@@ -263,6 +263,28 @@ void register_tests() {
         FieldReadLimits limit;limit.max_decoded_bytes=1024*1024;
         rejects([&]{decode(compressed,limit);},"limit");
     });
+    add("indexed binary layout matches ordinary AEROFIELDS",[] {
+        const auto original=sample();
+        auto metadata=original;
+        for (auto& f:metadata.fields) f.values.clear();
+        TempFile file;
+        const auto offsets=metadata.write_binary_layout(file.path);
+        require(offsets.size()==original.fields.size(),"One range per field");
+        std::fstream out(file.path,std::ios::in|std::ios::out|std::ios::binary);
+        for (std::size_t i=0;i<offsets.size();++i) {
+            out.seekp(static_cast<std::streamoff>(offsets[i]));
+            std::string data;
+            for (double value:original.fields[i].values) {
+                U64 bits; std::memcpy(&bits,&value,8); u64(data,bits);
+            }
+            out.write(data.data(),static_cast<std::streamsize>(data.size()));
+        }
+        out.close();
+        require(out && same(original,FieldSnapshot::read(file.path)),"Indexed field write round trip");
+        rejects([&]{original.write_binary_layout(file.path);},"size mismatch");
+        metadata.counts[0]=std::numeric_limits<U64>::max();
+        rejects([&]{metadata.write_binary_layout(file.path);},"overflow");
+    });
     add("filesystem and stream errors preserve existing files",[] {
         TempFile file;{std::ofstream out(file.path.c_str());out<<"keep";}
         FieldSnapshot s=sample();rejects([&]{s.write(file.path,static_cast<FieldFormat>(99));});

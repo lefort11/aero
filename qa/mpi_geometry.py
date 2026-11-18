@@ -1,0 +1,233 @@
+"""Compare distributed median-dual geometry with the native single-process solver."""
+import argparse
+import math
+import os
+import re
+from pathlib import Path
+import shutil
+import struct
+import subprocess
+import tempfile
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def run(args, success=True):
+    result = subprocess.run([str(arg) for arg in args], cwd=ROOT, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, errors="replace", timeout=120)
+    if (result.returncode == 0) != success:
+        raise RuntimeError(f"{args}\n{result.stdout}")
+    return result.stdout
+
+
+def sparse_line(mesh, count):
+    # Adjacent global IDs alternate between distant spatial regions.
+    half = count//2
+    node_ids = [2*(i % half) + i//half for i in range(count)]
+    blocks = [
+        ("X", ((i//2 + (i % 2)*half)/(count-1) for i in range(count))),
+        ("Y", [0]*count), ("Z", [0]*count),
+        ("FACE_OFFSETS", range(count+1)), ("FACE_NODES", node_ids),
+        ("CELL_OFFSETS", range(0, 2*count, 2)),
+        ("CELL_FACES", (f for i in range(count-1) for f in (i, i+1))),
+        ("CELL_ORIENTATIONS", [-1, 1]*(count-1)),
+    ]
+    with mesh.open("w") as f:
+        f.write(f"AEROMESH 2 TEXT\nDIMENSION 1\nCOUNTS {count} {count} {count} {count-1} {2*(count-1)} 2 2\n"
+                "LENGTH_SCALE_TO_METERS 1\n")
+        for name, values in blocks:
+            f.write(name + "\n" + " ".join(map(str, values)) + "\n")
+        f.write(f'BOUNDARY_FACES 0 {count-1}\nBOUNDARY_PATCH 0 1\nPATCH_NAMES "xmin" "xmax"\nEND\n')
+
+
+def geometry(directory, ranks):
+    records = {}
+    owners = []
+    for rank in range(ranks):
+        owned = 0
+        path = directory / f"geometry-{rank}-of-{ranks}.tsv"
+        for line in path.read_text().splitlines():
+            if line.startswith("#"):
+                continue
+            fields = line.split()
+            start = {"V": 2, "E": 3, "B": 4}[fields[0]]
+            key = tuple(fields[:start])
+            if key in records:
+                raise AssertionError(f"Duplicate geometry owner for {key}")
+            records[key] = tuple(map(float, fields[start:]))
+            owned += fields[0] == "V"
+        owners.append(owned)
+    return records, owners
+
+
+def compare(expected, actual):
+    if expected.keys() != actual.keys():
+        raise AssertionError(f"Missing or extra entities: {list(expected.keys() ^ actual.keys())[:5]}")
+    for key, ref in expected.items():
+        values = actual[key]
+        scale = max(map(abs, ref))
+        if len(values) != len(ref) or any(not math.isclose(x, y, rel_tol=3e-13, abs_tol=3e-13 * scale)
+                                           for x, y in zip(ref, values)):
+            raise AssertionError(f"{key}: {ref} vs {values}")
+
+
+def legacy_archive(current, target, version=1):
+    data = bytearray(current.read_bytes())
+    leaves, branches = struct.unpack_from("<QQ", data, 80)
+    index, tree, payload = struct.unpack_from("<QQQ", data, 112)
+    old_payload = tree + 112*branches
+    if version == 2:
+        nodes = struct.unpack_from("<Q", data, 40)[0]
+        stars, halo = struct.unpack_from("<QQ", data, old_payload)
+        old_payload += 16 + 8*(nodes+1+2*leaves+1) + 16*(stars+halo)
+    if version == 3:
+        old_payload = payload - 64  # v4 adds the native mesh SHA-256 before the payload
+    del data[old_payload:payload]
+    struct.pack_into("<Q", data, 8, version)
+    struct.pack_into("<Q", data, 128, old_payload)
+    for i in range(leaves):
+        pos = index + 48*i
+        offset = struct.unpack_from("<Q", data, pos)[0]
+        struct.pack_into("<Q", data, pos, offset - (payload-old_payload))
+    target.write_bytes(data)
+
+
+def verify_case(work, case, aero, meshdec, launcher):
+    source = ROOT / "qa" / "cases" / case
+    params = work / case
+    shutil.copytree(source, params)
+    native = params / "grid.mesh"
+    if case == "shear_jump_2d":
+        # Embedded, scaled plane with nonzero Z components in the dual areas.
+        words = native.read_text().split()
+        count = int(words[words.index("COUNTS") + 1])
+        xyz = [words.index(axis) + 1 for axis in "XYZ"]
+        for i in range(count):
+            x, y = (float(words[j + i]) for j in xyz[:2])
+            words[xyz[2] + i] = repr(0.25*x + 0.5*y)
+        words[words.index("LENGTH_SCALE_TO_METERS") + 1] = "0.375"
+        native.write_text(" ".join(words))
+    out = params / "results"
+    command = [aero, f"--input={params}", f"--output={out}"]
+    run(command + ["--geometry-only"])
+    reference, _ = geometry(out, 1)
+    if case == "pulse_1d":
+        run(command)
+        reference_fields = (out / "final.fields").read_bytes()
+    archive = params / "grid.mdec"
+    compression = ["--compress"] if case != "wave_3d" else []
+    run([meshdec, native, archive, "--target-ranks=4", *compression])
+    # The reference file is a private fixture. Only the archive remains available.
+    native.unlink()
+    settings = params / "main.txt"
+    settings.write_text(settings.read_text().replace("grid.mesh", "grid.mdec"))
+    for ranks in (1, 2, 4):
+        shutil.rmtree(out)
+        run([launcher, "-n", ranks, *command, "--geometry-only"])
+        result, owners = geometry(out, ranks)
+        compare(reference, result)
+        if not all(owners):
+            raise AssertionError(f"Expected a real split: {owners}")
+        print(f"OK {case}  processes={ranks}  owned vertices={owners}  records={len(result)}")
+    if case == "pulse_1d":
+        run(command)
+        if (out / "final.fields").read_bytes() != reference_fields:
+            raise AssertionError("Serial solve from archive differs from native periodic solve")
+        print("OK single-process periodic SSPRK3 field output")
+        legacy_archive(archive, params / "old.mdec")
+        original = settings.read_text()
+        legacy = original.replace("grid.mdec", "old.mdec")
+        settings.write_text(legacy)
+        run(command)
+        if (out / "final.fields").read_bytes() != reference_fields:
+            raise AssertionError("Legacy serial fields differ")
+        mpi = [launcher, "-n", 2, *command]
+        run(mpi + ["--geometry-only"])
+        result, _ = geometry(out, 2)
+        compare(reference, result)
+        settings.write_text(re.sub(r"(?m)^reconstruction\s*=.*", "reconstruction = first_order", legacy))
+        run(mpi)
+        for scheme in ("ebr3", "weno3", "weno5"):
+            settings.write_text(re.sub(r"(?m)^reconstruction\s*=.*", "reconstruction = "+scheme, legacy))
+            if "regenerate the .mdec" not in run(mpi, success=False):
+                raise AssertionError(f"Missing {scheme} diagnostic for legacy archive without halo")
+        legacy_archive(archive, params/"v2.mdec", 2)
+        v2 = original.replace("grid.mdec", "v2.mdec")
+        for scheme in ("ebr3", "weno3"):
+            settings.write_text(re.sub(r"(?m)^reconstruction\s*=.*", "reconstruction = "+scheme, v2))
+            run(mpi)
+        for scheme in ("ebr5", "weno5"):
+            settings.write_text(re.sub(r"(?m)^reconstruction\s*=.*", "reconstruction = "+scheme, v2))
+            if "far halo index" not in run(mpi, success=False):
+                raise AssertionError(f"Missing {scheme} diagnostic for v2")
+        settings.write_text(original)
+        archive.unlink()
+        run([meshdec, source / "grid.mesh", archive])
+        run([launcher, "-n", 4, *command, "--geometry-only"])
+        result, owners = geometry(out, 4)
+        compare(reference, result)
+        if owners.count(0) != 3:
+            raise AssertionError(f"Expected three empty partitions: {owners}")
+        print("OK one leaf on four processes")
+    if case == "wave_3d":
+        # Invalid directory bounds and links must be rejected collectively.
+        data = bytearray(archive.read_bytes())
+        payload = struct.unpack_from("<Q", data, 128)[0]
+        if struct.unpack_from("<Q", data, payload)[0] != 0:
+            raise AssertionError("Expected a vertex at start of Morton order")
+        first_id = struct.unpack_from("<Q", data, payload + 8)[0]
+        struct.pack_into("<Q", data, payload + 8, first_id + 1)
+        archive.write_bytes(data)
+        error = run([launcher, "-n", 4, *command, "--geometry-only"], success=False)
+        if "global node owner" not in error:
+            raise AssertionError(error)
+        struct.pack_into("<Q", data, payload + 8, first_id)
+        original_link = struct.unpack_from("<Q", data, payload+48)[0]
+        struct.pack_into("<Q", data, payload+48, 2**64-1)
+        archive.write_bytes(data)
+        error = run([launcher, "-n", 4, *command, "--geometry-only"], success=False)
+        if "nonexistent leaf" not in error:
+            raise AssertionError(error)
+        tree = struct.unpack_from("<Q", data, 120)[0]
+        branches = struct.unpack_from("<Q", data, 88)[0]
+        directory = tree+112*branches
+        star_links, halo_links = struct.unpack_from("<QQ", data, directory)
+        leaves = struct.unpack_from("<Q", data, 80)[0]
+        node_count = struct.unpack_from("<Q", data, 40)[0]
+        offsets = directory+16+8*(node_count+1)+16*star_links
+        struct.pack_into("<Q", data, payload+48, original_link)
+        first_end = struct.unpack_from("<Q", data, offsets+8)[0]
+        struct.pack_into("<Q", data, offsets+8, 2**64-1)
+        archive.write_bytes(data)
+        if "invalid halo row extent" not in run([launcher, "-n", 4, *command, "--geometry-only"], success=False):
+            raise AssertionError("Damaged precomputed halo accepted")
+        struct.pack_into("<Q", data, offsets+8, first_end)
+        far = offsets+8*(2*leaves+1)+16*halo_links
+        struct.pack_into("<Q", data, far+16, 2**64-1)
+        archive.write_bytes(data)
+        mpi = [launcher, "-n", 4, *command]
+        config = settings.read_text()
+        settings.write_text(re.sub(r"(?m)^reconstruction\s*=.*", "reconstruction = ebr3", config))
+        run(mpi)
+        settings.write_text(re.sub(r"(?m)^reconstruction\s*=.*", "reconstruction = ebr5", config))
+        if "invalid halo row extent" not in run(mpi, success=False):
+            raise AssertionError("Damaged EBR5 halo accepted")
+        print("OK collective rejection of duplicate ownership, invalid links and damaged near/far halo rows")
+
+
+def main():
+    ext = ".exe" if os.name == "nt" else ""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--aero", type=Path, default=ROOT / "bin" / ("aero" + ext))
+    parser.add_argument("--meshdec", type=Path, default=ROOT / "bin" / ("meshdec" + ext))
+    parser.add_argument("--mpiexec", default="mpiexec")
+    args = parser.parse_args()
+    (ROOT / "build").mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="mpi-geometry-", dir=ROOT / "build") as work:
+        for case in ("pulse_1d", "shear_jump_2d", "wave_3d"):
+            verify_case(Path(work), case, args.aero.resolve(), args.meshdec.resolve(), args.mpiexec)
+
+
+if __name__ == "__main__":
+    main()
+

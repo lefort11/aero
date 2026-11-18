@@ -9,6 +9,8 @@
 
 namespace aero { namespace io {
 
+std::uint32_t crc32(const char* data,std::size_t size);
+
 class CompressionError : public std::runtime_error {
 public:
     explicit CompressionError(const char* message) : std::runtime_error(message) {}

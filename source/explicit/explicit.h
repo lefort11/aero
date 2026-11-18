@@ -39,6 +39,9 @@ public:
 
     // The caller owns time and dt. A successful call commits the entire step.
     void step(ExplicitScheme scheme,double time,double dt,const ExplicitResidual& residual);
+    // An optional first residual already evaluated at (time, accepted state).
+    // It must be readable on the selected backend through the end of the call.
+    void step(ExplicitScheme scheme,double time,double dt,const ExplicitResidual& residual,const double* first_residual);
     ExplicitBackend backend() const;
     // Inspect the accepted field between steps, with the selected CUDA device active.
     void inspect(const std::function<void(const ExplicitField&)>& reader) const;

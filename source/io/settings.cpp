@@ -90,6 +90,17 @@ double number(const Entry& e, bool zero_allowed) {
     return value;
 }
 
+std::vector<double> positive_list(const Entry& e) {
+    std::vector<double> values;
+    std::size_t start=0;
+    for (;;) {
+        const auto comma=e.value.find(',',start);
+        values.push_back(number({trim(e.value.substr(start,comma-start)),e.where},false));
+        if (comma==std::string::npos) return values;
+        start=comma+1;
+    }
+}
+
 std::vector<int> device_list(const Entry& e) {
     std::vector<int> result;
     std::set<int> used;
@@ -114,13 +125,29 @@ RunDirectories parse_run_arguments(int argc, const char* const argv[]) {
     RunDirectories dirs;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
+        const auto eq = arg.find('=');
+        const std::string key = arg.substr(0, eq);
+        if (key=="--recover") {
+            if (dirs.recover) throw std::invalid_argument("duplicate --recover");
+            dirs.recover=true;
+            std::string slot;
+            if (eq!=std::string::npos) slot=arg.substr(eq+1);
+            else if (i+1<argc && std::string(argv[i+1]).compare(0,2,"--")!=0) slot=argv[++i];
+            else continue;
+            if (slot!="0" && slot!="1") throw std::invalid_argument("--recover expects 0 or 1");
+            dirs.recovery_slot=slot=="0"?0:1;
+            continue;
+        }
+        if (arg=="--geometry-only") {
+            if (dirs.geometry_only) throw std::invalid_argument("duplicate --geometry-only");
+            dirs.geometry_only=true;
+            continue;
+        }
         if (arg=="--interactive") {
             if (dirs.interactive) throw std::invalid_argument("duplicate --interactive");
             dirs.interactive=true;
             continue;
         }
-        const auto eq = arg.find('=');
-        const std::string key = arg.substr(0, eq);
         if (key != "--input" && key != "--output")
             throw std::invalid_argument("unknown argument: " + arg);
         if (eq == std::string::npos || eq + 1 == arg.size())
@@ -130,7 +157,7 @@ RunDirectories parse_run_arguments(int argc, const char* const argv[]) {
         path = arg.substr(eq + 1);
     }
     if (dirs.input.empty() || dirs.output.empty())
-        throw std::invalid_argument("usage: aero --input=<directory> --output=<directory> [--interactive]");
+        throw std::invalid_argument("usage: aero --input=<directory> --output=<directory> [--interactive] [--geometry-only] [--recover [0|1]]");
     return dirs;
 }
 
@@ -153,8 +180,28 @@ RunSettings read_run_settings(const RunDirectories& directories) {
     run.trace_ratio_max = main.contains("trace_ratio_max") ? number(main.take("trace_ratio_max"),false) : 1e16;
     if (run.trace_ratio_min>=1 || run.trace_ratio_max<=1)
         throw std::invalid_argument("main.txt: expected 0 <= trace_ratio_min < 1 < trace_ratio_max");
+    run.mpi_balance=main.contains("mpi_rank_weights") || main.contains("mpi_node_memory_mib") || main.contains("mpi_memory_factor");
+    if (main.contains("mpi_rank_weights")) {
+        const auto e=main.take("mpi_rank_weights");
+        if (e.value!="auto") run.mpi_rank_weights=positive_list(e);
+    }
+    if (main.contains("mpi_node_memory_mib")) {
+        const auto e=main.take("mpi_node_memory_mib");
+        if (e.value!="auto") run.mpi_node_memory_mib=positive_list(e);
+    }
+    if (main.contains("mpi_gpu_memory_mib")) {
+        const auto e=main.take("mpi_gpu_memory_mib");
+        if (e.value!="auto") run.mpi_gpu_memory_mib=positive_list(e);
+    }
+    // Initial estimates for the temporary geometry and derivative rows at startup.
+    if (run.reconstruction=="ebr3") run.mpi_memory_factor=12;
+    else if (run.reconstruction=="ebr5" || run.reconstruction=="weno3") run.mpi_memory_factor=16;
+    else if (run.reconstruction=="weno5") run.mpi_memory_factor=24;
+    if (main.contains("mpi_memory_factor")) run.mpi_memory_factor=number(main.take("mpi_memory_factor"),false);
+    if (main.contains("mpi_timing")) run.mpi_timing=choice(main.take("mpi_timing"),{"0","1"})=="1";
     run.omp_threads = main.optional_count<int>("omp_threads");
     run.flowreport_every = main.optional_count<std::uint64_t>("flowreport_every");
+    run.recovery_every_steps = main.optional_count<std::uint64_t>("recovery_every_steps");
     main.finish();
     Entries gas(resolve(directories.input, "gas.txt"));
     const Entry gamma = gas.take("gamma");

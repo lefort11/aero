@@ -117,5 +117,6 @@ void plan_leaves(const std::string& dir,const Options& options,int size) {
         }
         addresses.close();
     }
+    plan_halo(dir,options.memory);
 }
 } }

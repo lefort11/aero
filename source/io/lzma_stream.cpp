@@ -34,6 +34,7 @@ void write_u32(std::ostream& out, std::uint32_t value) {
     for (unsigned i = 0; i < 4; ++i) bytes[i] = static_cast<unsigned char>(value >> (8 * i));
     write_bytes(out, bytes, 4);
 }
+} // namespace
 std::uint32_t crc32(const char* data, std::size_t size) {
     static const std::array<std::uint32_t, 256> table = [] {
         std::array<std::uint32_t, 256> values = {};
@@ -49,7 +50,6 @@ std::uint32_t crc32(const char* data, std::size_t size) {
         c = table[(c ^ static_cast<unsigned char>(data[i])) & 255] ^ (c >> 8);
     return c ^ 0xffffffffU;
 }
-} // namespace
 
 LzmaOutputBuffer::LzmaOutputBuffer(std::ostream& output)
     : output_(output), raw_(block_size), finished_(false) {

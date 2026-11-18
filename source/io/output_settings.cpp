@@ -27,6 +27,7 @@ void entry(OutputZone& z,const std::string& key,const std::string& value,const s
         z.every_steps=positive<std::uint64_t>(value,where);
     } else if (key=="every_time") z.every_time=positive<double>(value,where);
     else if (key=="multi" && (value=="1" || value=="0")) z.multi=value=="1";
+    else if (key=="layout" && (value=="local" || value=="global")) z.global=value=="global";
     else if (key=="format" && value=="text") z.format=FieldFormat::Text;
     else if (key=="format" && value=="binary") z.format=FieldFormat::Binary;
     else if (key=="format" && value=="lzma") z.format=FieldFormat::Lzma;
@@ -55,7 +56,8 @@ bool in_series(const std::string& file,const std::string& series) {
     return digits.find_first_not_of("0123456789")==std::string::npos &&
            (digits.size()==6 || digits.front()!='0');
 }
-std::string path_key(std::string file) {
+}
+std::string output_path_key(std::string file) {
     std::replace(file.begin(),file.end(),'\\','/');
     if (file.empty() || file.find_first_of(":*?\"<>|")!=std::string::npos)
         throw std::invalid_argument("invalid relative file name: "+file);
@@ -80,7 +82,6 @@ std::string path_key(std::string file) {
 #endif
     return normalized;
 }
-}
 std::string output_filename(const OutputZone& zone,std::uint64_t step) {
     if (!zone.multi) return zone.file;
     std::ostringstream suffix;
@@ -102,7 +103,14 @@ void validate_output_zones(const std::vector<OutputZone>& zones) {
         std::set<std::string> used;
         for (const auto& var:z.variables) if (!supported.count(var) || !used.insert(var).second)
             throw std::invalid_argument(prefix+"unknown or duplicate variable: "+var);
-        const auto key=path_key(z.file);
+        const auto key=output_path_key(z.file);
+        if (z.global) {
+            if (z.format!=FieldFormat::Binary) throw std::invalid_argument(prefix+"layout = global requires format = binary");
+            const auto path=output_path_key(output_filename(z,1));
+            const auto first=path.substr(0,path.find('/'));
+            if (first=="recovery-0.bin" || first=="recovery-1.bin" || first=="recovery.lock")
+                throw std::invalid_argument(prefix+"field output overlaps recovery data: "+z.file);
+        }
         for (std::size_t i=0;i<keys.size();++i) {
             const bool overlap=z.multi==zones[i].multi ? key==keys[i] :
                 (z.multi ? in_series(keys[i],key) : in_series(key,keys[i]));

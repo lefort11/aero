@@ -79,6 +79,7 @@
     <ClCompile Include="..\utils\meshdec\storage.cpp" />
     <ClCompile Include="..\utils\meshdec\ingest.cpp" />
     <ClCompile Include="..\utils\meshdec\order.cpp" />
+    <ClCompile Include="..\utils\meshdec\halo.cpp" />
     <ClCompile Include="..\utils\meshdec\archive.cpp" />
     <ClCompile Include="..\utils\meshdec\main.cpp" />
   </ItemGroup>

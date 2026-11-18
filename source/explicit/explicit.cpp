@@ -1,5 +1,5 @@
 #include "explicit.h"
-#include "explicit_stage.h"
+#include "stage_sequence.h"
 
 #include <algorithm>
 #include <cmath>
@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <string>
 #ifdef AERO_WITH_CUDA
-#include "../cuda/runtime.h"
+#include "../cuda/device_scope.h"
 #endif
 
 namespace aero {
@@ -16,17 +16,6 @@ namespace {
 void checked(cudaError_t code) {
     if (code!=cudaSuccess) throw std::runtime_error(std::string("explicit CUDA: ")+cudaGetErrorString(code));
 }
-class DeviceScope {
-    int previous_;
-public:
-    explicit DeviceScope(int device):previous_(-1) {
-        if (device>=0) {
-            checked(cudaGetDevice(&previous_));
-            if (device!=previous_) checked(cudaSetDevice(device));
-        }
-    }
-    ~DeviceScope() { if (previous_>=0) cudaSetDevice(previous_); }
-};
 #endif
 }
 
@@ -51,15 +40,13 @@ struct ExplicitIntegrator::Impl {
     ~Impl() {
 #ifdef AERO_WITH_CUDA
         if (device<0) return;
-        int previous=-1;
-        cudaGetDevice(&previous);
-        if (cudaSetDevice(device)==cudaSuccess) {
+        cuda_detail::DeviceScope scope(device);
+        if (scope.status==cudaSuccess) {
             if (stream) cudaStreamSynchronize(stream);
             if (allocation) cudaFree(allocation);
             if (invalid) cudaFree(invalid);
             if (stream) cudaStreamDestroy(stream);
         }
-        if (previous>=0 && previous!=device) cudaSetDevice(previous);
 #endif
     }
     void bind(double* storage) {
@@ -75,12 +62,12 @@ struct ExplicitIntegrator::Impl {
         return nullptr;
 #endif
     }
-    void update_stage(explicit_detail::Stage s,const double* current,double dt) {
+    void update_stage(explicit_detail::Stage s,const double* current,const double* rhs,double dt) {
         int bad=0;
 #ifdef AERO_WITH_CUDA
         if (backend==ExplicitBackend::Cuda) {
             checked(cudaMemsetAsync(invalid,0,sizeof(int),stream));
-            explicit_detail::launch_update(s,size,components,volumes,original,current,residual,dt,stage,invalid,stream);
+            explicit_detail::launch_update(s,size,components,volumes,original,current,rhs,dt,stage,invalid,stream);
             checked(cudaGetLastError());
             checked(cudaMemcpyAsync(&bad,invalid,sizeof(int),cudaMemcpyDeviceToHost,stream));
             checked(cudaStreamSynchronize(stream));
@@ -92,8 +79,7 @@ struct ExplicitIntegrator::Impl {
 #pragma omp parallel for if(count>=4096) reduction(|:bad)
 #endif
             for (std::ptrdiff_t k=0;k<count;++k) {
-                stage[k]=explicit_detail::update(s,original[k],current[k],dt,volumes[k/components],residual[k]);
-                if (!explicit_detail::finite_value(stage[k])) bad=1;
+                if (!explicit_detail::update_value(s,original[k],current[k],dt,volumes[k/components],rhs[k],stage[k])) bad=1;
             }
         }
         if (bad) throw std::domain_error("non-finite explicit stage");
@@ -133,7 +119,8 @@ ExplicitIntegrator::ExplicitIntegrator(std::size_t nodes,std::size_t components,
     if (backend==ExplicitBackend::Cuda || (backend==ExplicitBackend::Auto && devices>0)) {
         if (device>=devices) throw std::invalid_argument("requested CUDA device unavailable");
 #ifdef AERO_WITH_CUDA
-        DeviceScope scope(device);
+        cuda_detail::DeviceScope scope(device);
+        checked(scope.status);
         p.backend=ExplicitBackend::Cuda;
         p.device=device;
         checked(cudaStreamCreateWithFlags(&p.stream,cudaStreamNonBlocking));
@@ -159,7 +146,8 @@ void ExplicitIntegrator::inspect(const std::function<void(const ExplicitField&)>
     if (!reader) throw std::invalid_argument("missing field reader");
     if (p.stepping) throw std::logic_error("field inspection requires an idle integrator");
 #ifdef AERO_WITH_CUDA
-    DeviceScope scope(p.device);
+    cuda_detail::DeviceScope scope(p.device);
+    checked(scope.status);
 #endif
     p.stepping=true;
     try {
@@ -178,30 +166,45 @@ void ExplicitIntegrator::inspect(const std::function<void(const ExplicitField&)>
     p.stepping=false;
 }
 
-void ExplicitIntegrator::step(ExplicitScheme scheme,double time,double dt,const ExplicitResidual& assemble) {
-    if (!assemble || !std::isfinite(time) || !(dt>0) || !std::isfinite(time+dt))
-        throw std::invalid_argument("invalid explicit step time, dt or residual callback");
-    explicit_detail::Stages stages;
-    switch(scheme) {
-    case ExplicitScheme::Euler: stages=explicit_detail::euler_stages(); break;
-    case ExplicitScheme::SSPRK3: stages=explicit_detail::ssprk3_stages(); break;
+ExplicitScheme explicit_detail::scheme_from_name(const std::string& name) {
+    if (name=="euler") return ExplicitScheme::Euler;
+    if (name=="ssprk3") return ExplicitScheme::SSPRK3;
+    throw std::invalid_argument("unknown explicit scheme: "+name);
+}
+explicit_detail::Stages explicit_detail::stages_for(ExplicitScheme scheme) {
+    switch (scheme) {
+    case ExplicitScheme::Euler: return euler_stages();
+    case ExplicitScheme::SSPRK3: return ssprk3_stages();
     default: throw std::invalid_argument("unknown explicit scheme");
     }
+}
+
+void ExplicitIntegrator::step(ExplicitScheme scheme,double time,double dt,const ExplicitResidual& assemble) {
+    step(scheme,time,dt,assemble,nullptr);
+}
+void ExplicitIntegrator::step(ExplicitScheme scheme,double time,double dt,const ExplicitResidual& assemble,
+                              const double* first_residual) {
+    if (!assemble || !std::isfinite(time) || !(dt>0) || !std::isfinite(time+dt))
+        throw std::invalid_argument("invalid explicit step time, dt or residual callback");
+    const auto stages=explicit_detail::stages_for(scheme);
     Impl& p=*impl_;
     if (p.stepping) throw std::logic_error("recursive explicit step");
 #ifdef AERO_WITH_CUDA
-    DeviceScope scope(p.device);
+    cuda_detail::DeviceScope scope(p.device);
+    checked(scope.status);
 #endif
     p.stepping=true;
     try {
         const double* current=p.original;
-        for (unsigned i=0;i<stages.count;++i) {
-            const explicit_detail::Stage s=stages.data[i];
-            ExplicitField field={p.nodes,p.components,current,p.volumes,p.backend,p.device,p.stream_handle()};
-            assemble(time+s.time_fraction*dt,field,p.residual);
-            p.update_stage(s,current,dt);
+        const auto compute=[&](double stage_time) {
+            const ExplicitField field={p.nodes,p.components,current,p.volumes,p.backend,p.device,p.stream_handle()};
+            assemble(stage_time,field,p.residual);
+        };
+        const auto update=[&](explicit_detail::Stage stage,bool first,bool) {
+            p.update_stage(stage,current,first && first_residual?first_residual:p.residual,dt);
             current=p.stage;
-        }
+        };
+        explicit_detail::advance_stages(stages,time,dt,first_residual!=nullptr,compute,update,[] {});
         std::swap(p.original,p.stage);
     } catch (...) {
 #ifdef AERO_WITH_CUDA
@@ -216,7 +219,8 @@ std::vector<double> ExplicitIntegrator::state() const {
     const Impl& p=*impl_;
 #ifdef AERO_WITH_CUDA
     if (p.backend==ExplicitBackend::Cuda) {
-        DeviceScope scope(p.device);
+        cuda_detail::DeviceScope scope(p.device);
+        checked(scope.status);
         std::vector<double> out(p.size);
         checked(cudaMemcpyAsync(out.data(),p.original,p.size*sizeof(double),cudaMemcpyDeviceToHost,p.stream));
         checked(cudaStreamSynchronize(p.stream));

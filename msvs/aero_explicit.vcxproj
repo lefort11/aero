@@ -66,9 +66,11 @@
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="..\source\cuda\device_scope.h" />
     <ClInclude Include="..\source\explicit\explicit.h" />
     <ClCompile Include="..\source\explicit\explicit.cpp" />
     <ClInclude Include="..\source\explicit\explicit_stage.h" />
+    <ClInclude Include="..\source\explicit\stage_sequence.h" />
 
     <ClCompile Include="..\source\explicit\explicit_euler.cpp" />
     <ClCompile Include="..\source\explicit\ssprk3.cpp" />

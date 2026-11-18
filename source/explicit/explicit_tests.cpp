@@ -67,6 +67,51 @@ void periodic(ExplicitBackend backend,int device,ExplicitScheme scheme) {
         near(balance,0);
     }
 }
+void prepared_step(ExplicitBackend backend,int device,ExplicitScheme scheme) {
+    const double volume=2,initial=1,start=.5,dt=.125;
+    const double first=-volume*(initial+start);
+    ExplicitIntegrator baseline(1,1,&volume,&initial,backend,device);
+    ExplicitIntegrator solver(1,1,&volume,&initial,backend,device);
+    // Keep the precomputed scalar on the same CPU or GPU as the solver.
+    ExplicitIntegrator cached(1,1,&volume,&first,backend,device);
+    baseline.step(scheme,start,dt,[](double t,const ExplicitField& f,double* r) {
+        evaluate(TestProblem::Forced,t,f,r);
+    });
+    unsigned calls=0;
+    cached.inspect([&](const ExplicitField& prepared) {
+        solver.step(scheme,start,dt,[&](double t,const ExplicitField& f,double* r) {
+            check(calls<2,"first residual evaluated twice");
+            near(t,start+(calls==0?dt:.5*dt));
+            ++calls;
+            evaluate(TestProblem::Forced,t,f,r);
+        },prepared.values);
+    });
+    check(calls==(scheme==ExplicitScheme::Euler?0u:2u),"incorrect number of later stages");
+    check(solver.state()==baseline.state(),"precomputed first residual changed the step");
+}
+#ifdef AERO_WITH_CUDA
+void nested_devices() {
+    const int caller=current_test_device(),other=caller==0 ? 1 : 0;
+    const double one=1;
+    {
+        ExplicitIntegrator outer(1,1,&one,&one,ExplicitBackend::Cuda,other);
+        ExplicitIntegrator inner(1,1,&one,&one,ExplicitBackend::Cuda,caller);
+        check(current_test_device()==caller,"construction changed the caller's device");
+        outer.inspect([&](const ExplicitField&) {
+            check(current_test_device()==other,"outer device not active");
+            try {
+                inner.inspect([&](const ExplicitField&) {
+                    check(current_test_device()==caller,"inner device not active");
+                    throw std::domain_error("rejected by reader");
+                });
+            } catch (const std::domain_error&) {}
+            check(current_test_device()==other,"inner inspection did not restore the outer device");
+        });
+        check(current_test_device()==caller,"inspection changed the caller's device");
+    }
+    check(current_test_device()==caller,"destruction changed the caller's device");
+}
+#endif
 void exercise(ExplicitBackend backend,int device) {
     for (auto scheme:{ExplicitScheme::Euler,ExplicitScheme::SSPRK3}) {
         const double coarse=convergence_error(backend,device,scheme,16);
@@ -76,6 +121,7 @@ void exercise(ExplicitBackend backend,int device) {
         check(std::fabs(p-order)<.1,"incorrect temporal order");
         std::cout<<(scheme==ExplicitScheme::Euler?"Euler":"SSPRK3")<<" observed order "<<p<<"\n";
         periodic(backend,device,scheme);
+        prepared_step(backend,device,scheme);
     }
     const double v=2,initial=1;
     ExplicitIntegrator solver(1,1,&v,&initial,backend,device);
@@ -109,6 +155,9 @@ int main(int argc,char** argv) {
         exercise(aero::ExplicitBackend::Cpu,0);
         std::cout<<"CPU explicit tests passed.\n";
         const int count=aero::ExplicitIntegrator::cuda_device_count();
+#ifdef AERO_WITH_CUDA
+        if (count>=2) nested_devices();
+#endif
         if (argc==2 && std::string(argv[1])=="--require-cuda") check(count>0,"CUDA device required");
         for (int i=0;i<count;++i) {
             exercise(aero::ExplicitBackend::Cuda,i);

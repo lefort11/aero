@@ -23,6 +23,7 @@
     <CudaArchitecture Condition="'$(CudaArchitecture)'==''">86</CudaArchitecture>
     <AeroVariant>cpu</AeroVariant><AeroVariant Condition="'$(WithCuda)'=='true'">cuda-sm$(CudaArchitecture)</AeroVariant>
     <AeroVariant Condition="'$(WithOpenMP)'=='false'">$(AeroVariant)-serial</AeroVariant>
+    <AeroVariant Condition="'$(WithMPI)'=='true'">$(AeroVariant)-mpi</AeroVariant>
     <OutDir>$(MSBuildProjectDirectory)\..\build\msvs\$(Platform)\$(Configuration)\$(AeroVariant)\</OutDir>
     <IntDir>$(OutDir)obj\$(MSBuildProjectName)\</IntDir><TargetName>aero</TargetName>
   </PropertyGroup>
@@ -36,7 +37,8 @@
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
       <OpenMPSupport Condition="'$(WithOpenMP)'=='true'">true</OpenMPSupport>
     </ClCompile>
-    <Link><SubSystem>Console</SubSystem><GenerateDebugInformation>true</GenerateDebugInformation></Link>
+    <Link><SubSystem>Console</SubSystem><GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>psapi.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
     <ClCompile><Optimization>Disabled</Optimization><BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
@@ -48,6 +50,42 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="..\source\aero\startup.h" />
+    <ClInclude Include="..\source\aero\geometry.h" />
+    <ClInclude Include="..\source\aero\recovery.h" />
+    <ClInclude Include="..\source\aero\indexed_io.h" />
+    <ClInclude Include="..\source\aero\mpi_fields.h" />
+    <ClInclude Include="..\source\aero\solver_timings.h" />
+    <ClInclude Include="..\source\aero\time_loop.h" />
+    <ClInclude Include="..\source\parallel\wall_timer.h" />
+    <ClInclude Include="..\source\aero\solver.h" />
+    <ClInclude Include="..\source\aero\partition_kernels.h" />
+    <ClInclude Include="..\source\aero\partition_report.h" />
+
+    <ClInclude Include="..\source\aero\mpi_balance.h" />
+    <ClInclude Include="..\source\mesh\leaf_balance.h" />
+    <ClInclude Include="..\source\aero\mpi_periodic.h" />
+    <ClInclude Include="..\source\aero\mpi_stencil.h" />
+    <ClInclude Include="..\source\aero\mpi_periodic_detail.h" />
+    <ClInclude Include="..\source\mesh\mdec.h" />
+    <ClInclude Include="..\source\mesh\partition.h" />
+    <ClInclude Include="..\source\parallel\processes.h" />
+    <ClCompile Include="..\source\aero\geometry.cpp" />
+    <ClCompile Include="..\source\aero\recovery.cpp" />
+    <ClCompile Include="..\source\aero\indexed_io.cpp" />
+    <ClCompile Include="..\source\aero\mpi_fields.cpp" />
+    <ClCompile Include="..\source\aero\solver_timings.cpp" />
+    <ClCompile Include="..\source\aero\time_loop.cpp" />
+    <ClCompile Include="..\source\aero\solver.cpp" />
+    <ClCompile Include="..\source\aero\partition_report.cpp" />
+    <ClCompile Include="..\source\aero\mpi_balance.cpp" />
+    <ClCompile Include="..\source\mesh\leaf_balance.cpp" />
+    <ClCompile Include="..\source\aero\mpi_periodic.cpp" />
+    <ClCompile Include="..\source\aero\mpi_stencil.cpp" />
+    <ClCompile Include="..\source\aero\mpi_periodic_match.cpp" />
+    <ClCompile Include="..\source\aero\momentum_frame.cpp" />
+    <ClCompile Include="..\source\mesh\mdec.cpp" />
+    <ClCompile Include="..\source\mesh\partition.cpp" />
+    <ClCompile Include="..\source\parallel\processes.cpp" />
     <ClCompile Include="..\source\aero\main.cpp" />
     <ClCompile Include="..\source\aero\startup.cpp" />
     <None Include="..\source\aero\README.txt" />
@@ -67,6 +105,29 @@
     <Link><AdditionalLibraryDirectories>$(CudaToolkitDir)\lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <AdditionalDependencies>cudart_static.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
   </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(WithMPI)'=='true'">
+    <ClCompile><AdditionalIncludeDirectories>$(MSMPI_INC);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>AERO_WITH_MPI;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+    <Link><AdditionalLibraryDirectories>$(MSMPI_LIB64);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>msmpi.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
+  </ItemDefinitionGroup>
+  <ItemGroup Condition="'$(WithCuda)'=='true'">
+
+    <ClCompile Include="..\source\aero\partition_gpu.cpp" />
+    <ClInclude Include="..\source\aero\partition_gpu.h" />
+    <ClInclude Include="..\source\aero\partition_kernels.cuh" />
+    <None Include="..\source\aero\partition_kernels.cu" />
+    <Object Include="$(IntDir)partition_kernels.obj" />
+    <GpuKernelInput Include="..\source\aero\partition_kernels.*;..\source\residual\*.h;..\source\reconstruction\*.h;..\source\eulersolver\*.h;..\source\bc\bc.h;..\source\explicit\explicit_stage.h;..\source\timestep\*.h;..\source\cuda\runtime.h;..\source\parallel\kernel_math.h;..\source\mesh\mesh_index.h" />
+  </ItemGroup>
+  <Target Name="CompilePartitionGpu" BeforeTargets="Link" Condition="'$(WithCuda)'=='true'" Inputs="@(GpuKernelInput);$(MSBuildProjectFullPath)" Outputs="$(IntDir)partition_kernels.obj">
+    <PropertyGroup>
+      <PartitionGpuFlags Condition="'$(Configuration)'=='Debug'">-G -g -O0 -Xcompiler=/MTd</PartitionGpuFlags>
+      <PartitionGpuFlags Condition="'$(Configuration)'!='Debug'">-O2 -Xcompiler=/MT</PartitionGpuFlags>
+      <PartitionGpuCompat Condition="'$(AllowUnsupportedCudaHostCompiler)'=='true'">-allow-unsupported-compiler -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH</PartitionGpuCompat>
+    </PropertyGroup>
+    <Exec Command="call &quot;$(VCInstallDir)Auxiliary\Build\vcvars64.bat&quot; -vcvars_ver=$(VCToolsVersion) &gt;nul &amp;&amp; &quot;$(CudaToolkitDir)\bin\nvcc.exe&quot; -std=c++11 -arch=sm_$(CudaArchitecture) $(PartitionGpuCompat) $(PartitionGpuFlags) -Xcompiler=/utf-8 -c &quot;$(MSBuildProjectDirectory)\..\source\aero\partition_kernels.cu&quot; -o &quot;$(IntDir)partition_kernels.obj&quot;" />
+  </Target>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <Import Project="publish_program.targets" />
 </Project>

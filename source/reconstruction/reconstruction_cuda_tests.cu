@@ -1,6 +1,7 @@
 #define AERO_RECONSTRUCTION_KERNEL_ONLY
 #include "reconstruction.h"
 #include "reconstruction_cuda_tests.cuh"
+#include "../cuda/device_scope.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <limits.h>
@@ -21,14 +22,6 @@ int report(cudaError_t code, char* error, unsigned capacity) {
         snprintf(error,capacity,"CUDA: %s",cudaGetErrorString(code));
     return code == cudaSuccess ? 0 : 1;
 }
-struct DeviceScope {
-    int previous;
-    cudaError_t status;
-    explicit DeviceScope(int device) : previous(-1), status(cudaGetDevice(&previous)) {
-        if (status==cudaSuccess) status=cudaSetDevice(device);
-    }
-    ~DeviceScope() { if (previous>=0) cudaSetDevice(previous); }
-};
 using namespace aero::reconstruction_cuda_tests_kernels;
 cudaError_t launch(State* s, const double* values, ReconstructionIndex components,
                    double* left, double* right, cudaStream_t stream) {
@@ -54,14 +47,14 @@ cudaError_t reserve(double** pointer, size_t* capacity, size_t count) {
 extern "C" void test_reconstruction_cuda_destroy(void* opaque) {
     State* s=static_cast<State*>(opaque);
     if (!s) return;
-    DeviceScope scope(s->device);
+    aero::cuda_detail::DeviceScope scope(s->device);
     cudaFree(s->values); cudaFree(s->left); cudaFree(s->right);
     free(s);
 }
 extern "C" int test_reconstruction_cuda_create(aero::ReconstructionStencilView view, int device, void** opaque,
                                     char* error, unsigned capacity) {
     *opaque=nullptr;
-    DeviceScope scope(device);
+    aero::cuda_detail::DeviceScope scope(device);
     if (scope.status!=cudaSuccess) return report(scope.status,error,capacity);
     State* s=static_cast<State*>(calloc(1,sizeof(State)));
     if (!s) return report(cudaErrorMemoryAllocation,error,capacity);
@@ -73,14 +66,14 @@ extern "C" int test_reconstruction_cuda_device(void* opaque, const double* value
                                     double* left, double* right, void* stream,
                                     char* error, unsigned capacity) {
     State* s=static_cast<State*>(opaque);
-    DeviceScope scope(s->device);
+    aero::cuda_detail::DeviceScope scope(s->device);
     if (scope.status!=cudaSuccess) return report(scope.status,error,capacity);
     return report(launch(s,values,components,left,right,static_cast<cudaStream_t>(stream)),error,capacity);
 }
 extern "C" int test_reconstruction_cuda_host(void* opaque, const double* values, ReconstructionIndex components,
                                   double* left, double* right, char* error, unsigned capacity) {
     State* s=static_cast<State*>(opaque);
-    DeviceScope scope(s->device);
+    aero::cuda_detail::DeviceScope scope(s->device);
     if (scope.status!=cudaSuccess) return report(scope.status,error,capacity);
     const size_t n=static_cast<size_t>(s->view.node_count*components);
     const size_t m=static_cast<size_t>(s->view.edge_count*components);

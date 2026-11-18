@@ -29,6 +29,13 @@ struct Field {
     Field() : location(FieldLocation::Cell) {}
 };
 
+struct FieldNodeSelection {
+    const std::vector<std::uint64_t>& nodes; // strictly increasing global IDs
+    const std::string& mesh_sha256;
+    unsigned dimension;
+    std::array<std::uint64_t,4> counts;
+};
+
 struct FieldReadLimits {
     // Stored vectors/strings, excluding allocator overhead and codec workspace.
     std::uint64_t max_payload_bytes;
@@ -62,11 +69,16 @@ public:
     void check_mesh(const Mesh& mesh) const;
     static std::string mesh_fingerprint(const Mesh& mesh);
 
+    static std::vector<Field> read_nodes(const std::string& path,const FieldNodeSelection& selection);
     static FieldSnapshot read(const std::string& path, const FieldReadLimits& limits = FieldReadLimits());
     static FieldSnapshot read(std::istream& input, const FieldReadLimits& limits = FieldReadLimits());
     // Validates before opening/truncating a file. I/O failure may leave partial output.
     void write(const std::string& path, FieldFormat format = FieldFormat::Binary) const;
     void write(std::ostream& output, FieldFormat format = FieldFormat::Binary) const;
+    // Write descriptors and reserve binary data ranges. Field values must be empty.
+    std::vector<std::uint64_t> write_binary_layout(const std::string& path) const;
+private:
+    void validate_fields(bool layout_only) const;
 };
 } // namespace aero
 #endif

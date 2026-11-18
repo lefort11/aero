@@ -113,11 +113,17 @@ void copy_row(RI row,const Ids& field,const std::vector<RI>& offsets,
 }
 }
 
+Mesh periodic_stencil_cover(const Mesh& mesh,const Ids& dof,Id count,double tolerance,unsigned rings,Ids& field) {
+    Cover cover(mesh,dof,count,tolerance);
+    cover.extend(rings);
+    field=std::move(cover.field);
+    return Mesh(std::move(cover.data));
+}
 ReconstructionStencil PeriodicDomain::prepare(const ReconstructionOptions& options) const {
-    Cover cover(mesh_,node_dof_,volumes_.size(),tolerance_);
     const bool fifth=options.scheme==ReconstructionScheme::Ebr5 || options.scheme==ReconstructionScheme::Weno5;
-    cover.extend(options.scheme==ReconstructionScheme::FirstOrder?0:(fifth?2:1));
-    Mesh lifted(std::move(cover.data));
+    Ids field;
+    Mesh lifted=periodic_stencil_cover(mesh_,node_dof_,volumes_.size(),tolerance_,
+                                       options.scheme==ReconstructionScheme::FirstOrder?0:(fifth?2:1),field);
     ReconstructionOptions local=options;
     local.require_complete_stencil=false; // outermost auxiliary rows will be discarded
     ReconstructionStencil all=prepare_reconstruction(lifted,local),result;
@@ -135,8 +141,8 @@ ReconstructionStencil PeriodicDomain::prepare(const ReconstructionOptions& optio
             RI row=2*e+side;
             if (options.require_complete_stencil && !src.complete[row])
                 throw ReconstructionError("Incomplete periodic-domain stencil on original edge "+std::to_string(edge.original));
-            copy_row(row,cover.field,src.offsets,src.nodes,src.weights,dst.offsets,dst.nodes,dst.weights);
-            dst.row_owner.push_back(cover.field[src.row_owner[row]]);
+            copy_row(row,field,src.offsets,src.nodes,src.weights,dst.offsets,dst.nodes,dst.weights);
+            dst.row_owner.push_back(field[src.row_owner[row]]);
             dst.complete.push_back(src.complete[row]);
             dst.outer_distance.push_back(src.outer_distance[row]);
             dst.far_distance.push_back(src.far_distance[row]);
@@ -145,7 +151,7 @@ ReconstructionStencil PeriodicDomain::prepare(const ReconstructionOptions& optio
                 dst.weno_order.push_back(src.weno_order[row]);
                 dst.weno_epsilon_scale.push_back(src.weno_epsilon_scale[row]);
                 for (RI k=0;k<4;++k)
-                    copy_row(4*row+k,cover.field,src.slope_offsets,src.slope_nodes,src.slope_weights,
+                    copy_row(4*row+k,field,src.slope_offsets,src.slope_nodes,src.slope_weights,
                              dst.slope_offsets,dst.slope_nodes,dst.slope_weights);
             }
         }

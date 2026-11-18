@@ -21,7 +21,7 @@ else
 EULER_FLAGS += -DAERO_WITH_CUDA
 EULER_LIBS += $(CUDA_RUNTIME_LINK)
 EULER_CUDA_TEST_OBJECT := $(BUILD)/eulersolver_cuda_tests.o
-$(EULER_CUDA_TEST_OBJECT): $(EULERSOLVER_SOURCE)/eulersolver_cuda_tests.cu $(EULERSOLVER_SOURCE)/eulersolver_cuda_tests.cuh $(EULER_HEADERS) | $(BUILD)
+$(EULER_CUDA_TEST_OBJECT): $(EULERSOLVER_SOURCE)/eulersolver_cuda_tests.cu $(EULERSOLVER_SOURCE)/eulersolver_cuda_tests.cuh $(EULER_HEADERS) source/cuda/device_scope.h source/cuda/runtime.h | $(BUILD)
 	$(compile_cuda)
 endif
 endif

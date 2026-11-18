@@ -106,12 +106,12 @@ void cases(int device) {
     }
 
     // More rows than one OpenMP team or CUDA block. A rotated area has
-    // magnitude 5. Two equally limiting nodes lie in different blocks.
+    // magnitude 5. Equal minima occur both within a block and across blocks.
     const std::size_t count=5003;
     std::vector<double> vol(count,10),speed(count,1);
     std::vector<PeriodicEdge> edges(count);
     for (std::size_t i=0;i<count;++i) edges[i]={i,(i+1)%count,i,{3,4,0}};
-    vol[3901]=vol[4097]=2;
+    vol[3901]=vol[3904]=vol[4097]=2;
     PeriodicView artificial={count,count,0,count,nullptr,vol.data(),edges.data(),nullptr};
     CflTimestep large(artificial,device);
     expect(run(device,large,.5,speed),.2,3901);

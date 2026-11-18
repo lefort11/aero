@@ -14,7 +14,7 @@ OUTPUT_HEADERS := $(IO_DIR)/output_settings.h $(IO_DIR)/scheduled_output.h $(IO_
 $(BUILD)/io_output_settings.o: $(OUTPUT_HEADERS) $(IO_DIR)/settings_text.h
 ifneq ($(wildcard source/eulersolver/euler.h),)
 SETTINGS_OBJECTS += $(BUILD)/io_scheduled_output.o
-$(BUILD)/io_scheduled_output.o: $(OUTPUT_HEADERS) source/eulersolver/euler.h source/parallel/parallel_for.h
+$(BUILD)/io_scheduled_output.o: $(OUTPUT_HEADERS) $(MESH_SOURCE)/mesh.h source/eulersolver/euler.h source/parallel/parallel_for.h
 FLOWREPORT_OBJECTS := $(BUILD)/flowreport.o
 ifneq ($(wildcard source/explicit/explicit.h),)
 FLOWREPORT_OBJECTS += $(BUILD)/flowreport_explicit.o

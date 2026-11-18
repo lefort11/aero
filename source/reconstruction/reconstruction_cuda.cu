@@ -1,6 +1,6 @@
 #define AERO_RECONSTRUCTION_KERNEL_ONLY
 #include "reconstruction.h"
-#include "../cuda/runtime.h"
+#include "../cuda/device_scope.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <limits.h>
@@ -26,14 +26,6 @@ int report(cudaError_t code, char* error, unsigned capacity) {
         snprintf(error,capacity,"CUDA: %s",cudaGetErrorString(code));
     return code == cudaSuccess ? 0 : 1;
 }
-struct DeviceScope {
-    int previous;
-    cudaError_t status;
-    explicit DeviceScope(int device) : previous(-1), status(cudaGetDevice(&previous)) {
-        if (status==cudaSuccess) status=cudaSetDevice(device);
-    }
-    ~DeviceScope() { if (previous>=0) cudaSetDevice(previous); }
-};
 cudaError_t copy_array(void** out, const void* src, size_t bytes) {
     if (!bytes) return cudaSuccess;
     cudaError_t code=cudaMalloc(out,bytes);
@@ -53,7 +45,7 @@ extern "C" int aero_reconstruction_cuda_count(int* count, char* error, unsigned 
 extern "C" void aero_reconstruction_cuda_destroy(void* opaque) {
     State* s=static_cast<State*>(opaque);
     if (!s) return;
-    DeviceScope scope(s->device);
+    aero::cuda_detail::DeviceScope scope(s->device);
     cudaFree(s->offsets); cudaFree(s->nodes); cudaFree(s->weights);
     cudaFree(s->slope_offsets); cudaFree(s->slope_nodes); cudaFree(s->slope_weights);
     cudaFree(s->weno_order); cudaFree(s->weno_epsilon_scale);
@@ -63,7 +55,7 @@ extern "C" void aero_reconstruction_cuda_destroy(void* opaque) {
 extern "C" int aero_reconstruction_cuda_create(aero::ReconstructionStencilView view, int device, void** opaque,
                                     char* error, unsigned capacity) {
     *opaque=nullptr;
-    DeviceScope scope(device);
+    aero::cuda_detail::DeviceScope scope(device);
     if (scope.status!=cudaSuccess) return report(scope.status,error,capacity);
     State* s=static_cast<State*>(calloc(1,sizeof(State)));
     if (!s) return report(cudaErrorMemoryAllocation,error,capacity);

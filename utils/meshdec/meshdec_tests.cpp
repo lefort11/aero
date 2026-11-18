@@ -1,6 +1,7 @@
 #include "meshdec.h"
 #include "../../source/mesh/mesh.h"
 #include "../../source/io/lzma_stream.h"
+#include "../../source/io/sha256.h"
 #include <cstring>
 #include <iostream>
 #include <map>
@@ -57,7 +58,7 @@ void reference(std::istream& in,std::vector<Ref>& refs,Id kind,Id id) {
 void check(const std::string& path,const Mesh& mesh,bool compressed) {
     const auto m=mesh.view();
     auto f=input(path);
-    require(bytes(f,8)=="AERODEC1" && read_word(f)==1,"Magic/version mismatch");
+    require(bytes(f,8)=="AERODEC1" && read_word(f)==4,"Magic/version mismatch");
     require(read_word(f)==static_cast<Id>(compressed) && read_word(f)==m.dimension &&
             read_real(f)==m.length_scale_to_meters,"Mesh header mismatch");
     for (Id n:{m.node_count,m.face_count,m.cell_count,m.boundary_face_count,m.patch_count})
@@ -153,7 +154,54 @@ void check(const std::string& path,const Mesh& mesh,bool compressed) {
                         box.high[a]==*std::max_element(axes[a],axes[a]+n),"Bad root bounds");
         }
     }
-    require(f.tellg()==position(payload),"Incorrect tree length");
+    // Independent incidence from Mesh, including cells sharing only a vertex.
+    std::vector<std::set<Id>> stars(m.node_count),halo(2*leaves);
+    std::vector<Id> owner(m.node_count);
+    for (const auto& o:objects) if (o.second.first==0) owner[o.second.second]=o.first.first;
+    for (Id c=0;c<m.cell_count;++c) for (Id n:m.cell_nodes(c)) {
+        stars[n].insert(c); halo[2*owner[n]].insert(c);
+    }
+    std::vector<bool> boundary_nodes(m.node_count),near_patch(m.node_count);
+    for (Id b=0;b<m.boundary_face_count;++b) for (Id n:m.face_nodes(m.boundary_faces[b])) boundary_nodes[n]=true;
+    for (Id e=0;e<m.edge_count;++e) {
+        const Id a=m.edge_begin[e],b=m.edge_end[e];
+        if (boundary_nodes[a] || boundary_nodes[b]) near_patch[a]=near_patch[b]=true;
+        if (owner[a]==owner[b]) continue;
+        for (Id c:stars[b]) if (!halo[2*owner[a]].count(c)) halo[2*owner[a]+1].insert(c);
+        for (Id c:stars[a]) if (!halo[2*owner[b]].count(c)) halo[2*owner[b]+1].insert(c);
+    }
+    const Id star_count=read_word(f),halo_count=read_word(f);
+    const auto rows=[&](const std::vector<std::set<Id>>& expected,Id count) {
+        require(read_word(f)==0,"First halo offset must be zero");
+        Id k=0;
+        for (const auto& row:expected) {
+            k+=row.size();
+            require(read_word(f)==k,"Incorrect halo row extent");
+        }
+        require(k==count,"Incorrect halo count");
+        for (const auto& row:expected) for (Id c:row) {
+            const Id leaf=read_word(f),off=read_word(f);
+            require(objects.at({leaf,off})==Key(2,c),"Incorrect halo cell address");
+        }
+    };
+    std::vector<std::set<Id>> far(leaves);
+    for (Id leaf=0;leaf<leaves;++leaf) {
+        const auto& core=halo[2*leaf];
+        const auto& outer=halo[2*leaf+1];
+        for (const auto* near:{&core,&outer}) for (Id c:*near) for (Id n:m.cell_nodes(c))
+            for (Id other:stars[n]) if (!core.count(other) && !outer.count(other)) far[leaf].insert(other);
+    }
+    auto band=near_patch;
+    for (Id n=0;n<m.node_count;++n) if (near_patch[n]) for (Id c:stars[n])
+        for (Id vertex:m.cell_nodes(c)) band[vertex]=true;
+    for (Id n=0;n<m.node_count;++n) if (!band[n]) stars[n].clear();
+    rows(stars,star_count); rows(halo,halo_count);
+    rows(far,read_word(f));
+    io_detail::Sha256Buffer hash;
+    std::ostream canonical(&hash);
+    mesh.write(canonical,MeshFormat::Binary);
+    require(bytes(f,64)==hash.hex_digest(),"Incorrect source mesh fingerprint");
+    require(f.tellg()==position(payload),"Incorrect halo directory length");
 }
 void tests() {
     Scratch temp;
@@ -201,7 +249,7 @@ void tests() {
     {
         auto f=input(o.target);
         f.seekg(80);
-        require(read_word(f)==0 && read_word(f)==0 && read_word(f)==none && file_size(o.target)==136,
+        require(read_word(f)==0 && read_word(f)==0 && read_word(f)==none && file_size(o.target)==248,
                 "Invalid empty archive");
     }
     auto truncated=output(o.source);

@@ -85,6 +85,21 @@ void arguments() {
     const char* edit[]={"aero","--interactive","--input=in","--output=out","--interactive"};
     require(parse_run_arguments(4,edit).interactive,"interactive flag");
     rejects([&]{parse_run_arguments(5,edit);},"duplicate --interactive");
+    const char* automatic[]={"aero","--recover","--input=in","--output=out"};
+    const auto selected=parse_run_arguments(4,automatic);
+    require(selected.recover && selected.recovery_slot==-1,"automatic recovery");
+    const char* restart[]={"aero","--input=in","--output=out","--recover","0"};
+    require(parse_run_arguments(5,restart).recovery_slot==0,"recovery slot 0");
+    restart[3]="--recover=1";
+    require(parse_run_arguments(4,restart).recovery_slot==1,"recovery slot 1");
+    restart[4]="--recover";
+    rejects([&]{parse_run_arguments(5,restart);},"duplicate --recover");
+    for (const char* bad:{"--recover=","--recover=2","--recover=-1"}) {
+        restart[3]=bad;
+        rejects([&]{parse_run_arguments(4,restart);},"expects 0 or 1");
+    }
+    restart[3]="--recover"; restart[4]="2";
+    rejects([&]{parse_run_arguments(5,restart);},"expects 0 or 1");
 }
 
 void templates_case() {
@@ -127,6 +142,9 @@ void output_zones(const CaseFiles& files) {
             "[s]\nfile=x\nevery_steps=0\nvariables=p","[s]\nfile=x\nevery_time=nan\nvariables=p",
             "[s]\nfile=x\nevery_steps=-1\nvariables=p","[s]\nfile=x\nevery_steps=2\nvariables=p,p",
             "[s]\nfile=x\nevery_steps=2\nvariables=q","[s]\nfile=../x\nevery_steps=2\nvariables=p",
+            "[s]\nfile=x\nevery_steps=1\nvariables=p\nlayout=other",
+            "[s]\nfile=x\nevery_steps=1\nvariables=p\nlayout=global\nformat=lzma",
+            "[s]\nfile=recovery-1.bin\nevery_steps=1\nvariables=p\nlayout=global",
             series+"[alias]\nfile=p_000003.fields\nevery_steps=2\nvariables=E"}) {
         files.write("output.txt",invalid);
         rejects([&]{read_output_zones(path);},"output.txt");

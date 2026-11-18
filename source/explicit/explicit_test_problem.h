@@ -13,6 +13,7 @@ inline double test_residual(TestProblem problem,double t,aero::ExplicitField f,s
     return f.values[k]-f.values[upstream*f.components+k%f.components];
 }
 #ifdef AERO_WITH_CUDA
+int current_test_device();
 void device_test_residual(TestProblem,double,aero::ExplicitField,double*);
 #endif
 #endif

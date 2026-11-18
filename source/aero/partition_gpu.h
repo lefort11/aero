@@ -1,0 +1,66 @@
+#ifndef AERO_PARTITION_GPU_H
+#define AERO_PARTITION_GPU_H
+#include "partition_kernels.h"
+#include "../residual/flux_cfl.h"
+#include "mpi_balance.h"
+#include "mpi_stencil.h"
+#include "../cuda/runtime.h"
+#include "../parallel/processes.h"
+#include <limits>
+
+namespace aero {
+void select_partition_gpu(const Processes& world,const std::vector<int>& devices);
+void query_gpu_memory(GpuMemoryFit& fit,const std::vector<double>& limits,const Processes& world);
+
+class PartitionGpu {
+    // Replay the same layout for sizing and upload. One reservation covers all device arrays.
+    struct Storage {
+        unsigned char* base=nullptr;
+        std::size_t used=0,capacity=0;
+        ~Storage();
+        template<class T> T* allocate(std::size_t n,const T* host=nullptr) {
+            if (!n) return nullptr;
+            const auto max=std::numeric_limits<std::size_t>::max();
+            if (used>max-255) throw std::length_error("GPU layout too large");
+            const auto offset=(used+255)&~std::size_t(255);
+            if (n>(max-offset)/sizeof(T)) throw std::length_error("GPU allocation too large");
+            used=offset+n*sizeof(T);
+            if (!base) return nullptr;
+            if (used>capacity) throw std::logic_error("GPU layout exceeded reserved storage");
+            T* data=reinterpret_cast<T*>(base+offset);
+            if (host) check(cudaMemcpy(data,host,n*sizeof(T),cudaMemcpyHostToDevice));
+            return data;
+        }
+        template<class T> T* upload(const std::vector<T>& host) { return allocate(host.size(),host.data()); }
+    } storage_;
+    partition_detail::Grid grid_{};
+    residual_detail::DeviceCflMinimum* minimum_=nullptr;
+    static void check(cudaError_t status);
+    void check_kernel(const char* phase);
+    static double measure_flux_rate(ResidualOptions options,std::size_t faces,MeshIndex budget);
+public:
+    PartitionGpu()=default;
+    static std::vector<double> measure_weights(const Processes& world,ResidualOptions options,MeshIndex budget);
+    void layout(residual_detail::Geometry geometry,std::size_t patches,const PartitionStencil& stencil,
+                 const std::vector<MeshIndex>& computed,const std::vector<MeshIndex>& owned,const double* volumes,
+                 std::size_t state_nodes,bool compact_buffer,bool whole_mesh);
+    bool reserve(GpuMemoryFit& fit);
+    void upload_state(const std::vector<double>& state,const std::vector<double>& initial);
+    static void synchronize();
+    PartitionGpu(const PartitionGpu&)=delete;
+    PartitionGpu& operator=(const PartitionGpu&)=delete;
+    void fluxes();
+    double cfl(double courant);
+    void update(explicit_detail::Stage stage,double dt,bool save_original);
+    void download_owned(std::vector<double>& compact) const;
+    void download(std::vector<double>& state) const;
+
+    struct Peer {
+        MeshIndex *out=nullptr,*in=nullptr;
+        double* buffer=nullptr;
+    };
+    Peer prepare(const std::vector<MeshIndex>& out,const std::vector<MeshIndex>& in,unsigned stride);
+    void exchange(const Peer& peer,DoubleExchange::Buffer records,double* mapped,bool edges,bool pack);
+};
+}
+#endif

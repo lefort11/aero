@@ -310,22 +310,23 @@ void ring_test(int device) {
     }
 }
 #ifndef AERO_RESIDUAL_NO_TIME_TEST
-void sod_step() {
+void sod_step(int device) {
     Mesh mesh=Mesh::read("examples/tecplot/demo_1d.mesh");
     MedianDual dual(mesh);
     const auto cv=dual.view();
     const auto m=mesh.view();
     ReconstructionOptions opts;opts.scheme=ReconstructionScheme::FirstOrder;
-    SpatialResidual op(m,cv,prepare_reconstruction(mesh,opts),free_patches(mesh),residual_options("conservative","lf",1.4));
+    SpatialResidual op(m,cv,prepare_reconstruction(mesh,opts),free_patches(mesh),residual_options("conservative","lf",1.4),device);
     Values u(3*m.node_count);
     for (size_t n=0;n<m.node_count;++n) {u[3*n]=m.x[n]<.5 ? 1 : .125;u[3*n+2]=m.x[n]<.5 ? 2.5 : .25;}
     Result out(u.size(),cv.edge_count,cv.boundary_count);
-    evaluate(-1,op,u,out);
+    evaluate(device,op,u,out);
     CflTimestep cfl(m,cv);
     const auto dt=cfl.compute(.4,{out.edge.data(),out.edge.size(),out.bc.data(),out.bc.size()});
-    ExplicitIntegrator step(m.node_count,3,cv.volumes,u.data(),ExplicitBackend::Cpu);
+    ExplicitIntegrator step(m.node_count,3,cv.volumes,u.data(),device<0?ExplicitBackend::Cpu:ExplicitBackend::Cuda,device<0?0:device);
     step.step(ExplicitScheme::Euler,0,dt.dt,[&](double,const ExplicitField& f,double* r){
-        op.assemble(f.values,u.data(),r,out.edge.data(),out.bc.data());
+        const double actual=op.assemble_cfl(f.values,f.values,r,f.volumes,.4,f.stream);
+        require(actual==dt.dt,"Sod CFL differs from reduction of the exported speeds");
     });
     const auto next=step.state();
     require(next!=u,"Sod jump must evolve");
@@ -337,12 +338,12 @@ int main(int argc,char** argv) {
     try {
         basis_test();
         trace_limiter_test();
-#ifndef AERO_RESIDUAL_NO_TIME_TEST
-        sod_step();
-#endif
         const int devices=ReconstructionContext::cuda_device_count();
         if (argc>1 && std::string(argv[1])=="--require-cuda") require(devices>0,"CUDA device required");
         for (int dev=-1;dev<devices;++dev) {
+#ifndef AERO_RESIDUAL_NO_TIME_TEST
+            sod_step(dev);
+#endif
             edge_modes(dev); ring_test(dev); inlet_outlet_edges(dev); constant_test(2,dev); constant_test(3,dev);
             std::cout<<"Residual tests passed: "<<(dev<0 ? "CPU" : "GPU "+std::to_string(dev))<<"\n";
         }

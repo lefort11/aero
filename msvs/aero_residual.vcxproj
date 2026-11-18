@@ -66,9 +66,12 @@
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="..\source\cuda\device_scope.h" />
+    <ClInclude Include="..\source\timestep\cfl_block_min.cuh" />
     <ClInclude Include="..\source\residual\residual.h" />
     <ClCompile Include="..\source\residual\residual.cpp" />
     <ClInclude Include="..\source\residual\residual_detail.h" />
+    <ClInclude Include="..\source\residual\flux_cfl.h" />
 
   </ItemGroup>
   <PropertyGroup>
@@ -113,7 +116,7 @@
     <None Include="..\source\residual\residual.mk" />
     <Object Include="$(IntDir)residual_cuda.obj" Condition="'$(WithCuda)'=='true'" />
   </ItemGroup>
-  <Target Name="CompileResidualCuda" BeforeTargets="Lib" Condition="'$(WithCuda)'=='true'" Inputs="$(MSBuildProjectDirectory)\..\source\residual\residual_cuda.cu;$(MSBuildProjectDirectory)\..\source\residual\residual_cuda.cuh;$(MSBuildProjectDirectory)\..\source\parallel\kernel_math.h;$(MSBuildProjectDirectory)\..\source\cuda\runtime.h;$(MSBuildProjectDirectory)\..\source\mesh\mesh_index.h;$(MSBuildProjectDirectory)\..\source\residual\residual_detail.h;$(MSBuildProjectDirectory)\..\source\residual\residual.h;$(MSBuildProjectDirectory)\..\source\bc\bc.h;$(MSBuildProjectDirectory)\..\source\eulersolver\euler.h;$(MSBuildProjectDirectory)\..\source\eulersolver\characteristic.h;$(MSBuildProjectDirectory)\..\source\eulersolver\lax_friedrichs.h;$(MSBuildProjectDirectory)\..\source\eulersolver\roe.h;$(MSBuildProjectDirectory)\..\source\reconstruction\ebr.h;$(MSBuildProjectDirectory)\..\source\reconstruction\weno.h;$(MSBuildProjectDirectory)\..\source\reconstruction\reconstruction.h;$(MSBuildProjectFullPath)" Outputs="$(IntDir)residual_cuda.obj">
+  <Target Name="CompileResidualCuda" BeforeTargets="Lib" Condition="'$(WithCuda)'=='true'" Inputs="$(MSBuildProjectDirectory)\..\source\residual\flux_cfl.h;$(MSBuildProjectDirectory)\..\source\timestep\timestep.h;$(MSBuildProjectDirectory)\..\source\timestep\cfl_detail.h;$(MSBuildProjectDirectory)\..\source\residual\residual_cuda.cu;$(MSBuildProjectDirectory)\..\source\residual\residual_cuda.cuh;$(MSBuildProjectDirectory)\..\source\parallel\kernel_math.h;$(MSBuildProjectDirectory)\..\source\cuda\runtime.h;$(MSBuildProjectDirectory)\..\source\mesh\mesh_index.h;$(MSBuildProjectDirectory)\..\source\residual\residual_detail.h;$(MSBuildProjectDirectory)\..\source\residual\residual.h;$(MSBuildProjectDirectory)\..\source\bc\bc.h;$(MSBuildProjectDirectory)\..\source\eulersolver\euler.h;$(MSBuildProjectDirectory)\..\source\eulersolver\characteristic.h;$(MSBuildProjectDirectory)\..\source\eulersolver\lax_friedrichs.h;$(MSBuildProjectDirectory)\..\source\eulersolver\roe.h;$(MSBuildProjectDirectory)\..\source\reconstruction\ebr.h;$(MSBuildProjectDirectory)\..\source\reconstruction\weno.h;$(MSBuildProjectDirectory)\..\source\reconstruction\reconstruction.h;$(MSBuildProjectDirectory)\..\source\timestep\cfl_block_min.cuh;$(MSBuildProjectFullPath)" Outputs="$(IntDir)residual_cuda.obj">
     <Exec Command="call &quot;$(VCInstallDir)Auxiliary\Build\vcvars64.bat&quot; -vcvars_ver=$(VCToolsVersion) &gt;nul &amp;&amp; &quot;$(CudaToolkitDir)\bin\nvcc.exe&quot; -std=c++11 -arch=sm_$(CudaArchitecture) $(CudaCompatibilityFlags) $(ResidualCudaCompileFlags) -Xcompiler=/utf-8 -c &quot;$(MSBuildProjectDirectory)\..\source\residual\residual_cuda.cu&quot; -o &quot;$(IntDir)residual_cuda.obj&quot;" />
   </Target>
   <ItemGroup><ProjectReference Include="aero_reconstruction.vcxproj"><Project>{1EAEAC46-A263-4B61-A48B-4D3CA6CE2BA4}</Project></ProjectReference></ItemGroup>

@@ -202,6 +202,7 @@ test: converter-test
 debug-test: converter-debug-test
 
 include utils/tecplot/tecplot.mk
+include source/parallel/mpi.mk
 include utils/meshdec/meshdec.mk
 
 include source/reconstruction/reconstruction.mk
@@ -230,7 +231,7 @@ endif
 PARALLEL_HEADER := source/parallel/parallel_for.h
 $(BUILD)/mesh.o $(BUILD)/cv.o $(BUILD)/periodic.o $(BUILD)/initial.o $(BUILD)/io_fields.o $(RECONSTRUCTION_OBJECT) $(WENO_OBJECT) $(BUILD)/converter_topology_$(WITH_CGNS).o: $(PARALLEL_HEADER)
 ifneq ($(filter 1,$(WITH_CUDA)),)
-cuda_objects := $(EBR_CUDA_OBJECT) $(RECONSTRUCTION_CUDA_TEST_OBJECT) $(EULER_CUDA_TEST_OBJECT) $(BC_GPU) $(CV_GPU) $(RES_GPU) $(EXPLICIT_GPU) $(EXPLICIT_TEST_GPU) $(TIMESTEP_GPU) $(TIMESTEP_TEST_GPU)
+cuda_objects := $(AERO_GPU) $(EBR_CUDA_OBJECT) $(RECONSTRUCTION_CUDA_TEST_OBJECT) $(EULER_CUDA_TEST_OBJECT) $(BC_GPU) $(CV_GPU) $(RES_GPU) $(EXPLICIT_GPU) $(EXPLICIT_TEST_GPU) $(TIMESTEP_GPU) $(TIMESTEP_TEST_GPU)
 $(cuda_objects): source/cuda/runtime.h source/parallel/kernel_math.h source/mesh/mesh_index.h
 $(AERO_PROGRAM) $(RES_OBJ) $(EXPLICIT_OBJ) $(EBR_TEST) $(RES_TEST) $(REPORT_TEST): source/cuda/runtime.h
 ifeq ($(MINGW_CUDA),1)

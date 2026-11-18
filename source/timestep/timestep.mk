@@ -17,7 +17,7 @@ TIMESTEP_FLAGS += -DAERO_WITH_CUDA -isystem "$(CUDA_HOME)/include"
 TIMESTEP_LIBS := $(CUDA_RUNTIME_LINK)
 TIMESTEP_GPU := $(BUILD)/timestep_kernel.o
 TIMESTEP_TEST_GPU := $(BUILD)/timestep_cuda_tests.o
-$(TIMESTEP_GPU): $(TIMESTEP_DIR)/timestep_cuda.cu $(TIMESTEP_DIR)/timestep_cuda.cuh $(TIMESTEP_HEADERS) | $(BUILD)
+$(TIMESTEP_GPU): $(TIMESTEP_DIR)/timestep_cuda.cu $(TIMESTEP_DIR)/timestep_cuda.cuh $(TIMESTEP_HEADERS) source/timestep/cfl_block_min.cuh source/cuda/device_scope.h source/cuda/runtime.h | $(BUILD)
 	$(compile_cuda)
 $(TIMESTEP_TEST_GPU): $(TIMESTEP_DIR)/timestep_cuda_tests.cu $(TIMESTEP_DIR)/timestep_cuda_tests.cuh $(TIMESTEP_TEST_HEADERS) $(TIMESTEP_HEADERS) | $(BUILD)
 	$(compile_cuda)

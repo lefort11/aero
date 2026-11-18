@@ -10,8 +10,7 @@ AERO_GPU_KERNEL void stage_kernel(Stage s,size_t size,size_t components,const do
     const double* original,const double* current,const double* residual,double dt,double* next,int* invalid) {
     const size_t stride=static_cast<size_t>(gridDim.x)*blockDim.x;
     for (size_t k=static_cast<size_t>(blockIdx.x)*blockDim.x+threadIdx.x;k<size;k+=stride) {
-        next[k]=update(s,original[k],current[k],dt,volumes[k/components],residual[k]);
-        if (!finite_value(next[k])) atomicExch(invalid,1);
+        if (!update_value(s,original[k],current[k],dt,volumes[k/components],residual[k],next[k])) atomicExch(invalid,1);
     }
 }
 #endif

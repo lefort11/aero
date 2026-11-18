@@ -24,6 +24,11 @@ AERO_EXPLICIT_HD inline double update(Stage s,double original,double current,
     if (s.original_weight==0 || forward==original) return forward;
     return s.original_weight*original+s.forward_weight*forward;
 }
+AERO_EXPLICIT_HD inline bool update_value(Stage s,double original,double current,double dt,double volume,
+                                          double residual,double& next) {
+    next=update(s,original,current,dt,volume,residual);
+    return finite_value(next);
+}
 #undef AERO_EXPLICIT_HD
 
 #ifdef AERO_WITH_CUDA

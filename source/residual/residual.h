@@ -48,6 +48,14 @@ public:
     // Edge and boundary speeds use the order of the supplied geometry view.
     void assemble(const double* u, const double* u0, double* residual,
         double* edge_speeds, double* boundary_speeds, void* stream=nullptr);
+    // On CPU, optionally accumulate the face-flux loop time, in seconds.
+    void assemble(const double* u,const double* u0,double* residual,double* edge_speeds,
+                  double* boundary_speeds,void* stream,double* flux_seconds);
+    // Solver path. Reuse the stored face fluxes and incidence for CFL at the accepted state.
+    // volumes is on the same backend as u. Later stages need only the right-hand side.
+    double assemble_cfl(const double* u,const double* u0,double* residual,const double* volumes,double courant,
+                        void* stream=nullptr,double* flux_seconds=nullptr,double* cfl_seconds=nullptr);
+    void assemble_rhs(const double* u,const double* u0,double* residual,void* stream=nullptr,double* flux_seconds=nullptr);
 private:
     struct Impl;
     std::unique_ptr<Impl> p_;

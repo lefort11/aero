@@ -75,6 +75,8 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="..\source\aero\aero_tests.cpp" />
+    <ClCompile Include="..\source\mesh\leaf_balance.cpp" />
+    <ClInclude Include="..\source\mesh\leaf_balance.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="aero.vcxproj"><Project>{0DDA9349-E566-4D28-B80A-AB6D11175F38}</Project><LinkLibraryDependencies>false</LinkLibraryDependencies></ProjectReference>
@@ -91,7 +93,11 @@
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <Target Name="RunAeroUnitTests" AfterTargets="Build"
           Condition="'$(RunAeroTests)'=='true' and '$(DesignTimeBuild)'!='true'">
-    <Exec Command="&quot;$(TargetPath)&quot; bin\aero.exe $(AeroTestDevice)" WorkingDirectory="$(MSBuildProjectDirectory)\.." />
+    <PropertyGroup>
+      <AeroTestBin Condition="'$(AeroBin)'!=''">$(AeroBin)</AeroTestBin>
+      <AeroTestBin Condition="'$(AeroBin)'==''">$(MSBuildProjectDirectory)\..\bin</AeroTestBin>
+    </PropertyGroup>
+    <Exec Command="&quot;$(TargetPath)&quot; &quot;$(AeroTestBin)\aero.exe&quot; $(AeroTestDevice)" WorkingDirectory="$(MSBuildProjectDirectory)\.." />
   </Target>
   <Import Project="publish_program.targets" />
 </Project>

@@ -111,22 +111,7 @@ CflStep CflTimestep::compute(double cfl,WaveSpeeds speeds,void* stream) const {
     {
         if (stream) throw std::invalid_argument("CUDA stream supplied to CPU timestep");
         const auto grid=p.view();
-        const auto count=static_cast<std::ptrdiff_t>(grid.nodes);
-#ifdef _OPENMP
-#pragma omp parallel if(count>=4096)
-#endif
-        {
-            CflStep best=cfl_detail::unconstrained();
-#ifdef _OPENMP
-#pragma omp for nowait
-#endif
-            for (std::ptrdiff_t n=0;n<count;++n)
-                best=cfl_detail::minimum(best,cfl_detail::local(grid,speeds,cfl,static_cast<std::size_t>(n)));
-#ifdef _OPENMP
-#pragma omp critical(aero_cfl_minimum)
-#endif
-            result=cfl_detail::minimum(result,best);
-        }
+        result=cfl_detail::host_min(grid.nodes,[&](size_t n) { return cfl_detail::local(grid,speeds,cfl,n); });
     }
     if (result.dt<0) throw std::domain_error("invalid wave speed or CFL sum at node "+std::to_string(result.node));
     if (result.node==cfl_detail::unconstrained().node) throw std::domain_error("no finite global CFL step");

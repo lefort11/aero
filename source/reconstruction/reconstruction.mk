@@ -25,9 +25,9 @@ EBR_FLAGS += -DAERO_WITH_CUDA -isystem "$(CUDA_HOME)/include"
 EBR_LIBS += $(CUDA_RUNTIME_LINK)
 EBR_CUDA_OBJECT := $(BUILD)/ebr_cuda.o
 RECONSTRUCTION_CUDA_TEST_OBJECT := $(BUILD)/reconstruction_cuda_tests.o
-$(RECONSTRUCTION_CUDA_TEST_OBJECT): $(RECONSTRUCTION_SOURCE)/reconstruction_cuda_tests.cu $(RECONSTRUCTION_SOURCE)/reconstruction_cuda_tests.cuh $(RECONSTRUCTION_HEADERS) | $(BUILD)
+$(RECONSTRUCTION_CUDA_TEST_OBJECT): $(RECONSTRUCTION_SOURCE)/reconstruction_cuda_tests.cu $(RECONSTRUCTION_SOURCE)/reconstruction_cuda_tests.cuh $(RECONSTRUCTION_HEADERS) source/cuda/device_scope.h source/cuda/runtime.h | $(BUILD)
 	$(compile_cuda)
-$(EBR_CUDA_OBJECT): $(RECONSTRUCTION_SOURCE)/reconstruction_cuda.cu $(RECONSTRUCTION_HEADERS) | $(BUILD)
+$(EBR_CUDA_OBJECT): $(RECONSTRUCTION_SOURCE)/reconstruction_cuda.cu $(RECONSTRUCTION_HEADERS) source/cuda/device_scope.h source/cuda/runtime.h | $(BUILD)
 ifeq ($(MINGW_CUDA),1)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -x c++ -c $< -o $@
 else

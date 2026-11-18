@@ -1,15 +1,27 @@
-# Each named zone currently covers the whole mesh.
-# File names are relative to --output. Choose one interval per zone.
+# Каждая секция задаёт вывод всей сетки по своему расписанию.
+# Пустой или отсутствующий output.txt отключает плановую запись полей.
+# file — относительный путь внутри каталога вывода выбранного layout.
+# Выберите ровно один интервал: every_steps (целое > 0, принятые шаги)
+# или every_time (число > 0, расчётное время).
+# variables — список через запятую без повторов: rho, ux, uy, uz, p, E.
+# uy доступна с 2D, uz — в 3D; E — полная энергия на единицу объёма.
+# multi — 0 (по умолчанию, заменять файл) или 1 (номер шага в имени).
+# format — binary (по умолчанию), text или lzma.
+# layout — local (по умолчанию, отдельные файлы рангов) или global
+# (общий файл в исходной нумерации). Для общего вывода MPI используйте
+# layout = global, format = binary и сетку .mdec версии 4.
 
 [latest]
 file = latest.fields
 every_steps = 100
 multi = 0
 variables = rho, ux, uy, p, E
+# format = binary
+# layout = local
 
 [pressure_history]
 file = pressure.fields
 every_time = 0.05
 multi = 1
 variables = p
-# For example, a write at step 37 produces pressure_000037.fields.
+# Например, запись на шаге 37 получит имя pressure_000037.fields.

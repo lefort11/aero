@@ -4,11 +4,12 @@ EXPLICIT_TAG := cuda$(WITH_CUDA)_omp$(WITH_OPENMP)
 EXPLICIT_SRC := $(addprefix $(EXPLICIT_DIR)/,explicit.cpp explicit_euler.cpp ssprk3.cpp)
 EXPLICIT_OBJ := $(patsubst $(EXPLICIT_DIR)/%.cpp,$(BUILD)/%_$(EXPLICIT_TAG).o,$(EXPLICIT_SRC))
 EXPLICIT_HEADERS := $(EXPLICIT_DIR)/explicit.h $(EXPLICIT_DIR)/explicit_stage.h
-EXPLICIT_HEADERS += source/parallel/kernel_math.h
+EXPLICIT_HEADERS += $(EXPLICIT_DIR)/stage_sequence.h source/parallel/kernel_math.h
 EXPLICIT_LIBRARY := $(BUILD)/libaero_explicit_$(EXPLICIT_TAG).a
 EXPLICIT_TEST := $(BUILD)/explicit_tests_$(EXPLICIT_TAG)$(EXE)
 EXPLICIT_DEBUG := $(BUILD)/explicit_tests_debug_$(EXPLICIT_TAG)$(EXE)
 ifeq ($(WITH_CUDA),1)
+EXPLICIT_HEADERS += source/cuda/device_scope.h source/cuda/runtime.h
 EXPLICIT_FLAGS += -DAERO_WITH_CUDA -isystem "$(CUDA_HOME)/include"
 EXPLICIT_LIBS := $(CUDA_RUNTIME_LINK)
 EXPLICIT_GPU := $(BUILD)/explicit_kernel.o

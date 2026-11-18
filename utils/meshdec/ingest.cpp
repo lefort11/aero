@@ -1,10 +1,35 @@
 #include "meshdec.h"
 #include "../../source/mesh/mesh_reader.h"
+#include "../../source/io/sha256.h"
 #include <cmath>
 
 namespace aero { namespace meshdec {
 namespace {
-using mesh_input::Reader;
+// Hash the canonical native binary encoding while unpacking any input encoding.
+class Reader : public mesh_input::Reader {
+public:
+    Reader(std::istream& in,const MeshReadLimits& limits) : mesh_input::Reader(in,limits),out_(&hash_) {
+        out_.write("AEROMSHB",8);
+        word(out_,2);
+    }
+    Id u64() { const Id v=mesh_input::Reader::u64(); word(out_,v); return v; }
+    double real() { const double v=mesh_input::Reader::real(); meshdec::real(out_,v); return v; }
+    std::int8_t orientation() {
+        const auto v=mesh_input::Reader::orientation();
+        out_.put(static_cast<char>(v));
+        return v;
+    }
+    std::string name() {
+        const auto v=mesh_input::Reader::name();
+        word(out_,v.size());
+        out_.write(v.data(),position(v.size()));
+        return v;
+    }
+    std::string digest() const { return hash_.hex_digest(); }
+private:
+    io_detail::Sha256Buffer hash_;
+    std::ostream out_;
+};
 void indices(Reader& r,const std::string& path,const char* name,Id count,Id limit) {
     r.block(name);
     auto out=output(path);
@@ -148,6 +173,9 @@ void unpack(const Options& options,const std::string& dir) {
         }
     }
     r.finish();
+    auto digest=output(dir+"/mesh-sha256");
+    digest<<r.digest();
+    digest.close();
     names.close();
     Table<Name> sorted_names(name_order.finish());
     for (Id i=1;i<sorted_names.count;++i)

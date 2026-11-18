@@ -135,10 +135,15 @@ Id write_catalog(const std::string& dir,const std::string& staged,bool compress,
     const Id names=136,index=plus(names,file_size(dir+"/names"));
     const Id branches=plus(index,times(6*8,leaves.count));
     const Id entries=leaves.count ? times(2,leaves.count)-1 : 0;
-    const Id payload=plus(branches,times(14*8,entries));
+    const Id directory=plus(branches,times(14*8,entries));
+    const Id star_bytes=file_size(dir+"/stars-refs"),halo_bytes=file_size(dir+"/halo-refs");
+    const Id rows=plus(plus(h.nodes,times(2,leaves.count)),2);
+    const Id far_index=plus(plus(directory,16),plus(times(8,rows),plus(star_bytes,halo_bytes)));
+    const Id far_bytes=file_size(dir+"/far-refs");
+    const Id payload=plus(plus(far_index,64),plus(times(8,plus(leaves.count,2)),far_bytes));
     auto out=output(staged);
     out.write("AERODEC1",8);
-    word(out,1); word(out,compress?1:0); word(out,h.dimension); real(out,h.scale);
+    word(out,4); word(out,compress?1:0); word(out,h.dimension); real(out,h.scale);
     word(out,h.nodes); word(out,h.faces); word(out,h.cells); word(out,h.boundaries); word(out,h.patches);
     word(out,leaves.count); word(out,entries); word(out,entries ? entries-1 : none);
     word(out,names); word(out,index); word(out,branches); word(out,payload);
@@ -154,7 +159,20 @@ Id write_catalog(const std::string& dir,const std::string& staged,bool compress,
     }
     Id next=0;
     if (leaves.count) tree(out,leaves,packed,0,leaves.count,next);
-    require(next==entries && out.tellp()==position(payload),"Catalog size mismatch");
+    require(next==entries && out.tellp()==position(directory),"Catalog size mismatch");
+    word(out,star_bytes/16); word(out,halo_bytes/16);
+    const auto write_rows=[&](const std::string& name) {
+        const auto path=dir+"/"+name;
+        Table<Id> starts(path+"-start");
+        for (Id i=0;i<starts.count;++i) word(out,starts.at(i));
+        auto refs=input(path+"-refs");
+        copy_bytes(refs,out,file_size(path+"-refs"));
+    };
+    write_rows("stars"); write_rows("halo");
+    word(out,far_bytes/16); write_rows("far");
+    auto digest=input(dir+"/mesh-sha256");
+    copy_bytes(digest,out,64);
+    require(out.tellp()==position(payload),"Halo directory size mismatch");
     if (offset>payload) {
         out.seekp(position(offset-1));
         out.put(0);

@@ -3,6 +3,9 @@
 #include "bc.h"
 #include "../cv/cv.h"
 #include "../reconstruction/reconstruction.h"
+#ifndef __CUDACC_RTC__
+#include <array>
+#endif
 
 namespace aero {
 // One entry per computational edge, oriented like its original representative.
@@ -16,6 +19,14 @@ struct PeriodicView {
     const CvBoundary* boundary; // physical pieces only; node is the compact DOF
 };
 #ifndef __CUDACC_RTC__
+namespace periodic_detail {
+double match_tolerance(const std::vector<PeriodicPair>& pairs,double requested=0);
+bool compatible_areas(const std::array<double,3>& a,const std::array<double,3>& b);
+}
+// Temporary translated cells for stencil preparation. field maps every image
+// vertex (including the original mesh prefix) to its computational node.
+Mesh periodic_stencil_cover(const Mesh&,const std::vector<MeshIndex>& node_dof,MeshIndex count,
+                            double tolerance,unsigned rings,std::vector<MeshIndex>& field);
 class PeriodicDomain {
 public:
     // Preparation on CPU. tol is an absolute distance in input coordinates;

@@ -21,19 +21,19 @@ bool directory_exists(const std::string& path) {
     struct stat info;
     return stat(path.c_str(),&info)==0 && (info.st_mode&S_IFMT)==S_IFDIR;
 }
-void make_directory(std::string path) {
+}
+void create_output_directory(std::string path) {
     std::replace(path.begin(),path.end(),'\\','/');
     if (directory_exists(path)) return;
     while (path.size()>1 && path.back()=='/') path.pop_back();
     const auto slash=path.rfind('/');
-    if (slash!=std::string::npos && slash>0) make_directory(path.substr(0,slash));
+    if (slash!=std::string::npos && slash>0) create_output_directory(path.substr(0,slash));
 #ifdef _WIN32
     const int result=_mkdir(path.c_str());
 #else
     const int result=mkdir(path.c_str(),0777);
 #endif
     if (result && !directory_exists(path)) throw std::runtime_error("Cannot create output directory "+path);
-}
 }
 void stage(const char* name) { std::cout<<name<<"... "<<std::flush; }
 void done() { std::cout<<"done\n"; }
@@ -76,7 +76,7 @@ void show_settings(const RunSettings& r) {
         std::cout<<"  ["<<z.name<<"] file = "<<z.file;
         if (z.every_steps) std::cout<<"  every_steps = "<<z.every_steps;
         else std::cout<<"  every_time = "<<z.every_time;
-        std::cout<<"  multi = "<<z.multi<<"  format = "
+        std::cout<<"  layout = "<<(z.global?"global":"local")<<"  multi = "<<z.multi<<"  format = "
             <<(z.format==FieldFormat::Text?"text":z.format==FieldFormat::Binary?"binary":"lzma")<<"  variables =";
         for (const auto& v:z.variables) std::cout<<' '<<v;
         std::cout<<'\n';
@@ -89,7 +89,7 @@ void show_boundary_labels(const Mesh& mesh) {
     std::cout<<"Boundary label\tFaces\n";
     for (std::size_t i=0;i<counts.size();++i) std::cout<<data.patch_names[i]<<'\t'<<counts[i]<<'\n';
 }
-bool prepare_boundary_file(const RunSettings& run,const Mesh& mesh) {
+bool prepare_boundary_file(const RunSettings& run,const std::vector<std::string>& names) {
     const std::string& path=run.boundary_path;
     std::FILE* file=nullptr;
     int error=0;
@@ -104,7 +104,7 @@ bool prepare_boundary_file(const RunSettings& run,const Mesh& mesh) {
     const bool created=file!=nullptr;
     if (file) {
         std::string sections="# Fill every boundary section. For a periodic pair, keep one section with pair and translation.\n";
-        for (const auto& name:mesh.data().patch_names) {
+        for (const auto& name:names) {
             if (name.find_first_of("#\"")==std::string::npos && name==settings_detail::trim(name)) {
                 sections+="\n["+name+"]\n";
                 continue;
@@ -124,17 +124,38 @@ bool prepare_boundary_file(const RunSettings& run,const Mesh& mesh) {
         std::cout<<"Edit "<<path<<", save it and press Enter to reload boundary conditions.\n"<<std::flush;
         std::string reply;
         if (!std::getline(std::cin,reply)) throw std::runtime_error("End of input while waiting for Enter");
-    } else if (created && !mesh.data().patch_names.empty()) {
+    } else if (created && !names.empty()) {
         std::cout<<"Fill "<<path<<" and run aero again.\n";
         return false;
     }
     return true;
 }
-void prepare_output_directories(const RunSettings& run) {
-    make_directory(run.directories.output);
-    for (const auto& z:run.output_zones) {
-        const auto slash=z.file.find_last_of("/\\");
-        if (slash!=std::string::npos) make_directory(run.directories.output+"/"+z.file.substr(0,slash));
+unsigned create_resume_directory(const std::string& prefix) {
+    for (unsigned i=1;i;i++) {
+        const std::string path=prefix+std::to_string(i);
+#ifdef _WIN32
+        const int status=_mkdir(path.c_str());
+#else
+        const int status=mkdir(path.c_str(),0777);
+#endif
+        if (!status) return i;
+        if (errno!=EEXIST) throw std::runtime_error("Cannot create output directory "+path);
     }
+    throw std::runtime_error("Too many recovery output directories");
+}
+namespace {
+void prepare_zone_directory(const std::string& directory,const OutputZone& zone) {
+    const auto slash=zone.file.find_last_of("/\\");
+    if (slash!=std::string::npos) create_output_directory(directory+"/"+zone.file.substr(0,slash));
+}
+}
+void prepare_output_directories(const RunSettings& run) {
+    create_output_directory(run.directories.output);
+    if (!run.directories.geometry_only)
+        for (const auto& z:run.output_zones) prepare_zone_directory(run.directories.output,z);
+}
+void prepare_zone_directories(const std::string& directory,const std::vector<OutputZone>& zones,bool global) {
+    create_output_directory(directory);
+    for (const auto& z:zones) if (z.global==global) prepare_zone_directory(directory,z);
 }
 }

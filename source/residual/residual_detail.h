@@ -1,6 +1,7 @@
 #ifndef AERO_RESIDUAL_DETAIL_H
 #define AERO_RESIDUAL_DETAIL_H
 #include "residual.h"
+#include "../mesh/mesh_index.h"
 #include "../bc/bc.h"
 #include "../eulersolver/roe.h"
 #include "../eulersolver/lax_friedrichs.h"
@@ -17,6 +18,14 @@ struct Surface {
     double area[3], measure;
     bool use_nodal_traces;
 };
+#if !defined(__CUDACC_RTC__) && !defined(AERO_RESIDUAL_KERNEL_ONLY)
+void project_surface(Surface&,CvVector area,unsigned dimension,const ResidualFrame&);
+void build_incidence(Index nodes,Index edges,const std::vector<Surface>& surfaces,
+                     std::vector<Index>& offsets,std::vector<Index>& incidence);
+inline bool needs_nodal_traces(BoundaryType type) {
+    return type==BoundaryType::Free || type==BoundaryType::SuperIn || type==BoundaryType::SuperOut;
+}
+#endif
 struct Geometry {
     unsigned dim;
     Index nodes,edges,faces;
@@ -215,7 +224,27 @@ AERO_RES_HD inline bool surface_flux(const Geometry& g,Index id,const double* u,
     return true;
 }
 
-AERO_RES_HD inline bool gather(const Geometry& g,Index node,const EulerFluxResult* flux,double* r) {
+// A null index list evaluates all faces in their native order.
+struct FaceBatch {
+    Geometry geometry;
+    const MeshIndex* indices;
+    Index count;
+    const double *state,*initial;
+    EulerFluxResult* flux;
+    double *edge_speeds,*boundary_speeds;
+    AERO_RES_HD Index face(Index k) const { return indices?indices[k]:k; }
+    AERO_RES_HD bool compute(Index f) const {
+        if (!surface_flux(geometry,f,state,initial,flux[f])) return false;
+        if (f<geometry.edges) {
+            if (edge_speeds) edge_speeds[f]=flux[f].max_wave_speed;
+        } else if (boundary_speeds) boundary_speeds[f-geometry.edges]=flux[f].max_wave_speed;
+        return true;
+    }
+};
+void cpu_face_fluxes(const FaceBatch&,const MeshIndex* global_nodes=nullptr);
+void gpu_face_fluxes(const FaceBatch&,Index* bad,void* stream);
+
+AERO_RES_HD inline bool gather_node(const Geometry& g,Index node,const EulerFluxResult* flux,double* row) {
     double sum[5]={};
     for (Index i=g.offsets[node];i<g.offsets[node+1];++i) {
         const Index entry=g.incidence[i];
@@ -224,9 +253,12 @@ AERO_RES_HD inline bool gather(const Geometry& g,Index node,const EulerFluxResul
     }
     for (unsigned k=0;k<g.dim+2;++k) {
         if (!euler_detail::finite(sum[k])) return false;
-        r[node*(g.dim+2)+k]=sum[k];
+        row[k]=sum[k];
     }
     return true;
+}
+AERO_RES_HD inline bool gather(const Geometry& g,Index node,const EulerFluxResult* flux,double* r) {
+    return gather_node(g,node,flux,r+node*(g.dim+2));
 }
 } }
 #undef AERO_RES_HD

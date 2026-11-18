@@ -16,7 +16,7 @@ clean_tags := cuda0 cuda1 $(foreach gpu,0 1,$(foreach omp,0 1,cuda$(gpu)_omp$(om
 clean_suffixes := $(addprefix _,$(clean_tags) cuda)
 clean_tests := $(foreach mod,$(clean_modules),$(foreach base,$(mod)_tests $(mod)_tests_debug,$(base) $(addprefix $(base),$(clean_suffixes))))
 clean_programs := aero mesh_converter fields_to_tecplot mesh_to_tecplot meshdec
-clean_exes := $(addsuffix $(EXE),$(clean_programs) $(clean_tests) $(addprefix aero_,$(clean_tags)))
+clean_exes := $(addsuffix $(EXE),$(clean_programs) $(clean_tests) $(addprefix aero_,$(clean_tags) $(addsuffix _mpi,$(clean_tags))))
 clean_runtime :=
 ifeq ($(OS),Windows_NT)
 clean_runtime := libstdc++-6.dll libgcc_s_seh-1.dll libwinpthread-1.dll libgomp-1.dll vcomp140.dll

@@ -1,5 +1,5 @@
 RES_DIR := source/residual
-RES_HDR := $(RES_DIR)/residual.h $(RES_DIR)/residual_detail.h source/parallel/parallel_for.h $(BC_HEADERS) $(CV_HEADERS) $(PERIODIC_HEADERS) $(EULER_HEADERS) $(MESH_SOURCE)/mesh.h
+RES_HDR := $(RES_DIR)/residual.h $(RES_DIR)/residual_detail.h $(RES_DIR)/flux_cfl.h source/timestep/cfl_detail.h source/timestep/timestep.h source/parallel/kernel_math.h source/mesh/mesh_index.h source/parallel/parallel_for.h source/parallel/wall_timer.h $(BC_HEADERS) $(CV_HEADERS) $(PERIODIC_HEADERS) $(EULER_HEADERS) $(MESH_SOURCE)/mesh.h
 RES_LIB := $(BUILD)/libaero_residual_$(EBR_TAG).a
 RES_OBJ := $(BUILD)/residual_$(EBR_TAG).o
 RES_DEPS := $(BC_LIB) $(CV_LIB) $(EBR_LIBRARY) $(EULER_LIBRARY) $(BUILD)/mesh.o $(IO_LIBRARY)
@@ -13,6 +13,7 @@ else
 RES_TEST_FLAGS := -DAERO_RESIDUAL_NO_TIME_TEST
 endif
 ifeq ($(WITH_CUDA),1)
+RES_HDR += source/cuda/device_scope.h source/cuda/runtime.h source/timestep/cfl_block_min.cuh
 RES_GPU := $(BUILD)/residual_cuda.o
 $(RES_GPU): $(RES_DIR)/residual_cuda.cu $(RES_DIR)/residual_cuda.cuh $(RES_HDR) | $(BUILD)
 	$(compile_cuda)

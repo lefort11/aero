@@ -22,10 +22,14 @@ constexpr auto cudaSuccess = CUDA_SUCCESS;
 constexpr auto cudaErrorNoDevice = CUDA_ERROR_NO_DEVICE;
 constexpr auto cudaErrorInsufficientDriver = CUDA_ERROR_NOT_INITIALIZED;
 constexpr auto cudaErrorMemoryAllocation = CUDA_ERROR_OUT_OF_MEMORY;
+constexpr auto cudaErrorInvalidValue = CUDA_ERROR_INVALID_VALUE;
+constexpr auto cudaErrorNotSupported = CUDA_ERROR_NOT_SUPPORTED;
 constexpr unsigned cudaStreamNonBlocking = CU_STREAM_NON_BLOCKING;
 enum cudaMemcpyKind { cudaMemcpyHostToDevice, cudaMemcpyDeviceToHost, cudaMemcpyDeviceToDevice };
 
 cudaError_t cudaGetDeviceCount(int*);
+cudaError_t cudaMemGetInfo(std::size_t*,std::size_t*);
+cudaError_t cudaDeviceGetPCIBusId(char*,int,int);
 cudaError_t cudaGetDevice(int*);
 cudaError_t cudaSetDevice(int);
 cudaError_t cudaGetLastError();
@@ -38,6 +42,9 @@ template<class T> cudaError_t cudaMalloc(T** out,std::size_t size) {
     return status;
 }
 cudaError_t cudaFree(void*);
+cudaError_t cudaMallocHost(void**,std::size_t);
+cudaError_t cudaFreeHost(void*);
+cudaError_t cudaHostGetDevicePointer(void**,void*,unsigned);
 cudaError_t cudaMemcpy(void*,const void*,std::size_t,cudaMemcpyKind);
 cudaError_t cudaMemcpyAsync(void*,const void*,std::size_t,cudaMemcpyKind,cudaStream_t);
 cudaError_t cudaMemsetAsync(void*,int,std::size_t,cudaStream_t);

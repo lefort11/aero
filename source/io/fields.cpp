@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <istream>
 #include <limits>
@@ -153,6 +154,30 @@ public:
         if(size>array.max_size())fail("Field array is too large");
         charge(size,sizeof(T));array.resize(static_cast<std::size_t>(size));
     }
+    void skip_values(U64 count) {
+        if (!count) return;
+        if (text_) {
+            for (U64 i=0;i<count;++i) real();
+            return;
+        }
+        U64 size=product(count,8);
+        if (size>available_) fail("Fields exceed decoded byte limit");
+        if (!compressed_) {
+            // Read the final byte too: seeking alone can succeed past EOF.
+            if (size-1>static_cast<U64>(std::numeric_limits<std::streamoff>::max())) fail("Field offset too large");
+            input_->seekg(static_cast<std::streamoff>(size-1),std::ios::cur);
+            available_-=size-1;
+            char last;
+            bytes(&last,1);
+        } else {
+            char block[8192];
+            while (size) {
+                const auto n=static_cast<std::size_t>(std::min<U64>(size,sizeof block));
+                bytes(block,n);
+                size-=n;
+            }
+        }
+    }
     void finish() {
         block("END");if(text_)skip_space();
         if(peek()!=std::char_traits<char>::eof())fail("Trailing data after fields");
@@ -270,7 +295,7 @@ private:
     bool text_;
     std::ostringstream numeric_;
 };
-void write_payload(const FieldSnapshot& snapshot,std::ostream& out,bool text) {
+void write_payload(const FieldSnapshot& snapshot,std::ostream& out,bool text,std::vector<U64>* offsets=nullptr) {
     Writer writer(out,text);
     writer.block("DIMENSION");writer.u64(snapshot.dimension);
     writer.block("MESH_SHA256");writer.hash(snapshot.mesh_sha256);
@@ -286,7 +311,17 @@ void write_payload(const FieldSnapshot& snapshot,std::ostream& out,bool text) {
         writer.block("VALUES");writer.u64(snapshot.entity_count(field.location));
         writer.block("DATA");
         const U64 count=snapshot.entity_count(field.location);
-        writer.values(field.values,count);
+        if (offsets) {
+            const std::streamoff pos=out.tellp();
+            const U64 size=product(product(count,field.components.size()),8);
+            if (pos<0 || size>static_cast<U64>(std::numeric_limits<std::streamoff>::max()-pos))
+                fail("Binary field offset exceeds file size limit");
+            offsets->push_back(static_cast<U64>(pos));
+            if (size) {
+                out.seekp(static_cast<std::streamoff>(size-1),std::ios::cur);
+                out.put(0);
+            }
+        } else writer.values(field.values,count);
         writer.block("END_FIELD");
     }
     writer.finish();
@@ -303,7 +338,8 @@ void write_encoded(const FieldSnapshot& snapshot,std::ostream& out,FieldFormat f
 U64 FieldSnapshot::entity_count(FieldLocation location) const {
     location_name(location);return counts[static_cast<std::size_t>(location)];
 }
-void FieldSnapshot::validate() const {
+void FieldSnapshot::validate() const { validate_fields(false); }
+void FieldSnapshot::validate_fields(bool layout_only) const {
     if(dimension<1||dimension>3)fail("Field dimension must be 1, 2 or 3");
     if(!valid_hash(mesh_sha256))fail("Invalid mesh SHA-256; expected 64 lowercase hex characters");
     if(!std::isfinite(time))fail("Field snapshot time must be finite");
@@ -318,10 +354,22 @@ void FieldSnapshot::validate() const {
             if(c.empty()||!valid_utf8(c))fail("Invalid component name");
             if(!components.insert(c).second)fail("Duplicate component name");
         }
-        if(product(count,field.components.size())!=field.values.size())fail("Field values size mismatch");
+        const U64 size=product(count,field.components.size());
+        if ((layout_only?0:size)!=field.values.size()) fail("Field values size mismatch");
     }
 }
-FieldSnapshot FieldSnapshot::read(std::istream& input,const FieldReadLimits& limits) try {
+std::vector<U64> FieldSnapshot::write_binary_layout(const std::string& path) const {
+    if (path.find('\0')!=std::string::npos) fail("NUL in field path");
+    validate_fields(true);
+    std::ofstream out(path.c_str(),std::ios::binary|std::ios::trunc);
+    if (!out) fail("Cannot create binary field layout: "+path);
+    std::vector<U64> offsets;
+    write_payload(*this,out,false,&offsets);
+    out.close();
+    if (!out) fail("Cannot finish binary field layout: "+path);
+    return offsets;
+}
+static FieldSnapshot read_snapshot(std::istream& input,const FieldReadLimits& limits,const FieldNodeSelection* selection) try {
     Reader reader(input,limits);FieldSnapshot result;
     reader.block("DIMENSION");const U64 dimension=reader.u64();
     if(dimension<1||dimension>3)fail("Field dimension must be 1, 2 or 3");
@@ -329,6 +377,14 @@ FieldSnapshot FieldSnapshot::read(std::istream& input,const FieldReadLimits& lim
     reader.block("MESH_SHA256");result.mesh_sha256=reader.hash();
     if(!valid_hash(result.mesh_sha256))fail("Invalid mesh SHA-256");
     reader.block("COUNTS");for(U64& count:result.counts)count=reader.u64();
+    if (selection) {
+        if (selection->mesh_sha256.empty()) fail("File initialization requires a mesh fingerprint; regenerate the .mdec with meshdec");
+        if (selection->mesh_sha256!=result.mesh_sha256) fail("Field mesh SHA-256 mismatch");
+        if (dimension!=selection->dimension || result.counts!=selection->counts) fail("Field mesh dimension/counts mismatch");
+        const auto& ids=selection->nodes;
+        if (!ids.empty() && (ids.back()>=result.counts[0] ||
+            std::adjacent_find(ids.begin(),ids.end(),std::greater_equal<U64>())!=ids.end())) fail("Invalid selected node IDs");
+    }
     reader.block("STEP");result.step=reader.u64();reader.block("TIME");result.time=reader.real();
     if(!std::isfinite(result.time))fail("Field snapshot time must be finite");
     reader.block("FIELDS");const U64 field_count=reader.u64();
@@ -343,12 +399,44 @@ FieldSnapshot FieldSnapshot::read(std::istream& input,const FieldReadLimits& lim
         reader.block("UNITS");field.units=reader.string();
         reader.block("VALUES");const U64 count=reader.u64();
         if(count!=result.entity_count(field.location))fail("Field entity count mismatch");
-        reader.resize(field.values,product(count,components));
-        reader.block("DATA");for(double& value:field.values)value=reader.real();reader.block("END_FIELD");
+        reader.block("DATA");
+        if (!selection) {
+            reader.resize(field.values,product(count,components));
+            for (double& value:field.values) value=reader.real();
+        } else if (field.location==FieldLocation::Node) {
+            const auto& ids=selection->nodes;
+            reader.resize(field.values,product(ids.size(),components));
+            auto dst=field.values.begin();
+            for (U64 c=0;c<components;++c) {
+                U64 next=0;
+                for (U64 id:ids) {
+                    reader.skip_values(id-next);
+                    *dst++=reader.real();
+                    next=id+1;
+                }
+                reader.skip_values(count-next);
+            }
+        } else reader.skip_values(product(count,components));
+        reader.block("END_FIELD");
     }
+    if (selection) result.counts={{selection->nodes.size(),0,0,0}};
     reader.finish();result.validate();return result;
 } catch(const io::CompressionError& error) {throw FieldError(error.what());}
   catch(const std::ios_base::failure& error) {throw FieldError(std::string("Field input failed: ")+error.what());}
+FieldSnapshot FieldSnapshot::read(std::istream& input,const FieldReadLimits& limits) {
+    return read_snapshot(input,limits,nullptr);
+}
+std::vector<Field> FieldSnapshot::read_nodes(const std::string& path,const FieldNodeSelection& selection) {
+    if (path.find('\0')!=std::string::npos) fail("NUL in field path");
+    std::ifstream input(path.c_str(),std::ios::binary);
+    if (!input) fail("Cannot open fields for reading: "+path);
+    FieldReadLimits limits;
+    // The archive already bounds the entity counts. The global stream can be
+    // much larger than a rank's memory; only local NODE values are allocated.
+    limits.max_decoded_bytes=std::numeric_limits<U64>::max();
+    limits.max_payload_bytes=std::numeric_limits<U64>::max();
+    return read_snapshot(input,limits,&selection).fields;
+}
 FieldSnapshot FieldSnapshot::read(const std::string& path,const FieldReadLimits& limits) {
     if(path.find('\0')!=std::string::npos)fail("NUL in field path");
     std::ifstream input(path.c_str(),std::ios::binary);if(!input)fail("Cannot open fields for reading: "+path);

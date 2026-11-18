@@ -8,11 +8,11 @@ namespace {
 #define AERO_STRING_(x) #x
 #define AERO_STRING(x) AERO_STRING_(x)
 #define AERO_DRIVER_API(X) \
-    X(cuInit) X(cuGetErrorString) X(cuDeviceGetCount) X(cuDevicePrimaryCtxRetain) \
+    X(cuInit) X(cuGetErrorString) X(cuDeviceGetCount) X(cuDeviceGetPCIBusId) X(cuDevicePrimaryCtxRetain) \
     X(cuDevicePrimaryCtxRelease) X(cuCtxSetCurrent) X(cuCtxGetCurrent) X(cuCtxGetDevice) \
-    X(cuCtxSynchronize) X(cuMemAlloc) X(cuMemFree) X(cuMemcpyHtoD) X(cuMemcpyDtoH) \
+    X(cuCtxSynchronize) X(cuMemGetInfo) X(cuMemAlloc) X(cuMemFree) X(cuMemcpyHtoD) X(cuMemcpyDtoH) \
     X(cuMemcpyDtoD) X(cuMemcpyHtoDAsync) X(cuMemcpyDtoHAsync) X(cuMemcpyDtoDAsync) \
-    X(cuMemsetD8Async) X(cuStreamCreate) X(cuStreamDestroy) X(cuStreamSynchronize) \
+    X(cuMemAllocHost) X(cuMemFreeHost) X(cuMemHostGetDevicePointer) X(cuMemsetD8Async) X(cuStreamCreate) X(cuStreamDestroy) X(cuStreamSynchronize) \
     X(cuLibraryLoadData) X(cuLibraryUnload) X(cuLibraryGetKernel) X(cuKernelGetFunction) X(cuLaunchKernel)
 
 struct Driver {
@@ -67,6 +67,10 @@ cudaError_t cudaGetDeviceCount(int* count) {
     *count=static_cast<int>(d.primary.size());
     return d.status;
 }
+cudaError_t cudaDeviceGetPCIBusId(char* id,int length,int device) {
+    auto& d=driver();
+    return d.status==CUDA_SUCCESS?d.cuDeviceGetPCIBusId(id,length,device):d.status;
+}
 cudaError_t cudaSetDevice(int device) {return driver().select(device);}
 cudaError_t cudaGetDevice(int* device) {AERO_CURRENT(); return d.cuCtxGetDevice(device);}
 const char* cudaGetErrorString(cudaError_t error) {
@@ -80,6 +84,9 @@ cudaError_t cudaGetLastError() {
     last_launch=CUDA_SUCCESS;
     return result;
 }
+cudaError_t cudaMemGetInfo(std::size_t* free_bytes,std::size_t* total_bytes) {
+    AERO_CURRENT(); return d.cuMemGetInfo(free_bytes,total_bytes);
+}
 cudaError_t cudaMalloc(void** p,std::size_t bytes) {
     AERO_CURRENT();
     CUdeviceptr address=0;
@@ -90,6 +97,14 @@ cudaError_t cudaMalloc(void** p,std::size_t bytes) {
 cudaError_t cudaFree(void* p) {
     if (!p) return CUDA_SUCCESS;
     AERO_CURRENT(); return d.cuMemFree(reinterpret_cast<CUdeviceptr>(p));
+}
+cudaError_t cudaMallocHost(void** p,std::size_t bytes) {AERO_CURRENT(); return d.cuMemAllocHost(p,bytes);}
+cudaError_t cudaFreeHost(void* p) {AERO_CURRENT(); return d.cuMemFreeHost(p);}
+cudaError_t cudaHostGetDevicePointer(void** p,void* host,unsigned flags) {
+    AERO_CURRENT(); CUdeviceptr address=0;
+    const auto result=d.cuMemHostGetDevicePointer(&address,host,flags);
+    *p=reinterpret_cast<void*>(address);
+    return result;
 }
 cudaError_t cudaMemcpy(void* dst,const void* src,std::size_t size,cudaMemcpyKind kind) {
     AERO_CURRENT();

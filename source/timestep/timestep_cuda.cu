@@ -1,4 +1,4 @@
-#include "cfl_detail.h"
+#include "../cuda/device_scope.h"
 #include "timestep_cuda.cuh"
 #include <stdexcept>
 #include <memory>
@@ -8,14 +8,6 @@ namespace {
 void checked(cudaError_t code) {
     if (code!=cudaSuccess) throw std::runtime_error(cudaGetErrorString(code));
 }
-struct DeviceScope {
-    int previous;
-    explicit DeviceScope(int device) {
-        checked(cudaGetDevice(&previous));
-        if (previous!=device) checked(cudaSetDevice(device));
-    }
-    ~DeviceScope() { cudaSetDevice(previous); }
-};
 template<class T> void allocate(T*& dst,std::size_t count) {
     checked(cudaMalloc(reinterpret_cast<void**>(&dst),count*sizeof(T)));
 }
@@ -37,11 +29,12 @@ struct Storage {
 using namespace aero::timestep_cuda_kernels;
 }
 void* upload(Grid grid,int device) {
-    DeviceScope scope(device);
+    cuda_detail::DeviceScope scope(device);
+    checked(scope.status);
     std::unique_ptr<Storage> s(new Storage);
     s->device=device;
     s->nodes=grid.nodes;
-    const std::size_t blocks=(grid.nodes+threads-1)/threads;
+    const std::size_t blocks=(grid.nodes+block_threads-1)/block_threads;
     s->blocks=static_cast<unsigned>(blocks>1024?1024:blocks);
     copy(s->volumes,grid.volumes,grid.nodes);
     copy(s->entries,grid.entries,grid.offsets[grid.nodes]);
@@ -53,19 +46,18 @@ void* upload(Grid grid,int device) {
 }
 void release(void* ptr) noexcept {
     Storage* s=static_cast<Storage*>(ptr);
-    int previous=-1;
-    cudaGetDevice(&previous);
-    if (cudaSetDevice(s->device)==cudaSuccess) delete s;
-    if (previous>=0) cudaSetDevice(previous);
+    cuda_detail::DeviceScope scope(s->device);
+    if (scope.status==cudaSuccess) delete s;
 }
 CflStep reduce(void* ptr,WaveSpeeds speeds,double cfl,void* stream_handle) {
     Storage& s=*static_cast<Storage*>(ptr);
-    DeviceScope scope(s.device);
+    cuda_detail::DeviceScope scope(s.device);
+    checked(scope.status);
     cudaStream_t stream=static_cast<cudaStream_t>(stream_handle);
     Grid grid={s.nodes,s.offsets,s.entries,s.volumes};
-    AERO_LAUNCH(nodal_min, s.blocks, threads, stream, grid,speeds,cfl,s.partial);
+    AERO_LAUNCH(nodal_min, s.blocks, block_threads, stream, grid,speeds,cfl,s.partial);
     checked(cudaGetLastError());
-    AERO_LAUNCH(global_min, 1, threads, stream, s.partial,s.blocks,s.answer);
+    AERO_LAUNCH(global_min, 1, block_threads, stream, s.partial,s.blocks,s.answer);
     checked(cudaGetLastError());
     CflStep result;
     checked(cudaMemcpyAsync(&result,s.answer,sizeof(result),cudaMemcpyDeviceToHost,stream));

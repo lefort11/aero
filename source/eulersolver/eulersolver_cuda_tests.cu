@@ -3,6 +3,7 @@
 #include "roe.h"
 #include "characteristic.h"
 #include "eulersolver_cuda_tests.cuh"
+#include "../cuda/device_scope.h"
 #include <stdio.h>
 
 namespace {
@@ -21,9 +22,8 @@ extern "C" int euler_test_cuda_count(int* count,char* error,unsigned capacity) {
 extern "C" int euler_test_cuda_flux(int device,unsigned mode,unsigned dimension,const double* left,const double* right,
     const double* aux_left,const double* aux_right,const double* direction,double gamma,
     aero::EulerFluxResult* result,int* status,char* error,unsigned capacity) {
-    int previous=-1; cudaError_t code=cudaGetDevice(&previous);
-    if (code==cudaSuccess) code=cudaSetDevice(device);
-    if (code!=cudaSuccess) return report(code,error,capacity);
+    aero::cuda_detail::DeviceScope scope(device);
+    if (scope.status!=cudaSuccess) return report(scope.status,error,capacity);
     Case input={}; input.mode=mode; input.dimension=dimension; input.gamma=gamma;
     for (unsigned k=0;k<dimension+2;++k) {
         input.left[k]=left[k]; input.right[k]=right[k];
@@ -32,7 +32,7 @@ extern "C" int euler_test_cuda_flux(int device,unsigned mode,unsigned dimension,
     }
     for (unsigned k=0;k<dimension;++k) input.direction[k]=direction[k];
     Output output={123,*result,456,-1}; Case* di=nullptr; Output* dout=nullptr; cudaStream_t stream=nullptr;
-    code=cudaMalloc(reinterpret_cast<void**>(&di),sizeof(Case));
+    cudaError_t code=cudaMalloc(reinterpret_cast<void**>(&di),sizeof(Case));
     if (code==cudaSuccess) code=cudaMalloc(reinterpret_cast<void**>(&dout),sizeof(Output));
     if (code==cudaSuccess) code=cudaStreamCreate(&stream);
     if (code==cudaSuccess) code=cudaMemcpy(di,&input,sizeof(Case),cudaMemcpyHostToDevice);
@@ -42,7 +42,6 @@ extern "C" int euler_test_cuda_flux(int device,unsigned mode,unsigned dimension,
     if (code==cudaSuccess) code=cudaMemcpy(&output,dout,sizeof(Output),cudaMemcpyDeviceToHost);
     if (stream) cudaStreamDestroy(stream);
     cudaFree(di); cudaFree(dout);
-    if (previous>=0) cudaSetDevice(previous);
     if (code!=cudaSuccess) return report(code,error,capacity);
     if (output.before!=123 || output.after!=456) { snprintf(error,capacity,"CUDA wrote beyond one flux result"); return 1; }
     *result=output.result; *status=output.status; return 0;

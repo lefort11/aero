@@ -66,6 +66,7 @@
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="..\source\cuda\device_scope.h" />
     <ClInclude Include="..\source\reconstruction\reconstruction.h" />
     <ClCompile Include="..\source\reconstruction\reconstruction.cpp" />
     <ClInclude Include="..\source\reconstruction\ebr.h" />
@@ -124,7 +125,7 @@
     <None Include="..\source\reconstruction\reconstruction.mk" />
     <Object Include="$(IntDir)ebr_cuda.obj" Condition="'$(WithCuda)'=='true'" />
   </ItemGroup>
-  <Target Name="CompileEbrCuda" BeforeTargets="Lib" Condition="'$(WithCuda)'=='true'" Inputs="$(MSBuildProjectDirectory)\..\source\reconstruction\reconstruction_cuda.cu;$(MSBuildProjectDirectory)\..\source\reconstruction\ebr.h;$(MSBuildProjectDirectory)\..\source\reconstruction\weno.h;$(MSBuildProjectDirectory)\..\source\reconstruction\reconstruction.h;$(MSBuildProjectFullPath)" Outputs="$(IntDir)ebr_cuda.obj">
+  <Target Name="CompileEbrCuda" BeforeTargets="Lib" Condition="'$(WithCuda)'=='true'" Inputs="$(MSBuildProjectDirectory)\..\source\reconstruction\reconstruction_cuda.cu;$(MSBuildProjectDirectory)\..\source\reconstruction\ebr.h;$(MSBuildProjectDirectory)\..\source\reconstruction\weno.h;$(MSBuildProjectDirectory)\..\source\reconstruction\reconstruction.h;$(MSBuildProjectDirectory)\..\source\cuda\device_scope.h;$(MSBuildProjectDirectory)\..\source\cuda\runtime.h;$(MSBuildProjectFullPath)" Outputs="$(IntDir)ebr_cuda.obj">
     <Exec Command="call &quot;$(VCInstallDir)Auxiliary\Build\vcvars64.bat&quot; -vcvars_ver=$(VCToolsVersion) &gt;nul &amp;&amp; &quot;$(CudaToolkitDir)\bin\nvcc.exe&quot; -std=c++11 -arch=sm_$(CudaArchitecture) $(CudaCompatibilityFlags) $(EbrCudaCompileFlags) -Xcompiler=/utf-8 -c &quot;$(MSBuildProjectDirectory)\..\source\reconstruction\reconstruction_cuda.cu&quot; -o &quot;$(IntDir)ebr_cuda.obj&quot;" />
   </Target>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

@@ -66,6 +66,8 @@
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="..\source\cuda\device_scope.h" />
+    <ClInclude Include="..\source\timestep\cfl_block_min.cuh" />
     <ClInclude Include="..\source\timestep\timestep.h" />
     <ClCompile Include="..\source\timestep\timestep.cpp" />
     <ClInclude Include="..\source\timestep\cfl_detail.h" />
@@ -113,7 +115,7 @@
     <None Include="..\source\timestep\timestep.mk" />
     <Object Include="$(IntDir)timestep_cuda.obj" Condition="'$(WithCuda)'=='true'" />
   </ItemGroup>
-  <Target Name="CompileTimestepCuda" BeforeTargets="Lib" Condition="'$(WithCuda)'=='true'" Inputs="$(MSBuildProjectDirectory)\..\source\timestep\timestep_cuda.cu;$(MSBuildProjectDirectory)\..\source\timestep\timestep_cuda.cuh;$(MSBuildProjectDirectory)\..\source\parallel\kernel_math.h;$(MSBuildProjectDirectory)\..\source\cuda\runtime.h;$(MSBuildProjectDirectory)\..\source\mesh\mesh_index.h;$(MSBuildProjectDirectory)\..\source\timestep\cfl_detail.h;$(MSBuildProjectDirectory)\..\source\timestep\timestep.h;$(MSBuildProjectFullPath)" Outputs="$(IntDir)timestep_cuda.obj">
+  <Target Name="CompileTimestepCuda" BeforeTargets="Lib" Condition="'$(WithCuda)'=='true'" Inputs="$(MSBuildProjectDirectory)\..\source\timestep\timestep_cuda.cu;$(MSBuildProjectDirectory)\..\source\timestep\timestep_cuda.cuh;$(MSBuildProjectDirectory)\..\source\parallel\kernel_math.h;$(MSBuildProjectDirectory)\..\source\cuda\runtime.h;$(MSBuildProjectDirectory)\..\source\mesh\mesh_index.h;$(MSBuildProjectDirectory)\..\source\timestep\cfl_detail.h;$(MSBuildProjectDirectory)\..\source\timestep\timestep.h;$(MSBuildProjectDirectory)\..\source\cuda\device_scope.h;$(MSBuildProjectDirectory)\..\source\timestep\cfl_block_min.cuh;$(MSBuildProjectFullPath)" Outputs="$(IntDir)timestep_cuda.obj">
     <Exec Command="call &quot;$(VCInstallDir)Auxiliary\Build\vcvars64.bat&quot; -vcvars_ver=$(VCToolsVersion) &gt;nul &amp;&amp; &quot;$(CudaToolkitDir)\bin\nvcc.exe&quot; -std=c++11 -arch=sm_$(CudaArchitecture) $(CudaCompatibilityFlags) $(TimestepCudaCompileFlags) -Xcompiler=/utf-8 -c &quot;$(MSBuildProjectDirectory)\..\source\timestep\timestep_cuda.cu&quot; -o &quot;$(IntDir)timestep_cuda.obj&quot;" />
   </Target>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

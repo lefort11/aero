@@ -1,20 +1,31 @@
 #ifndef AERO_RESIDUAL_CUDA_CUH
 #define AERO_RESIDUAL_CUDA_CUH
-#include "residual_detail.h"
-#include "../cuda/runtime.h"
+#include "flux_cfl.h"
+#include "../timestep/cfl_block_min.cuh"
 
 namespace aero { namespace residual_cuda_kernels {
 using namespace residual_detail;
 #ifndef AERO_MINGW_CUDA_HOST
-AERO_GPU_KERNEL void flux_kernel(Geometry g,const double* u,const double* u0,EulerFluxResult* flux,
-                            double* edge,double* boundary,Index* bad) {
-    for (Index f=blockIdx.x*blockDim.x+threadIdx.x; f<g.faces; f+=gridDim.x*blockDim.x) {
-        EulerFluxResult result{};
-        if (!surface_flux(g,f,u,u0,result)) atomicMin(bad,f);
-        flux[f]=result;
-        if (f<g.edges) edge[f]=result.max_wave_speed;
-        else boundary[f-g.edges]=result.max_wave_speed;
+AERO_GPU_KERNEL void flux_kernel(FaceBatch batch,Index* bad) {
+    for (Index k=blockIdx.x*blockDim.x+threadIdx.x;k<batch.count;k+=gridDim.x*blockDim.x) {
+        const Index f=batch.face(k);
+        if (!batch.compute(f)) atomicMin(bad,f);
     }
+}
+AERO_GPU_KERNEL void flux_cfl_kernel(FluxCfl grid,double courant,DeviceCflMinimum* result) {
+    __shared__ Index minima[cfl_detail::block_threads];
+    Index best=~Index(0);
+    for (Index k=blockIdx.x*blockDim.x+threadIdx.x;k<grid.count;k+=gridDim.x*blockDim.x) {
+        const auto limit=grid.local(k,courant);
+        if (limit.dt<0) atomicMin(&result->bad,Index(limit.node));
+        else if (limit.node!=cfl_detail::unconstrained().node) {
+            // Positive IEEE doubles have the same ordering as their unsigned bit patterns.
+            const Index bits=static_cast<Index>(__double_as_longlong(limit.dt));
+            if (bits<best) best=bits;
+        }
+    }
+    best=cfl_detail::block_min(best,minima);
+    if (!threadIdx.x) atomicMin(&result->bits,best);
 }
 AERO_GPU_KERNEL void gather_kernel(Geometry g,const EulerFluxResult* flux,double* r,Index* bad) {
     for (Index i=blockIdx.x*blockDim.x+threadIdx.x;i<g.nodes;i+=gridDim.x*blockDim.x)

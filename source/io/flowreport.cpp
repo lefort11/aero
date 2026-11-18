@@ -10,29 +10,27 @@
 #include <stdexcept>
 
 namespace aero {
-namespace {
-struct Stats {
-    double low=std::numeric_limits<double>::max(), high=std::numeric_limits<double>::lowest();
-    long double integral=0;
-};
-struct Block {
-    Stats field[6]; // rho, d velocity components, p, E
-    long double rate_scale=0, scaled_squares=0;
-
-    // Add weight*(rate)^2 using a common scale, so squaring a large rate
-    // cannot overflow while its RMS is representable.
-    void add_squares(long double scale,long double weight) {
-        if (scale==0) return;
-        if (scale>rate_scale) {
-            const long double ratio=rate_scale/scale;
-            scaled_squares=weight+scaled_squares*ratio*ratio;
-            rate_scale=scale;
-        } else {
-            const long double ratio=scale/rate_scale;
-            scaled_squares+=weight*ratio*ratio;
-        }
+void FlowSummary::add_squares(long double scale,long double weight) {
+    if (scale==0) return;
+    if (scale>rate_scale) {
+        const long double ratio=rate_scale/scale;
+        scaled_squares=weight+scaled_squares*ratio*ratio;
+        rate_scale=scale;
+    } else {
+        const long double ratio=scale/rate_scale;
+        scaled_squares+=weight*ratio*ratio;
     }
-};
+}
+void FlowSummary::merge(const FlowSummary& other,unsigned fields) {
+    add_squares(other.rate_scale,other.scaled_squares);
+    volume+=other.volume;
+    for (unsigned k=0;k<fields;++k) {
+        field[k].low=std::min(field[k].low,other.field[k].low);
+        field[k].high=std::max(field[k].high,other.field[k].high);
+        field[k].integral+=other.field[k].integral;
+    }
+}
+namespace {
 std::string cell(long double value) {
     std::ostringstream s;
     s.imbue(std::locale::classic());
@@ -60,8 +58,9 @@ FlowReport::FlowReport(std::uint64_t every,double gamma,unsigned dimension,
     previous_energy_.resize(nodes);
 }
 
-bool FlowReport::due(std::uint64_t step) const {
-    return every_ && step && step%every_==0;
+bool FlowReport::due(std::uint64_t step) const { return due(step,every_); }
+bool FlowReport::due(std::uint64_t step,std::uint64_t every) {
+    return every && step && step%every==0;
 }
 void FlowReport::capture(std::uint64_t step,const std::vector<double>& previous) {
     if (!due(step)) return;
@@ -84,14 +83,24 @@ void FlowReport::write(std::uint64_t step,double time,double cfl,double dt,const
     write_values(step,time,cfl,dt,current.data(),out);
 }
 void FlowReport::write_values(std::uint64_t step,double time,double cfl,double dt,const double* u,std::ostream& out) {
+    const auto total=measure_values(step,u);
+    write_flow_summary(total,step,time,cfl,dt,dimension_,out);
+    captured_step_=0;
+}
+FlowSummary FlowReport::measure(std::uint64_t step,const std::vector<double>& current) {
+    if (!due(step) || current.size()!=volumes_.size()*(dimension_+2))
+        throw std::invalid_argument("flowreport: unexpected step or field size");
+    const auto result=measure_values(step,current.data());
+    captured_step_=0;
+    return result;
+}
+FlowSummary FlowReport::measure_values(std::uint64_t step,const double* u) {
     if (captured_step_!=step) throw std::logic_error("flowreport: capture the state before this step");
-    if (!(dt>0 && std::isfinite(dt) && cfl>0 && std::isfinite(cfl)))
-        throw std::invalid_argument("flowreport: expected positive finite CFL and dt");
     const std::size_t chunk=256;
     const unsigned width=dimension_+2, fields=width+1;
-    std::vector<Block> blocks((volumes_.size()+chunk-1)/chunk);
+    std::vector<FlowSummary> blocks((volumes_.size()+chunk-1)/chunk);
     parallel_for(blocks.size(),[&](std::size_t b) {
-        Block& block=blocks[b];
+        FlowSummary& block=blocks[b];
         const auto end=std::min((b+1)*chunk,volumes_.size());
         for (std::size_t i=b*chunk;i<end;++i) {
             const double* q=u+i*width;
@@ -103,7 +112,7 @@ void FlowReport::write_values(std::uint64_t step,double time,double cfl,double d
             values[width-1]=state.pressure;
             values[width]=q[width-1];
             for (unsigned k=0;k<fields;++k) {
-                Stats& s=block.field[k];
+                FlowRange& s=block.field[k];
                 s.low=std::min(s.low,values[k]);
                 s.high=std::max(s.high,values[k]);
                 s.integral+=static_cast<long double>(volumes_[i])*values[k];
@@ -112,17 +121,17 @@ void FlowReport::write_values(std::uint64_t step,double time,double cfl,double d
             block.add_squares(std::abs(delta),volumes_[i]);
         }
     },2);
-    Block total;
-    for (const auto& block:blocks) {
-        total.add_squares(block.rate_scale,block.scaled_squares);
-        for (unsigned k=0;k<fields;++k) {
-            auto& s=total.field[k];
-            s.low=std::min(s.low,block.field[k].low);
-            s.high=std::max(s.high,block.field[k].high);
-            s.integral+=block.field[k].integral;
-        }
-    }
-    const long double rms=total.rate_scale*std::sqrt(total.scaled_squares/total_volume_)/dt;
+    FlowSummary total;
+    for (const auto& block:blocks) total.merge(block,fields);
+    total.volume=total_volume_;
+    return total;
+}
+void write_flow_summary(const FlowSummary& total,std::uint64_t step,double time,double cfl,double dt,
+                        unsigned dimension,std::ostream& out) {
+    if (!(dt>0 && std::isfinite(dt) && cfl>0 && std::isfinite(cfl) && total.volume>0))
+        throw std::invalid_argument("flowreport: expected positive finite CFL, dt and volume");
+    const unsigned width=dimension+2,fields=width+1;
+    const long double rms=total.rate_scale*std::sqrt(total.scaled_squares/total.volume)/dt;
     if (!std::isfinite(rms)) throw std::overflow_error("flowreport: energy residual overflow");
     std::ostringstream table;
     table.imbue(std::locale::classic());
@@ -132,9 +141,9 @@ void FlowReport::write_values(std::uint64_t step,double time,double cfl,double d
          <<std::setw(20)<<"Domain integral"<<'\n';
     const char* names[]={"rho","ux","uy","uz","p","E"};
     for (unsigned k=0;k<fields;++k) {
-        const Stats& s=total.field[k];
+        const FlowRange& s=total.field[k];
         if (!std::isfinite(s.integral)) throw std::overflow_error("flowreport: domain integral overflow");
-        const char* name=k<=dimension_ ? names[k] : names[k==width ? 5 : 4];
+        const char* name=k<=dimension ? names[k] : names[k==width ? 5 : 4];
         table<<std::left<<std::setw(9)<<name<<std::right<<std::setw(15)<<cell(s.low)
              <<std::setw(15)<<cell(s.high)<<std::setw(20)<<cell(s.integral)<<'\n';
     }
@@ -143,6 +152,5 @@ void FlowReport::write_values(std::uint64_t step,double time,double cfl,double d
     out.write(text.data(),static_cast<std::streamsize>(text.size()));
     out.flush();
     if (!out) throw std::runtime_error("flowreport: output failed");
-    captured_step_=0;
 }
 }

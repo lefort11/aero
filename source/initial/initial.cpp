@@ -114,8 +114,15 @@ Column component(const Field& f,const std::string& name) {
 }
 }
 
+void check_periodic_initial(const double* ref,const double* q,unsigned width,MeshIndex owner,MeshIndex node) {
+    for (unsigned k=0;k<width;++k) {
+        const double scale=std::max(std::fabs(q[k]),std::fabs(ref[k]));
+        if (std::fabs(q[k]-ref[k])>1e-13+1e-10*scale)
+            throw std::domain_error("initial: periodic mismatch between nodes "+std::to_string(owner)+" and "+std::to_string(node));
+    }
+}
 std::vector<double> read_initial(const Mesh& mesh,double gamma,std::istream& input,
-                                 const std::string& directory,const PeriodicView* seam) {
+                                 const std::string& directory,const PeriodicView* seam,const FieldNodeSelection* selection) {
     if (!(gamma>1 && std::isfinite(gamma))) throw std::invalid_argument("initial: invalid gamma");
     const auto m=mesh.view();
     const unsigned d=m.dimension,width=d+2;
@@ -134,8 +141,13 @@ std::vector<double> read_initial(const Mesh& mesh,double gamma,std::istream& inp
         }
     } else if (type=="file") {
         const std::string path=resolve(directory,single(take(settings,"path")));
-        snapshot=FieldSnapshot::read(path);
-        snapshot.check_mesh(mesh);
+        if (selection) {
+            if (selection->nodes.size()!=m.node_count) throw std::invalid_argument("initial: invalid local node count");
+            snapshot.fields=FieldSnapshot::read_nodes(path,*selection);
+        } else {
+            snapshot=FieldSnapshot::read(path);
+            snapshot.check_mesh(mesh);
+        }
         conservative=settings.count("field")!=0;
         if (conservative) {
             const std::string name=single(take(settings,"field"));
@@ -197,11 +209,7 @@ std::vector<double> read_initial(const Mesh& mesh,double gamma,std::istream& inp
             double q[5]={};
             evaluate(n,q);
             const double* dst=result.data()+width*id;
-            for (unsigned k=0;k<width;++k) {
-                const double scale=std::max(std::fabs(q[k]),std::fabs(dst[k]));
-                if (std::fabs(q[k]-dst[k])>1e-13+1e-10*scale)
-                    throw std::domain_error("initial: periodic mismatch between nodes "+std::to_string(owner[id])+" and "+std::to_string(n));
-            }
+            check_periodic_initial(dst,q,width,owner[id],n);
         });
     }
     return result;

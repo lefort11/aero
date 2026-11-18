@@ -48,6 +48,7 @@ void order_entities(const std::string& dir,Id memory,int rank,int size);
 void choose_splitters(const std::string& dir,Id memory,int size);
 void sort_range(const std::string& dir,Id memory,int rank,int size);
 void plan_leaves(const std::string& dir,const Options&,int size);
+void plan_halo(const std::string& dir,Id memory);
 void pack_leaves(const std::string& dir,bool compress,int rank,int size);
 Id write_catalog(const std::string& dir,const std::string& staged,bool compress,int size);
 void write_part(const std::string& dir,const std::string& staged,int rank);

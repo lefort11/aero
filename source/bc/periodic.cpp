@@ -81,24 +81,32 @@ std::map<Id,Id> match_nodes(MeshView m,const Patch& a,const Patch& b,
     return matches;
 }
 }
-PeriodicDomain::PeriodicDomain(const Mesh& mesh,const std::vector<PeriodicPair>& pairs,double tol)
-    :mesh_(mesh),tolerance_(tol) {
+double periodic_detail::match_tolerance(const std::vector<PeriodicPair>& pairs,double tol) {
     if (pairs.empty() || !std::isfinite(tol) || tol<0) throw MeshError("invalid periodic pairs or tolerance");
+    double shortest=std::numeric_limits<double>::max();
+    for (const auto& p:pairs) {
+        const double L=length({{p.translation[0],p.translation[1],p.translation[2]}});
+        if (!(L>0) || !std::isfinite(L)) throw MeshError("invalid periodic translation");
+        shortest=std::min(shortest,L);
+    }
+    if (!tol) tol=shortest*1e-10;
+    if (!(tol>0 && tol<0.5*shortest)) throw MeshError("unresolved periodic translation");
+    return tol;
+}
+bool periodic_detail::compatible_areas(const Point& a,const Point& b) {
+    return length(plus(a,b))<=1e-8*std::max(length(a),length(b));
+}
+PeriodicDomain::PeriodicDomain(const Mesh& mesh,const std::vector<PeriodicPair>& pairs,double tol)
+    :mesh_(mesh),tolerance_(periodic_detail::match_tolerance(pairs,tol)) {
     const MeshView m=mesh.view();
     const MedianDual dual(mesh);
     const CvView cv=dual.view();
-    double shortest=std::numeric_limits<double>::max();
     std::set<std::string> paired;
     std::map<std::string,Patch> patches;
     for (const PeriodicPair& p:pairs) {
         if (!paired.insert(p.patch).second || !paired.insert(p.pair).second)
             throw MeshError("repeated periodic patch: "+p.patch+" / "+p.pair);
-        const double L=length({{p.translation[0],p.translation[1],p.translation[2]}});
-        if (!(L>0) || !std::isfinite(L)) throw MeshError("invalid periodic translation");
-        shortest=std::min(shortest,L);
     }
-    if (!tol) tolerance_=shortest*1e-10;
-    if (!(tolerance_>0 && tolerance_<0.5*shortest)) throw MeshError("unresolved periodic translation");
     for (Id k=0;k<m.boundary_face_count;++k) {
         const std::string& name=mesh.data().patch_names[m.boundary_patch[k]];
         if (paired.count(name)) add_face(patches[name],m.face(m.boundary_faces[k]));
@@ -122,7 +130,7 @@ PeriodicDomain::PeriodicDomain(const Mesh& mesh,const std::vector<PeriodicPair>&
             if (found==b.faces.end()) throw MeshError(label+"unmatched face "+std::to_string(face.second));
             for (Id n:face.first) {
                 const Point u=areas.at({face.second,n}),v=areas.at({found->second,match.at(n)});
-                if (length(plus(u,v))>1e-8*std::max(length(u),length(v)))
+                if (!periodic_detail::compatible_areas(u,v))
                     throw MeshError(label+"incompatible area at face "+std::to_string(face.second));
             }
         }
