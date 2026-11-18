@@ -1,0 +1,12 @@
+[ymin]
+bc_type wall
+
+[ymax]
+bc_type free
+inflow  base_p
+outflow base_u
+
+[xmin]
+bc_type periodic
+pair xmax
+translation 1 0 0

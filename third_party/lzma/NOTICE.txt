@@ -1,0 +1,10 @@
+LZMA encoder and decoder from 7-Zip / LZMA SDK 24.09, by Igor Pavlov.
+These files are public domain, as stated in their original headers.
+Source files are unmodified:
+  https://github.com/ip7z/7zip/tree/24.09/C
+  7zTypes.h, Compiler.h, Precomp.h, LzmaDec.h, LzmaDec.c,
+  LzmaEnc.h, LzmaEnc.c, LzFind.h, LzFind.c, LzHash.h,
+  CpuArch.h, CpuArch.c, 7zWindows.h
+
+Built once in the shared aero_io library for native mesh I/O and converter
+another MSB decoding. No installed 7-Zip program is required.

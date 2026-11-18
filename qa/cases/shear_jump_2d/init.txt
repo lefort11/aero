@@ -1,0 +1,5 @@
+initial_type formula
+rho = 1
+ux = if(y >= 0.625, if(y < 0.875, 0.3, -0.1), -0.1)
+uy = 0.85
+p = 1

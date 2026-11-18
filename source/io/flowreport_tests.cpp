@@ -1,0 +1,135 @@
+#include "flowreport.h"
+#include "../explicit/explicit.h"
+#include <algorithm>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+#ifdef AERO_WITH_CUDA
+#include "../cuda/runtime.h"
+#endif
+
+namespace {
+using namespace aero;
+void check(bool ok,const char* message) {
+    if (!ok) throw std::runtime_error(message);
+}
+template<class F> void rejects(const F& f) {
+    try { f(); } catch (const std::exception&) { return; }
+    throw std::runtime_error("expected rejection");
+}
+void table_example() {
+    const double volumes[]={0.25,0.75};
+    const std::vector<double> current={1,2,0,4.5, 2,-2,4,10};
+    auto previous=current;
+    previous[3]=4.49;
+    previous[7]=10.02;
+    std::ostringstream out;
+    FlowReport report(100,1.4,2,2,volumes);
+    for (unsigned step=0;step<100;++step) {
+        report.capture(step,std::vector<double>());
+        report.write(step,0,0,0,std::vector<double>(),out);
+    }
+    check(out.str().empty(),"unexpected report before step 100");
+    rejects([&]{report.write(100,0.875,0.5,0.01,current,out);});
+    report.capture(100,previous);
+    auto invalid=current;
+    invalid[0]=-1;
+    rejects([&]{report.write(100,0.875,0.5,0.01,invalid,out);});
+    rejects([&]{report.write(100,0.875,0.5,0,current,out);});
+    check(out.str().empty(),"incomplete report was printed");
+    report.write(100,0.875,0.5,0.01,current,out);
+    rejects([&]{report.write(100,0.875,0.5,0.01,current,out);});
+    std::istringstream in(out.str());
+    std::string line;
+    std::getline(in,line);
+    check(line=="Flow report    Step = 100    t = 0.875    CFL = 0.5    dt = 1.000000e-02","step header");
+    std::getline(in,line);
+    std::getline(in,line);
+    check(line.find("Domain integral")!=std::string::npos,"column names");
+    const char* names[]={"rho","ux","uy","p","E"};
+    const double rows[][3]={{1,2,1.75},{-1,2,-0.25},{0,2,1.5},{1,2,1.75},{4.5,10,8.625}};
+    for (unsigned k=0;k<5;++k) {
+        std::string name;
+        double lo,hi,integral;
+        check(bool(in>>name>>lo>>hi>>integral),"missing row");
+        check(name==names[k] && lo==rows[k][0] && hi==rows[k][1] && integral==rows[k][2],"wrong row");
+    }
+    check(out.str().find("Energy residual (volume-weighted RMS of dE/dt) = 1.802776e+00")!=std::string::npos,"energy RMS");
+    FlowReport disabled(0,1.4,2,2,volumes);
+    disabled.capture(1,previous);
+    disabled.write(1,0.01,0.5,0.01,current,out);
+    check(!disabled.due(1) && out.str().find("Flow report",1)==std::string::npos,"disabled reporter");
+}
+
+std::string uniform_3d() {
+    const unsigned nodes=1025;
+    std::vector<double> volumes(nodes,1.0), field;
+    for (unsigned i=0;i<nodes;++i) field.insert(field.end(),{1,0,0,-2,5});
+    FlowReport report(1,1.4,3,nodes,volumes.data());
+    std::ostringstream out;
+    report.capture(1,field);
+    report.write(1,0.25,1,0.25,field,out);
+    check(out.str().find("uz ")!=std::string::npos && out.str().find("-2050.000000")!=std::string::npos &&
+          out.str().find("= 0.000000e+00")!=std::string::npos,"3D volume reduction");
+    return out.str();
+}
+
+void integration(ExplicitBackend backend,int device,ExplicitScheme scheme) {
+    const double volumes[]={0.25,0.75}, initial[]={1,0,4,1,0,10};
+    ExplicitIntegrator solver(2,3,volumes,initial,backend,device);
+    FlowReport report(100,1.4,1,2,volumes);
+    std::ostringstream out;
+    const double dt=0.01;
+    for (unsigned step=1;step<=200;++step) {
+        const double residual[]={0,0,-volumes[0]*(step==200 ? 2.0 : 1.0),
+                                 0,0,step==100 ? volumes[1]*2 : 0};
+        report.capture(step,solver);
+        solver.step(scheme,(step-1)*dt,dt,[&](double,const ExplicitField& field,double* r) {
+#ifdef AERO_WITH_CUDA
+            if (field.backend==ExplicitBackend::Cuda) {
+                check(cudaMemcpyAsync(r,residual,sizeof(residual),cudaMemcpyHostToDevice,
+                                      static_cast<cudaStream_t>(field.stream))==cudaSuccess,"CUDA test residual");
+                return;
+            }
+#else
+            (void)field;
+#endif
+            std::copy(residual,residual+6,r);
+        });
+        report.write(step,step*dt,0.5,dt,solver,out);
+    }
+    const std::string text=out.str();
+    const auto second=text.find("Flow report    Step = 200    t = 2    CFL");
+    check(text.find("Flow report    Step = 100    t = 1    CFL")==0 && text.find("Flow report",1)==second &&
+          second!=std::string::npos && text.find("Flow report",second+1)==std::string::npos,"report schedule");
+    check(text.find("uy ")==std::string::npos && text.find("uz ")==std::string::npos,"1D rows");
+    check(text.find("= 1.802776e+00")<second && text.find("= 1.000000e+00",second)!=std::string::npos,
+          "RMS must use consecutive accepted steps");
+}
+}
+int main(int argc,char** argv) {
+    try {
+        table_example();
+#ifdef _OPENMP
+        omp_set_num_threads(1);
+        const auto serial=uniform_3d();
+        omp_set_num_threads(4);
+        check(serial==uniform_3d(),"OpenMP changed table");
+#else
+        uniform_3d();
+#endif
+        integration(ExplicitBackend::Cpu,0,ExplicitScheme::Euler);
+        integration(ExplicitBackend::Cpu,0,ExplicitScheme::SSPRK3);
+        const int devices=ExplicitIntegrator::cuda_device_count();
+        if (argc>1 && std::string(argv[1])=="--require-cuda") check(devices>0,"CUDA device required");
+        for (int device=0;device<devices;++device) {
+            integration(ExplicitBackend::Cuda,device,ExplicitScheme::Euler);
+            integration(ExplicitBackend::Cuda,device,ExplicitScheme::SSPRK3);
+        }
+        std::cout<<"Flow report tests passed (CPU and "<<devices<<" CUDA devices).\n";
+        return 0;
+    } catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }
+}

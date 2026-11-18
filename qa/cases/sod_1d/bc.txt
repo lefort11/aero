@@ -1,0 +1,9 @@
+[xmin]
+bc_type free
+inflow base_p
+outflow base_u
+
+[xmax]
+bc_type free
+inflow base_p
+outflow base_u

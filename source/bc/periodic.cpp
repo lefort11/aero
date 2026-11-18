@@ -1,0 +1,169 @@
+#include "periodic.h"
+#include "../parallel/parallel_for.h"
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <limits>
+#include <map>
+#include <numeric>
+#include <set>
+
+namespace aero {
+namespace {
+using Id=MeshIndex;
+using Point=std::array<double,3>;
+using Ids=std::vector<Id>;
+Point position(MeshView m,Id n) { return {{m.x[n],m.y[n],m.z[n]}}; }
+Point plus(Point a,Point b) { for(unsigned i=0;i<3;++i) a[i]+=b[i]; return a; }
+Point minus(Point a,Point b) { for(unsigned i=0;i<3;++i) a[i]-=b[i]; return a; }
+double length(Point p) { return std::hypot(std::hypot(p[0],p[1]),p[2]); }
+Point vector_of(CvVector v) { return {{v.x,v.y,v.z}}; }
+struct Groups {
+    Ids parent;
+    explicit Groups(Id count):parent(count) { std::iota(parent.begin(),parent.end(),Id(0)); }
+    Id root(Id i) {
+        while (parent[i]!=i) { parent[i]=parent[parent[i]]; i=parent[i]; }
+        return i;
+    }
+    void join(Id a,Id b) {
+        a=root(a); b=root(b);
+        parent[std::max(a,b)]=std::min(a,b);
+    }
+};
+struct Patch {
+    std::set<Id> nodes;
+    std::map<Ids,Id> faces;
+    std::map<std::pair<Id,Id>,Id> edges;
+};
+void add_face(Patch& patch,MeshFace f) {
+    const MeshIndexSpan nodes=f.node_ids();
+    Ids key(nodes.begin(),nodes.end());
+    patch.nodes.insert(key.begin(),key.end());
+    std::sort(key.begin(),key.end());
+    patch.faces[key]=f.id();
+    for (Id j=0;j<f.edge_count();++j)
+        patch.edges[std::minmax(nodes[j],nodes[(j+1)%nodes.size])]=f.edge_id(j);
+}
+std::map<Id,Id> match_nodes(MeshView m,const Patch& a,const Patch& b,
+                            Point shift,double tol,const std::string& label) {
+    if (a.nodes.empty() || a.nodes.size()!=b.nodes.size() || a.faces.size()!=b.faces.size())
+        throw MeshError(label+"different patch sizes or empty patch");
+    Point low=position(m,*b.nodes.begin()),high=low;
+    for (Id n:b.nodes) {
+        const Point p=position(m,n);
+        for (unsigned i=0;i<3;++i) { low[i]=std::min(low[i],p[i]); high[i]=std::max(high[i],p[i]); }
+    }
+    Point span=minus(high,low);
+    size_t axis=static_cast<size_t>(std::max_element(span.begin(),span.end())-span.begin());
+    std::multimap<double,Id> bins;
+    for (Id n:b.nodes) bins.emplace(position(m,n)[axis],n);
+    std::map<Id,Id> matches;
+    std::set<Id> used;
+    const Ids sources(a.nodes.begin(),a.nodes.end());
+    Ids partners(sources.size());
+    parallel_for(sources.size(),[&](size_t k) {
+        const Id n=sources[k];
+        bool found=false;
+        const Point wanted=plus(position(m,n),shift);
+        for(auto i=bins.lower_bound(wanted[axis]-tol);i!=bins.end() && i->first<=wanted[axis]+tol;++i) {
+            if (length(minus(position(m,i->second),wanted))>tol) continue;
+            if (found)
+                throw MeshError(label+"ambiguous match at node "+std::to_string(n));
+            partners[k]=i->second;
+            found=true;
+        }
+        if (!found) throw MeshError(label+"unmatched node "+std::to_string(n));
+    });
+    for (size_t k=0;k<sources.size();++k) {
+        if (!used.insert(partners[k]).second) throw MeshError(label+"ambiguous match at node "+std::to_string(sources[k]));
+        matches.emplace(sources[k],partners[k]);
+    }
+    return matches;
+}
+}
+PeriodicDomain::PeriodicDomain(const Mesh& mesh,const std::vector<PeriodicPair>& pairs,double tol)
+    :mesh_(mesh),tolerance_(tol) {
+    if (pairs.empty() || !std::isfinite(tol) || tol<0) throw MeshError("invalid periodic pairs or tolerance");
+    const MeshView m=mesh.view();
+    const MedianDual dual(mesh);
+    const CvView cv=dual.view();
+    double shortest=std::numeric_limits<double>::max();
+    std::set<std::string> paired;
+    std::map<std::string,Patch> patches;
+    for (const PeriodicPair& p:pairs) {
+        if (!paired.insert(p.patch).second || !paired.insert(p.pair).second)
+            throw MeshError("repeated periodic patch: "+p.patch+" / "+p.pair);
+        const double L=length({{p.translation[0],p.translation[1],p.translation[2]}});
+        if (!(L>0) || !std::isfinite(L)) throw MeshError("invalid periodic translation");
+        shortest=std::min(shortest,L);
+    }
+    if (!tol) tolerance_=shortest*1e-10;
+    if (!(tolerance_>0 && tolerance_<0.5*shortest)) throw MeshError("unresolved periodic translation");
+    for (Id k=0;k<m.boundary_face_count;++k) {
+        const std::string& name=mesh.data().patch_names[m.boundary_patch[k]];
+        if (paired.count(name)) add_face(patches[name],m.face(m.boundary_faces[k]));
+    }
+    Groups nodes(m.node_count),edges(m.edge_count);
+    std::map<std::pair<Id,Id>,Point> areas;
+    for (Id k=0;k<cv.boundary_count;++k) {
+        const CvBoundary& s=cv.boundary[k];
+        if (paired.count(mesh.data().patch_names[s.patch])) areas[{s.face,s.node}]=vector_of(s.area);
+    }
+    for (const PeriodicPair& p:pairs) {
+        const Patch &a=patches[p.patch], &b=patches[p.pair];
+        const std::string label="periodic "+p.patch+" -> "+p.pair+": ";
+        auto match=match_nodes(m,a,b,{{p.translation[0],p.translation[1],p.translation[2]}},tolerance_,label);
+        for (const auto& n:match) nodes.join(n.first,n.second);
+        for (const auto& face:a.faces) {
+            Ids key;
+            for (Id n:face.first) key.push_back(match.at(n));
+            std::sort(key.begin(),key.end());
+            const auto found=b.faces.find(key);
+            if (found==b.faces.end()) throw MeshError(label+"unmatched face "+std::to_string(face.second));
+            for (Id n:face.first) {
+                const Point u=areas.at({face.second,n}),v=areas.at({found->second,match.at(n)});
+                if (length(plus(u,v))>1e-8*std::max(length(u),length(v)))
+                    throw MeshError(label+"incompatible area at face "+std::to_string(face.second));
+            }
+        }
+        for (const auto& edge:a.edges) {
+            auto found=b.edges.find(std::minmax(match.at(edge.first.first),match.at(edge.first.second)));
+            if (found==b.edges.end()) throw MeshError(label+"unmatched edge "+std::to_string(edge.second));
+            edges.join(edge.second,found->second);
+        }
+    }
+    node_dof_.resize(m.node_count);
+    for (Id n=0;n<m.node_count;++n) {
+        const Id root=nodes.root(n);
+        if (root==n) {node_dof_[n]=volumes_.size(); volumes_.push_back(0);}
+        else node_dof_[n]=node_dof_[root];
+        volumes_[node_dof_[n]]+=cv.volumes[n];
+    }
+    Ids edge_index(m.edge_count);
+    for (Id e=0;e<m.edge_count;++e) {
+        const Id root=edges.root(e);
+        if (root==e) {
+            edge_index[e]=edges_.size();
+            edges_.push_back({node_dof_[m.edge_begin[e]],node_dof_[m.edge_end[e]],e,{}});
+        }
+        PeriodicEdge& entry=edges_[edge_index[root]];
+        // Direction remains distinguishable even for an edge that wraps to the same DOF.
+        const Point d=minus(position(m,m.edge_end[e]),position(m,m.edge_begin[e]));
+        const Point ref=minus(position(m,m.edge_end[root]),position(m,m.edge_begin[root]));
+        const int sign=length(minus(d,ref))<=length(plus(d,ref)) ? 1 : -1;
+        entry.area.x+=sign*cv.edge_areas[e].x;
+        entry.area.y+=sign*cv.edge_areas[e].y;
+        entry.area.z+=sign*cv.edge_areas[e].z;
+    }
+    for (Id k=0;k<cv.boundary_count;++k) {
+        CvBoundary piece=cv.boundary[k];
+        if (paired.count(mesh.data().patch_names[piece.patch])) continue;
+        piece.node=node_dof_[piece.node];
+        boundary_.push_back(piece);
+    }
+}
+PeriodicView PeriodicDomain::view() const {
+    return {volumes_.size(),edges_.size(),boundary_.size(),node_dof_.size(),
+            node_dof_.data(),volumes_.data(),edges_.data(),boundary_.data()};
+}
+} // namespace aero

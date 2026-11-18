@@ -1,0 +1,4 @@
+initial_type formula
+rho = 1 + 0.25*cos(pi*(x - 0.25))^4
+ux = 1
+p = 1

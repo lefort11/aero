@@ -1,0 +1,6 @@
+initial_type formula
+rho = if(z >= 0.3125, if(z < 0.6125, 1.4, 1), 1)
+ux = 0.3
+uy = -0.2
+uz = 0.8
+p = 1

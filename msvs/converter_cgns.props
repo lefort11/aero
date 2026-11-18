@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <CGNSRoot Condition="'$(CGNSRoot)'==''">$(MSBuildProjectDirectory)\..\build\deps\install-msvc-mt\$(Configuration)</CGNSRoot>
+    <WithCGNS Condition="'$(WithCGNS)'=='' and Exists('$(CGNSRoot)\include\cgnslib.h')">true</WithCGNS>
+    <WithCGNS Condition="'$(WithCGNS)'==''">false</WithCGNS>
+    <HDF5Library Condition="'$(HDF5Library)'=='' and '$(Configuration)'=='Debug'">libhdf5_D.lib</HDF5Library>
+    <HDF5Library Condition="'$(HDF5Library)'==''">libhdf5.lib</HDF5Library>
+    <CGNSLibraries Condition="'$(CGNSLibraries)'==''">cgns.lib;$(HDF5Library);ws2_32.lib;shlwapi.lib</CGNSLibraries>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(WithCGNS)'=='true'">
+    <ClCompile>
+      <PreprocessorDefinitions>AERO_WITH_CGNS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(CGNSRoot)\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <AdditionalLibraryDirectories>$(CGNSRoot)\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>$(CGNSLibraries);%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+</Project>

@@ -1,0 +1,9 @@
+mesh = grid.mesh
+reconstruction = weno3
+reconstruction_variables = conservative
+time_scheme = ssprk3
+euler_solver = roe
+cfl = 0.25
+backend = cpu
+omp_threads = 1
+final_time = 0.20

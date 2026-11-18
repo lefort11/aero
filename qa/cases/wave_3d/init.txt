@@ -1,0 +1,6 @@
+initial_type formula
+rho = 1 + 0.1*sin(2*pi*x) + 0.06*cos(2*pi*y) + 0.04*sin(2*pi*z)
+ux = 0.8
+uy = -0.6
+uz = 0.45
+p = 1

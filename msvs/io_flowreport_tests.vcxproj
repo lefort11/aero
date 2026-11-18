@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{EBBC145E-FC25-4204-9DA1-004C1F1D134C}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword><RootNamespace>aero</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <ImportDirectoryBuildProps>false</ImportDirectoryBuildProps><ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType><PlatformToolset>v145</PlatformToolset><CharacterSet>Unicode</CharacterSet>
+    <UseDebugLibraries Condition="'$(Configuration)'=='Debug'">true</UseDebugLibraries>
+    <UseDebugLibraries Condition="'$(Configuration)'!='Debug'">false</UseDebugLibraries>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <WithCuda Condition="'$(WithCuda)'==''">false</WithCuda><WithOpenMP Condition="'$(WithOpenMP)'==''">true</WithOpenMP>
+    <CudaToolkitDir Condition="'$(CudaToolkitDir)'==''">$(CUDA_PATH)</CudaToolkitDir>
+    <CudaArchitecture Condition="'$(CudaArchitecture)'==''">86</CudaArchitecture>
+    <FlowReportVariant>cpu</FlowReportVariant><FlowReportVariant Condition="'$(WithCuda)'=='true'">cuda-sm$(CudaArchitecture)</FlowReportVariant>
+    <FlowReportVariant Condition="'$(WithOpenMP)'=='false'">$(FlowReportVariant)-serial</FlowReportVariant>
+    <OutDir>$(MSBuildProjectDirectory)\..\build\msvs\$(Platform)\$(Configuration)\$(FlowReportVariant)\</OutDir>
+    <IntDir>$(OutDir)obj\$(MSBuildProjectName)\</IntDir><TargetName>io_flowreport_tests</TargetName>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel>
+      <!-- MSVC has no C++11 mode; strict C++11 is checked by GNU Make. -->
+      <LanguageStandard>stdcpp14</LanguageStandard><ConformanceMode>true</ConformanceMode><ExceptionHandling>Sync</ExceptionHandling>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader><DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <ProgramDataBaseFileName>$(IntDir)$(MSBuildProjectName).pdb</ProgramDataBaseFileName>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+      <OpenMPSupport Condition="'$(WithOpenMP)'=='true'">true</OpenMPSupport>
+    </ClCompile>
+    <Link><SubSystem>Console</SubSystem><GenerateDebugInformation>true</GenerateDebugInformation></Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
+    <ClCompile><Optimization>Disabled</Optimization><BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary><PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
+    <ClCompile><Optimization>MaxSpeed</Optimization><RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClInclude Include="..\source\io\flowreport.h" />
+    <ClCompile Include="..\source\io\flowreport_tests.cpp" />
+    <None Include="..\source\io\README.txt" /><None Include="..\source\io\flowreport_tests.mk" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="aero_explicit.vcxproj"><Project>{68329720-CF29-47EB-A9E4-1B35097DF09B}</Project></ProjectReference>
+    <ProjectReference Include="aero_io.vcxproj"><Project>{C9C96040-05C8-498C-8E4D-D6C4B07A468E}</Project></ProjectReference>
+  </ItemGroup>
+  <PropertyGroup>
+    <RunFlowReportTests Condition="'$(RunFlowReportTests)'==''">true</RunFlowReportTests>
+    <FlowReportTestArguments Condition="'$(RequireCudaTests)'=='true'">--require-cuda</FlowReportTestArguments>
+
+
+
+    <LocalDebuggerWorkingDirectory>$(MSBuildProjectDirectory)\..</LocalDebuggerWorkingDirectory>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(WithCuda)'=='true'">
+    <ClCompile><AdditionalIncludeDirectories>$(CudaToolkitDir)\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories><PreprocessorDefinitions>AERO_WITH_CUDA;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+    <Link><AdditionalLibraryDirectories>$(CudaToolkitDir)\lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>cudart_static.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
+  </ItemDefinitionGroup>
+  <Target Name="RunFlowReportTests" AfterTargets="Build"
+    Condition="'$(RunFlowReportTests)'=='true' and '$(DesignTimeBuild)'!='true'">
+    <Exec Command="&quot;$(TargetPath)&quot; $(FlowReportTestArguments)" WorkingDirectory="$(MSBuildProjectDirectory)\.." />
+  </Target>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Import Project="publish_program.targets" />
+</Project>
+
+

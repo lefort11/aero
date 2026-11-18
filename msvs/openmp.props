@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <WithOpenMP Condition="'$(WithOpenMP)'==''">true</WithOpenMP>
+    <!-- Keep serial outputs separate so switching the backend cannot reuse a stale executable. -->
+    <OutDir Condition="'$(WithOpenMP)'=='false'">$(OutDir)serial\</OutDir>
+    <IntDir>$(OutDir)obj\$(MSBuildProjectName)\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <OpenMPSupport Condition="'$(WithOpenMP)'=='true'">true</OpenMPSupport>
+      <OpenMPSupport Condition="'$(WithOpenMP)'=='false'">false</OpenMPSupport>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <Target Name="ValidateOpenMP" BeforeTargets="ClCompile">
+    <Error Condition="'$(WithOpenMP)'!='true' and '$(WithOpenMP)'!='false'" Text="WithOpenMP must be true or false." />
+  </Target>
+</Project>

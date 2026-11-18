@@ -1,0 +1,11 @@
+# Paths in this file are relative to this directory.
+mesh           = "../examples/tecplot/demo_2d.mesh"
+reconstruction = ebr3
+reconstruction_variables = conservative
+time_scheme    = ssprk3
+cfl            = 0.5
+backend        = cpu
+omp_threads    = 8
+flowreport_every = 100
+euler_solver   = roe
+final_time     = 2.0

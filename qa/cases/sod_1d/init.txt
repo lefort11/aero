@@ -1,0 +1,4 @@
+initial_type formula
+rho = if(x < 0.5, 1, 0.125)
+ux = 0
+p = if(x < 0.5, 1, 0.1)

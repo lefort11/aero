@@ -1,0 +1,15 @@
+# Each named zone currently covers the whole mesh.
+# File names are relative to --output. Choose one interval per zone.
+
+[latest]
+file = latest.fields
+every_steps = 100
+multi = 0
+variables = rho, ux, uy, p, E
+
+[pressure_history]
+file = pressure.fields
+every_time = 0.05
+multi = 1
+variables = p
+# For example, a write at step 37 produces pressure_000037.fields.

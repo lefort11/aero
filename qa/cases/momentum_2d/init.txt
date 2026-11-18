@@ -1,0 +1,5 @@
+initial_type formula
+rho = 1
+ux = 0.3 + 0.2*sin(2*pi*y)
+uy = 0.75
+p = 1

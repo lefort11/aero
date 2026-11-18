@@ -1,0 +1,10 @@
+initial_type formula
+rho = 1.0
+ux  = 0.2 + 0.1*exp(-100*y^2)
+uy  = 0.0
+p   = 1.0
+
+# To initialize from a snapshot, replace the block above with these lines.
+# initial_type file
+# path "../results/start.fields"
+# field U

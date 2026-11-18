@@ -1,0 +1,2 @@
+# Read only when backend = cuda. IDs follow CUDA enumeration order.
+devices = 0,1

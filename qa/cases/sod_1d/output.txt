@@ -1,0 +1,6 @@
+[final]
+file = final.fields
+every_time = 0.12
+multi = 0
+format = text
+variables = rho, ux, p, E

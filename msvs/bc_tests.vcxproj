@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{180EE5BB-AB73-43F5-AD02-5C85317A3AFF}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword><RootNamespace>aero</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <ImportDirectoryBuildProps>false</ImportDirectoryBuildProps><ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType><PlatformToolset>v145</PlatformToolset><CharacterSet>Unicode</CharacterSet>
+    <UseDebugLibraries Condition="'$(Configuration)'=='Debug'">true</UseDebugLibraries>
+    <UseDebugLibraries Condition="'$(Configuration)'!='Debug'">false</UseDebugLibraries>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <WithCuda Condition="'$(WithCuda)'==''">false</WithCuda><WithOpenMP Condition="'$(WithOpenMP)'==''">true</WithOpenMP>
+    <CudaToolkitDir Condition="'$(CudaToolkitDir)'==''">$(CUDA_PATH)</CudaToolkitDir>
+    <CudaArchitecture Condition="'$(CudaArchitecture)'==''">86</CudaArchitecture>
+    <BcVariant>cpu</BcVariant><BcVariant Condition="'$(WithCuda)'=='true'">cuda-sm$(CudaArchitecture)</BcVariant>
+    <BcVariant Condition="'$(WithOpenMP)'=='false'">$(BcVariant)-serial</BcVariant>
+    <OutDir>$(MSBuildProjectDirectory)\..\build\msvs\$(Platform)\$(Configuration)\$(BcVariant)\</OutDir>
+    <IntDir>$(OutDir)obj\$(MSBuildProjectName)\</IntDir><TargetName>bc_tests</TargetName>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel>
+      <!-- MSVC has no C++11 mode; strict C++11 is checked by GNU Make. -->
+      <LanguageStandard>stdcpp14</LanguageStandard><ConformanceMode>true</ConformanceMode><ExceptionHandling>Sync</ExceptionHandling>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader><DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <ProgramDataBaseFileName>$(IntDir)$(MSBuildProjectName).pdb</ProgramDataBaseFileName>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+      <OpenMPSupport Condition="'$(WithOpenMP)'=='true'">true</OpenMPSupport>
+    </ClCompile>
+    <Link><SubSystem>Console</SubSystem><GenerateDebugInformation>true</GenerateDebugInformation></Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
+    <ClCompile><Optimization>Disabled</Optimization><BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary><PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
+    <ClCompile><Optimization>MaxSpeed</Optimization><RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClInclude Include="..\source\bc\bc.h" />
+    <ClCompile Include="..\source\bc\bc_tests.cpp" />
+    <ClCompile Include="..\source\bc\periodic_tests.cpp" />
+    <None Include="..\source\bc\bc.mk" />
+  </ItemGroup>
+  <ItemGroup><ProjectReference Include="aero_bc.vcxproj"><Project>{94C60178-3788-46F4-A507-6B17DC5BE1F8}</Project></ProjectReference></ItemGroup>
+  <PropertyGroup>
+    <RunBcTests Condition="'$(RunBcTests)'==''">true</RunBcTests>
+    <BcTestArguments Condition="'$(RequireCudaTests)'=='true'">--require-cuda</BcTestArguments>
+    <CudaCompatibilityFlags Condition="'$(AllowUnsupportedCudaHostCompiler)'=='true'">-allow-unsupported-compiler -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH</CudaCompatibilityFlags>
+    <BcCudaFlags Condition="'$(Configuration)'=='Debug'">-G -g -O0 -Xcompiler=/MTd</BcCudaFlags>
+    <BcCudaFlags Condition="'$(Configuration)'!='Debug'">-O2 -Xcompiler=/MT</BcCudaFlags>
+    <LocalDebuggerWorkingDirectory>$(MSBuildProjectDirectory)\..</LocalDebuggerWorkingDirectory>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(WithCuda)'=='true'">
+    <ClCompile><PreprocessorDefinitions>AERO_WITH_CUDA;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+    <Link><AdditionalLibraryDirectories>$(CudaToolkitDir)\lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>cudart_static.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <None Include="..\source\bc\bc_cuda_tests.cu" />
+    <ClInclude Include="..\source\bc\bc_cuda_tests.cuh" />
+    <Object Include="$(IntDir)bc_cuda_tests.obj" Condition="'$(WithCuda)'=='true'" />
+  </ItemGroup>
+  <Target Name="CompileBcCudaTests" BeforeTargets="Link" Condition="'$(WithCuda)'=='true'"
+    Inputs="$(MSBuildProjectDirectory)\..\source\bc\bc_cuda_tests.cu;$(MSBuildProjectDirectory)\..\source\bc\bc_cuda_tests.cuh;$(MSBuildProjectDirectory)\..\source\parallel\kernel_math.h;$(MSBuildProjectDirectory)\..\source\cuda\runtime.h;$(MSBuildProjectDirectory)\..\source\mesh\mesh_index.h;$(MSBuildProjectDirectory)\..\source\bc\bc.h;$(MSBuildProjectDirectory)\..\source\bc\bc_test_case.h;$(MSBuildProjectDirectory)\..\source\bc\periodic.h;$(MSBuildProjectDirectory)\..\source\reconstruction\reconstruction.h;$(MSBuildProjectDirectory)\..\source\reconstruction\weno.h;$(MSBuildProjectDirectory)\..\source\reconstruction\ebr.h;$(MSBuildProjectDirectory)\..\source\eulersolver\euler.h;$(MSBuildProjectFullPath)"
+    Outputs="$(IntDir)bc_cuda_tests.obj">
+    <Error Condition="!Exists('$(CudaToolkitDir)\bin\nvcc.exe')" Text="CUDA toolkit not found; set CudaToolkitDir or WithCuda=false." />
+    <Exec Command="call &quot;$(VCInstallDir)Auxiliary\Build\vcvars64.bat&quot; -vcvars_ver=$(VCToolsVersion) &gt;nul &amp;&amp; &quot;$(CudaToolkitDir)\bin\nvcc.exe&quot; -std=c++11 -arch=sm_$(CudaArchitecture) $(CudaCompatibilityFlags) $(BcCudaFlags) -Xcompiler=/utf-8 -c &quot;$(MSBuildProjectDirectory)\..\source\bc\bc_cuda_tests.cu&quot; -o &quot;$(IntDir)bc_cuda_tests.obj&quot;" />
+  </Target>
+  <Target Name="RunBcTests" AfterTargets="Build"
+    Condition="'$(RunBcTests)'=='true' and '$(DesignTimeBuild)'!='true'">
+    <Exec Command="&quot;$(TargetPath)&quot; $(BcTestArguments)" WorkingDirectory="$(MSBuildProjectDirectory)\.." />
+  </Target>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Import Project="publish_program.targets" />
+</Project>
+
+
+
+
