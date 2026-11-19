@@ -774,6 +774,15 @@ void register_weno_schemes() {
                 near(back.right_increment2[e], -r.left_increment2[4 - e]);
             }
         });
+        add(name + " WENO slope scaling at binary64 limits", [scheme] {
+            const unsigned order = scheme == ReconstructionScheme::Weno5 ? 5 : 3;
+            // При постоянном наклоне все кандидаты дают одну производную независимо от весов.
+            for (double x : {(std::numeric_limits<double>::denorm_min)(), (std::numeric_limits<double>::min)(),
+                             (std::numeric_limits<double>::max)() / 2}) {
+                const double slopes[] = {x, x, x, x};
+                near(weno_increment2(order, slopes, x) / x, 1);
+            }
+        });
         add(name + " jump suppression and extreme finite amplitudes", [scheme] {
             ReconstructionOptions o;
             o.scheme = scheme;

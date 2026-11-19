@@ -128,32 +128,20 @@ bool pack_weno_edge(const PartitionStencil& stencil, MeshIndex edge, WenoEdgeTil
     // В исходной записи по четыре наклона с каждой стороны. Ближний правый наклон при WENO5
     // доступен как противоположный у левой стороны (2), при WENO3 — как собственный у правой (4 + 1).
     const unsigned row_number[] = {0, 1, scheme_order == 5 ? 2u : 5u, 3, 7};
-    unsigned used = 0, term = 0, weight = 0;
-    MeshIndex slots = 0;
+    unsigned term = 0, weight = 0;
     for (unsigned r = 0; r < tile.rows_per_edge; ++r) {
         const auto row = 8 * edge + row_number[r];
         const auto first = rows.offsets[row], end = rows.offsets[row + 1];
         if (end - first != residual_detail::slope_terms(r))
             return false;
         for (auto i = first; i < end; ++i, ++term) {
-            // Присваиваем узлу номер при первом появлении. Порядок слагаемых внутри строки сохраняется.
-            const auto node = rows.nodes[i];
-            unsigned slot = 0;
-            while (slot < used && tile.nodes[slot][lane] != node)
-                ++slot;
-            if (slot == used) {
-                if (used == tile.nodes_per_edge)
-                    return false;
-                tile.nodes[used++][lane] = static_cast<unsigned>(node);
-            }
-            slots |= MeshIndex(slot) << (4 * term);
+                // Сохраняем индекс прямо у слагаемого, даже если узел встречался в соседней строке.
+                // Так при каждом расчёте потока читается один индекс вместо двух зависимых обращений.
+            tile.nodes[term][lane] = static_cast<unsigned>(rows.nodes[i]);
             if (i != first)
                 tile.weights[weight++][lane] = rows.weights[i];
         }
     }
-    if (used != tile.nodes_per_edge)
-        return false;
-    tile.slots[lane] = slots;
     return true;
 }
 }
@@ -184,13 +172,12 @@ void PartitionOperator::prepare_weno_tiles(std::vector<WenoEdgeTile<scheme_order
         auto& tile = tiles[t];
         for (unsigned lane = 0; lane < 32; ++lane) {
             const auto edge = 32 * t + lane;
-            tile.slots[lane] = ~MeshIndex(0);
-            if (edge < g.edges && !g.surfaces[edge].use_nodal_traces)
-                pack_weno_edge(stencil_, edge, tile, lane);
+            tile.complete[lane] = edge < g.edges && !g.surfaces[edge].use_nodal_traces &&
+                                  pack_weno_edge(stencil_, edge, tile, lane);
         }
     });
     for (auto f : compute_)
-        if (f >= g.edges || tiles[f / 32].slots[f % 32] == ~MeshIndex(0))
+        if (f >= g.edges || !tiles[f / 32].complete[f % 32])
             other_faces_.push_back(f);
     if (other_faces_.size() == compute_.size())
         tiles.clear();

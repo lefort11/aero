@@ -5,10 +5,10 @@
 namespace aero {
 namespace euler_detail {
 // Проецирует вектор на волны, используя заранее проверенные базис Роу и единичную нормаль.
-template <unsigned fixed_dimension = 0>
+template <unsigned fixed_dimension = 0, bool full_basis = true>
 AERO_HOST_DEVICE inline EulerStatus project_characteristic(const EulerRoeBasis& basis, const double* n,
                                                            double gamma, double kinetic, const double* u,
-                                                           double* w) {
+                                                           double* w, double inverse_sound = 0) {
     const unsigned d = fixed_dimension ? fixed_dimension : basis.dimension;
     double momentum[3] = {}, result[5] = {};
     for (unsigned k = 0; k < d; ++k)
@@ -16,13 +16,17 @@ AERO_HOST_DEVICE inline EulerStatus project_characteristic(const EulerRoeBasis& 
     // Линеаризуем давление в базисе Роу. Это приращение может быть отрицательным.
     const double pressure =
         (gamma - 1) * (u[d + 1] - euler_detail::dot(d, basis.velocity, u + 1) + kinetic * u[0]);
-    const double sum = (pressure / basis.sound_speed) / basis.sound_speed;
-    const double difference = euler_detail::dot(d, momentum, n) / basis.sound_speed;
+    // Все наклоны ребра имеют общую скорость звука. При повторных проекциях вызывающая
+    // функция подаёт готовое 1/c. Для разового вызова выполняем обычное деление.
+    const double normal_momentum = euler_detail::dot(d, momentum, n);
+    const double sum = inverse_sound ? (pressure * inverse_sound) * inverse_sound
+                                     : (pressure / basis.sound_speed) / basis.sound_speed;
+    const double difference = inverse_sound ? normal_momentum * inverse_sound : normal_momentum / basis.sound_speed;
     // Нормальная составляющая даёт пару акустических волн. Оставшаяся часть плотности переходит в энтропийную волну.
     result[0] = 0.5 * (sum - difference);
     result[1] = u[0] - sum;
     result[d + 1] = 0.5 * (sum + difference);
-    for (unsigned t = 0; t + 1 < d; ++t)
+    for (unsigned t = 0; full_basis && t + 1 < d; ++t)
         for (unsigned k = 0; k < d; ++k)
             result[2 + t] += basis.right[5 * (k + 1) + 2 + t] * momentum[k];
     for (unsigned c = 0; c < d + 2; ++c)

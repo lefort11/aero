@@ -11,7 +11,7 @@ struct RoeFlux {
                                                 const double* fr, double speed, EulerFluxResult* result) {
         const unsigned dimension = face.dimension;
         EulerRoeBasis basis;
-        EulerStatus status = euler_detail::build_roe_basis(dimension, gas.left, gas.right, face.direction,
+        EulerStatus status = euler_detail::build_roe_basis<false>(dimension, gas.left, gas.right, face.direction,
                                                            gas.normal, face.gamma, &basis);
         if (status != EulerStatus::Success)
             return status;
@@ -24,26 +24,31 @@ struct RoeFlux {
                 return EulerStatus::NonFinite;
         }
         // Раскладываем скачок U_R − U_L по волнам в уже построенном базисе грани.
-        status = euler_detail::project_characteristic(basis, gas.normal, face.gamma, basis.kinetic_energy(),
+        status = euler_detail::project_characteristic<0, false>(basis, gas.normal, face.gamma, basis.kinetic_energy(),
                                                        jump, strength);
         if (status != EulerStatus::Success)
             return status;
         EulerFluxResult output = {};
         output.components = count;
-        output.max_wave_speed = speed;
-        for (unsigned c = 0; c < count; ++c) {
-            if (!euler_detail::finite(strength[c]))
-                return EulerStatus::NonFinite;
-            const double wave = euler_detail::absolute(basis.eigenvalues[c]);
-            if (wave > output.max_wave_speed)
-                output.max_wave_speed = wave;
-        }
+        const unsigned plus = count - 1;
+        const double transport = euler_detail::absolute(basis.eigenvalues[1]);
+        const double left_speed = euler_detail::absolute(basis.eigenvalues[0]);
+        const double right_speed = euler_detail::absolute(basis.eigenvalues[plus]);
+        // u·n лежит между u·n−c и u·n+c. Для CFL достаточно сравнить модули этих двух
+        // звуковых скоростей с оценкой по левому и правому состояниям.
+        output.max_wave_speed = left_speed > speed ? left_speed : speed;
+        if (right_speed > output.max_wave_speed)
+            output.max_wave_speed = right_speed;
+
+        // Энтропия и поперечный импульс переносятся с одинаковой скоростью |u·n|.
+        // Берём эту скорость для всего скачка. Затем доводим вклад двух звуковых волн
+        // до их собственных скоростей. Это та же сумма R·|Λ|·L·ΔU в любой размерности.
+        const double left_correction = (left_speed - transport) * strength[0];
+        const double right_correction = (right_speed - transport) * strength[plus];
         for (unsigned r = 0; r < count; ++r) {
-            // Каждая волна вносит вклад в компоненту потока с весом |λ|.
-            double dissipation = 0;
-            for (unsigned c = 0; c < count; ++c)
-                dissipation +=
-                    basis.right[5 * r + c] * euler_detail::absolute(basis.eigenvalues[c]) * strength[c];
+            const double dissipation = transport * jump[r] +
+                                       basis.right[5 * r] * left_correction +
+                                       basis.right[5 * r + plus] * right_correction;
             output.flux[r] = 0.5 * fl[r] + 0.5 * fr[r] - 0.5 * dissipation;
             if (!euler_detail::finite(output.flux[r]))
                 return EulerStatus::NonFinite;

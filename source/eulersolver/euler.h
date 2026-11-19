@@ -282,10 +282,12 @@ flux_from_reconstructed_fluxes(const FaceStates& face, const double* left_flux, 
     return Scheme::combine(face, gas, left_flux, right_flux, speed, result);
 }
 
-// Собирает матрицу из уже проверенных физических величин. Она используется и для потока, и для реконструкции.
-AERO_HOST_DEVICE inline EulerStatus build_roe_basis(unsigned dimension, const EulerState& left,
+// Для реконструкции строим полный базис. Потоку Роу достаточно акустических столбцов и скоростей волн.
+template <bool full_basis = true, unsigned fixed_dimension = 0>
+AERO_HOST_DEVICE inline EulerStatus build_roe_basis(unsigned mesh_dimension, const EulerState& left,
                                                     const EulerState& right, const double* direction,
                                                     const double* n, double gamma, EulerRoeBasis* result) {
+    const unsigned dimension = fixed_dimension ? fixed_dimension : mesh_dimension;
     // Веса Роу пропорциональны квадратным корням плотностей соседних состояний.
     const double root_left = ::sqrt(left.density), root_right = ::sqrt(right.density);
     const double a = root_left / (root_left + root_right), b = root_right / (root_left + root_right);
@@ -303,11 +305,11 @@ AERO_HOST_DEVICE inline EulerStatus build_roe_basis(unsigned dimension, const Eu
     basis.sound_speed = ::sqrt(sound2);
     const double un = euler_detail::dot(dimension, basis.velocity, n), c = basis.sound_speed;
     double tangent[2][3] = {{0, 0, 0}, {0, 0, 0}};
-    if (dimension == 2) {
+    if (full_basis && dimension == 2) {
         tangent[0][0] = -n[1];
         tangent[0][1] = n[0];
     }
-    if (dimension == 3) {
+    if (full_basis && dimension == 3) {
         unsigned axis = 0;
         // Сравниваем исходные компоненты, чтобы округление нормали на CPU и GPU не меняло выбор касательной.
         for (unsigned k = 1; k < 3; ++k)
@@ -335,7 +337,7 @@ AERO_HOST_DEVICE inline EulerStatus build_roe_basis(unsigned dimension, const Eu
     basis.right[5 * energy] = basis.enthalpy - c * un;
     basis.right[5 * energy + 1] = kinetic;
     basis.right[5 * energy + plus] = basis.enthalpy + c * un;
-    for (unsigned t = 0; t + 1 < dimension; ++t) {
+    for (unsigned t = 0; full_basis && t + 1 < dimension; ++t) {
         for (unsigned k = 0; k < dimension; ++k)
             basis.right[5 * (k + 1) + 2 + t] = tangent[t][k];
         basis.right[5 * energy + 2 + t] = euler_detail::dot(dimension, basis.velocity, tangent[t]);

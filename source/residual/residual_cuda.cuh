@@ -24,17 +24,15 @@ AERO_GPU_KERNEL void nodal_gas(unsigned dimension, const double* field, double g
 
 template <unsigned scheme_order> __device__ __forceinline__ void packed_weno_flux(FaceBatch batch, Index* bad) {
     using Tile = WenoEdgeTile<scheme_order>;
-    __shared__ double q[Tile::nodes_per_edge * 4 * 32];
     for (Index k = blockIdx.x * blockDim.x + threadIdx.x; k < batch.count; k += gridDim.x * blockDim.x) {
         const Index f = batch.face(k);
         if (f >= batch.geometry.edges)
             continue;
         const auto& tile = static_cast<const Tile*>(batch.geometry.packed.tiles)[f / 32];
         const unsigned lane = f % 32;
-        const Index slots = tile.slots[lane];
-        if (slots == ~Index(0))
+        if (!tile.complete[lane])
             continue;
-        if (!packed_edge_flux<32>(batch.geometry, batch.state, f, tile, lane, slots, batch.flux[f], q + threadIdx.x))
+        if (!packed_edge_flux(batch.geometry, batch.state, f, tile, lane, batch.flux[f]))
             atomicMin(bad, f);
         else
             batch.save_speed(f);

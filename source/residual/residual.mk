@@ -1,6 +1,8 @@
 # Библиотека невязки связывает поток, реконструкцию и геометрию. Тесты проверяют также выбор шага.
 RES_DIR := source/residual
 RES_HDR := $(RES_DIR)/residual.h $(RES_DIR)/residual_detail.h $(RES_DIR)/packed_weno.h $(RES_DIR)/flux_cfl.h source/timestep/cfl_detail.h source/timestep/timestep.h source/parallel/kernel_math.h source/mesh/mesh_index.h source/parallel/parallel_for.h source/parallel/wall_timer.h $(BC_HEADERS) $(CV_HEADERS) $(PERIODIC_HEADERS) $(EULER_HEADERS) $(MESH_HEADERS)
+# Формула WENO встраивается в поток ребра на CPU и GPU. При изменении весов пересобираем оба варианта.
+RES_HDR += $(RECONSTRUCTION_HEADERS)
 RES_LIB := $(BUILD)/libaero_residual_$(EBR_TAG).a
 RES_OBJ := $(BUILD)/residual_$(EBR_TAG).o
 RES_DEPS := $(BC_LIB) $(CV_LIB) $(EBR_LIBRARY) $(EULER_LIBRARY) $(BUILD)/mesh.o $(IO_LIBRARY)
@@ -19,8 +21,10 @@ RES_GPU := $(BUILD)/residual_cuda.o
 $(RES_GPU): $(RES_DIR)/residual_cuda.cu $(RES_DIR)/residual_cuda.cuh $(RES_HDR) | $(BUILD)
 	$(compile_cuda)
 endif
-$(RES_OBJ): $(RES_DIR)/residual.cpp $(RES_HDR) | $(BUILD)
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(EBR_FLAGS) -c $< -o $@
+# Ошибки расчёта потока передаются через EulerStatus. Для sqrt в цикле CPU не нужен
+# побочный эффект записи в errno. Проверки плотности, давления и конечности сохраняются.
+$(RES_OBJ): $(RES_DIR)/residual.cpp $(RES_HDR) $(RES_DIR)/residual.mk | $(BUILD)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -fno-math-errno $(EBR_FLAGS) -c $< -o $@
 $(RES_LIB): $(RES_OBJ) $(RES_GPU)
 	$(AR) rcs $@ $^
 $(RES_TEST): $(RES_DIR)/residual_tests.cpp $(RES_HDR) $(RES_TIME_HEADERS) $(RES_LIB) $(RES_DEPS) $(RES_TIME_LIBS)

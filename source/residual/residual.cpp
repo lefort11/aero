@@ -133,11 +133,9 @@ template <unsigned order> bool cpu_face_with_stencil(const FaceBatch& batch, Ind
         return batch.compute(f);
     const auto& tile = static_cast<const Tile*>(g.packed.tiles)[f / 32];
     const unsigned lane = f % 32;
-    const Index slots = tile.slots[lane];
-    if (slots == ~Index(0))
+    if (!tile.complete[lane])
         return batch.compute(f);
-    double waves[Tile::nodes_per_edge * 4];
-    if (!packed_edge_flux<1>(g, batch.state, f, tile, lane, slots, batch.flux[f], waves))
+    if (!packed_edge_flux(g, batch.state, f, tile, lane, batch.flux[f]))
         return false;
     batch.save_speed(f);
     return true;

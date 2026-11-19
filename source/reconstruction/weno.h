@@ -1,6 +1,9 @@
 #ifndef AERO_WENO_H
 #define AERO_WENO_H
 #include "../parallel/kernel_math.h"
+#ifndef __CUDACC_RTC__
+#include <string.h>
+#endif
 
 // Скалярная формула WENO3/WENO5 общая для CPU и CUDA и пригодна для вызова внутри ядра.
 
@@ -21,6 +24,40 @@ AERO_HOST_DEVICE inline double weno_third(double x) {
     return x / 3.0;
 }
 
+// Масштабируем все наклоны и корень ε одной степенью двойки. Схема JS однородна:
+// после вычисления весов возвращаем размерность приращения обратным масштабированием.
+struct WenoScale {
+    double unit;       // Множитель для возвращения к размерному приращению.
+    double inverse;    // Обратная степень двойки для всех наклонов одной характеристики.
+
+    AERO_HOST_DEVICE explicit WenoScale(double largest) {
+        // В binary64 старшие биты положительного числа содержат порядок со смещением 1023.
+        // Выбираем 2^e и 2^(-e) так, чтобы обе величины оставались нормальными даже на краях диапазона.
+        unsigned long long bits;
+        static_assert(sizeof(bits) == sizeof(double), "WENO requires binary64");
+        memcpy(&bits, &largest, sizeof(bits));
+        unsigned exponent = static_cast<unsigned>(bits >> 52);
+        if (exponent < 1)
+            exponent = 1;
+        if (exponent > 2045)
+            exponent = 2045;
+        const unsigned long long unit_bits = static_cast<unsigned long long>(exponent) << 52;
+        const unsigned long long inverse_bits = static_cast<unsigned long long>(2046 - exponent) << 52;
+        memcpy(&unit, &unit_bits, sizeof(unit));
+        memcpy(&inverse, &inverse_bits, sizeof(inverse));
+    }
+    // Переводит и наклоны, и корень ε в одни и те же безразмерные единицы.
+    AERO_HOST_DEVICE double normalize(double value) const {
+        return value * inverse;
+    }
+};
+
+// Индикатор гладкости Jiang–Shu для одного из трёх кандидатов пятого порядка.
+// curvature задаёт изменение наклона, gradient — комбинацию наклонов для первой производной.
+AERO_HOST_DEVICE inline double weno_smoothness(double curvature, double gradient) {
+    return (13.0 / 12) * curvature * curvature + 0.25 * gradient * gradient;
+}
+
 // Формула (9) Бахвалова и Козубской (2017) с весами Jiang–Shu. Наклоны равны разделённым разностям, умноженным на h.
 // Масштабирование и отношения весов позволяют обойти переполнение квадратов и прямой расчёт 1/(ε+β)².
 // Здесь применяется исходная схема JS.
@@ -34,18 +71,19 @@ AERO_HOST_DEVICE inline double weno_increment2(unsigned order, const double* slo
     }
     if (scale == 0)
         return 0;
+    const WenoScale units(scale);
     double d[4] = {0, 0, 0, 0};
     for (unsigned k = 0; k < slope_count; ++k)
-        d[k] = slopes[k] / scale;
+        d[k] = units.normalize(slopes[k]);
+    // У третьего порядка два кандидата. Их квадраты наклонов служат индикаторами гладкости β.
     double candidate[3] = {d[0], d[1], 0}, beta[3] = {d[0] * d[0], d[1] * d[1], 0};
     double ideal[3] = {2.0 / 3, 1.0 / 3, 0};
     if (order == 5) {
-        const double a = d[2] - d[0], b = d[2] - 3 * d[0];
-        const double c = d[0] - d[1], e = d[0] + d[1];
-        const double f = d[1] - d[3], g = 3 * d[1] - d[3];
-        beta[0] = (13.0 / 12) * a * a + 0.25 * b * b;
-        beta[1] = (13.0 / 12) * c * c + 0.25 * e * e;
-        beta[2] = (13.0 / 12) * f * f + 0.25 * g * g;
+        // d[0] — центральный наклон, d[1] — ближний со своей стороны, d[2] — с противоположной,
+        // d[3] — дальний со своей стороны. Каждая пара определяет один из трёх кандидатов.
+        beta[0] = weno_smoothness(d[2] - d[0], d[2] - 3 * d[0]);
+        beta[1] = weno_smoothness(d[0] - d[1], d[0] + d[1]);
+        beta[2] = weno_smoothness(d[1] - d[3], 3 * d[1] - d[3]);
         candidate[0] = weno_third(4 * d[0] - d[2]);
         candidate[1] = weno_third(2 * d[0] + d[1]);
         candidate[2] = weno_third(5 * d[1] - 2 * d[3]);
@@ -53,7 +91,8 @@ AERO_HOST_DEVICE inline double weno_increment2(unsigned order, const double* slo
         ideal[1] = 0.6;
         ideal[2] = 0.1;
     }
-    const double t = epsilon_scale / scale, epsilon = t * t;
+    // На гладком шаблоне знаменатель ε + β мал, и кандидат получает больший вес.
+    const double t = units.normalize(epsilon_scale), epsilon = t * t;
     double denominator[3] = {0, 0, 0};
     for (unsigned k = 0; k < count; ++k)
         denominator[k] = epsilon + beta[k];
@@ -61,25 +100,32 @@ AERO_HOST_DEVICE inline double weno_increment2(unsigned order, const double* slo
     for (unsigned k = 1; k < count; ++k)
         if (denominator[k] < minimum)
             minimum = denominator[k];
-    // У WENO3 два кандидата: отношение меньшего знаменателя к себе равно 1.
-    // Одно деление даёт оставшийся вес независимо от того, какой наклон меньше.
-    double smaller_ratio = 0;
-    if (count == 2 && minimum != 0)
-        smaller_ratio = minimum / (denominator[0] < denominator[1] ? denominator[1] : denominator[0]);
-    double sum = 0, result = 0;
-    for (unsigned k = 0; k < count; ++k) {
-        double ratio;
-        if (minimum == 0)
-            ratio = denominator[k] == 0 ? 1.0 : 0.0;
-        else if (count == 2)
-            ratio = denominator[k] == minimum ? 1.0 : smaller_ratio;
-        else
-            ratio = minimum / denominator[k];
-        const double weight = ideal[k] * ratio * ratio;
-        sum += weight;
-        result += weight * candidate[k];
+    double factors[3] = {denominator[1], denominator[0], 0};
+    if (minimum >= 1e-18) {
+        // Нормированные наклоны ограничены по величине. Здесь можно умножить все веса
+        // на общий квадрат произведения знаменателей: он сократится при делении на сумму.
+        if (count == 3) {
+            factors[2] = factors[0] * factors[1];
+            factors[0] *= denominator[2];
+            factors[1] *= denominator[2];
+        }
+    } else {
+        // Вблизи нуля произведения могут потерять точность. Отношения к минимуму
+        // лежат в [0, 1]. При нулевом минимуме остаются только гладкие кандидаты.
+        for (unsigned k = 0; k < count; ++k)
+            factors[k] = minimum == 0 ? double(denominator[k] == 0) : minimum / denominator[k];
     }
-    return scale * (result / sum);
+    double weights[3], sum = 0;
+    for (unsigned k = 0; k < count; ++k) {
+        weights[k] = ideal[k] * factors[k] * factors[k];
+        sum += weights[k];
+    }
+    // Сначала нормируем веса: малый общий множитель не должен обнулить вклад малого наклона.
+    const double inverse_sum = 1 / sum;
+    double result = 0;
+    for (unsigned k = 0; k < count; ++k)
+        result += (weights[k] * inverse_sum) * candidate[k];
+    return units.unit * result;
 }
 
 // Восстанавливает вектор на одной подготовленной стороне ребра. Веса Jiang–Shu зависят от текущего решения.

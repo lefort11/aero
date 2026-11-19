@@ -39,9 +39,9 @@ void residual_detail::gpu_face_fluxes(const FaceBatch& batch, Index* bad, void* 
     }
     if (packed.tiles) {
         if (packed.order == 5) {
-            AERO_LAUNCH(weno5_flux, blocks(batch.count, 32), 32, static_cast<cudaStream_t>(stream), batch, bad);
+            AERO_LAUNCH(weno5_flux, blocks(batch.count), 128, static_cast<cudaStream_t>(stream), batch, bad);
         } else {
-            AERO_LAUNCH(weno3_flux, blocks(batch.count, 32), 32, static_cast<cudaStream_t>(stream), batch, bad);
+            AERO_LAUNCH(weno3_flux, blocks(batch.count), 128, static_cast<cudaStream_t>(stream), batch, bad);
         }
         checked(cudaGetLastError());
         remaining.indices = batch.geometry.packed.remaining;
