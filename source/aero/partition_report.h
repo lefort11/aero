@@ -6,21 +6,22 @@
 namespace aero {
 class Processes;
 struct ExchangeBytes {
-    std::uint64_t sent,received;
+    std::uint64_t sent, received;
 };
 struct PartitionWork {
-    std::uint64_t leaves,owned,halo,edges;
-    ExchangeBytes states,fluxes;
+    std::uint64_t leaves, owned, halo, edges;
+    ExchangeBytes states, fluxes;
 };
 
-// OS high-water mark through geometry and stencil construction, in KiB.
+// Пиковое потребление памяти по данным ОС за построение геометрии и шаблонов, КиБ.
 std::uint64_t process_peak_kib();
 struct NodeResources {
-    int leader,local_rank;
-    std::uint64_t resident_kib,available_kib; // leader values, UINT64_MAX if unavailable
+    int leader, local_rank;
+    std::uint64_t resident_kib,
+        available_kib; // Значения процесса-лидера. UINT64_MAX означает отсутствие измерения.
 };
 NodeResources partition_node_resources(const Processes& world);
-void write_partition_report(const Processes& world,const PartitionWork& work,
-                            std::uint64_t stencil_peak,std::ostream& out);
+void write_partition_report(const Processes& world, const PartitionWork& work, std::uint64_t stencil_peak,
+                            std::ostream& out);
 }
 #endif

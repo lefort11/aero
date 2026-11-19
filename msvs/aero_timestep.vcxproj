@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Project DefaultTargets="Build" ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003" DefaultTargets="Build" ToolsVersion="Current">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|x64">
       <Configuration>Debug</Configuration>
@@ -37,19 +37,7 @@
     <IntDir>$(OutDir)obj\$(MSBuildProjectName)\</IntDir>
     <TargetName>aero_timestep</TargetName>
   </PropertyGroup>
-  <ItemDefinitionGroup>
-    <ClCompile>
-      <WarningLevel>Level4</WarningLevel>
-      <!-- MSVC has no C++11 mode. Code is C++11; Makefile enforces strict C++11. -->
-      <LanguageStandard>stdcpp14</LanguageStandard>
-      <ConformanceMode>true</ConformanceMode>
-      <ExceptionHandling>Sync</ExceptionHandling>
-      <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
-      <ProgramDataBaseFileName>$(IntDir)$(MSBuildProjectName).pdb</ProgramDataBaseFileName>
-      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
-    </ClCompile>
-  </ItemDefinitionGroup>
+  <Import Project="module_compiler.props" />
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <Optimization>Disabled</Optimization>
@@ -71,7 +59,6 @@
     <ClInclude Include="..\source\timestep\timestep.h" />
     <ClCompile Include="..\source\timestep\timestep.cpp" />
     <ClInclude Include="..\source\timestep\cfl_detail.h" />
-
   </ItemGroup>
   <PropertyGroup>
     <WithCuda Condition="'$(WithCuda)'==''">false</WithCuda>
@@ -115,10 +102,21 @@
     <None Include="..\source\timestep\timestep.mk" />
     <Object Include="$(IntDir)timestep_cuda.obj" Condition="'$(WithCuda)'=='true'" />
   </ItemGroup>
-  <Target Name="CompileTimestepCuda" BeforeTargets="Lib" Condition="'$(WithCuda)'=='true'" Inputs="$(MSBuildProjectDirectory)\..\source\timestep\timestep_cuda.cu;$(MSBuildProjectDirectory)\..\source\timestep\timestep_cuda.cuh;$(MSBuildProjectDirectory)\..\source\parallel\kernel_math.h;$(MSBuildProjectDirectory)\..\source\cuda\runtime.h;$(MSBuildProjectDirectory)\..\source\mesh\mesh_index.h;$(MSBuildProjectDirectory)\..\source\timestep\cfl_detail.h;$(MSBuildProjectDirectory)\..\source\timestep\timestep.h;$(MSBuildProjectDirectory)\..\source\cuda\device_scope.h;$(MSBuildProjectDirectory)\..\source\timestep\cfl_block_min.cuh;$(MSBuildProjectFullPath)" Outputs="$(IntDir)timestep_cuda.obj">
+  <!-- Заголовки ядра учитываются при решении, нужно ли заново запускать nvcc. -->
+  <ItemGroup>
+    <GpuKernelInput Include="..\source\timestep\timestep_cuda.cu" />
+    <GpuKernelInput Include="..\source\timestep\timestep_cuda.cuh" />
+    <GpuKernelInput Include="..\source\parallel\kernel_math.h" />
+    <GpuKernelInput Include="..\source\cuda\runtime.h" />
+    <GpuKernelInput Include="..\source\mesh\mesh_index.h" />
+    <GpuKernelInput Include="..\source\timestep\cfl_detail.h" />
+    <GpuKernelInput Include="..\source\timestep\timestep.h" />
+    <GpuKernelInput Include="..\source\cuda\device_scope.h" />
+    <GpuKernelInput Include="..\source\timestep\cfl_block_min.cuh" />
+    <GpuKernelInput Include="..\source\cuda\check.h" />
+  </ItemGroup>
+  <Target Name="CompileTimestepCuda" BeforeTargets="Lib" Condition="'$(WithCuda)'=='true'" Inputs="@(GpuKernelInput);$(MSBuildProjectFullPath)" Outputs="$(IntDir)timestep_cuda.obj">
     <Exec Command="call &quot;$(VCInstallDir)Auxiliary\Build\vcvars64.bat&quot; -vcvars_ver=$(VCToolsVersion) &gt;nul &amp;&amp; &quot;$(CudaToolkitDir)\bin\nvcc.exe&quot; -std=c++11 -arch=sm_$(CudaArchitecture) $(CudaCompatibilityFlags) $(TimestepCudaCompileFlags) -Xcompiler=/utf-8 -c &quot;$(MSBuildProjectDirectory)\..\source\timestep\timestep_cuda.cu&quot; -o &quot;$(IntDir)timestep_cuda.obj&quot;" />
   </Target>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>
-
-

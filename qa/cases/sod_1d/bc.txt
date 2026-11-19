@@ -1,9 +1,11 @@
 [xmin]
 bc_type free
+superin
 inflow base_p
 outflow base_u
 
 [xmax]
 bc_type free
+superin
 inflow base_p
 outflow base_u

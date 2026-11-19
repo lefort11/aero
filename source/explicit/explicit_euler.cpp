@@ -1,8 +1,11 @@
 #include "explicit_stage.h"
 
-namespace aero { namespace explicit_detail {
+namespace aero {
+namespace explicit_detail {
 Stages euler_stages() {
-    static const Stage stages[]={{0.0,0.0,1.0}};
-    return {stages,1};
+    // Один вызов даёт принятое состояние U на момент t_n + dt.
+    static const Stage stages[] = {first_euler_stage()};
+    return {stages, 1};
 }
-}}
+}
+}

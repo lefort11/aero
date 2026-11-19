@@ -2,125 +2,197 @@
 
 #include <sstream>
 #include <locale>
+#include <memory>
 #include <string>
 
 namespace aero {
 namespace {
-typedef std::vector<std::string> Tokens;
+using Tokens = std::vector<std::string>;
 
+// Разбирает весь токен в локали с десятичной точкой и отвергает NaN и бесконечность.
 double number(const std::string& token) {
     std::istringstream stream(token);
     stream.imbue(std::locale::classic());
-    double x;
-    if (!(stream>>x) || !stream.eof() || !euler_detail::finite(x))
-        throw std::invalid_argument("invalid finite number: "+token);
-    return x;
+    double value;
+    if (!(stream >> value) || !stream.eof() || !euler_detail::finite(value))
+        throw std::invalid_argument("invalid finite number: " + token);
+    return value;
 }
 
-BoundaryRule read_rule(const Tokens& t,bool inflow,unsigned d) {
-    BoundaryRule r={};
-    const std::string& name=t.at(1);
-    if (name=="superout") {
-        if (inflow || t.size()!=2) throw std::invalid_argument("superout requires outflow and no arguments");
-        r.mode=BoundaryMode::SuperOut;
-        return r;
+// После superin разрешены начальное состояние и независимые замены его компонент.
+SupersonicInflow read_supersonic_inflow(const Tokens& words, unsigned dimension) {
+    SupersonicInflow rule = {};
+    rule.use_initial = words.size() > 1 && words[1] == "initial";
+    const char* fields[] = {"rho", "p", "ux", "uy", "uz"};
+    for (size_t i = rule.use_initial ? 2 : 1; i < words.size(); ++i) {
+        const auto equals = words[i].find('=');
+        const auto name = words[i].substr(0, equals);
+        // В 1D допустима только ux, в 2D добавляется uy, в 3D также uz.
+        unsigned field = 0;
+        while (field < 2 + dimension && name != fields[field])
+            ++field;
+        if (equals == std::string::npos || field == 2 + dimension || (rule.mask & (1u << field)))
+            throw std::invalid_argument("invalid or repeated superin field: " + words[i]);
+        rule.primitive[field] = number(words[i].substr(equals + 1));
+        if (field < 2 && rule.primitive[field] <= 0)
+            throw std::invalid_argument("expected positive " + name);
+        rule.mask |= 1u << field; // Остальные компоненты солвер возьмёт из выбранного состояния.
     }
-    if (name=="superin") {
-        if (!inflow) throw std::invalid_argument("superin requires inflow");
-        r.mode=BoundaryMode::SuperIn;
-        const char* fields[]={"rho","p","ux","uy","uz"};
-        for (size_t i=2;i<t.size();++i) {
-            if (i==2 && t[i]=="initial") {
-                r.source=BoundarySource::Initial;
-                continue;
-            }
-            const size_t eq=t[i].find('=');
-            const std::string key=t[i].substr(0,eq);
-            unsigned k=0;
-            while (k<2+d && key!=fields[k]) ++k;
-            if (eq==std::string::npos || k==2+d || (r.mask&(1u<<k)))
-                throw std::invalid_argument("invalid or repeated superin field: "+t[i]);
-            r.primitive[k]=number(t[i].substr(eq+1));
-            if (k<2 && r.primitive[k]<=0) throw std::invalid_argument("expected positive "+key);
-            r.mask|=1u<<k;
-        }
-        return r;
-    }
-    if (name=="base_p") r.mode=BoundaryMode::Pressure;
-    else if (name=="base_u") r.mode=BoundaryMode::NormalVelocity;
-    else if (name=="base_rho") r.mode=BoundaryMode::Density;
-    else throw std::invalid_argument("unknown boundary rule: "+name);
-    if (t.size()>3) throw std::invalid_argument("too many arguments for "+name);
-    if (t.size()==3) {
-        if (t[2]=="initial") r.source=BoundarySource::Initial;
-        else {
-            r.source=BoundarySource::Constant;
-            r.value=number(t[2]);
-            if (r.mode!=BoundaryMode::NormalVelocity && r.value<=0)
-                throw std::invalid_argument("expected positive value for "+name);
-        }
-    }
-    return r;
-}
+    return rule;
 }
 
-BoundaryConfig read_boundary(std::istream& input,unsigned dimension,PeriodicPair& periodic) {
-    if (dimension<1 || dimension>3) throw std::invalid_argument("invalid boundary dimension");
-    BoundaryConfig config={};
-    PeriodicPair spec={};
-    bool translation=false;
-    bool type=false, incoming=false, outgoing=false;
+// Оба дозвуковых режима используют один синтаксис и одну проверку численного значения.
+BoundaryRule read_subsonic_rule(const Tokens& words) {
+    if (words.size() < 2 || words.size() > 3)
+        throw std::invalid_argument("expected " + words[0] + " base_p|base_u|base_rho [initial|number]");
+    const auto& name = words[1];
+    BoundaryRule rule = {};
+    if (name == "base_p")
+        rule.mode = BoundaryMode::Pressure;
+    else if (name == "base_u")
+        rule.mode = BoundaryMode::NormalVelocity;
+    else if (name == "base_rho")
+        rule.mode = BoundaryMode::Density;
+    else
+        throw std::invalid_argument("unknown subsonic boundary rule: " + name);
+
+    // Без аргумента используем значение величины непосредственно внутри границы.
+    if (words.size() == 2)
+        rule.source = BoundarySource::Current;
+    else if (words[2] == "initial")
+        rule.source = BoundarySource::Initial;
+    else {
+        rule.source = BoundarySource::Constant;
+        rule.value = number(words[2]);
+        if (rule.mode != BoundaryMode::NormalVelocity && rule.value <= 0)
+            throw std::invalid_argument("expected positive value for " + name);
+    }
+    return rule;
+}
+
+// Тип метки описывает её назначение. Режим течения для free определится во время расчёта.
+BoundaryType read_type(const Tokens& words) {
+    if (words.size() == 2) {
+        if (words[1] == "free")
+            return BoundaryType::Free;
+        if (words[1] == "wall")
+            return BoundaryType::Wall;
+        if (words[1] == "periodic")
+            return BoundaryType::Periodic;
+    }
+    throw std::invalid_argument("expected bc_type wall, free or periodic");
+}
+
+// Промежуточное состояние одной секции позволяет задавать строки в любом порядке.
+struct BoundarySection {
+    BoundaryType type = BoundaryType::Wall;   // Тип, прочитанный из bc_type.
+    std::unique_ptr<FreeBoundaryRules> rules; // Создаётся при первой строке superin, inflow или outflow.
+    PeriodicPair periodic{};                  // Имена и перенос, если метка периодическая.
+    bool has_type = false;                    // Тип обязателен для всех меток.
+    bool has_superin = false, has_inflow = false, has_outflow = false; // Наличие каждой строки free.
+    bool has_translation = false; // Нулевой вектор тоже может быть явно записан.
+
+    // При чтении стенки или периодики даже временный набор правил не нужен.
+    FreeBoundaryRules& free_rules() {
+        if (!rules)
+            rules.reset(new FreeBoundaryRules{});
+        return *rules;
+    }
+
+    // Назначает единственную строку секции. Дубликаты являются ошибкой даже при одинаковых значениях.
+    void read_line(const Tokens& words, unsigned dimension) {
+        const auto& key = words.front();
+        if (key == "bc_type" && !has_type) {
+            type = read_type(words);
+            has_type = true;
+        } else if (key == "superin" && !has_superin) {
+            free_rules().superin = read_supersonic_inflow(words, dimension);
+            has_superin = true;
+        } else if (key == "inflow" && !has_inflow) {
+            free_rules().inflow = read_subsonic_rule(words);
+            has_inflow = true;
+        } else if (key == "outflow" && !has_outflow) {
+            free_rules().outflow = read_subsonic_rule(words);
+            has_outflow = true;
+        } else if (key == "patch" && words.size() == 2 && periodic.patch.empty()) {
+            periodic.patch = words[1];
+        } else if (key == "pair" && words.size() == 2 && periodic.pair.empty()) {
+            periodic.pair = words[1];
+        } else if (key == "translation" && words.size() == 4 && !has_translation) {
+            for (unsigned k = 0; k < 3; ++k)
+                periodic.translation[k] = number(words[k + 1]);
+            has_translation = true;
+        } else {
+            throw std::invalid_argument("invalid or repeated boundary setting: " + key);
+        }
+    }
+
+    // Проверяем комплектность после последней строки, когда известны тип и все параметры.
+    void validate() const {
+        if (!has_type)
+            throw std::invalid_argument("missing bc_type");
+        if (type == BoundaryType::Free) {
+            if (!has_superin)
+                throw std::invalid_argument("free boundary is missing superin");
+            if (!has_inflow)
+                throw std::invalid_argument("free boundary is missing inflow");
+            if (!has_outflow)
+                throw std::invalid_argument("free boundary is missing outflow");
+        } else if (has_superin || has_inflow || has_outflow) {
+            throw std::invalid_argument("superin, inflow and outflow require bc_type free");
+        }
+        if (type == BoundaryType::Periodic) {
+            if (!has_translation || periodic.patch.empty() || periodic.pair.empty() ||
+                periodic.patch == periodic.pair)
+                throw std::invalid_argument(
+                    "periodic requires different patch and pair names and translation x y z");
+        } else if (has_translation || !periodic.patch.empty() || !periodic.pair.empty()) {
+            throw std::invalid_argument("periodic keywords on a nonperiodic boundary");
+        }
+    }
+};
+} // namespace
+
+// Читает одну секцию bc.txt и возвращает разобранную пару вызывающему коду.
+BoundaryConfig read_boundary(std::istream& input, unsigned dimension, BoundaryPatches& patches,
+                             PeriodicPair& periodic) {
+    if (dimension < 1 || dimension > 3)
+        throw std::invalid_argument("invalid boundary dimension");
+    BoundarySection section;
     std::string line;
-    size_t row=0;
-    while (std::getline(input,line)) {
+    size_t row = 0;
+    while (std::getline(input, line)) {
         ++row;
-        std::istringstream words(line.substr(0,line.find('#')));
-        Tokens t;
-        for (std::string word; words>>word;) t.push_back(word);
-        if (t.empty()) continue;
+        // Всё после # — комментарий, в том числе в конце строки с правилом.
+        std::istringstream words(line.substr(0, line.find('#')));
+        Tokens tokens;
+        for (std::string word; words >> word;)
+            tokens.push_back(word);
+        if (tokens.empty())
+            continue;
         try {
-            if (t.size()<2) throw std::invalid_argument("missing boundary setting");
-            if (t[0]=="bc_type" && !type) {
-                type=true;
-                if (t[1]=="superin" || t[1]=="superout") {
-                    const bool in=t[1]=="superin";
-                    config.type=in ? BoundaryType::SuperIn : BoundaryType::SuperOut;
-                    (in ? config.inflow : config.outflow)=read_rule(t,in,dimension);
-                } else if (t.size()==2 && t[1]=="periodic") config.type=BoundaryType::Periodic;
-                else if (t.size()==2 && t[1]=="wall") config.type=BoundaryType::Wall;
-                else if (t.size()==2 && t[1]=="free") config.type=BoundaryType::Free;
-                else throw std::invalid_argument("invalid bc_type");
-            } else if (t[0]=="patch" && t.size()==2 && spec.patch.empty()) spec.patch=t[1];
-            else if (t[0]=="pair" && t.size()==2 && spec.pair.empty()) spec.pair=t[1];
-            else if (t[0]=="translation" && t.size()==4 && !translation) {
-                for (unsigned k=0;k<3;++k) spec.translation[k]=number(t[k+1]);
-                translation=true;
-            } else if (t[0]=="inflow" && !incoming) {
-                incoming=true;
-                config.inflow=read_rule(t,true,dimension);
-            } else if (t[0]=="outflow" && !outgoing) {
-                outgoing=true;
-                config.outflow=read_rule(t,false,dimension);
-            } else throw std::invalid_argument("unknown or repeated keyword: "+t[0]);
+            section.read_line(tokens, dimension);
         } catch (const std::invalid_argument& e) {
-            throw std::invalid_argument("boundary line "+std::to_string(row)+": "+e.what());
+            throw std::invalid_argument("boundary line " + std::to_string(row) + ": " + e.what());
         }
     }
-    if (input.bad() || !input.eof()) throw std::runtime_error("boundary settings read failed");
-    if (!type || (config.type==BoundaryType::Free ? !(incoming && outgoing) : incoming || outgoing))
-        throw std::invalid_argument("free requires inflow and outflow; other types take no branch lines");
-    if (config.type==BoundaryType::Periodic) {
-        if (!translation || spec.patch.empty() || spec.pair.empty() || spec.patch==spec.pair)
-            throw std::invalid_argument("periodic requires different patch and pair names and translation x y z");
-    } else if (translation || !spec.patch.empty() || !spec.pair.empty())
-        throw std::invalid_argument("periodic keywords on a nonperiodic boundary");
-    periodic=spec;
-    return config;
+    if (input.bad() || !input.eof())
+        throw std::runtime_error("boundary settings read failed");
+    section.validate();
+    periodic = section.periodic;
+    // Стенка и периодическая пара занимают только запись метки. Для них комплект правил не создаётся.
+    if (section.type == BoundaryType::Free)
+        return patches.add_free(*section.rules);
+    if (section.type == BoundaryType::Periodic)
+        return BoundaryConfig::periodic();
+    return BoundaryConfig{};
 }
-BoundaryConfig read_boundary(std::istream& input,unsigned dimension) {
+
+// Сокращённый вызов для физической границы, которой не требуется парная метка.
+BoundaryConfig read_boundary(std::istream& input, unsigned dimension, BoundaryPatches& patches) {
     PeriodicPair spec;
-    BoundaryConfig result=read_boundary(input,dimension,spec);
-    if (result.type==BoundaryType::Periodic)
+    BoundaryConfig result = read_boundary(input, dimension, patches, spec);
+    if (result.type() == BoundaryType::Periodic)
         throw std::invalid_argument("read_boundary requires a PeriodicPair output for periodic settings");
     return result;
 }

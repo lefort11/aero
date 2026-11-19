@@ -1,57 +1,79 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Project DefaultTargets="Build" ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003" DefaultTargets="Build" ToolsVersion="Current">
   <ItemGroup Label="ProjectConfigurations">
-    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
-    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{73365288-236A-4A80-989B-AC31D38505AE}</ProjectGuid>
-    <Keyword>Win32Proj</Keyword><RootNamespace>aero</RootNamespace>
+    <Keyword>Win32Proj</Keyword>
+    <RootNamespace>aero</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
-    <ImportDirectoryBuildProps>false</ImportDirectoryBuildProps><ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets>
+    <ImportDirectoryBuildProps>false</ImportDirectoryBuildProps>
+    <ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Label="Configuration">
-    <ConfigurationType>Application</ConfigurationType><PlatformToolset>v145</PlatformToolset><CharacterSet>Unicode</CharacterSet>
+    <ConfigurationType>Application</ConfigurationType>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
     <UseDebugLibraries Condition="'$(Configuration)'=='Debug'">true</UseDebugLibraries>
     <UseDebugLibraries Condition="'$(Configuration)'!='Debug'">false</UseDebugLibraries>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <PropertyGroup>
-    <WithCuda Condition="'$(WithCuda)'==''">false</WithCuda><WithOpenMP Condition="'$(WithOpenMP)'==''">true</WithOpenMP>
+    <WithCuda Condition="'$(WithCuda)'==''">false</WithCuda>
+    <WithOpenMP Condition="'$(WithOpenMP)'==''">true</WithOpenMP>
     <CudaToolkitDir Condition="'$(CudaToolkitDir)'==''">$(CUDA_PATH)</CudaToolkitDir>
     <CudaArchitecture Condition="'$(CudaArchitecture)'==''">86</CudaArchitecture>
-    <CvVariant>cpu</CvVariant><CvVariant Condition="'$(WithCuda)'=='true'">cuda-sm$(CudaArchitecture)</CvVariant>
+    <CvVariant>cpu</CvVariant>
+    <CvVariant Condition="'$(WithCuda)'=='true'">cuda-sm$(CudaArchitecture)</CvVariant>
     <CvVariant Condition="'$(WithOpenMP)'=='false'">$(CvVariant)-serial</CvVariant>
     <OutDir>$(MSBuildProjectDirectory)\..\build\msvs\$(Platform)\$(Configuration)\$(CvVariant)\</OutDir>
-    <IntDir>$(OutDir)obj\$(MSBuildProjectName)\</IntDir><TargetName>cv_tests</TargetName>
+    <IntDir>$(OutDir)obj\$(MSBuildProjectName)\</IntDir>
+    <TargetName>cv_tests</TargetName>
   </PropertyGroup>
+  <Import Project="module_compiler.props" />
   <ItemDefinitionGroup>
     <ClCompile>
-      <WarningLevel>Level4</WarningLevel>
-      <!-- MSVC has no C++11 mode; strict C++11 is checked by GNU Make. -->
-      <LanguageStandard>stdcpp14</LanguageStandard><ConformanceMode>true</ConformanceMode><ExceptionHandling>Sync</ExceptionHandling>
-      <PrecompiledHeader>NotUsing</PrecompiledHeader><DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
-      <ProgramDataBaseFileName>$(IntDir)$(MSBuildProjectName).pdb</ProgramDataBaseFileName>
-      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
       <OpenMPSupport Condition="'$(WithOpenMP)'=='true'">true</OpenMPSupport>
     </ClCompile>
-    <Link><SubSystem>Console</SubSystem><GenerateDebugInformation>true</GenerateDebugInformation></Link>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
-    <ClCompile><Optimization>Disabled</Optimization><BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
-      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary><PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+    <ClCompile>
+      <Optimization>Disabled</Optimization>
+      <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
-    <ClCompile><Optimization>MaxSpeed</Optimization><RuntimeLibrary>MultiThreaded</RuntimeLibrary>
-      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+    <ClCompile>
+      <Optimization>MaxSpeed</Optimization>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="..\source\cv\cv.h" />
     <ClCompile Include="..\source\cv\cv_tests.cpp" />
     <None Include="..\source\cv\cv.mk" />
   </ItemGroup>
-  <ItemGroup><ProjectReference Include="aero_cv.vcxproj"><Project>{08C0A087-76BA-48EC-91FF-E86976868D8D}</Project></ProjectReference></ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="aero_cv.vcxproj">
+      <Project>{08C0A087-76BA-48EC-91FF-E86976868D8D}</Project>
+    </ProjectReference>
+  </ItemGroup>
   <PropertyGroup>
     <RunCvTests Condition="'$(RunCvTests)'==''">true</RunCvTests>
     <CvTestArguments Condition="'$(RequireCudaTests)'=='true'">--require-cuda</CvTestArguments>
@@ -61,26 +83,37 @@
     <LocalDebuggerWorkingDirectory>$(MSBuildProjectDirectory)\..</LocalDebuggerWorkingDirectory>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(WithCuda)'=='true'">
-    <ClCompile><PreprocessorDefinitions>AERO_WITH_CUDA;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
-    <Link><AdditionalLibraryDirectories>$(CudaToolkitDir)\lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>cudart_static.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
+    <ClCompile>
+      <PreprocessorDefinitions>AERO_WITH_CUDA;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <AdditionalLibraryDirectories>$(CudaToolkitDir)\lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>cudart_static.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
     <None Include="..\source\cv\cv_cuda_tests.cu" />
     <ClInclude Include="..\source\cv\cv_cuda_tests.cuh" />
     <Object Include="$(IntDir)cv_cuda_tests.obj" Condition="'$(WithCuda)'=='true'" />
   </ItemGroup>
-  <Target Name="CompileCvCudaTests" BeforeTargets="Link" Condition="'$(WithCuda)'=='true'"
-    Inputs="$(MSBuildProjectDirectory)\..\source\cv\cv_cuda_tests.cu;$(MSBuildProjectDirectory)\..\source\cv\cv_cuda_tests.cuh;$(MSBuildProjectDirectory)\..\source\parallel\kernel_math.h;$(MSBuildProjectDirectory)\..\source\cuda\runtime.h;$(MSBuildProjectDirectory)\..\source\mesh\mesh_index.h;$(MSBuildProjectDirectory)\..\source\cv\cv.h;$(MSBuildProjectFullPath)"
-    Outputs="$(IntDir)cv_cuda_tests.obj">
+  <!-- Заголовки ядра учитываются при решении, нужно ли заново запускать nvcc. -->
+  <ItemGroup>
+    <GpuKernelInput Include="..\source\cv\cv_cuda_tests.cu" />
+    <GpuKernelInput Include="..\source\cv\cv_cuda_tests.cuh" />
+    <GpuKernelInput Include="..\source\parallel\kernel_math.h" />
+    <GpuKernelInput Include="..\source\cuda\runtime.h" />
+    <GpuKernelInput Include="..\source\mesh\mesh_index.h" />
+    <GpuKernelInput Include="..\source\cv\cv.h" />
+    <GpuKernelInput Include="..\qa\cuda_test_buffer.h" />
+    <GpuKernelInput Include="..\source\cuda\check.h" />
+  </ItemGroup>
+  <Target Name="CompileCvCudaTests" BeforeTargets="Link" Condition="'$(WithCuda)'=='true'" Inputs="@(GpuKernelInput);$(MSBuildProjectFullPath)" Outputs="$(IntDir)cv_cuda_tests.obj">
     <Error Condition="!Exists('$(CudaToolkitDir)\bin\nvcc.exe')" Text="CUDA toolkit not found; set CudaToolkitDir or WithCuda=false." />
     <Exec Command="call &quot;$(VCInstallDir)Auxiliary\Build\vcvars64.bat&quot; -vcvars_ver=$(VCToolsVersion) &gt;nul &amp;&amp; &quot;$(CudaToolkitDir)\bin\nvcc.exe&quot; -std=c++11 -arch=sm_$(CudaArchitecture) $(CudaCompatibilityFlags) $(CvCudaFlags) -Xcompiler=/utf-8 -c &quot;$(MSBuildProjectDirectory)\..\source\cv\cv_cuda_tests.cu&quot; -o &quot;$(IntDir)cv_cuda_tests.obj&quot;" />
   </Target>
-  <Target Name="RunCvTests" AfterTargets="Build"
-    Condition="'$(RunCvTests)'=='true' and '$(DesignTimeBuild)'!='true'">
+  <Target Name="RunCvTests" AfterTargets="Build" Condition="'$(RunCvTests)'=='true' and '$(DesignTimeBuild)'!='true'">
     <Exec Command="&quot;$(TargetPath)&quot; $(CvTestArguments)" WorkingDirectory="$(MSBuildProjectDirectory)\.." />
   </Target>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <Import Project="publish_program.targets" />
 </Project>
-

@@ -5,29 +5,38 @@
 #include <memory>
 
 namespace aero {
-// Rows are ordered by original node ID. Each rank supplies only its owned
-// original nodes (including its periodic copies). Halo storage is reconstructed.
+// Строки следуют исходным номерам узлов. Каждый процесс записывает свои узлы вместе с их периодическими копиями.
+// При восстановлении значения соседей заполняются обменом.
 class Recovery {
 public:
-    Recovery(const RunSettings& run,const Processes& world,std::uint64_t count,unsigned dimension,
-             std::string mesh_sha256,const std::vector<OwnedNode>& nodes);
+    Recovery(const RunSettings& run, const Processes& world, std::uint64_t count, unsigned dimension,
+             std::string mesh_sha256, const std::vector<OwnedNode>& nodes);
     ~Recovery();
-    void restore(std::vector<double>& state,std::vector<double>& initial);
-    void save(std::uint64_t step,double time,const std::vector<double>& state,const std::vector<double>& initial);
-    bool due(std::uint64_t step,double time) const;
+    // Сначала пробует указанный или новейший слот. При успешной проверке устанавливает время и номер шага.
+    void restore(std::vector<double>& state, std::vector<double>& initial);
+    // Записывает данные владельцев в другой слот и завершает запись проверенным заголовком.
+    void save(std::uint64_t step, double time, const std::vector<double>& state,
+              const std::vector<double>& initial);
+    bool due(std::uint64_t step, double time) const;
     const std::string& fields_directory() const { return fields_; }
-    std::uint64_t step=0;
-    double time=0;
+    std::uint64_t step = 0;
+    double time = 0;
+
 private:
     struct Lock;
+    // Блокировка каталога исключает одновременную запись контрольных точек разными запусками.
     std::unique_ptr<Lock> lock_;
     const RunSettings& run_;
     const Processes& world_;
+    // Число исходных узлов. Каждому соответствует одна запись независимо от разбиения.
     std::uint64_t count_;
+    // Число консервативных компонент в текущем и начальном состояниях узла.
     unsigned width_;
-    std::string hash_,fields_;
+    // Хеш сетки привязывает файл к геометрии, fields_ задаёт каталог полей текущего продолжения.
+    std::string hash_, fields_;
     const std::vector<OwnedNode>& nodes_;
-    int last_=-1;
+    // Номер последнего принятого слота. Следующая запись идёт в противоположный.
+    int last_ = -1;
     std::string path(int slot) const;
 };
 }

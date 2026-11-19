@@ -1,3 +1,4 @@
+# Тесты читают реальные настройки и проверяют согласование параметров между модулями.
 SETTINGS_TEST := $(BUILD)/io_settings_tests$(if $(filter 1,$(WITH_CUDA)),_cuda)$(EXE)
 SETTINGS_DEBUG_TEST := $(BUILD)/io_settings_tests_debug$(EXE)
 SETTINGS_TEST_SRC := $(IO_DIR)/settings_tests.cpp
@@ -25,3 +26,4 @@ io-settings-test: $(BIN)/$(notdir $(SETTINGS_TEST))
 	"$(SETTINGS_TEST)"
 io-settings-debug-test: $(BIN)/$(notdir $(SETTINGS_DEBUG_TEST))
 	"$(SETTINGS_DEBUG_TEST)"
+$(SETTINGS_TEST) $(SETTINGS_DEBUG_TEST): qa/test_checks.h

@@ -1,56 +1,79 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Project DefaultTargets="Build" ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003" DefaultTargets="Build" ToolsVersion="Current">
   <ItemGroup Label="ProjectConfigurations">
-    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
-    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{0DDA9349-E566-4D28-B80A-AB6D11175F38}</ProjectGuid>
-    <Keyword>Win32Proj</Keyword><RootNamespace>aero</RootNamespace>
+    <Keyword>Win32Proj</Keyword>
+    <RootNamespace>aero</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
-    <ImportDirectoryBuildProps>false</ImportDirectoryBuildProps><ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets>
+    <ImportDirectoryBuildProps>false</ImportDirectoryBuildProps>
+    <ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Label="Configuration">
-    <ConfigurationType>Application</ConfigurationType><PlatformToolset>v145</PlatformToolset><CharacterSet>Unicode</CharacterSet>
+    <ConfigurationType>Application</ConfigurationType>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
     <UseDebugLibraries Condition="'$(Configuration)'=='Debug'">true</UseDebugLibraries>
     <UseDebugLibraries Condition="'$(Configuration)'!='Debug'">false</UseDebugLibraries>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <PropertyGroup>
-    <WithCuda Condition="'$(WithCuda)'==''">false</WithCuda><WithOpenMP Condition="'$(WithOpenMP)'==''">true</WithOpenMP>
+    <WithCuda Condition="'$(WithCuda)'==''">false</WithCuda>
+    <WithOpenMP Condition="'$(WithOpenMP)'==''">true</WithOpenMP>
     <CudaToolkitDir Condition="'$(CudaToolkitDir)'==''">$(CUDA_PATH)</CudaToolkitDir>
     <CudaArchitecture Condition="'$(CudaArchitecture)'==''">86</CudaArchitecture>
-    <AeroVariant>cpu</AeroVariant><AeroVariant Condition="'$(WithCuda)'=='true'">cuda-sm$(CudaArchitecture)</AeroVariant>
+    <AeroVariant>cpu</AeroVariant>
+    <AeroVariant Condition="'$(WithCuda)'=='true'">cuda-sm$(CudaArchitecture)</AeroVariant>
     <AeroVariant Condition="'$(WithOpenMP)'=='false'">$(AeroVariant)-serial</AeroVariant>
     <AeroVariant Condition="'$(WithMPI)'=='true'">$(AeroVariant)-mpi</AeroVariant>
     <OutDir>$(MSBuildProjectDirectory)\..\build\msvs\$(Platform)\$(Configuration)\$(AeroVariant)\</OutDir>
-    <IntDir>$(OutDir)obj\$(MSBuildProjectName)\</IntDir><TargetName>aero</TargetName>
+    <IntDir>$(OutDir)obj\$(MSBuildProjectName)\</IntDir>
+    <TargetName>aero</TargetName>
   </PropertyGroup>
+  <Import Project="module_compiler.props" />
   <ItemDefinitionGroup>
     <ClCompile>
-      <WarningLevel>Level4</WarningLevel>
-      <!-- MSVC has no C++11 mode; strict C++11 is checked by GNU Make. -->
-      <LanguageStandard>stdcpp14</LanguageStandard><ConformanceMode>true</ConformanceMode><ExceptionHandling>Sync</ExceptionHandling>
-      <PrecompiledHeader>NotUsing</PrecompiledHeader><DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
-      <ProgramDataBaseFileName>$(IntDir)$(MSBuildProjectName).pdb</ProgramDataBaseFileName>
-      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
       <OpenMPSupport Condition="'$(WithOpenMP)'=='true'">true</OpenMPSupport>
     </ClCompile>
-    <Link><SubSystem>Console</SubSystem><GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>psapi.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>psapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
-    <ClCompile><Optimization>Disabled</Optimization><BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
-      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary><PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+    <ClCompile>
+      <Optimization>Disabled</Optimization>
+      <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
-    <ClCompile><Optimization>MaxSpeed</Optimization><RuntimeLibrary>MultiThreaded</RuntimeLibrary>
-      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+    <ClCompile>
+      <Optimization>MaxSpeed</Optimization>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="..\source\aero\startup.h" />
     <ClInclude Include="..\source\aero\geometry.h" />
+    <ClInclude Include="..\source\aero\case_geometry.h" />
+    <ClInclude Include="..\source\aero\partition_state.h" />
+    <ClInclude Include="..\source\aero\partition_operator.h" />
+    <ClInclude Include="..\source\aero\partition_transfers.h" />
+    <ClInclude Include="..\source\aero\partition_output.h" />
     <ClInclude Include="..\source\aero\recovery.h" />
     <ClInclude Include="..\source\aero\indexed_io.h" />
     <ClInclude Include="..\source\aero\mpi_fields.h" />
@@ -60,12 +83,12 @@
     <ClInclude Include="..\source\aero\solver.h" />
     <ClInclude Include="..\source\aero\partition_kernels.h" />
     <ClInclude Include="..\source\aero\partition_report.h" />
-
     <ClInclude Include="..\source\aero\mpi_balance.h" />
     <ClInclude Include="..\source\mesh\leaf_balance.h" />
     <ClInclude Include="..\source\aero\mpi_periodic.h" />
     <ClInclude Include="..\source\aero\mpi_stencil.h" />
     <ClInclude Include="..\source\aero\mpi_periodic_detail.h" />
+    <ClInclude Include="..\source\mesh\archive_format.h" />
     <ClInclude Include="..\source\mesh\mdec.h" />
     <ClInclude Include="..\source\mesh\partition.h" />
     <ClInclude Include="..\source\parallel\processes.h" />
@@ -76,6 +99,10 @@
     <ClCompile Include="..\source\aero\solver_timings.cpp" />
     <ClCompile Include="..\source\aero\time_loop.cpp" />
     <ClCompile Include="..\source\aero\solver.cpp" />
+    <ClCompile Include="..\source\aero\case_geometry.cpp" />
+    <ClCompile Include="..\source\aero\partition_state.cpp" />
+    <ClCompile Include="..\source\aero\partition_operator.cpp" />
+    <ClCompile Include="..\source\aero\partition_output.cpp" />
     <ClCompile Include="..\source\aero\partition_report.cpp" />
     <ClCompile Include="..\source\aero\mpi_balance.cpp" />
     <ClCompile Include="..\source\mesh\leaf_balance.cpp" />
@@ -91,28 +118,49 @@
     <None Include="..\source\aero\README.txt" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="aero_initial.vcxproj"><Project>{9C493C95-892E-43C3-A1A0-AF27943131E0}</Project></ProjectReference>
-    <ProjectReference Include="aero_io.vcxproj"><Project>{C9C96040-05C8-498C-8E4D-D6C4B07A468E}</Project></ProjectReference>
-    <ProjectReference Include="aero_timestep.vcxproj"><Project>{BC53F2DF-5B44-45D9-AEB8-D56CFF1AE923}</Project></ProjectReference>
-    <ProjectReference Include="aero_explicit.vcxproj"><Project>{68329720-CF29-47EB-A9E4-1B35097DF09B}</Project></ProjectReference>
-    <ProjectReference Include="aero_bc.vcxproj"><Project>{94C60178-3788-46F4-A507-6B17DC5BE1F8}</Project></ProjectReference>
-    <ProjectReference Include="aero_residual.vcxproj"><Project>{D264A833-5A0E-4208-ADFA-3A2D75713309}</Project></ProjectReference></ItemGroup>
+    <ProjectReference Include="aero_initial.vcxproj">
+      <Project>{9C493C95-892E-43C3-A1A0-AF27943131E0}</Project>
+    </ProjectReference>
+    <ProjectReference Include="aero_io.vcxproj">
+      <Project>{C9C96040-05C8-498C-8E4D-D6C4B07A468E}</Project>
+    </ProjectReference>
+    <ProjectReference Include="aero_timestep.vcxproj">
+      <Project>{BC53F2DF-5B44-45D9-AEB8-D56CFF1AE923}</Project>
+    </ProjectReference>
+    <ProjectReference Include="aero_explicit.vcxproj">
+      <Project>{68329720-CF29-47EB-A9E4-1B35097DF09B}</Project>
+    </ProjectReference>
+    <ProjectReference Include="aero_bc.vcxproj">
+      <Project>{94C60178-3788-46F4-A507-6B17DC5BE1F8}</Project>
+    </ProjectReference>
+    <ProjectReference Include="aero_residual.vcxproj">
+      <Project>{D264A833-5A0E-4208-ADFA-3A2D75713309}</Project>
+    </ProjectReference>
+  </ItemGroup>
   <PropertyGroup>
     <LocalDebuggerWorkingDirectory>$(MSBuildProjectDirectory)\..</LocalDebuggerWorkingDirectory>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(WithCuda)'=='true'">
-    <ClCompile><AdditionalIncludeDirectories>$(CudaToolkitDir)\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories><PreprocessorDefinitions>AERO_WITH_CUDA;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
-    <Link><AdditionalLibraryDirectories>$(CudaToolkitDir)\lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>cudart_static.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(CudaToolkitDir)\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>AERO_WITH_CUDA;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <AdditionalLibraryDirectories>$(CudaToolkitDir)\lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>cudart_static.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(WithMPI)'=='true'">
-    <ClCompile><AdditionalIncludeDirectories>$(MSMPI_INC);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>AERO_WITH_MPI;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
-    <Link><AdditionalLibraryDirectories>$(MSMPI_LIB64);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>msmpi.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(MSMPI_INC);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>AERO_WITH_MPI;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <AdditionalLibraryDirectories>$(MSMPI_LIB64);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>msmpi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
   </ItemDefinitionGroup>
   <ItemGroup Condition="'$(WithCuda)'=='true'">
-
     <ClCompile Include="..\source\aero\partition_gpu.cpp" />
     <ClInclude Include="..\source\aero\partition_gpu.h" />
     <ClInclude Include="..\source\aero\partition_kernels.cuh" />
@@ -131,5 +179,3 @@
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <Import Project="publish_program.targets" />
 </Project>
-
-

@@ -17,6 +17,7 @@ FieldSnapshot::FieldSnapshot(const Mesh& mesh, std::uint64_t step_number, double
     validate();
 }
 
+// Вычисляет SHA-256 канонической двоичной сетки, подавая её в хеширующий поток без промежуточного файла.
 std::string FieldSnapshot::mesh_fingerprint(const Mesh& mesh) {
     io_detail::Sha256Buffer buffer;
     std::ostream out(&buffer);
@@ -27,6 +28,7 @@ std::string FieldSnapshot::mesh_fingerprint(const Mesh& mesh) {
 
 void FieldSnapshot::check_mesh(const Mesh& mesh) const {
     validate();
+    // Сначала проверяем дешёвые признаки, затем подтверждаем совпадение нумерации и геометрии полным хешем.
     if (dimension != mesh.data().dimension || counts != mesh_counts(mesh))
         throw FieldError("Field mesh dimension/counts mismatch");
     if (mesh_sha256 != mesh_fingerprint(mesh))

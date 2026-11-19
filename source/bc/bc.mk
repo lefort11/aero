@@ -1,5 +1,6 @@
+# Проверки границ используют ту же реализацию потока и ту же геометрию площадок, что и солвер.
 BC_DIR := source/bc
-BC_HEADERS := $(BC_DIR)/bc.h source/eulersolver/euler.h
+BC_HEADERS := source/parallel/kernel_math.h $(BC_DIR)/bc.h source/eulersolver/euler.h
 BC_TEST_HEADERS := $(BC_HEADERS) $(BC_DIR)/bc_test_case.h
 BC_LIB := $(BUILD)/libaero_bc.a
 PERIODIC_HEADERS := $(BC_DIR)/periodic.h $(CV_HEADERS) $(RECONSTRUCTION_HEADERS)
@@ -24,7 +25,7 @@ $(BC_LIB): $(BUILD)/bc.o $(PERIODIC_OBJECTS)
 	$(AR) rcs $@ $^
 $(BC_TEST): $(BC_DIR)/bc_tests.cpp $(BC_DIR)/periodic_tests.cpp $(PERIODIC_HEADERS) $(BC_TEST_HEADERS) $(BC_LIB) $(BC_DEPS) $(BC_GPU)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(BC_FLAGS) $(filter %.cpp,$^) $(BC_LIB) $(BC_DEPS) $(BC_GPU) $(LDFLAGS) $(EBR_LIBS) $(BC_LIBS) $(LDLIBS) -o $@
-$(BC_DEBUG): $(BC_DIR)/bc_tests.cpp $(BC_DIR)/periodic_tests.cpp $(BC_DIR)/bc.cpp $(PERIODIC_SOURCES) $(CV_DIR)/cv.cpp $(addprefix $(RECONSTRUCTION_SOURCE)/,ebr.cpp weno.cpp reconstruction.cpp) $(MESH_SOURCE)/mesh.cpp source/io/lzma_stream.cpp $(LZMA_OBJECTS) $(PERIODIC_HEADERS) $(BC_TEST_HEADERS) $(IO_HEADERS) $(BC_GPU) $(EBR_CUDA_OBJECT)
+$(BC_DEBUG): $(BC_DIR)/bc_tests.cpp $(BC_DIR)/periodic_tests.cpp $(BC_DIR)/bc.cpp $(PERIODIC_SOURCES) $(CV_DIR)/cv.cpp $(RECONSTRUCTION_CPP) $(MESH_SOURCE)/mesh.cpp source/io/lzma_stream.cpp $(LZMA_OBJECTS) $(PERIODIC_HEADERS) $(BC_TEST_HEADERS) $(IO_HEADERS) $(BC_GPU) $(EBR_CUDA_OBJECT)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -g -O0 -D_GLIBCXX_DEBUG $(EBR_FLAGS) $(BC_FLAGS) $(filter %.cpp %.o,$^) $(LDFLAGS) $(EBR_LIBS) $(BC_LIBS) $(LDLIBS) -o $@
 
 .PHONY: bc bc-test bc-debug-test bc-cuda-test
@@ -51,4 +52,4 @@ else
 	$(MAKE) WITH_CUDA=1 $(BIN)/bc_tests_cuda1$(EXE)
 	./$(BIN)/bc_tests_cuda1$(EXE) --require-cuda
 endif
-
+$(BC_TEST) $(BC_DEBUG): qa/test_checks.h

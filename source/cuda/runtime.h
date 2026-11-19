@@ -15,7 +15,7 @@
 #include <cuda.h>
 #include <cstddef>
 
-// The MinGW host uses the driver's primary contexts and the same streams as CUDA.
+// В сборке MinGW используем первичный контекст драйвера и совместимые с CUDA потоки выполнения.
 using cudaError_t = CUresult;
 using cudaStream_t = CUstream;
 constexpr auto cudaSuccess = CUDA_SUCCESS;
@@ -28,59 +28,66 @@ constexpr unsigned cudaStreamNonBlocking = CU_STREAM_NON_BLOCKING;
 enum cudaMemcpyKind { cudaMemcpyHostToDevice, cudaMemcpyDeviceToHost, cudaMemcpyDeviceToDevice };
 
 cudaError_t cudaGetDeviceCount(int*);
-cudaError_t cudaMemGetInfo(std::size_t*,std::size_t*);
-cudaError_t cudaDeviceGetPCIBusId(char*,int,int);
+cudaError_t cudaMemGetInfo(std::size_t*, std::size_t*);
+cudaError_t cudaDeviceGetPCIBusId(char*, int, int);
 cudaError_t cudaGetDevice(int*);
 cudaError_t cudaSetDevice(int);
 cudaError_t cudaGetLastError();
 const char* cudaGetErrorString(cudaError_t);
-cudaError_t cudaMalloc(void**,std::size_t);
-template<class T> cudaError_t cudaMalloc(T** out,std::size_t size) {
-    void* memory=nullptr;
-    const auto status=cudaMalloc(&memory,size);
-    *out=static_cast<T*>(memory);
+cudaError_t cudaMalloc(void**, std::size_t);
+template <class T> cudaError_t cudaMalloc(T** out, std::size_t size) {
+    void* memory = nullptr;
+    const auto status = cudaMalloc(&memory, size);
+    *out = static_cast<T*>(memory);
     return status;
 }
 cudaError_t cudaFree(void*);
-cudaError_t cudaMallocHost(void**,std::size_t);
+cudaError_t cudaMallocHost(void**, std::size_t);
 cudaError_t cudaFreeHost(void*);
-cudaError_t cudaHostGetDevicePointer(void**,void*,unsigned);
-cudaError_t cudaMemcpy(void*,const void*,std::size_t,cudaMemcpyKind);
-cudaError_t cudaMemcpyAsync(void*,const void*,std::size_t,cudaMemcpyKind,cudaStream_t);
-cudaError_t cudaMemsetAsync(void*,int,std::size_t,cudaStream_t);
-cudaError_t cudaStreamCreateWithFlags(cudaStream_t*,unsigned);
-inline cudaError_t cudaStreamCreate(cudaStream_t* stream) {return cudaStreamCreateWithFlags(stream,0);}
+cudaError_t cudaHostGetDevicePointer(void**, void*, unsigned);
+cudaError_t cudaMemcpy(void*, const void*, std::size_t, cudaMemcpyKind);
+cudaError_t cudaMemcpyAsync(void*, const void*, std::size_t, cudaMemcpyKind, cudaStream_t);
+cudaError_t cudaMemsetAsync(void*, int, std::size_t, cudaStream_t);
+cudaError_t cudaStreamCreateWithFlags(cudaStream_t*, unsigned);
+inline cudaError_t cudaStreamCreate(cudaStream_t* stream) {
+    return cudaStreamCreateWithFlags(stream, 0);
+}
 cudaError_t cudaStreamDestroy(cudaStream_t);
 cudaError_t cudaStreamSynchronize(cudaStream_t);
 cudaError_t cudaDeviceSynchronize();
 
-namespace aero { namespace cuda_detail {
+namespace aero {
+namespace cuda_detail {
+// Модуль CUDA загружает встроенный образ ядра. Состояние загрузки доступно всем его точкам входа.
 struct Image {
     explicit Image(const unsigned char* bytes);
     ~Image();
-    Image(const Image&)=delete;
-    Image& operator=(const Image&)=delete;
+    Image(const Image&) = delete;
+    Image& operator=(const Image&) = delete;
     CUlibrary library;
     CUresult status;
 };
+// Точка входа в загруженном образе; имя разрешается один раз перед повторными запусками.
 struct Kernel {
-    Kernel(const Image&,const char* name);
-    void launch(unsigned blocks,unsigned threads,CUstream stream,void** args) const;
+    Kernel(const Image&, const char* name);
+    void launch(unsigned blocks, unsigned threads, CUstream stream, void** args) const;
     CUkernel kernel;
     CUresult status;
 };
-template<class... Args>
-void launch(const Kernel& kernel,unsigned blocks,unsigned threads,CUstream stream,Args... args) {
-    void* params[]={static_cast<void*>(&args)...};
-    kernel.launch(blocks,threads,stream,params);
+template <class... Args>
+void launch(const Kernel& kernel, unsigned blocks, unsigned threads, CUstream stream, Args... args) {
+    // Драйвер принимает адреса отдельных аргументов, а не непрерывный массив их значений.
+    void* params[] = {static_cast<void*>(&args)...};
+    kernel.launch(blocks, threads, stream, params);
 }
-}}
+}
+}
 
 #ifdef AERO_CUDA_IMAGE
 #define AERO_IMAGE_NAME_(x) #x
 #define AERO_IMAGE_NAME(x) AERO_IMAGE_NAME_(x)
-asm(".section .rdata,\"dr\"\n.balign 8\n"
-    AERO_IMAGE_NAME(AERO_CUDA_IMAGE) ":\n.incbin \"" AERO_CUDA_IMAGE_PATH "\"\n.text");
+asm(".section .rdata,\"dr\"\n.balign 8\n" AERO_IMAGE_NAME(
+    AERO_CUDA_IMAGE) ":\n.incbin \"" AERO_CUDA_IMAGE_PATH "\"\n.text");
 extern "C" const unsigned char AERO_CUDA_IMAGE[];
 namespace {
 inline const aero::cuda_detail::Image& cuda_image() {
@@ -88,10 +95,11 @@ inline const aero::cuda_detail::Image& cuda_image() {
     return image;
 }
 }
-#define AERO_LAUNCH(name, blocks, threads, stream, ...) do { \
-    static const aero::cuda_detail::Kernel kernel(cuda_image(),#name); \
-    aero::cuda_detail::launch(kernel,blocks,threads,stream,__VA_ARGS__); \
-} while(false)
+#define AERO_LAUNCH(name, blocks, threads, stream, ...)                                                      \
+    do {                                                                                                     \
+        static const aero::cuda_detail::Kernel kernel(cuda_image(), #name);                                  \
+        aero::cuda_detail::launch(kernel, blocks, threads, stream, __VA_ARGS__);                             \
+    } while (false)
 #endif
 #endif
 #endif

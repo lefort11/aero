@@ -1,5 +1,6 @@
+# Библиотека невязки связывает поток, реконструкцию и геометрию. Тесты проверяют также выбор шага.
 RES_DIR := source/residual
-RES_HDR := $(RES_DIR)/residual.h $(RES_DIR)/residual_detail.h $(RES_DIR)/flux_cfl.h source/timestep/cfl_detail.h source/timestep/timestep.h source/parallel/kernel_math.h source/mesh/mesh_index.h source/parallel/parallel_for.h source/parallel/wall_timer.h $(BC_HEADERS) $(CV_HEADERS) $(PERIODIC_HEADERS) $(EULER_HEADERS) $(MESH_SOURCE)/mesh.h
+RES_HDR := $(RES_DIR)/residual.h $(RES_DIR)/residual_detail.h $(RES_DIR)/flux_cfl.h source/timestep/cfl_detail.h source/timestep/timestep.h source/parallel/kernel_math.h source/mesh/mesh_index.h source/parallel/parallel_for.h source/parallel/wall_timer.h $(BC_HEADERS) $(CV_HEADERS) $(PERIODIC_HEADERS) $(EULER_HEADERS) $(MESH_HEADERS)
 RES_LIB := $(BUILD)/libaero_residual_$(EBR_TAG).a
 RES_OBJ := $(BUILD)/residual_$(EBR_TAG).o
 RES_DEPS := $(BC_LIB) $(CV_LIB) $(EBR_LIBRARY) $(EULER_LIBRARY) $(BUILD)/mesh.o $(IO_LIBRARY)
@@ -31,7 +32,7 @@ test: residual-test
 residual-test: $(BIN)/$(notdir $(RES_TEST))
 	"$(RES_TEST)"
 RES_DEBUG := $(BUILD)/residual_tests_debug_$(EBR_TAG)$(EXE)
-RES_DEBUG_SRC := $(RES_DIR)/residual_tests.cpp $(RES_DIR)/residual.cpp $(RES_TIME_SRC) $(PERIODIC_SOURCES) $(CV_DIR)/cv.cpp $(MESH_SOURCE)/mesh.cpp source/io/lzma_stream.cpp $(addprefix $(RECONSTRUCTION_SOURCE)/,reconstruction.cpp ebr.cpp weno.cpp)
+RES_DEBUG_SRC := $(RES_DIR)/residual_tests.cpp $(RES_DIR)/residual.cpp $(RES_TIME_SRC) $(PERIODIC_SOURCES) $(CV_DIR)/cv.cpp $(MESH_SOURCE)/mesh.cpp source/io/lzma_stream.cpp $(RECONSTRUCTION_CPP)
 $(RES_DEBUG): $(RES_DEBUG_SRC) $(RES_HDR) $(RES_TIME_HEADERS) $(IO_HEADERS) $(LZMA_OBJECTS) $(RES_GPU) $(RES_TIME_GPU) $(EBR_CUDA_OBJECT)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(EBR_FLAGS) $(RES_TEST_FLAGS) -O0 -g -D_GLIBCXX_DEBUG $(filter %.cpp %.o,$^) $(LDFLAGS) $(EBR_LIBS) $(LDLIBS) -o $@
 debug-test: residual-debug-test
@@ -44,3 +45,4 @@ else
 	$(MAKE) WITH_CUDA=1 $(BIN)/residual_tests_cuda1_omp$(WITH_OPENMP)$(EXE)
 	"$(BIN)/residual_tests_cuda1_omp$(WITH_OPENMP)$(EXE)" --require-cuda
 endif
+$(RES_TEST) $(RES_DEBUG): qa/test_checks.h

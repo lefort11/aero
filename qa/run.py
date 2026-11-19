@@ -1,4 +1,4 @@
-"""Run the aero verification matrix. Requires Python 3.8+ and the two project binaries."""
+"""Сравнивает поля солвера с аналитическими решениями по матрице схем и записывает результат для Tecplot."""
 
 import argparse
 import itertools
@@ -23,6 +23,7 @@ SCHEME_KEYS = ("reconstruction", "reconstruction_variables", "euler_solver", "ti
 
 
 def binary(name, override):
+    """Находит исполняемый файл по явному пути или в каталогах сборки."""
     if override:
         paths = [Path(override)]
     elif os.name == "nt":
@@ -33,15 +34,19 @@ def binary(name, override):
     for path in paths:
         if path.is_file():
             return path.resolve()
-    raise ValueError(f"Missing {name}. Build the project with 'make programs' or supply --{name.replace('_', '-')}.")
+    raise ValueError(
+        f"Missing {name}. Build the project with 'make programs' or supply --{name.replace('_', '-')}."
+    )
 
 
 def settings(path):
+    """Читает пары ключ–значение из текстового файла тестовой постановки."""
     pairs = [line.split("#", 1)[0].strip() for line in path.read_text().splitlines()]
     return dict(tuple(s.strip() for s in line.split("=", 1)) for line in pairs if line)
 
 
 def nodes(mesh, dim):
+    """Извлекает координаты узлов тестовой сетки в порядке исходных номеров."""
     words = mesh.read_text(encoding="ascii").split()
     count = int(words[words.index("COUNTS") + 1])
     if count < 1 or words[:5] != ["AEROMESH", "2", "TEXT", "DIMENSION", str(dim)]:
@@ -49,26 +54,28 @@ def nodes(mesh, dim):
     coords = []
     for axis in "XYZ":
         start = words.index(axis) + 1
-        coords.append([float(v) for v in words[start:start + count]])
+        coords.append([float(v) for v in words[start : start + count]])
     return list(zip(*coords))
 
 
 def reference(coords, formula, dim, time, gamma):
+    """Строит эталонные поля в заданный момент и веса узлов для средней ошибки."""
     names = ["rho", *("u" + a for a in "xyz"[:dim]), "p", "E"]
     exact = {key: [] for key in names}
     weights = []
     for xyz in coords:
         state = formula(*xyz, time, gamma)
-        energy = state[-1]/(gamma - 1) + 0.5*state[0]*sum(u*u for u in state[1:-1])
+        energy = state[-1] / (gamma - 1) + 0.5 * state[0] * sum(u * u for u in state[1:-1])
         for key, value in zip(names, (*state, energy)):
             exact[key].append(value)
-        # Relative nodal dual volumes on the uniform unit Cartesian meshes.
-        # Opposite periodic boundary copies together have one interior weight.
+        # Относительные контрольные объёмы узлов на равномерной декартовой сетке.
+        # Веса двух противоположных периодических копий в сумме дают вес внутреннего узла.
         weights.append(0.5 ** sum(c in (0.0, 1.0) for c in xyz[:dim]))
     return exact, weights
 
 
 def read_snapshot(path, count, dim, time, expected):
+    """Проверяет описание снимка и извлекает значения полей в ожидаемом порядке узлов."""
     words = iter(path.read_text(encoding="ascii").split())
 
     def expect(*tokens):
@@ -110,7 +117,8 @@ def read_snapshot(path, count, dim, time, expected):
 
 
 def with_reference(snapshot, target, fields, exact):
-    # Keep the solver-produced mesh identity, time, step and numerical fields.
+    """Добавляет аналитические значения к копии снимка с исходными временем и идентификатором сетки."""
+    # Сохраняем заданные солвером хеш сетки, время, номер шага и вычисленные поля.
     original = snapshot.read_text(encoding="ascii").rstrip()
     header, body = original.split("\nFIELDS ", 1)
     _, body = body.split("\n", 1)
@@ -127,14 +135,15 @@ def with_reference(snapshot, target, fields, exact):
 
 
 def compare(fields, exact, coords, weights, limits, tol):
+    """Сверяет ожидаемые значения с полученными и сообщает место расхождения."""
     failures = []
     summary = []
     total = sum(weights)
     for key, (_, values) in fields.items():
-        errors = [abs(a-b) for a, b in zip(values, exact[key])]
+        errors = [abs(a - b) for a, b in zip(values, exact[key])]
         worst = max(range(len(errors)), key=errors.__getitem__)
         peak = errors[worst]
-        mean = sum(w*e for w, e in zip(weights, errors))/total
+        mean = sum(w * e for w, e in zip(weights, errors)) / total
         peak_limit, mean_limit = limits[key]
         if tol is not None:
             peak_limit = tol
@@ -147,6 +156,7 @@ def compare(fields, exact, coords, weights, limits, tol):
 
 
 def load_tolerances(path, names):
+    """Проверяет допуски на максимальную и среднюю ошибки для схем и полей."""
     groups = json.loads(path.read_text(encoding="ascii"))
     if "default" not in groups or set(groups) - {"default", *RECONSTRUCTIONS}:
         raise ValueError(f"Invalid scheme groups in {path}")
@@ -154,21 +164,47 @@ def load_tolerances(path, names):
         if set(limits) != set(names):
             raise ValueError(f"Missing or unexpected fields in {path} ({group})")
         for key, pair in limits.items():
-            if (not isinstance(pair, list) or len(pair) != 2 or
-                    not all(isinstance(v, (int, float)) and math.isfinite(v) and v >= 0 for v in pair)):
+            if (
+                not isinstance(pair, list)
+                or len(pair) != 2
+                or not all(isinstance(v, (int, float)) and math.isfinite(v) and v >= 0 for v in pair)
+            ):
                 raise ValueError(f"Invalid [max, mean] tolerances for {group}/{key} in {path}")
     return groups
 
 
 def execute(command):
-    proc = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                          text=True, errors="replace")
+    """Запускает программу и сохраняет её вывод в сообщении при ненулевом коде завершения."""
+    proc = subprocess.run(
+        command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace"
+    )
     if proc.returncode:
         raise ValueError(f"{Path(command[0]).name} exit {proc.returncode}\n{proc.stdout.strip()}")
     return proc.stdout
 
 
+def prepare_variant(work, folder, main, mesh, variant, options):
+    """Собирает отдельную постановку для одной комбинации схем, сохраняя общий источник сетки."""
+    for file in ("init.txt", "bc.txt", "output.txt", "gas.txt"):
+        shutil.copyfile(folder / file, work / file)
+    run = dict(main, **dict(zip(SCHEME_KEYS, variant)))
+    run["mesh"] = f'"{mesh.as_posix()}"'
+    run["backend"] = options.backend
+    if options.backend == "cuda":
+        (work / "cuda.txt").write_text(f"devices = {options.device}\n", encoding="ascii")
+    (work / "main.txt").write_text("".join(f"{k} = {v}\n" for k, v in run.items()))
+
+
+def export_comparison(work, snap, fields, exact, mesh, exporter, destination):
+    """Добавляет эталонные поля и публикует файл Tecplot после успешного преобразования."""
+    with_reference(snap, work / "reference.fields", fields, exact)
+    plot = work / "solution.plt"
+    execute([exporter, mesh, work / "reference.fields", plot, "--threads", "1"])
+    plot.replace(destination)
+
+
 def run_case(name, options, solver, exporter, progress, total):
+    """Готовит эталон один раз и проверяет каждое сочетание схем для выбранной задачи."""
     formula, dim, smooth = CASES[name]
     folder = QA / "cases" / name
     main = settings(folder / "main.txt")
@@ -188,28 +224,20 @@ def run_case(name, options, solver, exporter, progress, total):
         progress += 1
         print(f"[{progress}/{total}] {name} / {' / '.join(variant)}", flush=True)
         try:
-            # A fresh directory prevents a missing write from reusing an old snapshot.
+            # Отдельный каталог исключает чтение снимка от предыдущего запуска.
             with tempfile.TemporaryDirectory(dir=outdir, prefix=".run-") as work:
                 work = Path(work)
-                for file in ("init.txt", "bc.txt", "output.txt", "gas.txt"):
-                    shutil.copyfile(folder / file, work / file)
-                run = dict(main, **dict(zip(SCHEME_KEYS, variant)))
-                run["mesh"] = f'"{mesh.as_posix()}"'
-                run["backend"] = options.backend
-                if options.backend == "cuda":
-                    (work / "cuda.txt").write_text(f"devices = {options.device}\n", encoding="ascii")
-                (work / "main.txt").write_text("".join(f"{k} = {v}\n" for k, v in run.items()))
+                prepare_variant(work, folder, main, mesh, variant, options)
                 log = execute([solver, f"--input={work}", f"--output={work}"])
                 if f"Active backend = {active}" not in log.splitlines():
-                    raise RuntimeError(f"{name}/{label}: solver did not confirm {active}.\n{log.strip()}")
+                    raise RuntimeError(
+                        f"{name}/{label}: solver did not confirm {active}.\n{log.strip()}"
+                    )
                 snap = work / "final.fields"
                 fields = read_snapshot(snap, len(coords), dim, time, exact)
                 limits = tolerances.get(variant[0], tolerances["default"])
                 problems, summary = compare(fields, exact, coords, weights, limits, options.tol)
-                with_reference(snap, work / "reference.fields", fields, exact)
-                plot = work / "solution.plt"
-                execute([exporter, mesh, work / "reference.fields", plot, "--threads", "1"])
-                plot.replace(outdir / (label + ".plt"))
+                export_comparison(work, snap, fields, exact, mesh, exporter, outdir / (label + ".plt"))
                 if problems:
                     raise ValueError(" | ".join(problems))
                 print(f"  OK  {active}  max/mean  {summary}", flush=True)
@@ -221,12 +249,20 @@ def run_case(name, options, solver, exporter, progress, total):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--case", choices=CASES, action="append", help="only run named case (repeatable)")
+    parser.add_argument(
+        "--case", choices=CASES, action="append", help="only run named case (repeatable)"
+    )
     parser.add_argument("--tol", type=float, help="absolute maximum nodal error for every field")
-    parser.add_argument("--backend", choices=("cpu", "cuda"), default="cpu", help="solver backend (default: cpu)")
+    parser.add_argument(
+        "--backend", choices=("cpu", "cuda"), default="cpu", help="solver backend (default: cpu)"
+    )
     parser.add_argument("--device", type=int, help="CUDA device index (default: 0)")
-    parser.add_argument("--output", type=Path, default=QA / "output",
-                        help="results root (default: qa/output); CUDA runs go in its cuda subdirectory")
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=QA / "output",
+        help="results root (default: qa/output); CUDA runs go in its cuda subdirectory",
+    )
     parser.add_argument("--aero", help="path to the solver executable")
     parser.add_argument("--fields-to-tecplot", help="path to the Tecplot exporter")
     options = parser.parse_args()
@@ -241,10 +277,18 @@ def main():
         options.output = options.output / "cuda"
     solver = binary("aero", options.aero)
     exporter = binary("fields_to_tecplot", options.fields_to_tecplot)
-    print(f"Solver: {solver}\nBackend: {options.backend}\nTecplot: {exporter}\nOutput: {options.output}", flush=True)
+    print(
+        f"Solver: {solver}\nBackend: {options.backend}\nTecplot: {exporter}\nOutput: {options.output}",
+        flush=True,
+    )
     cases = list(dict.fromkeys(options.case or CASES))
-    counts = {name: (len(RECONSTRUCTIONS) if CASES[name][2] else 2)
-              * len(VARIABLES)*len(FLUXES)*len(TIME_SCHEMES) for name in cases}
+    counts = {
+        name: (len(RECONSTRUCTIONS) if CASES[name][2] else 2)
+        * len(VARIABLES)
+        * len(FLUXES)
+        * len(TIME_SCHEMES)
+        for name in cases
+    }
     total = sum(counts.values())
     failures = progress = 0
     for name in cases:

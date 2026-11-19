@@ -4,21 +4,26 @@
 #include <functional>
 
 namespace aero {
-struct LeafCost { MeshIndex work,bytes; };
+// Оценки объёма работы и байтов памяти для префикса каталога листьев.
+struct LeafCost {
+    MeshIndex work, bytes;
+};
+// Процессы одной машины делят единый бюджет памяти для сетки.
 struct CpuNodeShare {
     std::vector<int> ranks;
     long double mesh_bytes;
 };
 struct GpuRankCapacity {
-    long double work_capacity; // archive work units, refined using the measured device layout
-    // Actual device reservation failed for these whole-leaf intervals on this rank.
-    std::vector<std::pair<MeshIndex,MeshIndex>> rejected;
+    long double work_capacity; // Единицы работы по архиву, с уточнением по фактическому размещению на карте.
+    // Для этих диапазонов целых листьев на данном процессе действительно не удалось выделить память устройства.
+    std::vector<std::pair<MeshIndex, MeshIndex>> rejected;
 };
-// Cumulative costs for [0,end). Only directory entries at queried cuts are needed.
-using LeafPrefix=std::function<LeafCost(MeshIndex)>;
-LeafLayout balance_leaves(MeshIndex leaves,const LeafPrefix& prefix,const std::vector<CpuNodeShare>& nodes,
+// Накопленная стоимость диапазона [0, end). Достаточно прочитать каталог в точках проверяемых разрезов.
+using LeafPrefix = std::function<LeafCost(MeshIndex)>;
+LeafLayout balance_leaves(MeshIndex leaves, const LeafPrefix& prefix, const std::vector<CpuNodeShare>& nodes,
                           const std::vector<long double>& speeds);
-LeafLayout balance_gpu_leaves(MeshIndex leaves,const LeafPrefix& prefix,const std::vector<CpuNodeShare>& nodes,
-                             const std::vector<long double>& speeds,const std::vector<GpuRankCapacity>& cards);
+LeafLayout balance_gpu_leaves(MeshIndex leaves, const LeafPrefix& prefix,
+                              const std::vector<CpuNodeShare>& nodes, const std::vector<long double>& speeds,
+                              const std::vector<GpuRankCapacity>& cards);
 }
 #endif

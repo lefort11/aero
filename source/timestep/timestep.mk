@@ -1,3 +1,4 @@
+# Критерий CFL собирается с нужным вариантом OpenMP и, по запросу, с ядрами редукции для CUDA.
 TIMESTEP_DIR := source/timestep
 WITH_CUDA ?= 0
 TIMESTEP_TAG := cuda$(WITH_CUDA)_omp$(WITH_OPENMP)
@@ -54,4 +55,4 @@ else
 	$(MAKE) WITH_CUDA=1 $(BIN)/timestep_tests_cuda1_omp$(WITH_OPENMP)$(EXE)
 	./$(BIN)/timestep_tests_cuda1_omp$(WITH_OPENMP)$(EXE) --require-cuda
 endif
-
+$(TIMESTEP_TEST) $(TIMESTEP_DEBUG): qa/test_checks.h

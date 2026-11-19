@@ -5,36 +5,71 @@
 
 namespace aero {
 namespace explicit_detail {
+
+// Коэффициенты одной стадии в форме Шу–Ошера. step_start всегда означает U в начале всего шага.
 struct Stage {
-    double time_fraction, original_weight, forward_weight;
+    double time_fraction;   // Время вычисления невязки: t_n + time_fraction * dt.
+    double original_weight; // Вес U в начале шага.
+    double forward_weight;  // Вес результата шага Эйлера из текущего состояния стадии.
+
+    AERO_HOST_DEVICE bool uses_step_start() const { return original_weight != 0; }
+
+    // На поздних стадиях SSPRK3 добавляем долю исходного U_n к результату Эйлера из текущего поля.
+    AERO_HOST_DEVICE double combine(double step_start, double forward) const {
+        // Для Эйлера и первой стадии берём forward. Совпадающие значения сохраняем точно и при смешивании.
+        if (!uses_step_start() || forward == step_start)
+            return forward;
+        return original_weight * step_start + forward_weight * forward;
+    }
 };
-struct Stages { const Stage* data; unsigned count; };
+struct Stages {
+    const Stage* data; // Таблица коэффициентов в порядке выполнения.
+    unsigned count;    // Одна стадия у Эйлера, три у SSPRK3.
+};
+
+// Эйлер и первая стадия SSPRK3 начинают с одной и той же формулы при t_n.
+constexpr Stage first_euler_stage() {
+    return {0.0, 0.0, 1.0};
+}
 Stages euler_stages();
 Stages ssprk3_stages();
 
-#ifdef __CUDACC__
-#define AERO_EXPLICIT_HD __host__ __device__
-#else
-#define AERO_EXPLICIT_HD
-#endif
-AERO_EXPLICIT_HD inline bool finite_value(double x) { return x>=-max_finite_double && x<=max_finite_double; }
-AERO_EXPLICIT_HD inline double update(Stage s,double original,double current,
-                                      double dt,double volume,double residual) {
-    const double forward=current-dt*(residual/volume);
-    if (s.original_weight==0 || forward==original) return forward;
-    return s.original_weight*original+s.forward_weight*forward;
+// Обновляет одну компоненту одного узла. Невязка уже содержит площадь всех его граней.
+AERO_HOST_DEVICE inline double forward_euler_value(double current, double residual, double volume,
+                                                   double dt) {
+    // Положительная невязка означает отток. Деление на объём переводит её в скорость изменения U.
+    return current - dt * (residual / volume);
 }
-AERO_EXPLICIT_HD inline bool update_value(Stage s,double original,double current,double dt,double volume,
-                                          double residual,double& next) {
-    next=update(s,original,current,dt,volume,residual);
-    return finite_value(next);
+
+// Общая формула обычного решателя и MPI на CPU и CUDA. next может совпадать с текущей компонентой.
+AERO_HOST_DEVICE inline bool advance_component(Stage stage, double step_start, double current,
+                                               double residual, double volume, double dt, double& next) {
+    const double forward = forward_euler_value(current, residual, volume, dt);
+    next = stage.combine(step_start, forward);
+    // Запрещаем принять стадию с NaN или бесконечностью.
+    return next >= -max_finite_double && next <= max_finite_double;
 }
-#undef AERO_EXPLICIT_HD
+
+// Вид массивов для применения одной стадии к плотному полю. Один и тот же обход компонент на CPU и CUDA.
+struct FieldStageUpdate {
+    Stage formula;            // Коэффициенты выбранной стадии.
+    size_t components;        // Сколько последовательных компонент размещено в одном узле.
+    const double* volumes;    // По одному неподвижному объёму на узел.
+    const double* step_start; // Поле U в начале всего шага.
+    const double* current;    // Поле, по которому посчитана невязка стадии.
+    const double* residual;   // Сумма выходящих потоков по каждой компоненте.
+    double dt;                // Шаг по времени одинаков для всех стадий.
+    double* next;             // Буфер результата стадии. Может совпадать с current.
+
+    AERO_HOST_DEVICE bool apply(size_t entry) const {
+        // Поля хранятся по схеме [узел][компонента], а объём общий для всех компонент узла.
+        return advance_component(formula, step_start[entry], current[entry], residual[entry],
+                                 volumes[entry / components], dt, next[entry]);
+    }
+};
 
 #ifdef AERO_WITH_CUDA
-void launch_update(Stage stage,size_t size,size_t components,const double* volumes,
-                   const double* original,const double* current,const double* residual,
-                   double dt,double* next,int* invalid,void* stream);
+void launch_update(FieldStageUpdate update, size_t entries, int* invalid, void* stream);
 #endif
 }
 }

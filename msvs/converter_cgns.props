@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- Выбираем статические библиотеки CGNS и HDF5 той же конфигурации, что и конвертер. -->
   <PropertyGroup>
     <CGNSRoot Condition="'$(CGNSRoot)'==''">$(MSBuildProjectDirectory)\..\build\deps\install-msvc-mt\$(Configuration)</CGNSRoot>
     <WithCGNS Condition="'$(WithCGNS)'=='' and Exists('$(CGNSRoot)\include\cgnslib.h')">true</WithCGNS>

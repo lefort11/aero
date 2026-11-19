@@ -6,7 +6,10 @@
 #include "../io/settings.h"
 
 namespace aero {
-ResidualFrame momentum_frame(MeshView mesh,const Processes& world,const MeshPartition* partition=nullptr);
-int calculate_case(RunSettings run,const ReconstructionOptions& reconstruction,const Processes& world,bool archive);
+// Выбирает общий для всех процессов базис компонент импульса.
+ResidualFrame momentum_frame(MeshView mesh, const Processes& world, const MeshPartition* partition = nullptr);
+// Готовит сетку, подбирает разбиение для выбранного устройства и выполняет расчёт.
+int calculate_case(RunSettings run, const ReconstructionOptions& reconstruction, const Processes& world,
+                   bool archive);
 }
 #endif

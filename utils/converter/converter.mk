@@ -1,4 +1,4 @@
-# Included by the root Makefile. CGNS is isolated from the mesh/solver library.
+# CGNS нужен конвертеру, библиотека сетки и солвер собираются самостоятельно.
 CONVERTER_SOURCE := utils/converter
 ifeq ($(OS),Windows_NT)
 CGNS_PREFIX ?= build/deps/install
@@ -19,7 +19,7 @@ CONVERTER_CPPFLAGS := -DAERO_WITH_CGNS $(CGNS_CPPFLAGS)
 CONVERTER_LDLIBS := $(CGNS_LDLIBS)
 endif
 CONVERTER_SOURCES := $(CONVERTER_SOURCE)/topology.cpp $(CONVERTER_SOURCE)/gmsh.cpp $(CONVERTER_SOURCE)/cgns.cpp $(CONVERTER_SOURCE)/another.cpp $(CONVERTER_SOURCE)/cli.cpp
-CONVERTER_HEADERS := $(CONVERTER_SOURCE)/converter.h $(CONVERTER_SOURCE)/detail.h $(CONVERTER_SOURCE)/cli.h $(MESH_SOURCE)/mesh.h
+CONVERTER_HEADERS := $(CONVERTER_SOURCE)/converter.h $(CONVERTER_SOURCE)/detail.h $(CONVERTER_SOURCE)/cli.h $(MESH_HEADERS)
 CONVERTER_OBJECTS := $(patsubst $(CONVERTER_SOURCE)/%.cpp,$(BUILD)/converter_%_$(WITH_CGNS).o,$(CONVERTER_SOURCES))
 $(BUILD)/converter_another_$(WITH_CGNS).o: $(wildcard $(LZMA_SOURCE)/*.h)
 $(BUILD)/converter_cgns_$(WITH_CGNS).o $(BUILD)/converter_converter_tests_$(WITH_CGNS).o: $(CGNS_BUILD_DEPS)
@@ -28,7 +28,7 @@ $(BUILD)/converter_%_$(WITH_CGNS).o: $(CONVERTER_SOURCE)/%.cpp $(CONVERTER_HEADE
 	$(CXX) $(CPPFLAGS) $(CONVERTER_CPPFLAGS) $(CXXFLAGS) -c $< -o $@
 
 .PHONY: converter converter-test converter-debug-test
-# Always link the selected backend, including after WITH_CGNS changes.
+# Повторно линкуем выбранный вариант при смене WITH_CGNS.
 converter: $(BUILD)/mesh.o $(CONVERTER_OBJECTS) $(BUILD)/converter_main_$(WITH_CGNS).o $(IO_LIBRARY) | bin-runtime
 	$(CXX) $(LDFLAGS) $^ $(CONVERTER_LDLIBS) $(LDLIBS) -o $(BIN)/mesh_converter$(EXE)
 
@@ -47,3 +47,4 @@ ifeq ($(USE_CMD),1)
 else
 	./$(BIN)/converter_tests_debug$(EXE)
 endif
+$(BUILD)/converter_converter_tests_$(WITH_CGNS).o: qa/test_checks.h

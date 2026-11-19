@@ -1,3 +1,4 @@
+# Собирает явный интегратор и его тестовый оператор, которым можно заменить невязку солвера.
 EXPLICIT_DIR := source/explicit
 WITH_CUDA ?= 0
 EXPLICIT_TAG := cuda$(WITH_CUDA)_omp$(WITH_OPENMP)
@@ -51,3 +52,4 @@ else
 	$(MAKE) WITH_CUDA=1 $(BIN)/explicit_tests_cuda1_omp$(WITH_OPENMP)$(EXE)
 	./$(BIN)/explicit_tests_cuda1_omp$(WITH_OPENMP)$(EXE) --require-cuda
 endif
+$(EXPLICIT_TEST) $(EXPLICIT_DEBUG): qa/test_checks.h

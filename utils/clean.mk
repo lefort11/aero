@@ -1,5 +1,5 @@
-# Only expand files in known Make output directories. build also holds meshes,
-# solver results and the CGNS/HDF5 installation.
+# Очищаем только известные результаты Make. В build также находятся сетки,
+# записанные решения и установка CGNS/HDF5.
 clean_roots := $(BUILD)
 ifeq ($(OS)/$(origin BUILD),Windows_NT/file)
 clean_roots := build $(wildcard build/mingw-cuda-sm*)

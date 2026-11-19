@@ -2,19 +2,26 @@
 #define AERO_CONVERTER_H
 #include "../../source/mesh/mesh.h"
 #include <istream>
-namespace aero { namespace converter {
+namespace aero {
+namespace converter {
 struct Options {
-    // CGNS indices are one-based; zero means require exactly one base/zone.
+    // Нумерация баз и зон CGNS начинается с единицы. Ноль разрешён, когда выбор однозначен.
     int base, zone;
+    // Сколько метров приходится на единицу координат входной сетки.
     double length_scale_to_meters;
+    // Имя внешней грани без исходной метки. Пустая строка требует явной метки.
     std::string unmarked_name;
     Options() : base(0), zone(0), length_scale_to_meters(1), unmarked_name("unmarked") {}
 };
+// Импортирует текстовые и двоичные секции Gmsh из открытого потока.
 Mesh read_gmsh(std::istream& input, const Options& options = Options());
 Mesh read_gmsh(const std::string& path, const Options& options = Options());
+// Преобразует выбранную базу и зону CGNS в общую ориентированную сетку.
 Mesh read_cgns(const std::string& path, const Options& options = Options());
-// another mesh directory or its mesh.txt; ordinary TEXT/BINARY 2D/3D meshes.
+// Принимает каталог сетки another или путь к mesh.txt. Поддерживаются обычные 2D/3D-сетки TEXT и BINARY.
 Mesh read_another(const std::string& path, const Options& options = Options());
+// Сообщает, собран ли конвертер с библиотекой CGNS.
 bool cgns_available() noexcept;
-} }
+}
+}
 #endif

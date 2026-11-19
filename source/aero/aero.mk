@@ -1,13 +1,16 @@
+# Сборка солвера объединяет геометрию, невязку и интегратор. Цели mpi-*-test запускают сквозные расчёты.
 AERO_SOURCES := source/aero/main.cpp source/aero/startup.cpp source/aero/solver_timings.cpp source/aero/time_loop.cpp
 AERO_SOURCES += source/aero/recovery.cpp source/aero/indexed_io.cpp source/aero/mpi_fields.cpp source/aero/solver.cpp source/aero/momentum_frame.cpp
 AERO_SOURCES += source/aero/mpi_periodic.cpp source/aero/mpi_periodic_match.cpp
+AERO_SOURCES += source/aero/partition_state.cpp source/aero/partition_output.cpp source/aero/partition_operator.cpp
 AERO_SOURCES += source/aero/mpi_stencil.cpp source/aero/partition_report.cpp source/aero/mpi_balance.cpp source/mesh/leaf_balance.cpp
-AERO_SOURCES += source/aero/geometry.cpp source/mesh/mdec.cpp source/mesh/partition.cpp source/parallel/processes.cpp
-AERO_HEADERS := source/aero/solver_timings.h source/aero/startup.h source/io/settings.h source/io/settings_text.h source/io/settings_boundary.h source/io/flowreport.h $(OUTPUT_HEADERS) $(INITIAL_HEADERS) $(RES_HDR) $(TIMESTEP_HEADERS) $(EXPLICIT_HEADERS)
+AERO_SOURCES += source/aero/geometry.cpp source/aero/case_geometry.cpp source/mesh/mdec.cpp source/mesh/partition.cpp source/parallel/processes.cpp
+AERO_HEADERS := $(MESH_SOURCE)/archive_format.h $(NUMBER_CODEC) source/aero/solver_timings.h source/aero/startup.h source/io/settings.h source/io/settings_text.h source/io/settings_boundary.h source/io/flowreport.h $(OUTPUT_HEADERS) $(INITIAL_HEADERS) $(RES_HDR) $(TIMESTEP_HEADERS) $(EXPLICIT_HEADERS)
 AERO_LIBS := $(RES_LIB) $(INITIAL_LIB) $(TIMESTEP_LIBRARY) $(EXPLICIT_LIBRARY) $(IO_LIBRARY) $(RES_DEPS)
-AERO_HEADERS += source/aero/geometry.h source/mesh/mdec.h source/mesh/partition.h source/mesh/mesh_reader.h source/parallel/processes.h
+AERO_HEADERS += source/aero/geometry.h source/aero/case_geometry.h source/mesh/mdec.h source/mesh/partition.h source/mesh/mesh_reader.h source/parallel/processes.h
 AERO_HEADERS += source/aero/recovery.h source/aero/indexed_io.h source/aero/mpi_fields.h source/aero/solver.h source/timestep/cfl_detail.h source/explicit/explicit_stage.h source/residual/residual_detail.h
 AERO_HEADERS += source/aero/partition_kernels.h source/aero/time_loop.h source/aero/mpi_periodic.h source/aero/mpi_periodic_detail.h
+AERO_HEADERS += source/aero/partition_state.h source/aero/partition_output.h source/aero/partition_operator.h source/aero/partition_transfers.h
 AERO_HEADERS += source/aero/mpi_stencil.h source/aero/partition_report.h source/aero/mpi_balance.h source/mesh/leaf_balance.h
 ifeq ($(WITH_CUDA),1)
 AERO_GPU := $(BUILD)/partition_kernels.o
@@ -27,7 +30,7 @@ all: aero
 programs: aero
 
 AERO_TEST := $(BUILD)/aero_tests$(EXE)
-$(AERO_TEST): source/aero/aero_tests.cpp source/aero/partition_kernels.h $(RES_HDR) source/explicit/explicit_stage.h source/mesh/leaf_balance.cpp source/mesh/leaf_balance.h source/mesh/partition.h source/mesh/mdec.h $(MESH_SOURCE)/mesh.h $(FIELD_HEADERS) $(BUILD)/mesh.o $(IO_LIBRARY)
+$(AERO_TEST): source/aero/aero_tests.cpp source/aero/partition_kernels.h $(RES_HDR) source/explicit/explicit_stage.h source/mesh/leaf_balance.cpp source/mesh/leaf_balance.h source/mesh/partition.h source/mesh/mdec.h $(MESH_HEADERS) $(FIELD_HEADERS) $(BUILD)/mesh.o $(IO_LIBRARY)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< source/mesh/leaf_balance.cpp $(BUILD)/mesh.o $(IO_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 .PHONY: aero-test
 aero-test: aero $(BIN)/aero_tests$(EXE)
@@ -51,24 +54,19 @@ endif
 MPI_RECONSTRUCTION_TESTS := mpi-ebr3-test mpi-ebr5-test mpi-weno3-test mpi-weno5-test
 .PHONY: mpi-timing-test mpi-fields-test mpi-recovery-test mpi-geometry-test mpi-balance-test mpi-euler-test mpi-ssprk3-test mpi-periodic-test $(MPI_RECONSTRUCTION_TESTS)
 ifeq ($(WITH_MPI),1)
-mpi-timing-test: aero meshdec
-	"$(PYTHON)" qa/mpi_timing.py --aero "$(BIN)/aero$(EXE)" --meshdec "$(BIN)/meshdec$(EXE)" --mpiexec "$(MPIEXEC)"
-mpi-fields-test: aero meshdec
-	"$(PYTHON)" qa/mpi_fields.py --aero "$(BIN)/aero$(EXE)" --meshdec "$(BIN)/meshdec$(EXE)" --mpiexec "$(MPIEXEC)"
-mpi-recovery-test: aero meshdec
-	"$(PYTHON)" qa/mpi_recovery.py --aero "$(BIN)/aero$(EXE)" --meshdec "$(BIN)/meshdec$(EXE)" --mpiexec "$(MPIEXEC)"
-mpi-balance-test: aero meshdec
-	"$(PYTHON)" qa/mpi_balance.py --aero "$(BIN)/aero$(EXE)" --meshdec "$(BIN)/meshdec$(EXE)" --mpiexec "$(MPIEXEC)"
-mpi-geometry-test: aero meshdec
-	"$(PYTHON)" qa/mpi_geometry.py --aero "$(BIN)/aero$(EXE)" --meshdec "$(BIN)/meshdec$(EXE)" --mpiexec "$(MPIEXEC)"
+# Для проверок с одноимённым Python-сценарием берём его имя из выбранной цели Make.
+MPI_QA_ARGS := --aero "$(BIN)/aero$(EXE)" --meshdec "$(BIN)/meshdec$(EXE)" --mpiexec "$(MPIEXEC)"
+mpi-timing-test mpi-fields-test mpi-recovery-test mpi-balance-test mpi-geometry-test: aero meshdec
+	"$(PYTHON)" qa/mpi_$(patsubst mpi-%-test,%,$@).py $(MPI_QA_ARGS)
 mpi-euler-test mpi-ssprk3-test: aero meshdec
-	"$(PYTHON)" qa/mpi_euler.py --aero "$(BIN)/aero$(EXE)" --meshdec "$(BIN)/meshdec$(EXE)" --mpiexec "$(MPIEXEC)" --time-scheme $(patsubst mpi-%-test,%,$@)
+	"$(PYTHON)" qa/mpi_euler.py $(MPI_QA_ARGS) --time-scheme $(patsubst mpi-%-test,%,$@)
 $(MPI_RECONSTRUCTION_TESTS): aero meshdec
-	"$(PYTHON)" qa/mpi_periodic.py --aero "$(BIN)/aero$(EXE)" --meshdec "$(BIN)/meshdec$(EXE)" --mpiexec "$(MPIEXEC)" --$(patsubst mpi-%-test,%,$@)
+	"$(PYTHON)" qa/mpi_periodic.py $(MPI_QA_ARGS) --$(patsubst mpi-%-test,%,$@)
 mpi-periodic-test: aero meshdec
-	"$(PYTHON)" qa/mpi_periodic.py --aero "$(BIN)/aero$(EXE)" --meshdec "$(BIN)/meshdec$(EXE)" --mpiexec "$(MPIEXEC)"
+	"$(PYTHON)" qa/mpi_periodic.py $(MPI_QA_ARGS)
 test: mpi-timing-test mpi-fields-test mpi-recovery-test mpi-geometry-test mpi-balance-test mpi-euler-test mpi-ssprk3-test mpi-periodic-test $(MPI_RECONSTRUCTION_TESTS)
 else
 mpi-timing-test mpi-fields-test mpi-recovery-test mpi-geometry-test mpi-balance-test mpi-euler-test mpi-ssprk3-test mpi-periodic-test $(MPI_RECONSTRUCTION_TESTS):
 	$(MAKE) WITH_MPI=1 $@
 endif
+$(AERO_TEST): qa/test_checks.h

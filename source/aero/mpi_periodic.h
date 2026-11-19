@@ -5,16 +5,24 @@
 #include "../parallel/processes.h"
 
 namespace aero {
-// IDs are the smallest original vertex in each equivalence class. Edges
-// remain distinct even when two different edges have the same canonical ends.
+// Номер класса равен наименьшему исходному номеру его вершины. Разные рёбра могут иметь одну пару приведённых концов.
 struct PeriodicPartition {
-    std::vector<MeshIndex> ids,node_dof;
+    // ids даёт исходный номер представителя, node_dof переводит исходные локальные вершины в расчётные.
+    std::vector<MeshIndex> ids, node_dof;
+    // Процесс, владеющий значением каждой расчётной степени свободы.
     std::vector<int> owners;
+    // Сумма контрольных объёмов всех периодических копий соответствующего узла.
     std::vector<double> volumes;
-    struct Edge { MeshIndex begin,end; CvVector area; std::pair<MeshIndex,MeshIndex> original; };
+    struct Edge {
+        MeshIndex begin, end;
+        CvVector area;
+        // Идентификаторы концов представителя исходного ребра, необходимые при построении шаблона.
+        std::pair<MeshIndex, MeshIndex> original;
+    };
     std::vector<Edge> edges;
     std::vector<CvBoundary> boundary;
 };
-PeriodicPartition partition_periodic(const MeshPartition&,CvView,const std::vector<PeriodicPair>&,const Processes&);
+PeriodicPartition partition_periodic(const MeshPartition&, CvView, const std::vector<PeriodicPair>&,
+                                     const Processes&);
 }
 #endif

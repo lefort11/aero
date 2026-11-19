@@ -1,5 +1,6 @@
+# Библиотека строит контрольные объёмы на CPU, CUDA-тест проверяет чтение готовых массивов на карте.
 CV_DIR := source/cv
-CV_HEADERS := $(CV_DIR)/cv.h $(MESH_SOURCE)/mesh.h $(MESH_SOURCE)/mesh_index.h
+CV_HEADERS := $(CV_DIR)/cv.h $(MESH_HEADERS)
 CV_TEST_HEADERS := $(CV_HEADERS) source/eulersolver/lax_friedrichs.h source/eulersolver/euler.h
 CV_LIB := $(BUILD)/libaero_cv.a
 CV_TEST := $(BUILD)/cv_tests_cuda$(WITH_CUDA)$(EXE)
@@ -45,3 +46,4 @@ else
 	$(MAKE) WITH_CUDA=1 $(BIN)/cv_tests_cuda1$(EXE)
 	./$(BIN)/cv_tests_cuda1$(EXE) --require-cuda
 endif
+$(CV_TEST) $(CV_DEBUG): qa/test_checks.h

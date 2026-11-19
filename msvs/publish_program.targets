@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
-  <Import Project="$(VCInstallDir)Auxiliary\Build\Microsoft.VCRedistVersion.default.props" Condition="'$(VCToolsRedistDir)'=='' and Exists('$(VCInstallDir)Auxiliary\Build\Microsoft.VCRedistVersion.default.props')" />
+  <!-- Старые наборы MSVC загружают версию поставляемых библиотек здесь, современные уже задали её. -->
+  <Import Project="$(VCInstallDir)Auxiliary\Build\Microsoft.VCRedistVersion.default.props" Condition="'$(VCToolsRedistDir)'=='' and '$(VCToolsRedistVersion)'=='' and Exists('$(VCInstallDir)Auxiliary\Build\Microsoft.VCRedistVersion.default.props')" />
   <PropertyGroup Condition="'$(VCToolsRedistDir)'=='' and '$(VCToolsRedistVersion)'!=''">
     <VCToolsRedistDir>$(VCInstallDir)Redist\MSVC\$(VCToolsRedistVersion)</VCToolsRedistDir>
   </PropertyGroup>

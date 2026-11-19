@@ -7,6 +7,8 @@ param(
     [ValidateSet('Debug','Release')][string[]]$Configurations = @('Debug','Release')
 )
 $ErrorActionPreference = 'Stop'
+# CMake принимает число рабочих процессов в виде строки для обоих генераторов.
+$parallelJobs = [Environment]::ProcessorCount.ToString()
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $deps = Join-Path $projectRoot 'build/deps'
 New-Item -ItemType Directory -Force -Path $deps | Out-Null
@@ -14,6 +16,7 @@ function Run([string[]]$Arguments) {
     & $CMake @Arguments
     if ($LASTEXITCODE -ne 0) { throw "CMake failed with exit code $LASTEXITCODE" }
 }
+# Проверяем контрольную сумму локального архива до распаковки, в том числе при повторном запуске.
 function Source([string]$Archive, [string]$Hash, [string]$Directory) {
     $zip = Join-Path (Join-Path $projectRoot 'third_party') $Archive
     if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash -ne $Hash) { throw "Archive checksum mismatch: $zip" }
@@ -33,20 +36,21 @@ if ($Toolchain -eq 'MinGW') {
     $cgBuild = Join-Path $deps 'cgns-build'
     $toolOptions = @('-G','MinGW Makefiles',"-DCMAKE_C_COMPILER=$compiler","-DCMAKE_MAKE_PROGRAM=$makePath",'-DCMAKE_BUILD_TYPE=Release',"-DCMAKE_INSTALL_PREFIX=$prefix")
     Run -Arguments (@('-S',$hdfSource,'-B',$hdfBuild) + $toolOptions + $hdfOptions)
-    Run -Arguments @('--build',$hdfBuild,'--target','install','-j','6')
+    Run -Arguments @('--build',$hdfBuild,'--target','install','--parallel',$parallelJobs)
     Run -Arguments (@('-S',$cgSource,'-B',$cgBuild,"-DCMAKE_PREFIX_PATH=$prefix") + $toolOptions + $cgOptions)
-    Run -Arguments @('--build',$cgBuild,'--target','install','-j','6')
+    Run -Arguments @('--build',$cgBuild,'--target','install','--parallel',$parallelJobs)
 } else {
     $crt = @('-DCMAKE_POLICY_DEFAULT_CMP0091=NEW','-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded$<$<CONFIG:Debug>:Debug>')
     $hdfBuild = Join-Path $deps 'hdf5-msvc-mt'
     Run -Arguments (@('-S',$hdfSource,'-B',$hdfBuild,'-G',$Generator,'-A','x64') + $crt + $hdfOptions)
+    # У каждой конфигурации свои бинарные библиотеки HDF5 и CGNS и свой префикс установки.
     foreach ($config in $Configurations) {
         $prefix = Join-Path $deps "install-msvc-mt/$config"
         $cgBuild = Join-Path $deps "cgns-msvc-mt-$config"
-        Run -Arguments @('--build',$hdfBuild,'--config',$config,'--parallel','6')
+        Run -Arguments @('--build',$hdfBuild,'--config',$config,'--parallel',$parallelJobs)
         Run -Arguments @('--install',$hdfBuild,'--config',$config,'--prefix',$prefix)
         Run -Arguments (@('-S',$cgSource,'-B',$cgBuild,'-G',$Generator,'-A','x64',"-DCMAKE_INSTALL_PREFIX=$prefix","-DCMAKE_PREFIX_PATH=$prefix") + $crt + $cgOptions)
-        Run -Arguments @('--build',$cgBuild,'--config',$config,'--target','INSTALL','--parallel','6')
+        Run -Arguments @('--build',$cgBuild,'--config',$config,'--target','INSTALL','--parallel',$parallelJobs)
     }
 }
 Write-Output "Dependencies installed inside $deps"

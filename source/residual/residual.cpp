@@ -10,264 +10,357 @@
 
 namespace aero {
 using namespace residual_detail;
-double residual_detail::cpu_flux_cfl(const FluxCfl& grid,double courant,const MeshIndex* global_ids) {
-    const auto limit=cfl_detail::host_min(grid.count,[&](size_t k) { return grid.local(k,courant); });
-    if (limit.dt<0) throw std::domain_error("Invalid CFL at node "+std::to_string(global_ids?global_ids[limit.node]:limit.node));
-    return limit.node==cfl_detail::unconstrained().node ? std::numeric_limits<double>::infinity() : limit.dt;
+double residual_detail::cpu_flux_cfl(const FluxCfl& grid, double courant, const MeshIndex* global_ids) {
+    const auto limit = cfl_detail::host_min(grid.count, [&](size_t k) { return grid.local(k, courant); });
+    if (limit.dt < 0)
+        throw std::domain_error("Invalid CFL at node " +
+                                std::to_string(global_ids ? global_ids[limit.node] : limit.node));
+    return limit.node == cfl_detail::unconstrained().node ? std::numeric_limits<double>::infinity()
+                                                          : limit.dt;
 }
 namespace {
 void validate(ResidualOptions o) {
-    if (!(o.gamma>1 && std::isfinite(o.gamma))) throw std::invalid_argument("residual: invalid gamma");
-    if (!(o.trace_ratio_min>=0 && o.trace_ratio_min<1 && o.trace_ratio_max>1 && std::isfinite(o.trace_ratio_max)))
+    if (!(o.gamma > 1 && std::isfinite(o.gamma)))
+        throw std::invalid_argument("residual: invalid gamma");
+    if (!(o.trace_ratio_min >= 0 && o.trace_ratio_min < 1 && o.trace_ratio_max > 1 &&
+          std::isfinite(o.trace_ratio_max)))
         throw std::invalid_argument("residual: invalid trace ratio bounds");
-    if (o.variables!=ResidualVariables::Conservative && o.variables!=ResidualVariables::Characteristic &&
-        o.variables!=ResidualVariables::Flux) throw std::invalid_argument("residual: invalid reconstruction variables");
-    if (o.solver!=ResidualSolver::Roe && o.solver!=ResidualSolver::LocalLF)
+    if (o.variables != ResidualVariables::Conservative && o.variables != ResidualVariables::Characteristic &&
+        o.variables != ResidualVariables::Flux)
+        throw std::invalid_argument("residual: invalid reconstruction variables");
+    if (o.solver != ResidualSolver::Roe && o.solver != ResidualSolver::LocalLF)
         throw std::invalid_argument("residual: invalid solver");
 }
-double dot(CvVector a,CvVector b) { return a.x*b.x+a.y*b.y+a.z*b.z; }
-double length(CvVector a) { return std::hypot(std::hypot(a.x,a.y),a.z); }
+double dot(CvVector a, CvVector b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
 }
-void residual_detail::project_surface(Surface& s,CvVector world,unsigned d,const ResidualFrame& frame) {
-    s.measure=length(world);
-    if (!(s.measure>0 && std::isfinite(s.measure))) throw std::invalid_argument("residual: invalid area");
-    CvVector remainder=world;
-    for (unsigned k=0;k<d;++k) {
-        const auto axis=frame.axis[k];
-        const double a=dot(world,axis);
-        s.area[k]=a;
-        remainder.x-=a*axis.x; remainder.y-=a*axis.y; remainder.z-=a*axis.z;
+double length(CvVector a) {
+    return std::hypot(std::hypot(a.x, a.y), a.z);
+}
+}
+void residual_detail::project_surface(Surface& s, CvVector world, unsigned d, const ResidualFrame& frame) {
+    s.measure = length(world);
+    if (!(s.measure > 0 && std::isfinite(s.measure)))
+        throw std::invalid_argument("residual: invalid area");
+    CvVector remainder = world;
+    for (unsigned k = 0; k < d; ++k) {
+        const auto axis = frame.axis[k];
+        const double a = dot(world, axis);
+        s.area[k] = a;
+        remainder.x -= a * axis.x;
+        remainder.y -= a * axis.y;
+        remainder.z -= a * axis.z;
     }
-    if (!(length(remainder)<=1.e-10*s.measure))
+    if (!(length(remainder) <= 1.e-10 * s.measure))
         throw std::invalid_argument("residual: area outside the supplied momentum frame");
 }
-void residual_detail::build_incidence(Index nodes,Index edges,const std::vector<Surface>& surfaces,
-                                      std::vector<Index>& offsets,std::vector<Index>& incidence) {
-    offsets.assign(nodes+1,0);
-    for (Index f=0;f<surfaces.size();++f) {
-        ++offsets[surfaces[f].begin+1];
-        if (f<edges) ++offsets[surfaces[f].end+1];
+namespace {
+// Перечисляет вклады поверхности в узлы в порядке сетки. Одна и та же схема нужна для подсчёта и заполнения.
+template <class Visit>
+void for_each_node_contribution(Index edges, const std::vector<Surface>& surfaces, const Visit& visit) {
+    for (Index face = 0; face < surfaces.size(); ++face) {
+        const Surface& surface = surfaces[face];
+        // В начале ребра нормаль направлена из объёма узла. У физической площадки она тоже наружная.
+        visit(surface.begin, OrientedFace::outward(face));
+        // На втором конце та же нормаль направлена внутрь. У периодической петли оба вклада идут одному узлу.
+        if (face < edges)
+            visit(surface.end, OrientedFace::inward(face));
     }
-    std::partial_sum(offsets.begin(),offsets.end(),offsets.begin());
+}
+}
+
+// Один раз при подготовке сетки строит непрерывный список вкладов для каждого узла.
+void residual_detail::build_incidence(Index nodes, Index edges, const std::vector<Surface>& surfaces,
+                                      std::vector<Index>& offsets, std::vector<OrientedFace>& incidence) {
+    offsets.assign(nodes + 1, 0);
+    for_each_node_contribution(edges, surfaces, [&](Index node, OrientedFace) { ++offsets[node + 1]; });
+    // После накопления узлу i принадлежит ровно диапазон [offsets[i], offsets[i+1]).
+    std::partial_sum(offsets.begin(), offsets.end(), offsets.begin());
     incidence.resize(offsets.back());
-    auto cursor=offsets;
-    // A periodic self-loop contributes both oriented entries to the same node.
-    for (Index f=0;f<surfaces.size();++f) {
-        incidence[cursor[surfaces[f].begin]++]=2*f;
-        if (f<edges) incidence[cursor[surfaces[f].end]++]=2*f+1;
-    }
+    auto next = offsets;
+    // next отмечает свободное место в строке узла. Само начало строки сохраняем для всех стадий расчёта.
+    for_each_node_contribution(edges, surfaces,
+                               [&](Index node, OrientedFace entry) { incidence[next[node]++] = entry; });
 }
 namespace {
 void failure(Index bad, const Geometry& g) {
-    if (bad<g.edges) throw std::domain_error("residual: invalid flux at edge "+std::to_string(bad));
-    if (bad<g.faces) throw std::domain_error("residual: invalid boundary flux at piece "+std::to_string(bad-g.edges));
-    throw std::domain_error("residual: nonfinite sum at node "+std::to_string(bad-g.faces));
+    if (bad < g.edges)
+        throw std::domain_error("residual: invalid flux at edge " + std::to_string(bad));
+    if (bad < g.faces)
+        throw std::domain_error("residual: invalid boundary flux at piece " + std::to_string(bad - g.edges));
+    throw std::domain_error("residual: nonfinite sum at node " + std::to_string(bad - g.faces));
 }
 #ifdef AERO_WITH_CUDA
-void check(cudaError_t e) { if (e!=cudaSuccess) throw std::runtime_error(cudaGetErrorString(e)); }
+void check(cudaError_t e) {
+    if (e != cudaSuccess)
+        throw std::runtime_error(cudaGetErrorString(e));
+}
 struct DeviceStorage {
-    int device=-1;
+    int device = -1;
     std::vector<void*> allocations;
-    template<class T> T* allocate(std::size_t n,const T* src=nullptr) {
-        if (!n) return nullptr;
+    template <class T> T* allocate(std::size_t n, const T* src = nullptr) {
+        if (!n)
+            return nullptr;
         allocations.push_back(nullptr);
-        check(cudaMalloc(&allocations.back(),n*sizeof(T)));
-        auto* p=static_cast<T*>(allocations.back());
-        if (src) check(cudaMemcpy(p,src,n*sizeof(T),cudaMemcpyHostToDevice));
+        check(cudaMalloc(&allocations.back(), n * sizeof(T)));
+        auto* p = static_cast<T*>(allocations.back());
+        if (src)
+            check(cudaMemcpy(p, src, n * sizeof(T), cudaMemcpyHostToDevice));
         return p;
     }
     ~DeviceStorage() {
-        if (allocations.empty()) return;
+        if (allocations.empty())
+            return;
         cuda_detail::DeviceScope scope(device);
-        if (scope.status==cudaSuccess) for (auto p:allocations) cudaFree(p);
+        if (scope.status == cudaSuccess)
+            for (auto p : allocations)
+                cudaFree(p);
     }
 };
 #endif
 }
 #ifdef AERO_WITH_CUDA
-void launch_residual(Geometry,const double*,const double*,EulerFluxResult*,double*,double*,double*,Index*,cudaStream_t);
+void launch_residual(Geometry, const double*, const double*, EulerFluxResult*, double*, double*, double*,
+                     Index*, cudaStream_t);
 #endif
 
-void residual_detail::cpu_face_fluxes(const FaceBatch& batch,const MeshIndex* global_nodes) {
-    parallel_for(batch.count,[&](Index k) {
-        const Index f=batch.face(k);
-        if (batch.compute(f)) return;
-        if (global_nodes) throw std::domain_error("Invalid flux at global node "+std::to_string(global_nodes[batch.geometry.surfaces[f].begin]));
-        failure(f,batch.geometry);
-    },256);
+void residual_detail::cpu_face_fluxes(const FaceBatch& batch, const MeshIndex* global_nodes) {
+    parallel_for(
+        batch.count,
+        [&](Index k) {
+            const Index f = batch.face(k);
+            if (batch.compute(f))
+                return;
+            if (global_nodes)
+                throw std::domain_error("Invalid flux at global node " +
+                                        std::to_string(global_nodes[batch.geometry.surfaces[f].begin]));
+            failure(f, batch.geometry);
+        },
+        256);
 }
 
-ResidualOptions residual_options(const std::string& variables,const std::string& solver,double gamma,
-                                 double trace_ratio_min,double trace_ratio_max) {
+ResidualOptions residual_options(const std::string& variables, const std::string& solver, double gamma,
+                                 double trace_ratio_min, double trace_ratio_max) {
     ResidualOptions o{};
-    if (variables=="conservative") o.variables=ResidualVariables::Conservative;
-    else if (variables=="characteristic") o.variables=ResidualVariables::Characteristic;
-    else if (variables=="flux") o.variables=ResidualVariables::Flux;
-    else throw std::invalid_argument("residual: unknown reconstruction variables: "+variables);
-    if (solver=="roe") o.solver=ResidualSolver::Roe;
-    else if (solver=="lf") o.solver=ResidualSolver::LocalLF;
-    else throw std::invalid_argument("residual: unknown solver: "+solver);
-    o.gamma=gamma;
-    o.trace_ratio_min=trace_ratio_min;
-    o.trace_ratio_max=trace_ratio_max;
+    if (variables == "conservative")
+        o.variables = ResidualVariables::Conservative;
+    else if (variables == "characteristic")
+        o.variables = ResidualVariables::Characteristic;
+    else if (variables == "flux")
+        o.variables = ResidualVariables::Flux;
+    else
+        throw std::invalid_argument("residual: unknown reconstruction variables: " + variables);
+    if (solver == "roe")
+        o.solver = ResidualSolver::Roe;
+    else if (solver == "lf")
+        o.solver = ResidualSolver::LocalLF;
+    else
+        throw std::invalid_argument("residual: unknown solver: " + solver);
+    o.gamma = gamma;
+    o.trace_ratio_min = trace_ratio_min;
+    o.trace_ratio_max = trace_ratio_max;
     validate(o);
     return o;
 }
 
 struct SpatialResidual::Impl {
-    int device;
-    ReconstructionContext context;
-    std::vector<Surface> surfaces;
-    std::vector<BoundaryConfig> patches;
-    std::vector<Index> offsets,incidence;
-    std::vector<EulerFluxResult> buffer;
-    Geometry g{};
-    void assemble(const double* u,const double* u0,double* r,double* edge,double* boundary,void* stream,double* flux_seconds);
+    int device;                          // Отрицательное значение выбирает CPU.
+    ReconstructionContext context;       // Владеет шаблоном и его копией на устройстве.
+    std::vector<Surface> surfaces;       // Сначала внутренние рёбра, затем физические площадки.
+    BoundaryPatches patches;             // Метки и правила физических границ.
+    std::vector<Index> offsets;          // Начало и конец списка для каждого узла.
+    std::vector<OrientedFace> incidence; // Номера поверхностей с ориентацией относительно узла.
+    std::vector<EulerFluxResult> buffer; // На CPU хранит вычисленные потоки до сборки по узлам.
+    Geometry g{};                        // Представление массивов на выбранном устройстве.
+    void assemble(const double* u, const double* u0, double* r, double* edge, double* boundary, void* stream,
+                  double* flux_seconds);
 #ifdef AERO_WITH_CUDA
     DeviceStorage storage;
-    EulerFluxResult* device_flux=nullptr;
-    DeviceCflMinimum* device_minimum=nullptr;
+    EulerFluxResult* device_flux = nullptr;
+    DeviceCflMinimum* device_minimum = nullptr;
 #endif
-    Impl(ReconstructionStencil stencil,int id) : device(id),context(std::move(stencil),
-        id<0 ? ReconstructionBackend::Cpu : ReconstructionBackend::Cuda,id<0 ? 0 : id) {
-        if (id< -1) throw std::invalid_argument("residual: invalid device");
+    Impl(ReconstructionStencil stencil, int id)
+        : device(id),
+          context(std::move(stencil), id < 0 ? ReconstructionBackend::Cpu : ReconstructionBackend::Cuda,
+                  id < 0 ? 0 : id) {
+        if (id < -1)
+            throw std::invalid_argument("residual: invalid device");
 #ifndef AERO_WITH_CUDA
-        if (id>=0) throw std::invalid_argument("residual: CUDA is not enabled in this build");
+        if (id >= 0)
+            throw std::invalid_argument("residual: CUDA is not enabled in this build");
 #endif
     }
-    template<class EdgeAt> void prepare(unsigned d,Index nodes,Index edges,Index pieces,
-        const CvBoundary* boundary,EdgeAt edge_at,const std::vector<BoundaryConfig>& bc,
-        ResidualOptions options,const ResidualFrame& frame) {
+    template <class EdgeAt>
+    void prepare(unsigned d, Index nodes, Index edges, Index pieces, const CvBoundary* boundary,
+                 EdgeAt edge_at, const BoundaryPatches& bc, ResidualOptions options,
+                 const ResidualFrame& frame) {
         validate(options);
-        const auto stencil=context.host_view();
-        if (d<1 || d>3 || !nodes || nodes!=stencil.node_count || edges!=stencil.edge_count ||
-            (pieces && !boundary) || edges>surfaces.max_size() || pieces>surfaces.max_size()-edges ||
-            nodes>=offsets.max_size() || nodes>std::vector<double>().max_size()/(d+2))
+        const auto stencil = context.host_view();
+        if (d < 1 || d > 3 || !nodes || nodes != stencil.node_count || edges != stencil.edge_count ||
+            (pieces && !boundary) || edges > surfaces.max_size() || pieces > surfaces.max_size() - edges ||
+            nodes >= offsets.max_size() || nodes > std::vector<double>().max_size() / (d + 2))
             throw std::invalid_argument("residual: incompatible grid or stencil");
-        for (unsigned i=0;i<d;++i) for (unsigned j=0;j<=i;++j)
-            if (!(std::abs(dot(frame.axis[i],frame.axis[j])-(i==j ? 1 : 0))<1.e-12))
-                throw std::invalid_argument("residual: invalid momentum frame");
-        surfaces.resize(edges+pieces);
-        std::vector<unsigned char> inlet_outlet_node(nodes,0);
-        for (Index f=0;f<surfaces.size();++f) {
-            Surface& s=surfaces[f];
-            if (f<edges) {
-                const auto e=edge_at(f);
-                s.begin=e.begin; s.end=e.end;
-                if (s.begin>=nodes || s.end>=nodes || stencil.row_owner[2*f]!=s.begin || stencil.row_owner[2*f+1]!=s.end)
+        for (unsigned i = 0; i < d; ++i)
+            for (unsigned j = 0; j <= i; ++j)
+                if (!(std::abs(dot(frame.axis[i], frame.axis[j]) - (i == j ? 1 : 0)) < 1.e-12))
+                    throw std::invalid_argument("residual: invalid momentum frame");
+        surfaces.resize(edges + pieces);
+        std::vector<unsigned char> inlet_outlet_node(nodes, 0);
+        for (Index f = 0; f < surfaces.size(); ++f) {
+            Surface& s = surfaces[f];
+            if (f < edges) {
+                const auto e = edge_at(f);
+                s.begin = e.begin;
+                s.end = e.end;
+                if (s.begin >= nodes || s.end >= nodes || stencil.row_owner[2 * f] != s.begin ||
+                    stencil.row_owner[2 * f + 1] != s.end)
                     throw std::invalid_argument("residual: edge/stencil endpoint mismatch");
-                project_surface(s,e.area,d,frame);
+                project_surface(s, e.area, d, frame);
             } else {
-                const auto& b=boundary[f-edges];
-                s.begin=b.node; s.patch=b.patch;
-                if (b.node>=nodes || b.patch>=bc.size() || bc[b.patch].type==BoundaryType::Periodic)
+                const auto& b = boundary[f - edges];
+                s.begin = b.node;
+                s.patch = b.patch;
+                if (b.node >= nodes || b.patch >= bc.by_patch.size() ||
+                    bc.by_patch[b.patch].type() == BoundaryType::Periodic)
                     throw std::invalid_argument("residual: invalid physical boundary");
-                if (needs_nodal_traces(bc[b.patch].type)) inlet_outlet_node[b.node]=1;
-                project_surface(s,b.area,d,frame);
+                if (needs_nodal_traces(bc.by_patch[b.patch].type()))
+                    inlet_outlet_node[b.node] = 1;
+                project_surface(s, b.area, d, frame);
             }
         }
-        for (Index f=0;f<edges;++f) {
-            auto& s=surfaces[f];
-            s.use_nodal_traces=inlet_outlet_node[s.begin] || inlet_outlet_node[s.end];
+        for (Index f = 0; f < edges; ++f) {
+            auto& s = surfaces[f];
+            s.use_nodal_traces = inlet_outlet_node[s.begin] || inlet_outlet_node[s.end];
         }
-        build_incidence(nodes,edges,surfaces,offsets,incidence);
-        patches=bc;
-        g={d,nodes,edges,surfaces.size(),surfaces.data(),offsets.data(),incidence.data(),patches.data(),stencil,options};
-        if (device<0) { buffer.resize(surfaces.size()); return; }
+        build_incidence(nodes, edges, surfaces, offsets, incidence);
+        patches = bc;
+        g = {d,
+             nodes,
+             edges,
+             surfaces.size(),
+             surfaces.data(),
+             offsets.data(),
+             incidence.data(),
+             patches.view(),
+             stencil,
+             options};
+        if (device < 0) {
+            buffer.resize(surfaces.size());
+            return;
+        }
 #ifdef AERO_WITH_CUDA
         cuda_detail::DeviceScope scope(device);
         check(scope.status);
-        storage.device=device;
-        g.surfaces=storage.allocate(surfaces.size(),surfaces.data());
-        g.offsets=storage.allocate(offsets.size(),offsets.data());
-        g.incidence=storage.allocate(incidence.size(),incidence.data());
-        g.patches=storage.allocate(patches.size(),patches.data());
-        g.stencil=context.device_view();
-        device_flux=storage.allocate<EulerFluxResult>(surfaces.size());
-        device_minimum=storage.allocate<DeviceCflMinimum>(1);
-        // Assembly may immediately consume the uploaded geometry on a nonblocking stream.
+        storage.device = device;
+        g.surfaces = storage.allocate(surfaces.size(), surfaces.data());
+        g.offsets = storage.allocate(offsets.size(), offsets.data());
+        g.incidence = storage.allocate(incidence.size(), incidence.data());
+        g.patches = upload_boundary_patches(storage, g.patches);
+        g.stencil = context.device_view();
+        device_flux = storage.allocate<EulerFluxResult>(surfaces.size());
+        device_minimum = storage.allocate<DeviceCflMinimum>(1);
+        // Сразу после возврата сборка может читать геометрию в неблокирующем потоке CUDA.
         check(cudaStreamSynchronize(nullptr));
 #endif
     }
 };
 
-SpatialResidual::SpatialResidual(MeshView mesh,CvView cv,ReconstructionStencil stencil,
-    const std::vector<BoundaryConfig>& patches,ResidualOptions options,int device,const ResidualFrame& frame)
-    :p_(new Impl(std::move(stencil),device)) {
-    if (cv.dimension!=mesh.dimension || cv.edge_count!=mesh.edge_count || cv.node_count!=mesh.node_count ||
+SpatialResidual::SpatialResidual(MeshView mesh, CvView cv, ReconstructionStencil stencil,
+                                 const BoundaryPatches& patches, ResidualOptions options, int device,
+                                 const ResidualFrame& frame)
+    : p_(new Impl(std::move(stencil), device)) {
+    if (cv.dimension != mesh.dimension || cv.edge_count != mesh.edge_count ||
+        cv.node_count != mesh.node_count ||
         (cv.edge_count && (!mesh.edge_begin || !mesh.edge_end || !cv.edge_areas)))
         throw std::invalid_argument("residual: incompatible mesh and control volumes");
-    p_->prepare(cv.dimension,cv.node_count,cv.edge_count,cv.boundary_count,cv.boundary,
-        [&](Index e)->PeriodicEdge {return {mesh.edge_begin[e],mesh.edge_end[e],e,cv.edge_areas[e]};},
-        patches,options,frame);
+    p_->prepare(
+        cv.dimension, cv.node_count, cv.edge_count, cv.boundary_count, cv.boundary,
+        [&](Index e) -> PeriodicEdge { return {mesh.edge_begin[e], mesh.edge_end[e], e, cv.edge_areas[e]}; },
+        patches, options, frame);
 }
-SpatialResidual::SpatialResidual(unsigned d,PeriodicView grid,ReconstructionStencil stencil,
-    const std::vector<BoundaryConfig>& patches,ResidualOptions options,int device,const ResidualFrame& frame)
-    :p_(new Impl(std::move(stencil),device)) {
-    if (grid.edge_count && !grid.edges) throw std::invalid_argument("residual: missing periodic edges");
-    p_->prepare(d,grid.node_count,grid.edge_count,grid.boundary_count,grid.boundary,
-        [&](Index e){return grid.edges[e];},patches,options,frame);
+SpatialResidual::SpatialResidual(unsigned d, PeriodicView grid, ReconstructionStencil stencil,
+                                 const BoundaryPatches& patches, ResidualOptions options, int device,
+                                 const ResidualFrame& frame)
+    : p_(new Impl(std::move(stencil), device)) {
+    if (grid.edge_count && !grid.edges)
+        throw std::invalid_argument("residual: missing periodic edges");
+    p_->prepare(
+        d, grid.node_count, grid.edge_count, grid.boundary_count, grid.boundary,
+        [&](Index e) { return grid.edges[e]; }, patches, options, frame);
 }
 SpatialResidual::~SpatialResidual() {}
 
-void SpatialResidual::assemble(const double* u,const double* u0,double* r,double* edge,double* boundary,void* stream) {
-    assemble(u,u0,r,edge,boundary,stream,nullptr);
+void SpatialResidual::assemble(const double* u, const double* u0, double* r, double* edge, double* boundary,
+                               void* stream) {
+    assemble(u, u0, r, edge, boundary, stream, nullptr);
 }
-void SpatialResidual::assemble(const double* u,const double* u0,double* r,double* edge,double* boundary,
-                               void* stream,double* flux_seconds) {
-    const auto& g=p_->g;
-    if ((g.edges && !edge) || (g.faces>g.edges && !boundary))
+void SpatialResidual::assemble(const double* u, const double* u0, double* r, double* edge, double* boundary,
+                               void* stream, double* flux_seconds) {
+    const auto& g = p_->g;
+    if ((g.edges && !edge) || (g.faces > g.edges && !boundary))
         throw std::invalid_argument("residual: missing input or output");
-    p_->assemble(u,u0,r,edge,boundary,stream,flux_seconds);
+    p_->assemble(u, u0, r, edge, boundary, stream, flux_seconds);
 }
-void SpatialResidual::assemble_rhs(const double* u,const double* u0,double* r,void* stream,double* flux_seconds) {
-    p_->assemble(u,u0,r,nullptr,nullptr,stream,flux_seconds);
+void SpatialResidual::assemble_rhs(const double* u, const double* u0, double* r, void* stream,
+                                   double* flux_seconds) {
+    p_->assemble(u, u0, r, nullptr, nullptr, stream, flux_seconds);
 }
-double SpatialResidual::assemble_cfl(const double* u,const double* u0,double* r,const double* volumes,double courant,
-                                     void* stream,double* flux_seconds,double* cfl_seconds) {
-    if (!volumes || !(courant>0 && std::isfinite(courant))) throw std::invalid_argument("invalid CFL or volumes");
-    assemble_rhs(u,u0,r,stream,flux_seconds);
+double SpatialResidual::assemble_cfl(const double* u, const double* u0, double* r, const double* volumes,
+                                     double courant, void* stream, double* flux_seconds,
+                                     double* cfl_seconds) {
+    if (!volumes || !(courant > 0 && std::isfinite(courant)))
+        throw std::invalid_argument("invalid CFL or volumes");
+    assemble_rhs(u, u0, r, stream, flux_seconds);
     WallTimer timer(cfl_seconds);
-    const auto& g=p_->g;
+    const auto& g = p_->g;
     double dt;
 #ifdef AERO_WITH_CUDA
-    if (p_->device>=0) {
+    if (p_->device >= 0) {
         cuda_detail::DeviceScope scope(p_->device);
         check(scope.status);
-        dt=gpu_flux_cfl({g,p_->device_flux,volumes,nullptr,g.nodes},courant,p_->device_minimum,stream);
+        dt = gpu_flux_cfl({g, p_->device_flux, volumes, nullptr, g.nodes}, courant, p_->device_minimum,
+                          stream);
     } else
 #endif
-    dt=cpu_flux_cfl({g,p_->buffer.data(),volumes,nullptr,g.nodes},courant);
-    if (!std::isfinite(dt)) throw std::domain_error("no finite global CFL step");
+        dt = cpu_flux_cfl({g, p_->buffer.data(), volumes, nullptr, g.nodes}, courant);
+    if (!std::isfinite(dt))
+        throw std::domain_error("no finite global CFL step");
     return dt;
 }
-void SpatialResidual::Impl::assemble(const double* u,const double* u0,double* r,double* edge,double* boundary,
-                                     void* stream,double* flux_seconds) {
-    if (!u || !r) throw std::invalid_argument("residual: missing input or output");
+void SpatialResidual::Impl::assemble(const double* u, const double* u0, double* r, double* edge,
+                                     double* boundary, void* stream, double* flux_seconds) {
+    if (!u || !r)
+        throw std::invalid_argument("residual: missing input or output");
 #ifdef AERO_WITH_CUDA
-    if (device>=0) {
+    if (device >= 0) {
         cuda_detail::DeviceScope scope(device);
         check(scope.status);
-        const auto queue=static_cast<cudaStream_t>(stream);
-        Index* device_error=&device_minimum->bad;
-        check(cudaMemsetAsync(device_error,0xff,sizeof(Index),queue));
-        launch_residual(g,u,u0,device_flux,r,edge,boundary,device_error,queue);
+        const auto queue = static_cast<cudaStream_t>(stream);
+        Index* device_error = &device_minimum->bad;
+        check(cudaMemsetAsync(device_error, 0xff, sizeof(Index), queue));
+        launch_residual(g, u, u0, device_flux, r, edge, boundary, device_error, queue);
         Index bad;
-        check(cudaMemcpyAsync(&bad,device_error,sizeof(bad),cudaMemcpyDeviceToHost,queue));
+        check(cudaMemcpyAsync(&bad, device_error, sizeof(bad), cudaMemcpyDeviceToHost, queue));
         check(cudaStreamSynchronize(queue));
-        if (bad!=~Index(0)) failure(bad,g);
+        if (bad != ~Index(0))
+            failure(bad, g);
         return;
     }
 #endif
-    if (stream) throw std::invalid_argument("residual: CUDA stream on CPU");
-    // Each edge owns one flux. Gathering the two signed incidences requires
-    // no atomic updates and uses the same summation order on both backends.
+    if (stream)
+        throw std::invalid_argument("residual: CUDA stream on CPU");
+    // Первый проход по поверхностям: каждое ребро или площадка заполняет свою запись в buffer.
     {
         WallTimer timer(flux_seconds);
-        cpu_face_fluxes({g,nullptr,g.faces,u,u0,buffer.data(),edge,boundary});
+        cpu_face_fluxes({g, nullptr, g.faces, u, u0, buffer.data(), edge, boundary});
     }
-    parallel_for(g.nodes,[&](Index i) {
-        if (!gather(g,i,buffer.data(),r)) failure(g.faces+i,g);
-    },256);
+    // Второй проход по узлам: каждый поток читает готовые вклады и пишет только строку своего узла.
+    parallel_for(
+        g.nodes,
+        [&](Index i) {
+            if (!assemble_node_residual(g, i, buffer.data(), g.node_row(r, i)))
+                failure(g.faces + i, g);
+        },
+        256);
 }
 }

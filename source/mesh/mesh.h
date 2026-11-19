@@ -1,5 +1,6 @@
 #ifndef AERO_MESH_H
 #define AERO_MESH_H
+#include "../parallel/kernel_math.h"
 
 #include "mesh_index.h"
 #ifndef __CUDACC_RTC__
@@ -12,12 +13,6 @@
 #include <vector>
 #endif
 
-#if defined(__CUDACC__)
-#define AERO_MESH_HD __host__ __device__
-#else
-#define AERO_MESH_HD
-#endif
-
 namespace aero {
 
 #ifndef __CUDACC_RTC__
@@ -28,7 +23,7 @@ public:
     explicit MeshError(const std::string& message) : std::runtime_error(message) {}
 };
 
-// Zero-based CSR with half-open [offset[i], offset[i+1]) rows.
+// Строка i в CSR занимает индексы от offsets[i] включительно до offsets[i+1] исключительно. Нумерация с нуля.
 struct MeshCsr {
     std::vector<MeshIndex> offsets;
     std::vector<MeshIndex> indices;
@@ -38,21 +33,21 @@ struct MeshCsr {
 };
 
 struct MeshData {
-    // Topological dimension (1, 2 or 3); coordinates always use x, y, z.
+    // Топологическая размерность равна 1, 2 или 3. Координаты всегда хранятся по трём осям.
     unsigned dimension;
-    double length_scale_to_meters;
+    double length_scale_to_meters; // Метров на единицу исходных координат.
     std::vector<double> x, y, z;
-    // 1D: one vertex; 2D: two directed endpoints; 3D: a cyclic polygon.
+    // Грань в 1D — вершина, в 2D — направленное ребро, в 3D — циклически упорядоченный многоугольник.
     MeshCsr face_nodes;
-    // Cells reference shared faces, each stored exactly once.
+    // Ячейки ссылаются на номера граней. Общая грань хранится один раз.
     MeshCsr cell_faces;
-    // Parallel to cell_faces.indices. 1D: -1 at start, +1 at end.
-    // 2D: +1 follows the directed edge, -1 reverses it along the cell contour.
-    // 3D: +1 uses the face cycle as outward, -1 reverses it.
+    // Знаки идут в том же порядке, что и cell_faces.indices. В 1D начало имеет знак −1, конец +1.
+    // В 2D знак +1 означает обход ребра по его направлению, в 3D — наружную ориентацию цикла грани.
+    // Знак −1 обращает соответствующее направление.
     std::vector<std::int8_t> cell_face_orientation;
     std::vector<MeshIndex> boundary_faces;
     std::vector<MeshIndex> boundary_patch;
-    // Names only; boundary conditions and periodic pairs belong to run setup.
+    // Здесь хранятся имена участков. Физические условия и периодические пары задаются в постановке.
     std::vector<std::string> patch_names;
     MeshData() : dimension(3), length_scale_to_meters(1.0) {}
 };
@@ -61,73 +56,80 @@ struct MeshData {
 struct MeshIndexSpan {
     const MeshIndex* data;
     MeshIndex size;
-    AERO_MESH_HD MeshIndexSpan(const MeshIndex* values = nullptr, MeshIndex count = 0)
+    AERO_HOST_DEVICE MeshIndexSpan(const MeshIndex* values = nullptr, MeshIndex count = 0)
         : data(values), size(count) {}
-    AERO_MESH_HD MeshIndex operator[](MeshIndex i) const noexcept { return data[i]; }
-    AERO_MESH_HD const MeshIndex* begin() const noexcept { return data; }
-    AERO_MESH_HD const MeshIndex* end() const noexcept { return size ? data + size : data; }
+    AERO_HOST_DEVICE MeshIndex operator[](MeshIndex i) const noexcept { return data[i]; }
+    AERO_HOST_DEVICE const MeshIndex* begin() const noexcept { return data; }
+    AERO_HOST_DEVICE const MeshIndex* end() const noexcept { return size ? data + size : data; }
 };
+
+// Любая связь сетки задаётся одной строкой CSR. Смежные номера лежат подряд между двумя смещениями.
+// В частности, у точечной грани в 1D строка рёбер пуста, а указатель на их массив может быть нулевым.
+AERO_HOST_DEVICE inline MeshIndexSpan mesh_index_row(const MeshIndex* offsets, const MeshIndex* indices,
+                                                     MeshIndex row) noexcept {
+    const MeshIndex first = offsets[row], count = offsets[row + 1] - first;
+    return MeshIndexSpan(count ? indices + first : nullptr, count);
+}
 
 class MeshNode;
 class MeshEdge;
 class MeshFace;
 class MeshCell;
 
-// Borrowed CPU/CUDA view; value-initialize with MeshView{}. Pointers must
-// address memory accessible to the chosen executor. Copying this struct does
-// not copy its arrays to a GPU. Access is unchecked; names remain on the host.
+// Представление ссылается на массивы владельца. Инициализируйте его как MeshView{}.
+// Копирование указателей не переносит данные на GPU. Адреса должны быть доступны выбранному исполнителю.
+// Индексы должны быть проверены вызывающим кодом. Имена остаются на CPU.
 struct MeshView {
     unsigned dimension;
     MeshIndex node_count, face_count, cell_count, edge_count, boundary_face_count, patch_count;
-    double length_scale_to_meters;
+    double length_scale_to_meters; // Метров на единицу исходных координат.
     const double* x;
     const double* y;
     const double* z;
+    // Связь «грань → вершины»: смещения и номера узлов в порядке обхода грани.
     const MeshIndex* face_offsets;
     const MeshIndex* face_indices;
+    // Связь «ячейка → грани». Знак в той же позиции задаёт ориентацию грани в ячейке.
     const MeshIndex* cell_offsets;
     const MeshIndex* cell_indices;
     const signed char* cell_orientation;
+    // Параллельные массивы: номер внешней грани и номер её граничного участка.
     const MeshIndex* boundary_faces;
     const MeshIndex* boundary_patch;
+    // Концы ориентированного ребра. Положительный поток идёт от begin к end.
     const MeshIndex* edge_begin;
     const MeshIndex* edge_end;
-    // Separate CSR: 0 edges per face in 1D, 1 in 2D, cyclic edges in 3D.
+    // Отдельная CSR-таблица рёбер грани: ноль рёбер в 1D, одно в 2D, цикл в 3D.
     const MeshIndex* face_edge_offsets;
     const MeshIndex* face_edge_indices;
+    // Производные строки узлов и рёбер ячейки. Их строят один раз при загрузке сетки.
     const MeshIndex* cell_node_offsets;
     const MeshIndex* cell_node_indices;
     const MeshIndex* cell_edge_offsets;
     const MeshIndex* cell_edge_indices;
 
-    AERO_MESH_HD MeshNode node(MeshIndex id) const noexcept;
-    AERO_MESH_HD MeshEdge edge(MeshIndex id) const noexcept;
-    AERO_MESH_HD MeshFace face(MeshIndex id) const noexcept;
-    AERO_MESH_HD MeshCell cell(MeshIndex id) const noexcept;
+    AERO_HOST_DEVICE MeshNode node(MeshIndex id) const noexcept;
+    AERO_HOST_DEVICE MeshEdge edge(MeshIndex id) const noexcept;
+    AERO_HOST_DEVICE MeshFace face(MeshIndex id) const noexcept;
+    AERO_HOST_DEVICE MeshCell cell(MeshIndex id) const noexcept;
 
-    AERO_MESH_HD MeshIndexSpan face_nodes(MeshIndex face) const noexcept {
-        const MeshIndex first = face_offsets[face];
-        return MeshIndexSpan(face_indices + first, face_offsets[face + 1] - first);
+    AERO_HOST_DEVICE MeshIndexSpan face_nodes(MeshIndex face) const noexcept {
+        return mesh_index_row(face_offsets, face_indices, face);
     }
-    AERO_MESH_HD MeshIndexSpan cell_faces(MeshIndex cell) const noexcept {
-        const MeshIndex first = cell_offsets[cell];
-        return MeshIndexSpan(cell_indices + first, cell_offsets[cell + 1] - first);
+    AERO_HOST_DEVICE MeshIndexSpan cell_faces(MeshIndex cell) const noexcept {
+        return mesh_index_row(cell_offsets, cell_indices, cell);
     }
-    AERO_MESH_HD int face_orientation(MeshIndex cell, MeshIndex local_face) const noexcept {
+    AERO_HOST_DEVICE int face_orientation(MeshIndex cell, MeshIndex local_face) const noexcept {
         return cell_orientation[cell_offsets[cell] + local_face];
     }
-    AERO_MESH_HD MeshIndexSpan face_edges(MeshIndex face) const noexcept {
-        const MeshIndex first = face_edge_offsets[face];
-        const MeshIndex count = face_edge_offsets[face + 1] - first;
-        return MeshIndexSpan(count ? face_edge_indices + first : nullptr, count);
+    AERO_HOST_DEVICE MeshIndexSpan face_edges(MeshIndex face) const noexcept {
+        return mesh_index_row(face_edge_offsets, face_edge_indices, face);
     }
-    AERO_MESH_HD MeshIndexSpan cell_nodes(MeshIndex cell) const noexcept {
-        const MeshIndex first = cell_node_offsets[cell];
-        return MeshIndexSpan(cell_node_indices + first, cell_node_offsets[cell + 1] - first);
+    AERO_HOST_DEVICE MeshIndexSpan cell_nodes(MeshIndex cell) const noexcept {
+        return mesh_index_row(cell_node_offsets, cell_node_indices, cell);
     }
-    AERO_MESH_HD MeshIndexSpan cell_edges(MeshIndex cell) const noexcept {
-        const MeshIndex first = cell_edge_offsets[cell];
-        return MeshIndexSpan(cell_edge_indices + first, cell_edge_offsets[cell + 1] - first);
+    AERO_HOST_DEVICE MeshIndexSpan cell_edges(MeshIndex cell) const noexcept {
+        return mesh_index_row(cell_edge_offsets, cell_edge_indices, cell);
     }
 };
 
@@ -136,118 +138,119 @@ static_assert(std::is_trivially_copyable<MeshView>::value, "MeshView must be tri
 static_assert(std::is_standard_layout<MeshView>::value, "MeshView must have standard layout");
 #endif
 
-// Non-owning, read-only entity handles. They copy the view descriptor, never
-// arrays, and are safe to obtain from a temporary mesh.view(). Their lifetime
-// is limited by the underlying mesh/device storage, not by the view object.
-// All indices below are LOCAL positions; id()/..._id() return GLOBAL IDs.
-// Like MeshView, access is unchecked (valid indices required), on CPU and CUDA.
+// Дескрипторы дают доступ только для чтения. Они копируют представление, а массивы остаются у владельца.
+// Можно брать дескриптор из временного mesh.view(), пока существует память сетки или устройства.
+// Аргументы обхода — локальные позиции внутри элемента. Методы id() и ..._id() возвращают номера в сетке.
+// На CPU и CUDA вложенные обращения предполагают корректные индексы.
 class MeshEntity {
 public:
-    AERO_MESH_HD MeshIndex id() const noexcept { return id_; }
+    AERO_HOST_DEVICE MeshIndex id() const noexcept { return id_; }
+
 protected:
-    AERO_MESH_HD MeshEntity(MeshView view, MeshIndex id) : view_(view), id_(id) {}
+    AERO_HOST_DEVICE MeshEntity(MeshView view, MeshIndex id) : view_(view), id_(id) {}
     MeshView view_;
     MeshIndex id_;
 };
 
 class MeshNode : public MeshEntity {
 public:
-    AERO_MESH_HD MeshNode(MeshView view, MeshIndex id) : MeshEntity(view, id) {}
-    // Stored coordinates, before applying length_scale_to_meters.
-    AERO_MESH_HD double x() const noexcept { return view_.x[id_]; }
-    AERO_MESH_HD double y() const noexcept { return view_.y[id_]; }
-    AERO_MESH_HD double z() const noexcept { return view_.z[id_]; }
+    AERO_HOST_DEVICE MeshNode(MeshView view, MeshIndex id) : MeshEntity(view, id) {}
+    // Исходные координаты до умножения на length_scale_to_meters.
+    AERO_HOST_DEVICE double x() const noexcept { return view_.x[id_]; }
+    AERO_HOST_DEVICE double y() const noexcept { return view_.y[id_]; }
+    AERO_HOST_DEVICE double z() const noexcept { return view_.z[id_]; }
 };
 
 class MeshEdge : public MeshEntity {
 public:
-    AERO_MESH_HD MeshEdge(MeshView view, MeshIndex id) : MeshEntity(view, id) {}
-    AERO_MESH_HD MeshIndex node_count() const noexcept { return 2; }
-    // Canonical endpoint order by node ID, not cell/face traversal direction.
-    AERO_MESH_HD MeshIndex node_id(MeshIndex local) const noexcept {
+    AERO_HOST_DEVICE MeshEdge(MeshView view, MeshIndex id) : MeshEntity(view, id) {}
+    AERO_HOST_DEVICE MeshIndex node_count() const noexcept { return 2; }
+    // Концы упорядочены по номерам узлов. Направление обхода грани или ячейки может быть обратным.
+    AERO_HOST_DEVICE MeshIndex node_id(MeshIndex local) const noexcept {
         return local == 0 ? view_.edge_begin[id_] : view_.edge_end[id_];
     }
-    AERO_MESH_HD MeshNode node(MeshIndex local) const noexcept { return view_.node(node_id(local)); }
+    AERO_HOST_DEVICE MeshNode node(MeshIndex local) const noexcept { return view_.node(node_id(local)); }
 };
 
 class MeshFace : public MeshEntity {
 public:
-    AERO_MESH_HD MeshFace(MeshView view, MeshIndex id) : MeshEntity(view, id) {}
-    AERO_MESH_HD MeshIndexSpan node_ids() const noexcept { return view_.face_nodes(id_); }
-    AERO_MESH_HD MeshIndexSpan edge_ids() const noexcept { return view_.face_edges(id_); }
-    AERO_MESH_HD MeshIndex node_count() const noexcept { return node_ids().size; }
-    AERO_MESH_HD MeshIndex edge_count() const noexcept { return edge_ids().size; }
-    AERO_MESH_HD MeshIndex node_id(MeshIndex local) const noexcept { return node_ids()[local]; }
-    AERO_MESH_HD MeshIndex edge_id(MeshIndex local) const noexcept { return edge_ids()[local]; }
-    AERO_MESH_HD MeshNode node(MeshIndex local) const noexcept { return view_.node(node_id(local)); }
-    AERO_MESH_HD MeshEdge edge(MeshIndex local) const noexcept { return view_.edge(edge_id(local)); }
+    AERO_HOST_DEVICE MeshFace(MeshView view, MeshIndex id) : MeshEntity(view, id) {}
+    AERO_HOST_DEVICE MeshIndexSpan node_ids() const noexcept { return view_.face_nodes(id_); }
+    AERO_HOST_DEVICE MeshIndexSpan edge_ids() const noexcept { return view_.face_edges(id_); }
+    AERO_HOST_DEVICE MeshIndex node_count() const noexcept { return node_ids().size; }
+    AERO_HOST_DEVICE MeshIndex edge_count() const noexcept { return edge_ids().size; }
+    AERO_HOST_DEVICE MeshIndex node_id(MeshIndex local) const noexcept { return node_ids()[local]; }
+    AERO_HOST_DEVICE MeshIndex edge_id(MeshIndex local) const noexcept { return edge_ids()[local]; }
+    AERO_HOST_DEVICE MeshNode node(MeshIndex local) const noexcept { return view_.node(node_id(local)); }
+    AERO_HOST_DEVICE MeshEdge edge(MeshIndex local) const noexcept { return view_.edge(edge_id(local)); }
 };
 
 class MeshCell : public MeshEntity {
 public:
-    AERO_MESH_HD MeshCell(MeshView view, MeshIndex id) : MeshEntity(view, id) {}
-    AERO_MESH_HD MeshIndexSpan face_ids() const noexcept { return view_.cell_faces(id_); }
-    // Unique nodes/edges sorted by global ID; not a geometric traversal order.
-    AERO_MESH_HD MeshIndexSpan node_ids() const noexcept { return view_.cell_nodes(id_); }
-    AERO_MESH_HD MeshIndexSpan edge_ids() const noexcept { return view_.cell_edges(id_); }
-    AERO_MESH_HD MeshIndex face_count() const noexcept { return face_ids().size; }
-    AERO_MESH_HD MeshIndex node_count() const noexcept { return node_ids().size; }
-    AERO_MESH_HD MeshIndex edge_count() const noexcept { return edge_ids().size; }
-    AERO_MESH_HD MeshIndex face_id(MeshIndex local) const noexcept { return face_ids()[local]; }
-    AERO_MESH_HD MeshIndex node_id(MeshIndex local) const noexcept { return node_ids()[local]; }
-    AERO_MESH_HD MeshIndex edge_id(MeshIndex local) const noexcept { return edge_ids()[local]; }
-    AERO_MESH_HD int face_orientation(MeshIndex local) const noexcept { return view_.face_orientation(id_,local); }
-    AERO_MESH_HD MeshFace face(MeshIndex local) const noexcept { return view_.face(face_id(local)); }
-    AERO_MESH_HD MeshNode node(MeshIndex local) const noexcept { return view_.node(node_id(local)); }
-    AERO_MESH_HD MeshEdge edge(MeshIndex local) const noexcept { return view_.edge(edge_id(local)); }
+    AERO_HOST_DEVICE MeshCell(MeshView view, MeshIndex id) : MeshEntity(view, id) {}
+    AERO_HOST_DEVICE MeshIndexSpan face_ids() const noexcept { return view_.cell_faces(id_); }
+    // Узлы и рёбра перечисляются по возрастанию номера без повторов. Геометрический обход имеет другой порядок.
+    AERO_HOST_DEVICE MeshIndexSpan node_ids() const noexcept { return view_.cell_nodes(id_); }
+    AERO_HOST_DEVICE MeshIndexSpan edge_ids() const noexcept { return view_.cell_edges(id_); }
+    AERO_HOST_DEVICE MeshIndex face_count() const noexcept { return face_ids().size; }
+    AERO_HOST_DEVICE MeshIndex node_count() const noexcept { return node_ids().size; }
+    AERO_HOST_DEVICE MeshIndex edge_count() const noexcept { return edge_ids().size; }
+    AERO_HOST_DEVICE MeshIndex face_id(MeshIndex local) const noexcept { return face_ids()[local]; }
+    AERO_HOST_DEVICE MeshIndex node_id(MeshIndex local) const noexcept { return node_ids()[local]; }
+    AERO_HOST_DEVICE MeshIndex edge_id(MeshIndex local) const noexcept { return edge_ids()[local]; }
+    AERO_HOST_DEVICE int face_orientation(MeshIndex local) const noexcept {
+        return view_.face_orientation(id_, local);
+    }
+    AERO_HOST_DEVICE MeshFace face(MeshIndex local) const noexcept { return view_.face(face_id(local)); }
+    AERO_HOST_DEVICE MeshNode node(MeshIndex local) const noexcept { return view_.node(node_id(local)); }
+    AERO_HOST_DEVICE MeshEdge edge(MeshIndex local) const noexcept { return view_.edge(edge_id(local)); }
 };
 
-AERO_MESH_HD inline MeshNode MeshView::node(MeshIndex id) const noexcept { return MeshNode(*this,id); }
-AERO_MESH_HD inline MeshEdge MeshView::edge(MeshIndex id) const noexcept { return MeshEdge(*this,id); }
-AERO_MESH_HD inline MeshFace MeshView::face(MeshIndex id) const noexcept { return MeshFace(*this,id); }
-AERO_MESH_HD inline MeshCell MeshView::cell(MeshIndex id) const noexcept { return MeshCell(*this,id); }
+AERO_HOST_DEVICE inline MeshNode MeshView::node(MeshIndex id) const noexcept {
+    return MeshNode(*this, id);
+}
+AERO_HOST_DEVICE inline MeshEdge MeshView::edge(MeshIndex id) const noexcept {
+    return MeshEdge(*this, id);
+}
+AERO_HOST_DEVICE inline MeshFace MeshView::face(MeshIndex id) const noexcept {
+    return MeshFace(*this, id);
+}
+AERO_HOST_DEVICE inline MeshCell MeshView::cell(MeshIndex id) const noexcept {
+    return MeshCell(*this, id);
+}
 
 #ifndef __CUDACC_RTC__
 static_assert(std::is_trivially_copyable<MeshCell>::value, "Entity handles must be trivially copyable");
 
 struct MeshReadLimits {
-    // Stored input arrays/strings only; excludes validation and derived connectivity.
+    // Память входных массивов и строк. Рабочая память проверок и производные связи учитываются отдельно.
     std::uint64_t max_payload_bytes, max_name_bytes;
-    MeshReadLimits(std::uint64_t bytes = 1024ULL * 1024ULL * 1024ULL,
-                   std::uint64_t name_bytes = 4096)
+    MeshReadLimits(std::uint64_t bytes = 1024ULL * 1024ULL * 1024ULL, std::uint64_t name_bytes = 4096)
         : max_payload_bytes(bytes), max_name_bytes(name_bytes) {}
 };
 
-// Lzma wraps binary v2 in AEROLZMA blocks; see source/io/README.txt.
-// Reading detects all three encodings by signature, independent of extension.
-// Native format v2; v1 is explicitly rejected, without implicit conversion.
-// TEXT: "AEROMESH 2 TEXT", then DIMENSION, COUNTS, LENGTH_SCALE_TO_METERS,
-// X, Y, Z, FACE_OFFSETS, FACE_NODES, CELL_OFFSETS, CELL_FACES, CELL_ORIENTATIONS,
-// BOUNDARY_FACES, BOUNDARY_PATCH, PATCH_NAMES, END.
-// COUNTS: nodes, faces, face-node entries, cells, cell-face entries, boundary
-// faces, patches. Offsets have rows+1 entries. DIMENSION=1,2,3. IDs start at zero.
-// All dimensions store all three coordinate arrays. Existing v2 3D files
-// remain compatible; no padding or new fields are added to the file layout.
-// Whitespace separates tokens; decimal point is always a dot. Names use double
-// quotes; a backslash escapes a quote or another backslash.
-// BINARY: 8 bytes "AEROMSHB", uint64 version=2, then the same payload without
-// labels or END. Integers are little-endian uint64, except orientations: one
-// byte 0x01 (+1) or 0xff (-1). Doubles are IEEE-754 binary64, little-endian.
-// A name is uint64 byte-length followed by UTF-8 bytes, without a NUL terminator.
-// Names are nonempty unique UTF-8 without ASCII control characters. Trailing
-// data is rejected in both encodings. Derived edges and cell node/edge lists
-// are rebuilt on loading; they do not add fields to the file format.
+// Формат сетки версии 2. При чтении сигнатура различает текст, двоичные данные и двоичные блоки AEROLZMA.
+// Версия 1 отклоняется. Контейнер LZMA описан в source/io/README.txt.
 //
-// A 1D cell has two point faces with opposite signs. A 2D cell has a single
-// simple oriented contour (at least three edges), including concave polygons.
-// A 3D cell boundary is a connected, closed, oriented manifold surface.
-// A face has one or two incident cells; the latter use opposite orientations.
-// Every exterior face occurs once in the boundary list. Polygon sizes and
-// polyhedron face counts have no fixed maximum. Duplicate face cycles/cells,
-// repeated vertices, orphan faces, and incomplete boundaries are rejected.
-// Geometry validation covers finite coordinates and a positive length scale,
-// NOT planarity, zero lengths/areas, signed volumes, intersections or overlap.
-// Topological orientation alone does not prove positive volume.
+// Текст начинается с «AEROMESH 2 TEXT». Далее идут DIMENSION, COUNTS, LENGTH_SCALE_TO_METERS, X, Y, Z,
+// FACE_OFFSETS, FACE_NODES, CELL_OFFSETS, CELL_FACES, CELL_ORIENTATIONS, BOUNDARY_FACES, BOUNDARY_PATCH, PATCH_NAMES, END.
+// COUNTS перечисляет узлы, грани, записи «грань–узел», ячейки, записи «ячейка–грань», внешние грани и участки.
+// Длина массива смещений равна числу строк плюс один. Номера с нуля, размерность 1–3, массивов координат всегда три.
+// Совместимость с трёхмерной версией 2 сохраняется. Токены разделяют пробелами, дробную часть — точкой.
+// Имена заключают в двойные кавычки. Обратная косая черта экранирует кавычку или другую обратную косую черту.
+//
+// Двоичный поток начинается с восьми байтов AEROMSHB и uint64 со значением 2. Далее те же данные без меток и END.
+// Целые числа записываются как uint64 младшим байтом вперёд. Для ориентации один байт: 0x01 (+1) или 0xff (−1).
+// Вещественные числа — IEEE-754 binary64 младшим байтом вперёд. Имя содержит длину uint64 и байты UTF-8 без завершающего нуля.
+// Имена непустые и уникальные, управляющие символы ASCII запрещены. Лишние данные в конце файла вызывают ошибку.
+// Производные рёбра и списки узлов и рёбер ячеек восстанавливаются при чтении.
+//
+// Ячейка 1D имеет две точечные грани с противоположными знаками. В 2D нужен один простой ориентированный контур
+// хотя бы из трёх рёбер, он может быть вогнутым. В 3D требуется связная замкнутая ориентированная поверхность.
+// У грани одна или две ячейки. Две соседние ячейки используют противоположные знаки. Каждая внешняя грань входит в список один раз.
+// Число вершин многоугольника и граней многогранника произвольно. Повторы граней и ячеек, повтор вершины,
+// грани без ячеек и неполная граница отклоняются. На этом этапе проверяются конечность координат и положительный масштаб.
+// Плоскостность, длины, площади, объёмы, пересечения и наложения одной проверкой топологии установить нельзя.
 class Mesh {
 public:
     Mesh() : face_edge_offsets_(1, 0) {}
@@ -255,20 +258,20 @@ public:
     const MeshData& data() const noexcept { return data_; }
     const std::vector<MeshIndex>& edge_begin() const noexcept { return edge_begin_; }
     const std::vector<MeshIndex>& edge_end() const noexcept { return edge_end_; }
-    // Host pointers; cannot outlive or survive replacement of their storage.
+    // Указатели на память CPU действительны, пока существует исходное хранилище и его не заменили.
     MeshView view() const noexcept;
-    // Host entry points check the global ID and throw MeshError on failure.
-    // Nested access/local indices remain unchecked, as in MeshView.
+    // Методы Mesh проверяют номер элемента и выбрасывают MeshError при ошибке.
+    // Во вложенных обращениях проверка локальной позиции остаётся обязанностью вызывающего кода.
     MeshNode node(MeshIndex id) const;
     MeshEdge edge(MeshIndex id) const;
     MeshFace face(MeshIndex id) const;
     MeshCell cell(MeshIndex id) const;
     void validate() const;
 
-    // CPU-only C++11 I/O. Paths use the platform's narrow-string encoding.
+    // Файловый ввод и вывод выполняются на CPU. Путь передаётся в узкой кодировке системы.
     static Mesh read(const std::string& path, const MeshReadLimits& limits = MeshReadLimits());
     static Mesh read(std::istream& input, const MeshReadLimits& limits = MeshReadLimits());
-    // Failed I/O can leave a partially written output.
+    // При ошибке записи часть выходного файла уже может находиться на диске.
     void write(const std::string& path, MeshFormat format = MeshFormat::Binary) const;
     void write(std::ostream& output, MeshFormat format = MeshFormat::Binary) const;
 
@@ -283,5 +286,4 @@ private:
 #endif
 } // namespace aero
 
-#undef AERO_MESH_HD
 #endif

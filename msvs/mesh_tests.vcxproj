@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Project DefaultTargets="Build" ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003" DefaultTargets="Build" ToolsVersion="Current">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|x64">
       <Configuration>Debug</Configuration>
@@ -41,18 +41,8 @@
     <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
     <RunMeshTests Condition="'$(RunMeshTests)'==''">true</RunMeshTests>
   </PropertyGroup>
+  <Import Project="module_compiler.props" />
   <ItemDefinitionGroup>
-    <ClCompile>
-      <WarningLevel>Level4</WarningLevel>
-      <!-- MSVC has no C++11 mode. Code is C++11; Makefile enforces strict C++11. -->
-      <LanguageStandard>stdcpp14</LanguageStandard>
-      <ConformanceMode>true</ConformanceMode>
-      <ExceptionHandling>Sync</ExceptionHandling>
-      <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
-      <ProgramDataBaseFileName>$(IntDir)$(MSBuildProjectName).pdb</ProgramDataBaseFileName>
-      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
-    </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
@@ -88,8 +78,7 @@
   </ItemGroup>
   <Import Project="openmp.props" />
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
-  <Target Name="RunMeshUnitTests" AfterTargets="Build"
-          Condition="'$(RunMeshTests)'=='true' and '$(DesignTimeBuild)'!='true'">
+  <Target Name="RunMeshUnitTests" AfterTargets="Build" Condition="'$(RunMeshTests)'=='true' and '$(DesignTimeBuild)'!='true'">
     <Exec Command="&quot;$(TargetPath)&quot;" WorkingDirectory="$(MSBuildProjectDirectory)\.." />
   </Target>
   <Import Project="publish_program.targets" />

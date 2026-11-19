@@ -1,5 +1,5 @@
-# The default converter uses the bundled source archives. An explicit prefix or
-# flags select a caller-provided installation instead.
+# По умолчанию конвертер использует архивы зависимостей из third_party.
+# Префикс или флаги сборки позволяют выбрать установленную библиотеку.
 WITH_CGNS ?= 1
 ifeq ($(WITH_CGNS),1)
 ifeq ($(origin CGNS_PREFIX)/$(origin CGNS_CPPFLAGS)/$(origin CGNS_LDLIBS),undefined/undefined/undefined)

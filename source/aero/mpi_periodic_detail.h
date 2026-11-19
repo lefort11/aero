@@ -7,57 +7,107 @@
 #include <cstring>
 #include <set>
 
-namespace aero { namespace periodic_mpi {
-using Id=MeshIndex;
-using Key=std::pair<Id,Id>;  // (n,n) for nodes, ordered original endpoints for edges
-using Point=std::array<double,3>;
-struct Ref { Key key; int rank; };
-inline bool operator<(const Ref& a,const Ref& b) { return a.key<b.key; }
-inline Ref vertex(const MeshPartition& p,Id i) { return {{p.nodes[i],p.nodes[i]},p.node_owners[i]}; }
-inline Ref edge(Ref a,Ref b) {
-    if (b<a) std::swap(a,b);
-    return {{a.key.first,b.key.first},a.rank};
+namespace aero {
+namespace periodic_mpi {
+using Id = MeshIndex;
+using Key = std::pair<Id, Id>; // Для узла пара (n,n), для ребра — упорядоченные исходные номера концов.
+using Point = std::array<double, 3>;
+struct Ref {
+    Key key;
+    int rank;
+};
+inline bool operator<(const Ref& a, const Ref& b) {
+    return a.key < b.key;
 }
-inline Point position(MeshView m,Id i) { return {{m.x[i],m.y[i],m.z[i]}}; }
-inline Point point(CvVector a) { return {{a.x,a.y,a.z}}; }
-inline CvVector vector(Point a) { return {a[0],a[1],a[2]}; }
-inline Point add(Point a,Point b) { return {{a[0]+b[0],a[1]+b[1],a[2]+b[2]}}; }
-inline Point sub(Point a,Point b) { return {{a[0]-b[0],a[1]-b[1],a[2]-b[2]}}; }
-inline double norm(Point a) { return std::hypot(std::hypot(a[0],a[1]),a[2]); }
+inline Ref vertex(const MeshPartition& p, Id i) {
+    return {{p.nodes[i], p.nodes[i]}, p.node_owners[i]};
+}
+inline Ref edge(Ref a, Ref b) {
+    if (b < a)
+        std::swap(a, b);
+    return {{a.key.first, b.key.first}, a.rank};
+}
+inline Point position(MeshView m, Id i) {
+    return {{m.x[i], m.y[i], m.z[i]}};
+}
+inline Point point(CvVector a) {
+    return {{a.x, a.y, a.z}};
+}
+inline CvVector vector(Point a) {
+    return {a[0], a[1], a[2]};
+}
+inline Point add(Point a, Point b) {
+    return {{a[0] + b[0], a[1] + b[1], a[2] + b[2]}};
+}
+inline Point sub(Point a, Point b) {
+    return {{a[0] - b[0], a[1] - b[1], a[2] - b[2]}};
+}
+inline double norm(Point a) {
+    return std::hypot(std::hypot(a[0], a[1]), a[2]);
+}
 
-inline void put(std::string& s,Id n) { mdec::append_word(s,n); }
-inline void put(std::string& s,Key k) { put(s,k.first); put(s,k.second); }
-inline void put(std::string& s,Ref r) { put(s,r.key); put(s,static_cast<Id>(r.rank)); }
-inline void put_real(std::string& s,double x) { Id n; std::memcpy(&n,&x,sizeof(n)); put(s,n); }
-inline void put(std::string& s,Point v) { for (double x:v) put_real(s,x); }
+inline void put(std::string& s, Id n) {
+    mdec::append_word(s, n);
+}
+inline void put(std::string& s, Key k) {
+    put(s, k.first);
+    put(s, k.second);
+}
+inline void put(std::string& s, Ref r) {
+    put(s, r.key);
+    put(s, static_cast<Id>(r.rank));
+}
+inline void put_real(std::string& s, double x) {
+    Id n;
+    std::memcpy(&n, &x, sizeof(n));
+    put(s, n);
+}
+inline void put(std::string& s, Point v) {
+    for (double x : v)
+        put_real(s, x);
+}
 struct Reader {
     const std::string& data;
     std::size_t offset;
-    Id id() { const Id n=mdec::read_word(data,offset); offset+=8; return n; }
-    Key key() { return {id(),id()}; }
-    Ref ref() { return {key(),static_cast<int>(id())}; }
-    double real() { const Id n=id(); double x; std::memcpy(&x,&n,sizeof(x)); return x; }
-    Point point() { return {{real(),real(),real()}}; }
+    Id id() {
+        const Id n = mdec::read_word(data, offset);
+        offset += 8;
+        return n;
+    }
+    Key key() { return {id(), id()}; }
+    Ref ref() { return {key(), static_cast<int>(id())}; }
+    double real() {
+        const Id n = id();
+        double x;
+        std::memcpy(&x, &n, sizeof(x));
+        return x;
+    }
+    Point point() { return {{real(), real(), real()}}; }
 };
-// All setup records use the archive's 64-bit little-endian representation.
-// Local errors are synchronized before any process enters the next exchange.
-using Messages=Processes::Messages;
-template<class Send,class Receive> void exchange(const Processes& w,Send send,Receive receive) {
+// При подготовке используем 64-битный формат архива с младшим байтом первым.
+// Согласуем ошибки между процессами до начала следующего обмена.
+using Messages = Processes::Messages;
+template <class Send, class Receive> void exchange(const Processes& w, Send send, Receive receive) {
     Messages out;
-    w.local([&] { out.resize(w.size); send(out); });
-    const auto in=w.exchange(out);
     w.local([&] {
-        for (int p=0;p<w.size;++p) {
-            Reader r={in[p],0};
-            while (r.offset<r.data.size()) receive(r,p);
+        out.resize(w.size);
+        send(out);
+    });
+    const auto in = w.exchange(out);
+    w.local([&] {
+        for (int p = 0; p < w.size; ++p) {
+            Reader r = {in[p], 0};
+            while (r.offset < r.data.size())
+                receive(r, p);
         }
     });
 }
-using Labels=std::map<Key,Ref>;
-inline Ref representative(const Labels& labels,Ref ref) {
-    const auto it=labels.find(ref.key);
-    return it==labels.end()?ref:it->second;
+using Labels = std::map<Key, Ref>;
+inline Ref representative(const Labels& labels, Ref ref) {
+    const auto it = labels.find(ref.key);
+    return it == labels.end() ? ref : it->second;
 }
-Labels match_periodic(const MeshPartition&,CvView,const std::vector<PeriodicPair>&,const Processes&);
-}}
+Labels match_periodic(const MeshPartition&, CvView, const std::vector<PeriodicPair>&, const Processes&);
+}
+}
 #endif

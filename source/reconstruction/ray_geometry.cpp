@@ -1,0 +1,511 @@
+#include "reconstruction.h"
+#include "../parallel/parallel_for.h"
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <limits>
+#include <map>
+#include <initializer_list>
+
+namespace aero {
+detail::RayPoint::RayPoint() : distance((std::numeric_limits<double>::infinity)()), outward(false) {}
+namespace {
+struct Vec {
+    double x, y, z;
+    Vec(double a = 0, double b = 0, double c = 0) : x(a), y(b), z(c) {}
+};
+Vec operator+(Vec a, Vec b) {
+    return Vec(a.x + b.x, a.y + b.y, a.z + b.z);
+}
+Vec operator-(Vec a, Vec b) {
+    return Vec(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+Vec operator*(Vec a, double t) {
+    return Vec(a.x * t, a.y * t, a.z * t);
+}
+Vec operator/(Vec a, double t) {
+    return a * (1.0 / t);
+}
+double dot(Vec a, Vec b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+Vec cross(Vec a, Vec b) {
+    return Vec(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x);
+}
+double norm(Vec a) {
+    return std::hypot(std::hypot(a.x, a.y), a.z);
+}
+Vec point(MeshView m, MeshIndex n) {
+    return Vec(m.x[n], m.y[n], m.z[n]);
+}
+typedef std::array<MeshIndex, 3> Triangle;
+struct Surface {
+    Vec normal;
+    std::vector<Triangle> triangles;
+};
+
+double turn(Vec a, Vec b, Vec c, Vec normal) {
+    return dot(cross(b - a, c - a), normal);
+}
+
+// Переносим начало в вершину грани и приводим координаты к её масштабу.
+std::vector<Vec> normalized_polygon(MeshView mesh, const std::vector<MeshIndex>& ids) {
+    if (ids.size() < 3) {
+        throw ReconstructionError("Polygon has fewer than three nodes");
+    }
+    const Vec origin = point(mesh, ids[0]);
+    double scale = 0;
+    for (MeshIndex id : ids) {
+        scale = (std::max)(scale, norm(point(mesh, id) - origin));
+    }
+    if (!(scale > 0) || !std::isfinite(scale)) {
+        throw ReconstructionError("Degenerate polygon scale");
+    }
+    std::vector<Vec> p;
+    p.reserve(ids.size());
+    for (MeshIndex id : ids) {
+        p.push_back((point(mesh, id) - origin) / scale);
+    }
+    return p;
+}
+
+// Самопересечение или касание несмежных рёбер делает интерполяцию по грани неоднозначной.
+void validate_polygon(const std::vector<Vec>& p, Vec normal, double eps) {
+    for (Vec v : p) {
+        if (std::abs(dot(v, normal)) > eps) {
+            throw ReconstructionError("EBR requires planar polygon faces/cells");
+        }
+    }
+    const std::size_t n = p.size();
+    for (std::size_t i = 0; i < n; ++i) {
+        if (norm(p[(i + 1) % n] - p[i]) <= eps) {
+            throw ReconstructionError("Zero or unresolved polygon edge");
+        }
+        for (std::size_t j = i + 1; j < n; ++j) {
+            if (j == i + 1 || (i == 0 && j == n - 1)) {
+                continue;
+            }
+            const Vec a = p[i], b = p[(i + 1) % n], c = p[j], d = p[(j + 1) % n];
+            const double ac = turn(a, b, c, normal), ad = turn(a, b, d, normal);
+            const double ca = turn(c, d, a, normal), cb = turn(c, d, b, normal);
+            if (((ac > eps && ad < -eps) || (ac < -eps && ad > eps)) &&
+                ((ca > eps && cb < -eps) || (ca < -eps && cb > eps))) {
+                throw ReconstructionError("Self-intersecting polygon");
+            }
+            const Vec ends[4] = {a, b, c, d};
+            for (unsigned k = 0; k < 4; ++k) {
+                const Vec q = ends[k], r = ends[k < 2 ? 2 : 0], t = ends[k < 2 ? 3 : 1];
+                if (std::abs(turn(r, t, q, normal)) <= eps && dot(q - r, q - t) <= eps * eps) {
+                    throw ReconstructionError("Touching or overlapping polygon edges");
+                }
+            }
+        }
+    }
+}
+
+// Отрезаем выпуклые треугольники по порядку вершин, пока в контуре не останутся три точки.
+std::vector<Triangle> clip_ears(const std::vector<Vec>& p, const std::vector<MeshIndex>& ids, Vec normal,
+                                double eps) {
+    const auto n = p.size();
+    std::vector<Triangle> triangles;
+    triangles.reserve(n - 2);
+    std::vector<std::size_t> active;
+    for (std::size_t i = 0; i < n; ++i) {
+        active.push_back(i);
+    }
+    while (active.size() > 3) {
+        bool clipped = false;
+        for (std::size_t j = 0; j < active.size(); ++j) {
+            const std::size_t a = active[(j + active.size() - 1) % active.size()], b = active[j],
+                              c = active[(j + 1) % active.size()];
+            if (turn(p[a], p[b], p[c], normal) <= eps) {
+                continue;
+            }
+            bool contains = false;
+            for (std::size_t k : active) {
+                if (k != a && k != b && k != c) {
+                    if (turn(p[a], p[b], p[k], normal) >= -eps && turn(p[b], p[c], p[k], normal) >= -eps &&
+                        turn(p[c], p[a], p[k], normal) >= -eps) {
+                        contains = true;
+                        break;
+                    }
+                }
+            }
+            if (contains) {
+                continue;
+            }
+            triangles.push_back(Triangle{{ids[a], ids[b], ids[c]}});
+            active.erase(active.begin() + static_cast<std::ptrdiff_t>(j));
+            clipped = true;
+            break;
+        }
+        if (!clipped) {
+            throw ReconstructionError("Cannot triangulate polygon at selected tolerance");
+        }
+    }
+    if (turn(p[active[0]], p[active[1]], p[active[2]], normal) <= eps) {
+        throw ReconstructionError("Degenerate final polygon triangle");
+    }
+    triangles.push_back(Triangle{{ids[active[0]], ids[active[1]], ids[active[2]]}});
+    return triangles;
+}
+
+// Треугольники нужны только для пересечения луча с гранью. Исходная связность сетки сохраняется.
+Surface triangulate(MeshView mesh, const std::vector<MeshIndex>& ids, double eps) {
+    const auto points = normalized_polygon(mesh, ids);
+    Vec area;
+    for (std::size_t i = 0; i < points.size(); ++i) {
+        area = area + cross(points[i], points[(i + 1) % points.size()]);
+    }
+    const double magnitude = norm(area);
+    if (!(magnitude > eps)) {
+        throw ReconstructionError("Degenerate or self-intersecting polygon");
+    }
+    const Vec normal = area / magnitude;
+    validate_polygon(points, normal, eps);
+    return {normal, clip_ears(points, ids, normal, eps)};
+}
+
+std::vector<MeshIndex> cell_cycle(MeshCell cell) {
+    std::map<MeshIndex, MeshIndex> next;
+    for (MeshIndex i = 0; i < cell.face_count(); ++i) {
+        const MeshFace face = cell.face(i);
+        const bool forward = cell.face_orientation(i) > 0;
+        next[face.node_id(forward ? 0 : 1)] = face.node_id(forward ? 1 : 0);
+    }
+    std::vector<MeshIndex> result;
+    MeshIndex id = next.begin()->first;
+    for (std::size_t i = 0; i < next.size(); ++i) {
+        result.push_back(id);
+        id = next.at(id);
+    }
+    return result;
+}
+
+// При обходе ячеек звезды считаем, сколько раз встретилась грань. Один раз означает внешнюю границу.
+struct PatchFace {
+    MeshIndex face;  // Номер грани.
+    MeshIndex cell;  // Смежная ячейка, задающая нормаль в 2D.
+    int orientation; // Ориентация грани относительно ячейки.
+    unsigned count;  // Число вхождений грани в выбранную область.
+};
+
+enum class RayTarget { StarExit, FarthestLayerFace };
+
+// Ищет одну опорную точку для заданного начала и направления луча.
+class RaySearch {
+public:
+    RaySearch(Vec origin, Vec direction, double length, double eps, RayTarget target)
+        : origin_(origin), direction_(direction), length_(length), eps_(eps), target_(target) {
+        if (target == RayTarget::FarthestLayerFace) {
+            best_.distance = 0;
+        }
+    }
+
+    // В 1D опорная грань состоит из одной вершины с единичным весом.
+    void test_point(MeshView mesh, MeshIndex node) {
+        const Vec offset = point(mesh, node) - origin_;
+        const double distance = dot(offset, direction_);
+        if (norm(offset - direction_ * distance) <= eps_ * (std::max)(length_, norm(offset))) {
+            consider(distance, true, {{node, 1}});
+        }
+    }
+
+    // В плоскости грани параметр u задаёт линейную интерполяцию между концами отрезка.
+    void test_segment(MeshView mesh, MeshFace face, Vec normal, int orientation) {
+        const MeshIndex a = face.node_id(0), b = face.node_id(1);
+        const Vec edge = point(mesh, b) - point(mesh, a), from = point(mesh, a) - origin_;
+        const double det = dot(cross(direction_, edge), normal);
+        if (std::abs(det) <= eps_ * norm(edge)) {
+            return;
+        }
+        const double distance = dot(cross(from, edge), normal) / det;
+        double u = dot(cross(from, direction_), normal) / det;
+        if (u < -eps_ || u > 1 + eps_) {
+            return;
+        }
+        if (norm(direction_ * distance - (from + edge * u)) >
+            eps_ * (std::max)(length_, norm(from) + norm(edge))) {
+            return;
+        }
+        u = (std::max)(0.0, (std::min)(1.0, u));
+        const Vec outward = cross(edge, normal) * static_cast<double>(orientation);
+        consider(distance, dot(direction_, outward) > 0, {{a, 1 - u}, {b, u}});
+    }
+
+    // В 3D веса пересечения — барицентрические координаты на одном треугольнике грани.
+    void test_triangle(MeshView mesh, const Triangle& tri, Vec normal, int orientation) {
+        const Vec a = point(mesh, tri[0]) - origin_;
+        const Vec b = point(mesh, tri[1]) - origin_, c = point(mesh, tri[2]) - origin_;
+        // Локальный масштаб сохраняет смысл допуска для больших и маленьких ячеек.
+        const double scale = (std::max)(norm(b - a), norm(c - a));
+        const Vec e1 = (b - a) / scale, e2 = (c - a) / scale, r = a / scale;
+        const Vec p = cross(direction_, e2);
+        const double det = dot(e1, p);
+        if (std::abs(det) <= eps_ * norm(e1) * norm(e2)) {
+            return;
+        }
+        double u = dot(r * (-1), p) / det;
+        const Vec q = cross(r * (-1), e1);
+        double v = dot(direction_, q) / det;
+        const double distance = dot(e2, q) / det * scale;
+        if (u < -eps_ || v < -eps_ || u + v > 1 + eps_) {
+            return;
+        }
+        u = (std::max)(0.0, u);
+        v = (std::max)(0.0, v);
+        if (u + v > 1) {
+            const double sum = u + v;
+            u /= sum;
+            v /= sum;
+        }
+        consider(distance, dot(direction_, normal) * orientation > 0,
+                 {{tri[0], 1 - u - v}, {tri[1], u}, {tri[2], v}});
+    }
+
+    // Для EBR ближайшее пересечение должно быть выходом из звезды, иначе опоры нет.
+    detail::RayPoint finish() {
+        if (target_ == RayTarget::StarExit && !best_.outward) {
+            best_.weights.clear();
+        }
+        return std::move(best_);
+    }
+
+private:
+    // WENO ищет дальнее пересечение слоя, EBR — ближайшее. При совпадении предпочитаем выход.
+    void consider(double distance, bool outward,
+                  std::initializer_list<detail::SparseRow::value_type> weights) {
+        const double tolerance = eps_ * length_;
+        if (!(distance > tolerance) || !std::isfinite(distance)) {
+            return;
+        }
+        const bool better = target_ == RayTarget::StarExit ? distance < best_.distance - tolerance
+                                                           : distance > best_.distance + tolerance;
+        const bool tied_exit = std::abs(distance - best_.distance) <= tolerance && outward && !best_.outward;
+        if (better || tied_exit) {
+            best_.distance = distance;
+            best_.outward = outward;
+            best_.weights = weights;
+        }
+    }
+    Vec origin_;            // Координаты начала луча.
+    Vec direction_;         // Единичный вектор продолжения ребра.
+    double length_;         // Длина ребра, задающая масштаб допуска.
+    double eps_;            // Относительный допуск геометрических проверок.
+    RayTarget target_;      // Правило выбора пересечения.
+    detail::RayPoint best_; // Расстояние и веса лучшего пересечения.
+};
+
+// Переиспользуем построенную геометрию граней для всех лучей этого ребра.
+template <class FaceAt>
+detail::RayPoint outer_point(MeshView mesh, MeshIndex node, Vec direction, double length,
+                             std::size_t face_count, const FaceAt& face_at, const std::vector<Surface>& faces,
+                             const std::vector<Vec>& cell_normals, double eps, RayTarget target) {
+    RaySearch search(point(mesh, node), direction, length, eps, target);
+    for (std::size_t i = 0; i < face_count; ++i) {
+        const auto& entry = face_at(i);
+        if (entry.count != 1) {
+            continue;
+        }
+        const auto face = mesh.face(entry.face);
+        if (mesh.dimension == 1) {
+            search.test_point(mesh, face.node_id(0));
+        } else if (mesh.dimension == 2) {
+            search.test_segment(mesh, face, cell_normals[entry.cell], entry.orientation);
+        } else {
+            const auto& surface = faces[entry.face];
+            for (const auto& triangle : surface.triangles) {
+                search.test_triangle(mesh, triangle, surface.normal, entry.orientation);
+            }
+        }
+    }
+    return search.finish();
+}
+
+} // namespace
+
+struct detail::ReconstructionGeometry::Impl {
+    MeshView m;                 // Заимствованные координаты и связность исходной сетки.
+    double eps;                 // Относительный допуск для пересечений и проверок геометрии.
+    std::vector<Surface> faces; // Разбиение 3D-граней на треугольники для поиска пересечений.
+    std::vector<Vec> normals;   // Ориентированные нормали 2D-ячеек.
+    std::vector<std::vector<PatchFace>> patches; // Внешние грани звезды каждого узла для EBR.
+    std::vector<PatchFace> owners;               // Смежная ячейка и ориентация по номеру грани для WENO.
+
+    Impl(const Mesh& mesh, double tolerance, bool build_stars)
+        : m(mesh.view()), eps(tolerance), faces(m.dimension == 3 ? m.face_count : 0),
+          normals(m.dimension == 2 ? m.cell_count : 0), patches(build_stars ? m.node_count : 0),
+          owners(m.face_count) {
+        if (!std::isfinite(eps) || eps <= 0 || eps >= 0.01) {
+            throw ReconstructionError("Invalid geometry tolerance");
+        }
+        if (m.dimension == 3) {
+            parallel_for(m.face_count, [&](MeshIndex face) {
+                const auto nodes = m.face_nodes(face);
+                faces[face] = triangulate(m, std::vector<MeshIndex>(nodes.begin(), nodes.end()), eps);
+            });
+        }
+        std::vector<std::vector<MeshIndex>> incident(build_stars ? m.node_count : 0);
+        for (MeshIndex index = 0; index < m.cell_count; ++index) {
+            const auto cell = m.cell(index);
+            for (MeshIndex k = 0; k < cell.face_count(); ++k) {
+                const auto face = cell.face_id(k);
+                owners[face] = PatchFace{face, index, cell.face_orientation(k), 1};
+            }
+            if (build_stars) {
+                for (auto node : cell.node_ids()) {
+                    incident[node].push_back(index);
+                }
+            }
+            if (m.dimension == 2) {
+                normals[index] = triangulate(m, cell_cycle(cell), eps).normal;
+            }
+            if (m.dimension == 3) {
+                check_cell_volume(cell);
+            }
+        }
+        if (m.dimension == 2 && m.cell_count) {
+            check_common_plane();
+        }
+        if (build_stars) {
+            parallel_for(m.node_count, [&](MeshIndex node) { build_star(node, incident[node]); });
+        }
+    }
+
+    // Сумма ориентированных тетраэдров равна шести объёмам нормированной ячейки.
+    void check_cell_volume(MeshCell cell) const {
+        const Vec origin = point(m, cell.node_id(0));
+        double scale = 0;
+        for (auto node : cell.node_ids()) {
+            scale = (std::max)(scale, norm(point(m, node) - origin));
+        }
+        if (!(scale > 0) || !std::isfinite(scale)) {
+            throw ReconstructionError("Degenerate cell scale");
+        }
+        double volume6 = 0;
+        for (MeshIndex k = 0; k < cell.face_count(); ++k) {
+            for (const Triangle& t : faces[cell.face_id(k)].triangles) {
+                volume6 += cell.face_orientation(k) *
+                           dot((point(m, t[0]) - origin) / scale,
+                               cross((point(m, t[1]) - origin) / scale, (point(m, t[2]) - origin) / scale));
+            }
+        }
+        if (!(volume6 > eps)) {
+            throw ReconstructionError("Inverted or degenerate 3D cell");
+        }
+    }
+
+    // У всех ячеек двумерной сетки должна быть общая плоскость для продолжения ребра.
+    void check_common_plane() const {
+        const Vec origin = point(m, m.cell(0).node_id(0));
+        for (MeshIndex node = 0; node < m.node_count; ++node) {
+            const Vec offset = point(m, node) - origin;
+            if (std::abs(dot(offset, normals[0])) > eps * norm(offset)) {
+                throw ReconstructionError("2D EBR requires a planar mesh");
+            }
+        }
+    }
+
+    // Грань на границе объединения ячеек узла принадлежит ровно одной ячейке звезды.
+    void build_star(MeshIndex node, const std::vector<MeshIndex>& incident) {
+        std::map<MeshIndex, PatchFace> boundary;
+        for (auto cell_id : incident) {
+            const auto cell = m.cell(cell_id);
+            for (MeshIndex k = 0; k < cell.face_count(); ++k) {
+                const auto face = cell.face_id(k);
+                const auto found = boundary.find(face);
+                if (found == boundary.end()) {
+                    boundary[face] = PatchFace{face, cell_id, cell.face_orientation(k), 1};
+                } else {
+                    ++found->second.count;
+                }
+            }
+        }
+        for (const auto& face : boundary) {
+            if (face.second.count == 1) {
+                patches[node].push_back(face.second);
+            }
+        }
+    }
+    Vec edge(MeshIndex e) const { return point(m, m.edge_end[e]) - point(m, m.edge_begin[e]); }
+
+    // Одна параметризация для EBR и WENO. Грани слоя читаем по индексам без копирования.
+    template <class FaceAt>
+    RayPoint intersect(MeshIndex node, MeshIndex edge_id, unsigned side, double length, RayTarget target,
+                       std::size_t count, const FaceAt& face_at) const {
+        const Vec direction = edge(edge_id) * ((side ? 1.0 : -1.0) / length);
+        return outer_point(m, node, direction, length, count, face_at, faces, normals, eps, target);
+    }
+};
+detail::ReconstructionGeometry::ReconstructionGeometry(const Mesh& mesh, double tolerance, bool build_stars)
+    : impl_(new Impl(mesh, tolerance, build_stars)) {}
+detail::ReconstructionGeometry::~ReconstructionGeometry() {}
+double detail::ReconstructionGeometry::edge_length(MeshIndex e) const {
+    const double h = norm(impl_->edge(e));
+    if (!(h > 0) || !std::isfinite(h)) {
+        throw ReconstructionError("Zero or non-finite edge length");
+    }
+    return h;
+}
+detail::RayPoint detail::ReconstructionGeometry::star_hit(MeshIndex edge, unsigned side) const {
+    const MeshView mesh = impl_->m;
+    return parallel_star_hit(side ? mesh.edge_end[edge] : mesh.edge_begin[edge], edge, side);
+}
+detail::RayPoint detail::ReconstructionGeometry::layer_hit(MeshIndex e, unsigned side,
+                                                           const std::vector<MeshIndex>& ids) const {
+    const Impl& g = *impl_;
+    const double h = edge_length(e);
+    const MeshIndex node = side ? g.m.edge_end[e] : g.m.edge_begin[e];
+    return g.intersect(node, e, side, h, RayTarget::FarthestLayerFace, ids.size(),
+                       [&](std::size_t i) -> const PatchFace& { return g.owners[ids[i]]; });
+}
+detail::RayPoint detail::ReconstructionGeometry::parallel_star_hit(MeshIndex node, MeshIndex e,
+                                                                   unsigned side) const {
+    const Impl& g = *impl_;
+    const double h = edge_length(e);
+    if (g.patches.empty()) {
+        return RayPoint{};
+    }
+    const auto& boundary = g.patches[node];
+    return g.intersect(node, e, side, h, RayTarget::StarExit, boundary.size(),
+                       [&](std::size_t i) -> const PatchFace& { return boundary[i]; });
+}
+void detail::ReconstructionGeometry::append_row(ReconstructionStencilData& data, const SparseRow& row,
+                                                MeshIndex e, unsigned side) const {
+    const Impl& g = *impl_;
+    const double h = edge_length(e);
+    const MeshIndex center = side ? g.m.edge_end[e] : g.m.edge_begin[e];
+    double sum = 0;
+    Vec moment;
+    for (const auto& w : row) {
+        if (!std::isfinite(w.second)) {
+            throw ReconstructionError("Non-finite reconstruction weight");
+        }
+        sum += w.second;
+        moment = moment + ((point(g.m, w.first) - point(g.m, center)) / h) * w.second;
+        if (w.second != 0) {
+            data.nodes.push_back(w.first);
+            data.weights.push_back(w.second);
+        }
+    }
+    if (std::abs(sum) > 100 * g.eps || norm(moment - g.edge(e) / h) > 100 * g.eps) {
+        throw ReconstructionError("EBR stencil failed constant/linear consistency check");
+    }
+    data.offsets.push_back(static_cast<ReconstructionIndex>(data.nodes.size()));
+    data.row_owner.push_back(center);
+}
+void detail::add_scaled_row(SparseRow& destination, const SparseRow& source, double factor) {
+    for (const auto& term : source) {
+        destination[term.first] += factor * term.second;
+    }
+}
+
+// На обеих сторонах ребра производная направлена от начала ребра к концу.
+detail::SparseRow detail::ray_derivative(MeshIndex node, const RayPoint& hit, double length, unsigned side) {
+    SparseRow row;
+    const double factor = (side ? 1.0 : -1.0) * (length / hit.distance);
+    row[node] = -factor;
+    add_scaled_row(row, hit.weights, factor);
+    return row;
+}
+} // namespace aero

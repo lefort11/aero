@@ -9,16 +9,19 @@ namespace aero {
 class Mesh;
 struct PeriodicView;
 struct FieldNodeSelection;
-void check_periodic_initial(const double* reference,const double* copy,unsigned width,MeshIndex owner,MeshIndex node);
+// Сравнивает консервативные компоненты копии с представителем шва в пределах абсолютного и относительного допусков.
+void check_periodic_initial(const double* reference, const double* copy, unsigned width, MeshIndex owner,
+                            MeshIndex node);
 
-// Construct [computational node][rho, momentum..., total energy density].
-// settings is one initial-condition block. Relative field paths use directory.
-// Supply a host periodic view to compact and check identified original nodes.
-std::vector<double> read_initial(const Mesh& mesh,double gamma,std::istream& settings,
-    const std::string& directory=".",const PeriodicView* periodic=nullptr,const FieldNodeSelection* selection=nullptr);
+// Возвращает для каждого расчётного узла подряд плотность, компоненты импульса и полную энергию.
+// Относительные пути из настроек отсчитываются от directory. Периодическое отображение
+// позволяет склеить копии узлов и проверить согласованность их начальных состояний.
+std::vector<double> read_initial(const Mesh& mesh, double gamma, std::istream& settings,
+                                 const std::string& directory = ".", const PeriodicView* periodic = nullptr,
+                                 const FieldNodeSelection* selection = nullptr);
 
-// Resolve field paths relative to the settings file containing the block.
-std::vector<double> read_initial_file(const Mesh& mesh,double gamma,const std::string& settings_path,
-    const PeriodicView* periodic=nullptr);
+// Разрешает пути к полям относительно каталога файла начальных условий.
+std::vector<double> read_initial_file(const Mesh& mesh, double gamma, const std::string& settings_path,
+                                      const PeriodicView* periodic = nullptr);
 }
 #endif

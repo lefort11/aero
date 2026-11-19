@@ -126,6 +126,19 @@ source/reconstruction/README.txt. При запуске одного проце�
 образует одну подобласть. Для .mdec процессы получают свои части из архива.
 В сборке без MPI используется тот же решатель с одной подобластью.
 
+Где менять код расчёта
+
+  case_geometry.cpp       prepare_case_geometry читает граничные условия и строит контрольные объёмы.
+  partition_state.cpp     PartitionState переводит начальные поля из номеров исходной сетки в расчётные.
+  time_loop.cpp           choose_time_step ограничивает шаг, integrate_time принимает его и вызывает вывод.
+  solver.cpp              PartitionStepper ведёт стадии Эйлера или SSPRK3 и собирает данные для отчёта.
+  partition_operator.cpp  PartitionOperator считает потоки по поверхностям, ограничение CFL и обновление узлов.
+  partition_transfers.h   PartitionTransfers упаковывает и обменивает узловые значения и потоки через MPI.
+  partition_output.cpp    PartitionOutput записывает поля из одного состояния в локальные или общие файлы.
+
+Например, чтобы изменить момент записи, откройте OutputSchedule в source/io/scheduled_output.cpp.
+Чтобы изменить длину шага при известном сроке записи, откройте choose_time_step.
+
 Цикл integrate_time ограничивает шаг по CFL, final_time и расписанию вывода.
 PartitionOperator собирает потоки на своих гранях. После выбора шага первая
 стадия использует уже собранные потоки. На каждой стадии Эйлера и SSPRK3

@@ -12,41 +12,44 @@ namespace aero {
 enum class ExplicitScheme { Euler, SSPRK3 };
 enum class ExplicitBackend { Auto, Cpu, Cuda };
 
-// Borrowed only during the residual or inspection callback. The CUDA stream and pointers
-// belong to the selected device; cpu views have device=-1 and stream=nullptr.
+// Представление действительно во время обратного вызова для невязки или чтения поля.
+// На CUDA указатели и поток принадлежат выбранной карте. На CPU device = −1, stream = nullptr.
 struct ExplicitField {
     size_t nodes, components;
-    const double* values;   // [node*components + component]
-    const double* volumes;  // one fixed, positive measure per computational node
+    const double* values;  // Индекс компоненты равен node * components + component.
+    const double* volumes; // Положительный постоянный объём каждого расчётного узла.
     ExplicitBackend backend;
     int device;
     void* stream;
 };
 
-// Overwrite every entry of R with the sum of outward, area-integrated fluxes.
-// Throw to reject a stage. CUDA callbacks enqueue their work on field.stream.
+// Заполните каждую компоненту R суммой выходящих потоков с учётом площади.
+// Исключение отклоняет стадию. На CUDA операции ставятся в очередь field.stream.
 #ifndef __CUDACC_RTC__
-typedef std::function<void(double time,const ExplicitField& field,double* R)> ExplicitResidual;
+typedef std::function<void(double time, const ExplicitField& field, double* R)> ExplicitResidual;
 
 class ExplicitIntegrator {
 public:
-    // Both input arrays reside on the host and are copied at construction.
-    ExplicitIntegrator(std::size_t nodes,std::size_t components,const double* volumes,
-                       const double* initial,ExplicitBackend backend=ExplicitBackend::Auto,int device=0);
+    // Оба входных массива находятся на CPU. Конструктор сохраняет их копии.
+    ExplicitIntegrator(std::size_t nodes, std::size_t components, const double* volumes,
+                       const double* initial, ExplicitBackend backend = ExplicitBackend::Auto,
+                       int device = 0);
     ~ExplicitIntegrator();
-    ExplicitIntegrator(const ExplicitIntegrator&)=delete;
-    ExplicitIntegrator& operator=(const ExplicitIntegrator&)=delete;
+    ExplicitIntegrator(const ExplicitIntegrator&) = delete;
+    ExplicitIntegrator& operator=(const ExplicitIntegrator&) = delete;
 
-    // The caller owns time and dt. A successful call commits the entire step.
-    void step(ExplicitScheme scheme,double time,double dt,const ExplicitResidual& residual);
-    // An optional first residual already evaluated at (time, accepted state).
-    // It must be readable on the selected backend through the end of the call.
-    void step(ExplicitScheme scheme,double time,double dt,const ExplicitResidual& residual,const double* first_residual);
+    // Время и dt задаёт вызывающий код. Принятое состояние заменяется по завершении всего шага.
+    void step(ExplicitScheme scheme, double time, double dt, const ExplicitResidual& residual);
+    // Можно передать первую невязку, уже вычисленную для текущих времени и принятого поля.
+    // Её память должна быть доступна выбранному исполнителю до конца вызова.
+    void step(ExplicitScheme scheme, double time, double dt, const ExplicitResidual& residual,
+              const double* first_residual);
     ExplicitBackend backend() const;
-    // Inspect the accepted field between steps, with the selected CUDA device active.
+    // Даёт доступ к принятому полю между шагами. Для CUDA на время чтения активируется выбранное устройство.
     void inspect(const std::function<void(const ExplicitField&)>& reader) const;
-    std::vector<double> state() const; // host snapshot of the last committed step
+    std::vector<double> state() const; // Копия принятого поля последнего завершённого шага в памяти CPU.
     static int cuda_device_count();
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

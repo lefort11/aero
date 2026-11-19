@@ -1,3 +1,4 @@
+# Для проверки отчёта собираем интегратор и проверяем его поля на принятых шагах.
 REPORT_SRC := $(IO_DIR)/flowreport_tests.cpp
 REPORT_TEST := $(BUILD)/io_flowreport_tests_$(EXPLICIT_TAG)$(EXE)
 REPORT_DEBUG := $(BUILD)/io_flowreport_tests_debug_$(EXPLICIT_TAG)$(EXE)
@@ -29,3 +30,4 @@ else
 	$(MAKE) WITH_CUDA=1 $(BIN)/io_flowreport_tests_cuda1_omp$(WITH_OPENMP)$(EXE)
 	./$(BIN)/io_flowreport_tests_cuda1_omp$(WITH_OPENMP)$(EXE) --require-cuda
 endif
+$(REPORT_TEST) $(REPORT_DEBUG): qa/test_checks.h

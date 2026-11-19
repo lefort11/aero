@@ -4,38 +4,48 @@
 #include <memory>
 
 namespace aero {
-void write_global_fields(const Processes& world,const std::string& directory,const OutputZone& zone,
-                         const std::vector<unsigned>& columns,const FieldNodeSelection& mesh,
-                         const std::vector<OwnedNode>& nodes,double gamma,std::uint64_t step,double time,
+// Записывает общий двоичный снимок без сбора поля на процессе 0.
+void write_global_fields(const Processes& world, const std::string& directory, const OutputZone& zone,
+                         const std::vector<unsigned>& columns, const FieldNodeSelection& mesh,
+                         const std::vector<OwnedNode>& nodes, double gamma, std::uint64_t step, double time,
                          const std::vector<double>& state) {
     std::unique_ptr<StagedFieldFile> staged;
     std::vector<std::uint64_t> offsets;
     std::string temporary;
     world.local([&] {
+        // Нулевой процесс создаёт метаданные и резервирует место для каждого столбца.
         offsets.resize(columns.size());
-        if (world.rank) return;
-        auto name=output_filename(zone,step);
-        std::replace(name.begin(),name.end(),'\\','/');
-        staged.reset(new StagedFieldFile(directory+"/"+name));
-        temporary=staged->temporary();
+        if (world.rank)
+            return;
+        auto name = output_filename(zone, step);
+        std::replace(name.begin(), name.end(), '\\', '/');
+        staged.reset(new StagedFieldFile(directory + "/" + name));
+        temporary = staged->temporary();
         FieldSnapshot metadata;
-        metadata.dimension=mesh.dimension;
-        metadata.mesh_sha256=mesh.mesh_sha256;
-        metadata.counts=mesh.counts;
-        metadata.step=step;
-        metadata.time=time;
-        for (const auto& var:zone.variables) metadata.fields.push_back(output_field(var));
-        offsets=metadata.write_binary_layout(temporary);
+        metadata.dimension = mesh.dimension;
+        metadata.mesh_sha256 = mesh.mesh_sha256;
+        metadata.counts = mesh.counts;
+        metadata.step = step;
+        metadata.time = time;
+        for (const auto& var : zone.variables)
+            metadata.fields.push_back(output_field(var));
+        offsets = metadata.write_binary_layout(temporary);
     });
-    world.broadcast(temporary,0);
-    world.broadcast(offsets.data(),static_cast<int>(offsets.size()),0);
-    const unsigned width=mesh.dimension+2;
-    const auto encode=[&](const OwnedNode& n,char* dst,std::size_t pitch) {
-        const auto values=output_values(mesh.dimension,state.data()+n.slot*width,gamma,n.id);
-        for (std::size_t k=0;k<columns.size();++k) indexed_io::put_real(dst+k*pitch,values[columns[k]]);
+    // Всем владельцам нужны одинаковые путь и начальные смещения столбцов.
+    world.broadcast(temporary, 0);
+    world.broadcast(offsets.data(), static_cast<int>(offsets.size()), 0);
+    const unsigned width = mesh.dimension + 2;
+    const auto encode = [&](const OwnedNode& n, char* dst, std::size_t pitch) {
+        // Один раз восстанавливаем физические величины узла, затем раскладываем запрошенные столбцы.
+        const auto values = output_values(mesh.dimension, state.data() + n.slot * width, gamma, n.id);
+        for (std::size_t k = 0; k < columns.size(); ++k)
+            indexed_io::put_real(dst + k * pitch, values[columns[k]]);
     };
-    indexed_io::transfer(world,temporary,indexed_io::Access::Write,8,nodes,offsets,std::ref(encode));
-    world.local([&] { if (!world.rank) staged->publish(!zone.multi); });
+    // Исходный номер узла определяет позицию в файле независимо от разбиения сетки.
+    indexed_io::transfer(world, temporary, indexed_io::Access::Write, 8, nodes, offsets, std::ref(encode));
+    world.local([&] {
+        if (!world.rank)
+            staged->publish(!zone.multi);
+    });
 }
 }
-

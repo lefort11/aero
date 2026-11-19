@@ -1,5 +1,5 @@
-# MSYS2 x64. The build helper compiles device sources with NVRTC. ptxas and
-# fatbinary package native code and PTX for compatible and future devices.
+# В MSYS2 x64 компилятор NVRTC переводит ядра в PTX.
+# ptxas и fatbinary упаковывают машинный код выбранной карты вместе с PTX.
 CUDA_RUNTIME_LINK = $(BUILD)/libaero_cuda_driver.a
 override CPPFLAGS += -DAERO_MINGW_CUDA_HOST -isystem "$(CUDA_HOME)/include"
 mingw_fatbin = $(basename $@).fatbin

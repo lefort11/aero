@@ -1,46 +1,57 @@
-"""Compare distributed median-dual geometry with the native single-process solver."""
-import argparse
+"""Сопоставляет геометрию контрольных объёмов в MPI и на исходной сетке."""
+
+from mpi_common import ROOT, mpi_parser, mpi_workspace
 import math
-import os
 import re
 from pathlib import Path
 import shutil
 import struct
 import subprocess
-import tempfile
-
-ROOT = Path(__file__).resolve().parents[1]
 
 
 def run(args, success=True):
-    result = subprocess.run([str(arg) for arg in args], cwd=ROOT, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True, errors="replace", timeout=120)
+    """Выполняет команду проверки с ограничением времени и проверяет ожидаемый исход."""
+    result = subprocess.run(
+        [str(arg) for arg in args],
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        errors="replace",
+        timeout=120,
+    )
     if (result.returncode == 0) != success:
         raise RuntimeError(f"{args}\n{result.stdout}")
     return result.stdout
 
 
 def sparse_line(mesh, count):
-    # Adjacent global IDs alternate between distant spatial regions.
-    half = count//2
-    node_ids = [2*(i % half) + i//half for i in range(count)]
+    """Создаёт линию с перемежающимися глобальными номерами, чтобы соседние записи файла попали разным процессам."""
+    # Соседние глобальные номера чередуются между удалёнными участками линии.
+    half = count // 2
+    node_ids = [2 * (i % half) + i // half for i in range(count)]
     blocks = [
-        ("X", ((i//2 + (i % 2)*half)/(count-1) for i in range(count))),
-        ("Y", [0]*count), ("Z", [0]*count),
-        ("FACE_OFFSETS", range(count+1)), ("FACE_NODES", node_ids),
-        ("CELL_OFFSETS", range(0, 2*count, 2)),
-        ("CELL_FACES", (f for i in range(count-1) for f in (i, i+1))),
-        ("CELL_ORIENTATIONS", [-1, 1]*(count-1)),
+        ("X", ((i // 2 + (i % 2) * half) / (count - 1) for i in range(count))),
+        ("Y", [0] * count),
+        ("Z", [0] * count),
+        ("FACE_OFFSETS", range(count + 1)),
+        ("FACE_NODES", node_ids),
+        ("CELL_OFFSETS", range(0, 2 * count, 2)),
+        ("CELL_FACES", (f for i in range(count - 1) for f in (i, i + 1))),
+        ("CELL_ORIENTATIONS", [-1, 1] * (count - 1)),
     ]
     with mesh.open("w") as f:
-        f.write(f"AEROMESH 2 TEXT\nDIMENSION 1\nCOUNTS {count} {count} {count} {count-1} {2*(count-1)} 2 2\n"
-                "LENGTH_SCALE_TO_METERS 1\n")
+        f.write(
+            f"AEROMESH 2 TEXT\nDIMENSION 1\nCOUNTS {count} {count} {count} {count-1} {2*(count-1)} 2 2\n"
+            "LENGTH_SCALE_TO_METERS 1\n"
+        )
         for name, values in blocks:
             f.write(name + "\n" + " ".join(map(str, values)) + "\n")
         f.write(f'BOUNDARY_FACES 0 {count-1}\nBOUNDARY_PATCH 0 1\nPATCH_NAMES "xmin" "xmax"\nEND\n')
 
 
 def geometry(directory, ranks):
+    """Читает таблицы контрольных объёмов и площадок всех разделов для сравнения с целой сеткой."""
     records = {}
     owners = []
     for rank in range(ranks):
@@ -61,50 +72,54 @@ def geometry(directory, ranks):
 
 
 def compare(expected, actual):
+    """Сверяет ожидаемые значения с полученными и сообщает место расхождения."""
     if expected.keys() != actual.keys():
         raise AssertionError(f"Missing or extra entities: {list(expected.keys() ^ actual.keys())[:5]}")
     for key, ref in expected.items():
         values = actual[key]
         scale = max(map(abs, ref))
-        if len(values) != len(ref) or any(not math.isclose(x, y, rel_tol=3e-13, abs_tol=3e-13 * scale)
-                                           for x, y in zip(ref, values)):
+        if len(values) != len(ref) or any(
+            not math.isclose(x, y, rel_tol=3e-13, abs_tol=3e-13 * scale) for x, y in zip(ref, values)
+        ):
             raise AssertionError(f"{key}: {ref} vs {values}")
 
 
 def legacy_archive(current, target, version=1):
+    """Строит из проверочного архива образ прежней версии для проверки совместимости."""
     data = bytearray(current.read_bytes())
     leaves, branches = struct.unpack_from("<QQ", data, 80)
     index, tree, payload = struct.unpack_from("<QQQ", data, 112)
-    old_payload = tree + 112*branches
+    old_payload = tree + 112 * branches
     if version == 2:
         nodes = struct.unpack_from("<Q", data, 40)[0]
         stars, halo = struct.unpack_from("<QQ", data, old_payload)
-        old_payload += 16 + 8*(nodes+1+2*leaves+1) + 16*(stars+halo)
+        old_payload += 16 + 8 * (nodes + 1 + 2 * leaves + 1) + 16 * (stars + halo)
     if version == 3:
         old_payload = payload - 64  # v4 adds the native mesh SHA-256 before the payload
     del data[old_payload:payload]
     struct.pack_into("<Q", data, 8, version)
     struct.pack_into("<Q", data, 128, old_payload)
     for i in range(leaves):
-        pos = index + 48*i
+        pos = index + 48 * i
         offset = struct.unpack_from("<Q", data, pos)[0]
-        struct.pack_into("<Q", data, pos, offset - (payload-old_payload))
+        struct.pack_into("<Q", data, pos, offset - (payload - old_payload))
     target.write_bytes(data)
 
 
 def verify_case(work, case, aero, meshdec, launcher):
+    """Сопоставляет геометрию одной постановки на исходной сетке и после разбиения."""
     source = ROOT / "qa" / "cases" / case
     params = work / case
     shutil.copytree(source, params)
     native = params / "grid.mesh"
     if case == "shear_jump_2d":
-        # Embedded, scaled plane with nonzero Z components in the dual areas.
+        # Масштабированная плоскость вложена в 3D так, что векторы площадок имеют ненулевую компоненту Z.
         words = native.read_text().split()
         count = int(words[words.index("COUNTS") + 1])
         xyz = [words.index(axis) + 1 for axis in "XYZ"]
         for i in range(count):
             x, y = (float(words[j + i]) for j in xyz[:2])
-            words[xyz[2] + i] = repr(0.25*x + 0.5*y)
+            words[xyz[2] + i] = repr(0.25 * x + 0.5 * y)
         words[words.index("LENGTH_SCALE_TO_METERS") + 1] = "0.375"
         native.write_text(" ".join(words))
     out = params / "results"
@@ -117,7 +132,7 @@ def verify_case(work, case, aero, meshdec, launcher):
     archive = params / "grid.mdec"
     compression = ["--compress"] if case != "wave_3d" else []
     run([meshdec, native, archive, "--target-ranks=4", *compression])
-    # The reference file is a private fixture. Only the archive remains available.
+    # Исходный файл нужен только для эталона. Для распределённого запуска оставляем один архив.
     native.unlink()
     settings = params / "main.txt"
     settings.write_text(settings.read_text().replace("grid.mesh", "grid.mdec"))
@@ -148,16 +163,18 @@ def verify_case(work, case, aero, meshdec, launcher):
         settings.write_text(re.sub(r"(?m)^reconstruction\s*=.*", "reconstruction = first_order", legacy))
         run(mpi)
         for scheme in ("ebr3", "weno3", "weno5"):
-            settings.write_text(re.sub(r"(?m)^reconstruction\s*=.*", "reconstruction = "+scheme, legacy))
+            settings.write_text(
+                re.sub(r"(?m)^reconstruction\s*=.*", "reconstruction = " + scheme, legacy)
+            )
             if "regenerate the .mdec" not in run(mpi, success=False):
                 raise AssertionError(f"Missing {scheme} diagnostic for legacy archive without halo")
-        legacy_archive(archive, params/"v2.mdec", 2)
+        legacy_archive(archive, params / "v2.mdec", 2)
         v2 = original.replace("grid.mdec", "v2.mdec")
         for scheme in ("ebr3", "weno3"):
-            settings.write_text(re.sub(r"(?m)^reconstruction\s*=.*", "reconstruction = "+scheme, v2))
+            settings.write_text(re.sub(r"(?m)^reconstruction\s*=.*", "reconstruction = " + scheme, v2))
             run(mpi)
         for scheme in ("ebr5", "weno5"):
-            settings.write_text(re.sub(r"(?m)^reconstruction\s*=.*", "reconstruction = "+scheme, v2))
+            settings.write_text(re.sub(r"(?m)^reconstruction\s*=.*", "reconstruction = " + scheme, v2))
             if "far halo index" not in run(mpi, success=False):
                 raise AssertionError(f"Missing {scheme} diagnostic for v2")
         settings.write_text(original)
@@ -170,7 +187,7 @@ def verify_case(work, case, aero, meshdec, launcher):
             raise AssertionError(f"Expected three empty partitions: {owners}")
         print("OK one leaf on four processes")
     if case == "wave_3d":
-        # Invalid directory bounds and links must be rejected collectively.
+        # Неверные границы каталога и ссылки должны вызвать согласованный отказ всех процессов.
         data = bytearray(archive.read_bytes())
         payload = struct.unpack_from("<Q", data, 128)[0]
         if struct.unpack_from("<Q", data, payload)[0] != 0:
@@ -182,28 +199,30 @@ def verify_case(work, case, aero, meshdec, launcher):
         if "global node owner" not in error:
             raise AssertionError(error)
         struct.pack_into("<Q", data, payload + 8, first_id)
-        original_link = struct.unpack_from("<Q", data, payload+48)[0]
-        struct.pack_into("<Q", data, payload+48, 2**64-1)
+        original_link = struct.unpack_from("<Q", data, payload + 48)[0]
+        struct.pack_into("<Q", data, payload + 48, 2**64 - 1)
         archive.write_bytes(data)
         error = run([launcher, "-n", 4, *command, "--geometry-only"], success=False)
         if "nonexistent leaf" not in error:
             raise AssertionError(error)
         tree = struct.unpack_from("<Q", data, 120)[0]
         branches = struct.unpack_from("<Q", data, 88)[0]
-        directory = tree+112*branches
+        directory = tree + 112 * branches
         star_links, halo_links = struct.unpack_from("<QQ", data, directory)
         leaves = struct.unpack_from("<Q", data, 80)[0]
         node_count = struct.unpack_from("<Q", data, 40)[0]
-        offsets = directory+16+8*(node_count+1)+16*star_links
-        struct.pack_into("<Q", data, payload+48, original_link)
-        first_end = struct.unpack_from("<Q", data, offsets+8)[0]
-        struct.pack_into("<Q", data, offsets+8, 2**64-1)
+        offsets = directory + 16 + 8 * (node_count + 1) + 16 * star_links
+        struct.pack_into("<Q", data, payload + 48, original_link)
+        first_end = struct.unpack_from("<Q", data, offsets + 8)[0]
+        struct.pack_into("<Q", data, offsets + 8, 2**64 - 1)
         archive.write_bytes(data)
-        if "invalid halo row extent" not in run([launcher, "-n", 4, *command, "--geometry-only"], success=False):
+        if "invalid halo row extent" not in run(
+            [launcher, "-n", 4, *command, "--geometry-only"], success=False
+        ):
             raise AssertionError("Damaged precomputed halo accepted")
-        struct.pack_into("<Q", data, offsets+8, first_end)
-        far = offsets+8*(2*leaves+1)+16*halo_links
-        struct.pack_into("<Q", data, far+16, 2**64-1)
+        struct.pack_into("<Q", data, offsets + 8, first_end)
+        far = offsets + 8 * (2 * leaves + 1) + 16 * halo_links
+        struct.pack_into("<Q", data, far + 16, 2**64 - 1)
         archive.write_bytes(data)
         mpi = [launcher, "-n", 4, *command]
         config = settings.read_text()
@@ -212,22 +231,18 @@ def verify_case(work, case, aero, meshdec, launcher):
         settings.write_text(re.sub(r"(?m)^reconstruction\s*=.*", "reconstruction = ebr5", config))
         if "invalid halo row extent" not in run(mpi, success=False):
             raise AssertionError("Damaged EBR5 halo accepted")
-        print("OK collective rejection of duplicate ownership, invalid links and damaged near/far halo rows")
+        print(
+            "OK collective rejection of duplicate ownership, invalid links and damaged near/far halo rows"
+        )
 
 
 def main():
-    ext = ".exe" if os.name == "nt" else ""
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--aero", type=Path, default=ROOT / "bin" / ("aero" + ext))
-    parser.add_argument("--meshdec", type=Path, default=ROOT / "bin" / ("meshdec" + ext))
-    parser.add_argument("--mpiexec", default="mpiexec")
+    parser = mpi_parser(__doc__)
     args = parser.parse_args()
-    (ROOT / "build").mkdir(exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="mpi-geometry-", dir=ROOT / "build") as work:
+    with mpi_workspace("mpi-geometry-") as work:
         for case in ("pulse_1d", "shear_jump_2d", "wave_3d"):
             verify_case(Path(work), case, args.aero.resolve(), args.meshdec.resolve(), args.mpiexec)
 
 
 if __name__ == "__main__":
     main()
-

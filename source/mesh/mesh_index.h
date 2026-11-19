@@ -4,11 +4,12 @@
 #include <cstdint>
 #endif
 namespace aero {
+// На CPU и при компиляции ядра NVRTC номера элементов должны занимать одинаковые восемь байтов.
 #ifdef __CUDACC_RTC__
-using MeshIndex=unsigned long long;
-static_assert(sizeof(MeshIndex)==8,"Mesh indices require 64 bits");
+using MeshIndex = unsigned long long;
+static_assert(sizeof(MeshIndex) == 8, "Mesh indices require 64 bits");
 #else
-using MeshIndex=std::uint64_t;
+using MeshIndex = std::uint64_t;
 #endif
 }
 #endif

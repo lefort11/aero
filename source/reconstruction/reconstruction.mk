@@ -1,14 +1,14 @@
-# Optional module; remove this include to build the rest of the project alone.
+# Собирает реконструкцию и отдельные программы проверки геометрии, схем и GPU.
 RECONSTRUCTION_SOURCE := source/reconstruction
 WITH_CUDA ?= 0
 EBR_TAG := cuda$(WITH_CUDA)_omp$(WITH_OPENMP)
 EBR_FLAGS :=
 EBR_LIBS :=
-EBR_OBJECT := $(BUILD)/ebr_$(EBR_TAG).o
-RECONSTRUCTION_OBJECT := $(BUILD)/reconstruction_$(EBR_TAG).o
-WENO_OBJECT := $(BUILD)/weno_$(EBR_TAG).o
 RECONSTRUCTION_HEADERS := $(RECONSTRUCTION_SOURCE)/reconstruction.h $(RECONSTRUCTION_SOURCE)/ebr.h $(RECONSTRUCTION_SOURCE)/weno.h
-RECONSTRUCTION_HEADERS += $(RECONSTRUCTION_SOURCE)/parallel_stencil.h source/parallel/parallel_for.h
+RECONSTRUCTION_CPP := $(addprefix $(RECONSTRUCTION_SOURCE)/,reconstruction.cpp ray_geometry.cpp stencil_builder.cpp ebr.cpp weno.cpp)
+RECONSTRUCTION_OBJECTS := $(patsubst $(RECONSTRUCTION_SOURCE)/%.cpp,$(BUILD)/%_$(EBR_TAG).o,$(RECONSTRUCTION_CPP))
+RECONSTRUCTION_HEADERS += $(RECONSTRUCTION_SOURCE)/scheme.h $(RECONSTRUCTION_SOURCE)/stencil_builder.h
+RECONSTRUCTION_HEADERS += $(RECONSTRUCTION_SOURCE)/parallel_stencil.h source/parallel/parallel_for.h source/parallel/kernel_math.h
 EBR_LIBRARY := $(BUILD)/libaero_reconstruction_$(EBR_TAG).a
 EBR_TEST := $(BUILD)/reconstruction_tests_$(EBR_TAG)$(EXE)
 EBR_DEBUG_TEST := $(BUILD)/reconstruction_tests_debug_$(EBR_TAG)$(EXE)
@@ -36,18 +36,14 @@ endif
 endif
 endif
 
-$(RECONSTRUCTION_OBJECT): $(RECONSTRUCTION_SOURCE)/reconstruction.cpp $(RECONSTRUCTION_HEADERS) $(MESH_SOURCE)/mesh.h | $(BUILD)
+$(RECONSTRUCTION_OBJECTS): $(BUILD)/%_$(EBR_TAG).o: $(RECONSTRUCTION_SOURCE)/%.cpp $(RECONSTRUCTION_HEADERS) $(MESH_HEADERS) | $(BUILD)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(EBR_FLAGS) -c $< -o $@
-$(EBR_OBJECT): $(RECONSTRUCTION_SOURCE)/ebr.cpp $(RECONSTRUCTION_HEADERS) $(MESH_SOURCE)/mesh.h | $(BUILD)
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(EBR_FLAGS) -c $< -o $@
-$(WENO_OBJECT): $(RECONSTRUCTION_SOURCE)/weno.cpp $(RECONSTRUCTION_HEADERS) $(MESH_SOURCE)/mesh.h | $(BUILD)
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(EBR_FLAGS) -c $< -o $@
-$(EBR_LIBRARY): $(RECONSTRUCTION_OBJECT) $(EBR_OBJECT) $(WENO_OBJECT) $(EBR_CUDA_OBJECT)
+$(EBR_LIBRARY): $(RECONSTRUCTION_OBJECTS) $(EBR_CUDA_OBJECT)
 	$(AR) rcs $@ $^
 $(EBR_TEST): $(RECONSTRUCTION_SOURCE)/reconstruction_tests.cpp $(RECONSTRUCTION_HEADERS) $(EBR_LIBRARY) $(BUILD)/mesh.o $(IO_LIBRARY) $(RECONSTRUCTION_CUDA_TEST_OBJECT)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(EBR_FLAGS) $< $(EBR_LIBRARY) $(BUILD)/mesh.o $(IO_LIBRARY) $(RECONSTRUCTION_CUDA_TEST_OBJECT) $(LDFLAGS) $(LDLIBS) $(EBR_LIBS) -o $@
-$(EBR_DEBUG_TEST): $(RECONSTRUCTION_SOURCE)/reconstruction.cpp $(RECONSTRUCTION_SOURCE)/ebr.cpp $(RECONSTRUCTION_SOURCE)/weno.cpp $(RECONSTRUCTION_SOURCE)/reconstruction_tests.cpp $(RECONSTRUCTION_HEADERS) $(MESH_SOURCE)/mesh.cpp $(MESH_SOURCE)/mesh.h source/io/lzma_stream.cpp $(IO_HEADERS) $(LZMA_OBJECTS) $(EBR_CUDA_OBJECT) $(RECONSTRUCTION_CUDA_TEST_OBJECT) | $(BUILD)
-	$(CXX) $(CPPFLAGS) -std=c++11 -pedantic-errors -O0 -g -Wall -Wextra -Wpedantic -Wconversion -Wshadow -D_GLIBCXX_DEBUG -D_GLIBCXX_ASSERTIONS $(EBR_FLAGS) $(RECONSTRUCTION_SOURCE)/reconstruction.cpp $(RECONSTRUCTION_SOURCE)/ebr.cpp $(RECONSTRUCTION_SOURCE)/weno.cpp $(RECONSTRUCTION_SOURCE)/reconstruction_tests.cpp $(MESH_SOURCE)/mesh.cpp source/io/lzma_stream.cpp $(LZMA_OBJECTS) $(EBR_CUDA_OBJECT) $(RECONSTRUCTION_CUDA_TEST_OBJECT) $(LDFLAGS) $(LDLIBS) $(EBR_LIBS) -o $@
+$(EBR_DEBUG_TEST): $(RECONSTRUCTION_CPP) $(RECONSTRUCTION_SOURCE)/reconstruction_tests.cpp $(RECONSTRUCTION_HEADERS) $(MESH_SOURCE)/mesh.cpp $(MESH_HEADERS) source/io/lzma_stream.cpp $(IO_HEADERS) $(LZMA_OBJECTS) $(EBR_CUDA_OBJECT) $(RECONSTRUCTION_CUDA_TEST_OBJECT) | $(BUILD)
+	$(CXX) $(CPPFLAGS) -std=c++11 -pedantic-errors -O0 -g -Wall -Wextra -Wpedantic -Wconversion -Wshadow -D_GLIBCXX_DEBUG -D_GLIBCXX_ASSERTIONS $(EBR_FLAGS) $(RECONSTRUCTION_CPP) $(RECONSTRUCTION_SOURCE)/reconstruction_tests.cpp $(MESH_SOURCE)/mesh.cpp source/io/lzma_stream.cpp $(LZMA_OBJECTS) $(EBR_CUDA_OBJECT) $(RECONSTRUCTION_CUDA_TEST_OBJECT) $(LDFLAGS) $(LDLIBS) $(EBR_LIBS) -o $@
 
 .PHONY: reconstruction reconstruction-test reconstruction-debug-test reconstruction-cuda-test
 reconstruction: $(EBR_LIBRARY)
@@ -64,8 +60,8 @@ else
 	./$(EBR_DEBUG_TEST)
 endif
 
-# Windows nvcc requires an MSVC host. Build ALL C++ objects in this CUDA test
-# using MSVC through the same projects as Visual Studio; never mix C++ ABIs.
+# На Windows все объекты теста CUDA собираем в проектах Visual Studio с MSVC.
+# Это сохраняет совместимость представления объектов C++ при линковке.
 MSBUILD ?= MSBuild.exe
 MSBUILD_CUDA_FLAGS ?=
 ifeq ($(USE_CMD),1)
@@ -79,3 +75,4 @@ endif
 all: $(BIN)/$(notdir $(EBR_TEST))
 test: reconstruction-test
 debug-test: reconstruction-debug-test
+$(EBR_TEST) $(EBR_DEBUG_TEST): qa/test_checks.h

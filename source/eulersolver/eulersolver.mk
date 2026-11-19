@@ -1,4 +1,4 @@
-# Optional gas-dynamics module, independent of mesh, reconstruction and I/O.
+# Модуль потоков Эйлера собирается независимо от сетки, реконструкции и ввода-вывода.
 EULERSOLVER_SOURCE := source/eulersolver
 WITH_CUDA ?= 0
 EULER_TAG := cuda$(WITH_CUDA)_omp$(WITH_OPENMP)
@@ -62,3 +62,4 @@ endif
 all: $(BIN)/$(notdir $(EULER_TEST))
 test: eulersolver-test
 debug-test: eulersolver-debug-test
+$(EULER_TEST) $(EULER_DEBUG_TEST): qa/test_checks.h

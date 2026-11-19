@@ -2,7 +2,7 @@
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup>
     <WithOpenMP Condition="'$(WithOpenMP)'==''">true</WithOpenMP>
-    <!-- Keep serial outputs separate so switching the backend cannot reuse a stale executable. -->
+    <!-- У последовательной сборки свой каталог, иначе после переключения может остаться программа с OpenMP. -->
     <OutDir Condition="'$(WithOpenMP)'=='false'">$(OutDir)serial\</OutDir>
     <IntDir>$(OutDir)obj\$(MSBuildProjectName)\</IntDir>
   </PropertyGroup>

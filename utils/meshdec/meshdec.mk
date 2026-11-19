@@ -1,5 +1,6 @@
+# Архив разделов сетки собирается потоково. Тест проверяет как содержимое, так и ссылки между разделами.
 MESHDEC_DIR := utils/meshdec
-MESHDEC_HEADERS := $(MESHDEC_DIR)/meshdec.h $(MESHDEC_DIR)/storage.h $(MESH_SOURCE)/mesh_reader.h $(MESH_SOURCE)/mesh.h $(IO_HEADERS)
+MESHDEC_HEADERS := $(MESH_SOURCE)/archive_format.h $(MESHDEC_DIR)/meshdec.h $(MESHDEC_DIR)/storage.h $(MESH_SOURCE)/mesh_reader.h $(MESH_HEADERS) $(IO_HEADERS)
 MESHDEC_SOURCES := $(addprefix $(MESHDEC_DIR)/,storage.cpp ingest.cpp order.cpp halo.cpp archive.cpp)
 MESHDEC_OBJECTS := $(patsubst $(MESHDEC_DIR)/%.cpp,$(BUILD)/meshdec_%.o,$(MESHDEC_SOURCES))
 $(BUILD)/meshdec_%.o: $(MESHDEC_DIR)/%.cpp $(MESHDEC_HEADERS) | $(BUILD)

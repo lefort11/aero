@@ -1,12 +1,12 @@
-# GNU Make; strict C++11. CPU compilation has no dependency on CUDA.
-# Examples: make test; make debug-test; make cuda-check (optional CUDA toolkit).
+# Сборка GNU Make для C++11. Для варианта CPU достаточно компилятора C++.
+# Основные проверки запускаются целями test, debug-test и cuda-check.
 CXX = g++
 WITH_CUDA ?= 0
 CUDA_ARCH ?= 86
 ifeq ($(OS)/$(WITH_CUDA),Windows_NT/1)
 ifneq ($(filter %cygwin %msys,$(MAKE_HOST)),)
 MINGW_CUDA := 1
-# Prefer CUDA 12 when installed alongside newer toolkits (C++11 project).
+# Для совместимости с C++11 при наличии нескольких версий выбираем CUDA 12.
 cuda12_env := $(lastword $(sort $(filter CUDA_PATH_V12_%,$(.VARIABLES))))
 CUDA_HOME ?= $(shell cygpath -u "$(or $($(cuda12_env)),$(CUDA_PATH))")
 endif
@@ -26,7 +26,7 @@ ifeq ($(STATIC_LINK),1)
 ifeq ($(OS),Windows_NT)
 override LDFLAGS += -static
 else ifeq ($(WITH_CUDA),1)
-# The NVIDIA driver is loaded into the process and needs the system glibc.
+# Драйвер NVIDIA использует системную glibc при загрузке в процесс.
 override LDFLAGS += -static-libgcc -static-libstdc++
 else
 override LDFLAGS += -static
@@ -52,7 +52,7 @@ endif
 ifeq ($(OS),Windows_NT)
 ifneq ($(filter %cygwin %msys,$(MAKE_HOST)),)
 SHELL := /bin/sh
-# Leave native MSBuild switches intact when MSYS2 launches a Windows process.
+# Ключи MSBuild должны дойти до Windows без преобразования MSYS2 в пути.
 msbuild_switches := /t:;/p:;/m:;/nr:;/nologo;/v:
 ifneq ($(MSYS2_ARG_CONV_EXCL),*)
 export MSYS2_ARG_CONV_EXCL := $(if $(MSYS2_ARG_CONV_EXCL),$(MSYS2_ARG_CONV_EXCL);)$(msbuild_switches)
@@ -67,7 +67,7 @@ endif
 EXE := .exe
 BUILD := build
 ifeq ($(MINGW_CUDA),1)
-# The helper imports the NVRTC DLL of the selected toolkit.
+# Вычисляем отдельный каталог сборки для каждого набора библиотек NVRTC.
 cuda_toolkit_id := $(shell printf '%s' "$(CUDA_HOME)" | cksum | cut -d' ' -f1)
 BUILD := build/mingw-cuda-sm$(CUDA_ARCH)-$(cuda_toolkit_id)
 endif
@@ -88,8 +88,8 @@ ifneq ($(filter clean,$(MAKECMDGOALS)),)
 $(error Run make clean separately from a build)
 endif
 ifeq ($(OS)/$(WITH_CUDA)/$(USE_CMD)/$(MAKECMDGOALS),Windows_NT/1/1/programs)
-# nvcc uses the MSVC host ABI on Windows. Build the application projects
-# and their library dependencies, without selecting any test project.
+# На Windows nvcc использует ABI MSVC. Здесь собираются программы и их библиотеки.
+# Тестовые проекты запускаются отдельными целями.
 MSBUILD ?= MSBuild.exe
 CUDA_ARCH ?= 86
 .PHONY: programs
@@ -111,6 +111,7 @@ override CXXFLAGS := $(filter-out -O%,$(CXXFLAGS)) $(build_optimization)
 override NVCCFLAGS := $(filter-out -O%,$(NVCCFLAGS)) $(build_optimization) -DNDEBUG
 endif
 MESH_SOURCE := source/mesh
+MESH_HEADERS := $(MESH_SOURCE)/mesh.h $(MESH_SOURCE)/mesh_index.h source/parallel/kernel_math.h
 ifeq ($(MINGW_CUDA),1)
 include source/cuda/mingw.mk
 else
@@ -156,12 +157,14 @@ else
 	mkdir -p "$(BUILD)"
 endif
 
+$(BUILD)/mesh_tests.o $(DEBUG_TEST): qa/test_checks.h
+
 include source/io/io.mk
 
-$(BUILD)/mesh.o: $(MESH_SOURCE)/mesh.cpp $(MESH_SOURCE)/mesh_reader.h $(MESH_SOURCE)/mesh.h $(MESH_SOURCE)/mesh_index.h $(IO_HEADERS) | $(BUILD)
+$(BUILD)/mesh.o: $(MESH_SOURCE)/mesh.cpp $(MESH_SOURCE)/mesh_reader.h $(MESH_HEADERS) $(IO_HEADERS) | $(BUILD)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $(MESH_SOURCE)/mesh.cpp -o $@
 
-$(BUILD)/mesh_tests.o: $(MESH_SOURCE)/mesh_tests.cpp $(MESH_SOURCE)/mesh.h source/io/lzma_stream.h | $(BUILD)
+$(BUILD)/mesh_tests.o: $(MESH_SOURCE)/mesh_tests.cpp $(MESH_HEADERS) source/io/lzma_stream.h | $(BUILD)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $(MESH_SOURCE)/mesh_tests.cpp -o $@
 
 $(TEST): $(BUILD)/mesh.o $(BUILD)/mesh_tests.o $(IO_LIBRARY)
@@ -174,7 +177,7 @@ else
 	./$(TEST)
 endif
 
-$(DEBUG_TEST): $(MESH_SOURCE)/mesh.cpp $(MESH_SOURCE)/mesh_reader.h $(MESH_SOURCE)/mesh.h $(MESH_SOURCE)/mesh_tests.cpp source/io/lzma_stream.cpp $(IO_HEADERS) $(LZMA_OBJECTS) | $(BUILD)
+$(DEBUG_TEST): $(MESH_SOURCE)/mesh.cpp $(MESH_SOURCE)/mesh_reader.h $(MESH_HEADERS) $(MESH_SOURCE)/mesh_tests.cpp source/io/lzma_stream.cpp $(IO_HEADERS) $(LZMA_OBJECTS) | $(BUILD)
 	$(CXX) $(CPPFLAGS) -std=c++11 -pedantic-errors -O0 -g -Wall -Wextra -Wpedantic -Wconversion -Wshadow -D_GLIBCXX_DEBUG -D_GLIBCXX_ASSERTIONS $(MESH_SOURCE)/mesh.cpp $(MESH_SOURCE)/mesh_tests.cpp source/io/lzma_stream.cpp $(LZMA_OBJECTS) $(LDFLAGS) $(LDLIBS) -o $@
 
 debug-test: $(BIN)/$(notdir $(DEBUG_TEST))
@@ -184,12 +187,12 @@ else
 	./$(DEBUG_TEST)
 endif
 
-# Compile the same accessors in a real CUDA kernel. This is a compile check,
-# not a GPU execution test. Configure NVCCFLAGS/-ccbin for the installed host compiler.
+# Ядро компилирует методы доступа к сетке в режиме CUDA без запуска на устройстве.
+# Через NVCCFLAGS можно указать компилятор хоста, подходящий для установленного CUDA.
 cuda-check: | $(BUILD)
 ifeq ($(MINGW_CUDA),1)
 cuda-check: $(BUILD)/mesh_cuda_probe.ptx
-$(BUILD)/mesh_cuda_probe.ptx: $(MESH_SOURCE)/mesh_probe.cuh $(MESH_SOURCE)/mesh.h $(MESH_SOURCE)/mesh_index.h $(ptx_compiler) | $(BUILD)
+$(BUILD)/mesh_cuda_probe.ptx: $(MESH_SOURCE)/mesh_probe.cuh $(MESH_HEADERS) $(ptx_compiler) | $(BUILD)
 	PATH="$(CUDA_HOME)/bin/x64:$(CUDA_HOME)/bin:$$PATH" "$(ptx_compiler)" "$<" "$(CUDA_ARCH)" "$@"
 else ifeq ($(OS)/$(USE_CMD),Windows_NT/)
 	$(MAKE) WITH_CUDA=1 cuda-check
@@ -227,13 +230,14 @@ ifneq ($(and $(RES_LIB),$(INITIAL_LIB),$(EXPLICIT_LIBRARY),$(TIMESTEP_LIBRARY)),
 include source/aero/aero.mk
 endif
 
-# Shared host loops also occur in the debug targets that compile sources directly.
+# Цели отладки компилируют общие параллельные циклы непосредственно из исходников.
 PARALLEL_HEADER := source/parallel/parallel_for.h
 $(BUILD)/mesh.o $(BUILD)/cv.o $(BUILD)/periodic.o $(BUILD)/initial.o $(BUILD)/io_fields.o $(RECONSTRUCTION_OBJECT) $(WENO_OBJECT) $(BUILD)/converter_topology_$(WITH_CGNS).o: $(PARALLEL_HEADER)
 ifneq ($(filter 1,$(WITH_CUDA)),)
 cuda_objects := $(AERO_GPU) $(EBR_CUDA_OBJECT) $(RECONSTRUCTION_CUDA_TEST_OBJECT) $(EULER_CUDA_TEST_OBJECT) $(BC_GPU) $(CV_GPU) $(RES_GPU) $(EXPLICIT_GPU) $(EXPLICIT_TEST_GPU) $(TIMESTEP_GPU) $(TIMESTEP_TEST_GPU)
-$(cuda_objects): source/cuda/runtime.h source/parallel/kernel_math.h source/mesh/mesh_index.h
-$(AERO_PROGRAM) $(RES_OBJ) $(EXPLICIT_OBJ) $(EBR_TEST) $(RES_TEST) $(REPORT_TEST): source/cuda/runtime.h
+$(cuda_objects): source/cuda/check.h source/cuda/runtime.h source/parallel/kernel_math.h source/mesh/mesh_index.h
+$(AERO_PROGRAM) $(RES_OBJ) $(EXPLICIT_OBJ) $(EBR_TEST) $(RES_TEST) $(REPORT_TEST): source/cuda/check.h source/cuda/runtime.h
+$(CV_GPU) $(BC_GPU) $(TIMESTEP_TEST_GPU) $(EBR_TEST) $(EBR_DEBUG_TEST) $(RES_TEST) $(RES_DEBUG): qa/cuda_test_buffer.h
 ifeq ($(MINGW_CUDA),1)
 $(cuda_objects): source/cuda/mingw.mk $(ptx_compiler) $(CUDA_RUNTIME_LINK)
 endif
