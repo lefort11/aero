@@ -22,7 +22,7 @@ double PartitionGpu::measure_flux_rate(ResidualOptions options, std::size_t coun
     std::vector<double> state(5 * count);
     for (std::size_t i = 0; i < count; ++i) {
         faces[i] = {i, (i + 1) % count, 0, {1, 0, 0}, 1, true};
-        state[5 * i] = 1 + .001 * (i % 31);
+        state[5 * i] = 1 + .001 * static_cast<double>(i % 31);
         state[5 * i + 1] = .125;
         state[5 * i + 4] = 2.5;
     }
@@ -57,7 +57,7 @@ double PartitionGpu::measure_flux_rate(ResidualOptions options, std::size_t coun
     }
     sample.check_kernel("calibration");
     std::sort(seconds.begin(), seconds.end());
-    const double rate = count * repeats / seconds[seconds.size() / 2];
+    const double rate = static_cast<double>(count * repeats) / seconds[seconds.size() / 2];
     if (!(rate > 0 && std::isfinite(rate)))
         throw std::runtime_error("GPU calibration: invalid elapsed time");
     return rate;
@@ -156,6 +156,16 @@ void PartitionGpu::layout(residual_detail::Geometry g, const PartitionStencil& s
                           const std::vector<MeshIndex>& computed, const std::vector<MeshIndex>& owned,
                           const double* volumes, std::size_t state_nodes, bool compact_buffer,
                           bool whole_mesh) {
+    if (g.packed.tiles) {
+        const auto count = (g.edges + 31) / 32;
+        if (g.packed.order == 5)
+            g.packed.tiles = storage_.allocate(count, static_cast<const residual_detail::WenoEdgeTile<5>*>(g.packed.tiles));
+        else
+            g.packed.tiles = storage_.allocate(count, static_cast<const residual_detail::WenoEdgeTile<3>*>(g.packed.tiles));
+        g.packed.remaining = storage_.allocate(g.packed.count, g.packed.remaining);
+    }
+    g.packed.gas = storage_.allocate<EulerState>(g.packed.state_nodes);
+    g.packed.normals = storage_.allocate<residual_detail::FaceNormal>(g.packed.state_nodes ? g.edges : 0);
     g.surfaces = storage_.allocate(g.faces, g.surfaces);
     g.incidence = storage_.allocate(g.offsets[g.nodes], g.incidence);
     g.offsets = storage_.allocate(g.nodes + 1, g.offsets);
@@ -205,6 +215,8 @@ bool PartitionGpu::reserve(GpuMemoryFit& fit) {
 void PartitionGpu::upload_state(const std::vector<double>& state, const std::vector<double>& initial) {
     if (storage_.used != storage_.capacity)
         throw std::logic_error("GPU layout changed after reservation");
+    if (grid_.geometry.packed.normals)
+        residual_detail::gpu_prepare_face_normals(grid_.geometry);
     if (!state.empty()) {
         check(cudaMemcpy(grid_.state, state.data(), state.size() * sizeof(double), cudaMemcpyHostToDevice));
         check(cudaMemcpy(grid_.initial, initial.data(), initial.size() * sizeof(double),

@@ -1,6 +1,6 @@
 # Библиотека невязки связывает поток, реконструкцию и геометрию. Тесты проверяют также выбор шага.
 RES_DIR := source/residual
-RES_HDR := $(RES_DIR)/residual.h $(RES_DIR)/residual_detail.h $(RES_DIR)/flux_cfl.h source/timestep/cfl_detail.h source/timestep/timestep.h source/parallel/kernel_math.h source/mesh/mesh_index.h source/parallel/parallel_for.h source/parallel/wall_timer.h $(BC_HEADERS) $(CV_HEADERS) $(PERIODIC_HEADERS) $(EULER_HEADERS) $(MESH_HEADERS)
+RES_HDR := $(RES_DIR)/residual.h $(RES_DIR)/residual_detail.h $(RES_DIR)/packed_weno.h $(RES_DIR)/flux_cfl.h source/timestep/cfl_detail.h source/timestep/timestep.h source/parallel/kernel_math.h source/mesh/mesh_index.h source/parallel/parallel_for.h source/parallel/wall_timer.h $(BC_HEADERS) $(CV_HEADERS) $(PERIODIC_HEADERS) $(EULER_HEADERS) $(MESH_HEADERS)
 RES_LIB := $(BUILD)/libaero_residual_$(EBR_TAG).a
 RES_OBJ := $(BUILD)/residual_$(EBR_TAG).o
 RES_DEPS := $(BC_LIB) $(CV_LIB) $(EBR_LIBRARY) $(EULER_LIBRARY) $(BUILD)/mesh.o $(IO_LIBRARY)

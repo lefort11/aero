@@ -63,8 +63,6 @@
     <ClInclude Include="..\source\reconstruction\stencil_builder.h" />
     <ClCompile Include="..\source\reconstruction\ray_geometry.cpp" />
     <ClCompile Include="..\source\reconstruction\stencil_builder.cpp" />
-    <ClCompile Include="..\source\reconstruction\ebr.cpp" />
-    <ClCompile Include="..\source\reconstruction\weno.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="aero_io.vcxproj">

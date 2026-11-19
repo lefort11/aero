@@ -250,7 +250,7 @@ void PartitionInput::prepare_stencil(const std::set<Id>& periodic_nodes, bool fi
     if (!fifth)
         return;
     if (near_vertices) {
-        // Даже у внутреннего ребра первый луч может попасть в шов. Остальные периодические копии дают соседей для второго луча.
+        // Ближняя опора внутреннего ребра может попасть на периодический шов. Копии узлов дают соседей второго слоя.
         for (const auto& a : face_nodes(cell_faces(cells_)))
             near_vertices->emplace_back(records_.at(a).id(), layout_.owner(a.first));
         // Дополнительный поиск соседей нужен только за обычными слоями листа. Дальний каталог уже охватывает все обычные ближние ячейки.

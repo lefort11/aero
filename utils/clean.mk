@@ -2,7 +2,7 @@
 # записанные решения и установка CGNS/HDF5.
 clean_roots := $(BUILD)
 ifeq ($(OS)/$(origin BUILD),Windows_NT/file)
-clean_roots := build $(wildcard build/mingw-cuda-sm*)
+clean_roots := build $(wildcard build/mingw-cpu-* build/mingw-cuda-sm*)
 endif
 ifneq ($(OS),Windows_NT)
 ifeq ($(origin BUILD),file)

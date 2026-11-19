@@ -66,10 +66,16 @@ msbuild_bin = $(abspath $(BIN))
 endif
 EXE := .exe
 BUILD := build
+ifneq ($(filter %cygwin %msys,$(MAKE_HOST)),)
+# MINGW64 и UCRT64 используют разные типы в libstdc++. Путь библиотеки
+# различает эти среды, а версия компилятора отделяет результаты после обновления GCC.
+mingw_toolchain_id := $(shell { $(CXX) -print-file-name=libstdc++.a && $(CXX) -dumpfullversion; } | cksum | cut -d' ' -f1)
+BUILD := build/mingw-cpu-$(mingw_toolchain_id)
+endif
 ifeq ($(MINGW_CUDA),1)
 # Вычисляем отдельный каталог сборки для каждого набора библиотек NVRTC.
 cuda_toolkit_id := $(shell printf '%s' "$(CUDA_HOME)" | cksum | cut -d' ' -f1)
-BUILD := build/mingw-cuda-sm$(CUDA_ARCH)-$(cuda_toolkit_id)
+BUILD := build/mingw-cuda-sm$(CUDA_ARCH)-$(cuda_toolkit_id)-$(mingw_toolchain_id)
 endif
 else
 EXE :=

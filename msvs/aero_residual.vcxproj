@@ -59,6 +59,7 @@
     <ClInclude Include="..\source\residual\residual.h" />
     <ClCompile Include="..\source\residual\residual.cpp" />
     <ClInclude Include="..\source\residual\residual_detail.h" />
+    <ClInclude Include="..\source\residual\packed_weno.h" />
     <ClInclude Include="..\source\residual\flux_cfl.h" />
   </ItemGroup>
   <PropertyGroup>
@@ -114,6 +115,7 @@
     <GpuKernelInput Include="..\source\cuda\runtime.h" />
     <GpuKernelInput Include="..\source\mesh\mesh_index.h" />
     <GpuKernelInput Include="..\source\residual\residual_detail.h" />
+    <GpuKernelInput Include="..\source\residual\packed_weno.h" />
     <GpuKernelInput Include="..\source\residual\residual.h" />
     <GpuKernelInput Include="..\source\bc\bc.h" />
     <GpuKernelInput Include="..\source\eulersolver\euler.h" />

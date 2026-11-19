@@ -2,6 +2,9 @@
 #define AERO_EULERSOLVER_EULER_H
 
 #include "../parallel/kernel_math.h"
+#ifndef __CUDACC_RTC__
+#include <cmath>
+#endif
 
 namespace aero {
 enum class EulerStatus {
@@ -37,12 +40,20 @@ struct EulerRoeBasis {
     double enthalpy;       // Полная удельная энтальпия после осреднения.
     double sound_speed;    // Скорость звука в осреднённом состоянии.
     double right[25];      // Правые собственные векторы по столбцам, шаг строки равен пяти.
+    // В столбце энтропийной волны энергетическая компонента равна |v_Roe|²/2.
+    AERO_HOST_DEVICE double kinetic_energy() const { return right[5 * (dimension + 1) + 1]; }
     double eigenvalues[5]; // Скорости волн в порядке: звук−, энтропия, сдвиговые волны, звук+.
 };
 
 namespace euler_detail {
 AERO_HOST_DEVICE inline bool finite(double x) {
-    return x == x && x <= max_finite_double && x >= -max_finite_double;
+#ifdef __CUDA_ARCH__
+    // У бесконечности и NaN все биты порядка равны единице. Проверка целых битов
+    // освобождает блоки FP64 для вычисления самих потоков и сохраняет субнормальные числа.
+    return (static_cast<unsigned>(__double2hiint(x)) & 0x7ff00000u) != 0x7ff00000u;
+#else
+    return std::isfinite(x);
+#endif
 }
 AERO_HOST_DEVICE inline double absolute(double x) {
     return x < 0 ? -x : x;
@@ -208,6 +219,8 @@ AERO_HOST_DEVICE inline EulerStatus interface_fluxes(unsigned dimension, const d
     return EulerStatus::Success;
 }
 
+AERO_HOST_DEVICE inline EulerStatus interface_wave_speed(unsigned, const InterfaceGas&, double&);
+
 // При реконструкции потоков они уже известны. Скорость диссипации определяем по состояниям.
 AERO_HOST_DEVICE inline EulerStatus interface_speed(unsigned dimension, const double* left,
                                                     const double* right, const double* direction,
@@ -216,6 +229,11 @@ AERO_HOST_DEVICE inline EulerStatus interface_speed(unsigned dimension, const do
         read_interface_states(dimension, left, right, direction, gamma, gas.left, gas.right, gas.normal);
     if (status != EulerStatus::Success)
         return status;
+    return interface_wave_speed(dimension, gas, max_speed);
+}
+
+// Звуковая и переносная скорости на каждой стороне уже известны ограничителю и решателю.
+AERO_HOST_DEVICE inline EulerStatus interface_wave_speed(unsigned dimension, const InterfaceGas& gas, double& max_speed) {
     const double speed_left = absolute(dot(dimension, gas.left.velocity, gas.normal)) + gas.left.sound_speed;
     const double speed_right =
         absolute(dot(dimension, gas.right.velocity, gas.normal)) + gas.right.sound_speed;

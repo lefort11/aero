@@ -19,11 +19,41 @@ unsigned blocks(Index n, unsigned threads = 128) {
 }
 using aero::cuda_detail::checked;
 }
+void residual_detail::gpu_prepare_face_normals(const Geometry& g) {
+    if (g.edges) {
+        AERO_LAUNCH(face_normals, blocks(g.edges), 128, nullptr, g);
+        checked(cudaGetLastError());
+    }
+}
+
 // Считает один поток на площадку. Пакет может содержать как внутренние рёбра, так и граничные площадки.
 void residual_detail::gpu_face_fluxes(const FaceBatch& batch, Index* bad, void* stream) {
     if (!batch.count)
         return;
-    AERO_LAUNCH(flux_kernel, blocks(batch.count), 128, static_cast<cudaStream_t>(stream), batch, bad);
+    FaceBatch remaining = batch;
+    const auto& packed = batch.geometry.packed;
+    if (packed.gas) {
+        AERO_LAUNCH(nodal_gas, blocks(packed.state_nodes), 128, static_cast<cudaStream_t>(stream),
+                    batch.geometry.dim, batch.state, batch.geometry.options.gamma, packed.state_nodes, packed.gas);
+        checked(cudaGetLastError());
+    }
+    if (packed.tiles) {
+        if (packed.order == 5) {
+            AERO_LAUNCH(weno5_flux, blocks(batch.count, 32), 32, static_cast<cudaStream_t>(stream), batch, bad);
+        } else {
+            AERO_LAUNCH(weno3_flux, blocks(batch.count, 32), 32, static_cast<cudaStream_t>(stream), batch, bad);
+        }
+        checked(cudaGetLastError());
+        remaining.indices = batch.geometry.packed.remaining;
+        remaining.count = batch.geometry.packed.count;
+        if (!remaining.count)
+            return;
+    }
+    if (remaining.nodal_roe_2d()) {
+        AERO_LAUNCH(nodal_roe_2d_kernel, blocks(remaining.count), 128, static_cast<cudaStream_t>(stream), remaining, bad);
+    } else {
+        AERO_LAUNCH(flux_kernel, blocks(remaining.count), 128, static_cast<cudaStream_t>(stream), remaining, bad);
+    }
     checked(cudaGetLastError());
 }
 void launch_residual(Geometry g, const double* u, const double* u0, EulerFluxResult* flux, double* r,

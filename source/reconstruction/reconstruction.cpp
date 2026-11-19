@@ -71,10 +71,8 @@ ReconstructionStencil prepare_reconstruction(const Mesh& mesh, const Reconstruct
         build_first_order_rows(view, data);
         break;
     case ReconstructionFamily::Ebr:
-        detail::build_ebr_stencil(mesh, options, scheme, data);
-        break;
     case ReconstructionFamily::Weno:
-        detail::build_weno_stencil(mesh, options, scheme, data);
+        detail::build_layer_stencil(mesh, options, scheme, data);
         break;
     }
     return result;

@@ -724,6 +724,10 @@ void register_weno_formulas() {
         b.node(1, 2);
         b.node(-3, 2);
         b.polygon({0, 1, 2, 3, 4, 5, 6, 7});
+        // Заполняем выемку ячейкой: луч идёт через внутреннюю грань на расстоянии 2
+        // и достигает допустимой внешней опоры на расстоянии 3.
+        b.node(0, -1);
+        b.polygon({1, 8, 4, 3, 2});
         const Mesh m = b.finish();
         ReconstructionOptions o;
         o.scheme = ReconstructionScheme::Weno3;
@@ -734,6 +738,12 @@ void register_weno_formulas() {
         require(s.data().side_scheme[2 * e] == ReconstructionSideScheme::Weno3,
                 "Missing WENO first-layer hit");
         near(s.data().outer_distance[2 * e], 3); // Пересечения на расстояниях 2 и 3.
+        o.scheme = ReconstructionScheme::Ebr3;
+        const auto linear = prepare_reconstruction(m, o);
+        require(linear.data().offsets == s.data().offsets && linear.data().nodes == s.data().nodes &&
+                    linear.data().weights == s.data().weights && linear.data().complete == s.data().complete &&
+                    linear.data().outer_distance == s.data().outer_distance,
+                "Different geometry or linear coefficients for EBR3 and WENO3");
     });
 }
 
@@ -907,7 +917,7 @@ void register_ebr5() {
         near(s.data().far_distance[4], 3);
         near(s.data().far_distance[5], 9);
     });
-    add("EBR5 interpolates gradients rather than far-point divided differences", [] {
+    add("EBR5 shares the WENO5 virtual points and optimal linear coefficients", [] {
         Builder b;
         b.d.dimension = 2;
         b.node(0, 0);
@@ -933,9 +943,15 @@ void register_ebr5() {
             ++e;
         require(s.data().side_scheme[2 * e] == ReconstructionSideScheme::Ebr5,
                 "Missing virtual-point EBR5 stencil");
-        // Ближняя производная равна −6, дальняя равна 0.5·(5−17)/2 + 0.5·(11+1)/1 = 3.
-        // Интерполяция самих дальних значений дала бы другие результаты: 0 и 7/5.
-        near(reconstruct_all_sides(s, {2, 8, 5, 11, 17, -1, 20}, 1).left_increment2[e], 6.0 / 5);
+        // В обоих пересечениях слева значение равно 8. Дальний наклон равен нулю.
+        near(reconstruct_all_sides(s, {2, 8, 5, 11, 17, -1, 20}, 1).left_increment2[e], 7.0 / 5);
+        o.scheme = ReconstructionScheme::Weno5;
+        const auto nonlinear = prepare_reconstruction(m, o);
+        require(s.data().offsets == nonlinear.data().offsets && s.data().nodes == nonlinear.data().nodes &&
+                    s.data().weights == nonlinear.data().weights && s.data().complete == nonlinear.data().complete &&
+                    s.data().outer_distance == nonlinear.data().outer_distance &&
+                    s.data().far_distance == nonlinear.data().far_distance,
+                "Different geometry or linear coefficients for EBR5 and WENO5");
         near(s.data().far_distance[2 * e], 2.5);
         require(s.data().side_scheme[2 * e + 1] == ReconstructionSideScheme::Ebr3,
                 "Expected right-side downgrade only");

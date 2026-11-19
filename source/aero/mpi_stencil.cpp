@@ -201,7 +201,7 @@ namespace {
 // эти данные требуются лишь на этапе подготовки. Владельцы удалённых узлов позже пришлют значения поля.
 MeshPartition build_stencil_support(const MeshPartition& part, const PeriodicPartition* seam,
                                     PartitionInput& input, const StencilRequests& requests, bool fifth,
-                                    bool weno, const Processes& w, std::set<Id>& nodal) {
+                                    const Processes& w, std::set<Id>& nodal) {
     const auto& ids = seam ? seam->ids : part.nodes;
     const auto& owners = seam ? seam->owners : part.node_owners;
     const Copies copies = seam ? periodic_copies(part, *seam, w) : Copies();
@@ -230,7 +230,7 @@ MeshPartition build_stencil_support(const MeshPartition& part, const PeriodicPar
         far_copies = boundary_support(near_vertices, copies, {}, w).originals;
     w.local([&] { input.add_stars(far_copies); });
     // В одном измерении единственная вершина слоя уже задаёт всю грань.
-    if (weno && part.mesh.view().dimension > 1) {
+    if (part.mesh.view().dimension > 1) {
         const bool crosses_seam = seam && add_periodic_context(input, copies, w, true, false);
         w.local([&] { input.complete_layer_faces(); });
         if (seam) {
@@ -273,7 +273,7 @@ PartitionStencil prepare_partition_stencil(const MeshPartition& part, const Peri
     MeshPartition support;
     std::set<Id> nodal;
     if (input) {
-        support = build_stencil_support(part, seam, *input, requests, fifth, weno, w, nodal);
+        support = build_stencil_support(part, seam, *input, requests, fifth, w, nodal);
     } else
         nodal = requests.inlet_nodes;
     const MeshPartition& halo = input ? support : part;

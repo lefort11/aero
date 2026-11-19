@@ -41,6 +41,29 @@ inline bool needs_nodal_traces(BoundaryType type) {
     return type == BoundaryType::Free;
 }
 #endif
+// Порядок строк в упаковке обоих концов ребра. Центральная и ближние строки хранятся по одному разу.
+enum WenoSlopeRow : unsigned { CentralSlope, NearLeftSlope, NearRightSlope, FarLeftSlope, FarRightSlope };
+
+// Число узлов в наклоне: концы ребра, интерполяция ближней грани либо разность двух интерполяций.
+AERO_HOST_DEVICE constexpr unsigned slope_terms(unsigned row) {
+    return row == CentralSlope ? 2 : (row <= NearRightSlope ? 3 : 4);
+}
+
+// Номер первого слагаемого в списке всех строк. При чтении шаблона известен при компиляции.
+AERO_HOST_DEVICE constexpr unsigned first_slope_term(unsigned row) {
+    return row ? first_slope_term(row - 1) + slope_terms(row - 1) : 0;
+}
+
+// В плитке соседние потоки CUDA читают подряд данные одного и того же элемента шаблона.
+// Для полного двумерного WENO5 пять разных наклонов содержат 2, 3, 3, 4 и 4 слагаемых.
+template <unsigned scheme_order> struct WenoEdgeTile {
+    static constexpr unsigned nodes_per_edge = scheme_order == 5 ? 10 : 6;
+    static constexpr unsigned rows_per_edge = scheme_order == 5 ? 5 : 3;
+    unsigned nodes[nodes_per_edge][32];    // Индексы в поле узлов. WENO3 использует 6 узлов, WENO5 — 10.
+    Index slots[32];           // По четыре бита на номер узла каждого слагаемого. Все единицы — общий путь.
+    double weights[first_slope_term(rows_per_edge) - rows_per_edge][32];    // В каждой разностной строке коэффициент опорного узла не используется.
+};
+struct FaceNormal { double axis[3]; }; // Единичный вектор в базисе решателя.
 struct Geometry {
     unsigned dim;              // Число компонент импульса.
     Index nodes, edges, faces; // faces включает рёбра и следующие за ними физические площадки.
@@ -50,6 +73,16 @@ struct Geometry {
     BoundaryPatchView patches;         // Метки и отдельные данные для free на текущем устройстве.
     ReconstructionStencilView stencil; // Геометрические веса для восстановления состояний на рёбрах.
     ResidualOptions options;           // Переменные реконструкции, газ и решатель потока.
+
+    struct {
+        const void* tiles;  // Необязательная упаковка полных шаблонов для CPU и GPU.
+        unsigned order;             // Выбирает раскладку WENO3 или WENO5.
+        const MeshIndex* remaining; // Остальные площадки текущего процесса, включая физические границы.
+        Index count;                // Размер списка remaining.
+        FaceNormal* normals;        // Единичные нормали рёбер, подготовленные на текущем устройстве.
+        EulerState* gas;            // Физические величины в узлах текущей стадии.
+        Index state_nodes;          // Включает удалённые узлы шаблона.
+    } packed;
 
     AERO_HOST_DEVICE unsigned components() const { return dim + 2; } // Плотность, импульс и энергия.
     template <class T> AERO_HOST_DEVICE T* node_row(T* field, Index node) const {
@@ -64,17 +97,20 @@ struct Reader {
     const double* normal;        // Единичная нормаль этого базиса.
     ResidualVariables variables; // Величины, к которым применяются веса шаблона.
     AERO_HOST_DEVICE EulerStatus project(const double* u, double* q) const {
-        // Компонента энергии у энтропийного собственного вектора равна
-        // v_Roe
-        // ²/2.
         return euler_detail::project_characteristic(basis, normal, g.options.gamma,
-                                                    basis.right[5 * (g.dim + 1) + 1], u, q);
+                                                    basis.kinetic_energy(), u, q);
     }
     AERO_HOST_DEVICE EulerStatus transform(const double* u, double* q) const {
         if (variables == ResidualVariables::Characteristic)
             return project(u, q);
         if (variables == ResidualVariables::Flux) {
             double speed;
+            if (g.packed.gas) {
+                const auto& gas = g.packed.gas[(u - field) / g.components()];
+                if (!gas.density)
+                    return EulerStatus::InvalidDensity;
+                return euler_detail::project_flux(g.dim, u, gas, normal, q, &speed);
+            }
             return euler_flux(g.dim, u, surface.area, g.options.gamma, q, &speed);
         }
         for (unsigned k = 0; k < g.dim + 2; ++k)
@@ -91,9 +127,9 @@ struct Reader {
     }
 };
 
-// Складываем все характеристические компоненты в исходном порядке разреженной строки.
+// Складываем сразу все компоненты выбранных переменных в исходном порядке разреженной строки.
 // Первый узел даёт опорное значение разностной формулы с нулевой суммой весов.
-AERO_HOST_DEVICE inline bool characteristic_row(const Reader& reader, Index owner, const double* own,
+AERO_HOST_DEVICE inline bool transformed_row(const Reader& reader, Index owner, const double* own,
                                                 const Index* offsets, const Index* nodes,
                                                 const double* weights, Index row, double* sum,
                                                 unsigned stride) {
@@ -107,7 +143,7 @@ AERO_HOST_DEVICE inline bool characteristic_row(const Reader& reader, Index owne
     double first[5];
     const double* reference = own;
     if (nodes[begin] != owner) {
-        if (reader.project(reader.field + nodes[begin] * width, first) != EulerStatus::Success)
+        if (reader.transform(reader.field + nodes[begin] * width, first) != EulerStatus::Success)
             return false;
         reference = first;
     }
@@ -115,7 +151,7 @@ AERO_HOST_DEVICE inline bool characteristic_row(const Reader& reader, Index owne
         double projected[5];
         const double* q = own;
         if (nodes[i] != owner) {
-            if (reader.project(reader.field + nodes[i] * width, projected) != EulerStatus::Success)
+            if (reader.transform(reader.field + nodes[i] * width, projected) != EulerStatus::Success)
                 return false;
             q = projected;
         }
@@ -125,17 +161,17 @@ AERO_HOST_DEVICE inline bool characteristic_row(const Reader& reader, Index owne
     return true;
 }
 
-AERO_HOST_DEVICE inline bool characteristic_weno_increment(const Reader& reader, Index row, const double* own,
+AERO_HOST_DEVICE inline bool transformed_weno_increment(const Reader& reader, Index row, const double* own,
                                                            double* out) {
     const auto& s = reader.g.stencil;
     const Index owner = s.row_owner[row];
     const unsigned order = s.weno_order[row];
     if (!order)
-        return characteristic_row(reader, owner, own, s.offsets, s.nodes, s.weights, row, out, 1);
+        return transformed_row(reader, owner, own, s.offsets, s.nodes, s.weights, row, out, 1);
     // Проецируем в базис ребра сразу все компоненты, затем применяем веса WENO к каждой отдельно.
     double slopes[5 * 4];
     for (unsigned k = 0; k < (order == 5 ? 4u : 2u); ++k)
-        if (!characteristic_row(reader, owner, own, s.slope_offsets, s.slope_nodes, s.slope_weights,
+        if (!transformed_row(reader, owner, own, s.slope_offsets, s.slope_nodes, s.slope_weights,
                                 4 * row + k, slopes + k, 4))
             return false;
     for (unsigned c = 0; c < reader.g.dim + 2; ++c)
@@ -149,44 +185,47 @@ struct EdgeTraces {
     double right[5]; // Значение со стороны end.
 };
 
+// Приращение схемы вдвое больше сдвига от узла к середине ребра.
+// При работе с волнами сначала переводим только приращение обратно в консервативные переменные.
+template <unsigned fixed_width = 0>
+AERO_HOST_DEVICE inline bool trace_from_increment(unsigned width, const EulerRoeBasis* basis, const double* own,
+                                                  double* increment, bool right, double* trace) {
+    if (basis && euler_detail::expand_characteristic<fixed_width>(width, *basis, increment, increment) != EulerStatus::Success)
+        return false;
+    for (unsigned k = 0; k < width; ++k)
+        trace[k] = own[k] + (right ? -0.5 : 0.5) * increment[k];
+    return true;
+}
+
+// Граница с узловыми следами уже обработана в integrated_edge_flux. Здесь обе стороны используют шаблон.
 AERO_HOST_DEVICE inline bool reconstruct_edge_traces(const Reader& reader, Index edge, EdgeTraces& traces) {
     const unsigned width = reader.g.dim + 2;
     for (unsigned side = 0; side < 2; ++side) {
         const Index node = side ? reader.surface.end : reader.surface.begin;
         const double* u = reader.g.node_row(reader.field, node);
         double* dst = side ? traces.right : traces.left;
-        // У открытой границы поток на соседнем ребре строится по самим концам ребра.
-        if (reader.surface.use_nodal_traces) {
-            if (reader.variables == ResidualVariables::Flux) {
-                if (reader.transform(u, dst) != EulerStatus::Success)
-                    return false;
-            } else {
-                for (unsigned k = 0; k < width; ++k)
-                    dst[k] = u[k];
-            }
-            continue;
-        }
         double own[5], increment[5];
         if (reader.transform(u, own) != EulerStatus::Success)
             return false;
         // Шаблон возвращает удвоенное приращение, ориентированное от begin к end для обеих сторон.
         const auto which = side ? ReconstructionSide::Right : ReconstructionSide::Left;
-        if (reader.variables == ResidualVariables::Characteristic && reader.g.stencil.weno_order) {
-            if (!characteristic_weno_increment(reader, 2 * edge + side, own, increment))
+        if (reader.variables != ResidualVariables::Conservative) {
+            const Index row = 2 * edge + side;
+            const auto& stencil = reader.g.stencil;
+            // Для EBR и WENO читаем и преобразуем опорный узел сразу для всех компонент.
+            // EBR хранит готовую линейную строку, а WENO комбинирует строки наклонов по текущему полю.
+            const bool valid = stencil.weno_order
+                ? transformed_weno_increment(reader, row, own, increment)
+                : transformed_row(reader, node, own, stencil.offsets, stencil.nodes, stencil.weights, row, increment, 1);
+            if (!valid)
                 return false;
         } else if (reconstruct_increment2(reader.g.stencil, edge, which, own, width, reader, increment) !=
                    ReconstructionStatus::Success)
             return false;
-        if (reader.variables == ResidualVariables::Characteristic) {
-            // Базис линейный: переводим обратно только приращение. На постоянном поле исходное U сохраняется точно.
-            if (characteristic_to_conservative(reader.basis, increment, increment) != EulerStatus::Success)
-                return false;
-            for (unsigned k = 0; k < width; ++k)
-                own[k] = u[k];
-        }
-        // От begin движемся по направлению ребра, от end — навстречу ему.
-        for (unsigned k = 0; k < width; ++k)
-            dst[k] = own[k] + (side ? -0.5 : 0.5) * increment[k];
+        const bool characteristic = reader.variables == ResidualVariables::Characteristic;
+        if (!trace_from_increment(width, characteristic ? &reader.basis : nullptr, characteristic ? u : own,
+                                  increment, side != 0, dst))
+            return false;
     }
     return true;
 }
@@ -203,10 +242,12 @@ AERO_HOST_DEVICE inline double limit_ratio(double base, double value, const Resi
 // Вне абсолютных границ плотности или давления используем узловое состояние.
 // Внутри допустимого диапазона ограничиваем все примитивные переменные одним коэффициентом смешения.
 AERO_HOST_DEVICE inline bool limit_trace(unsigned d, const ResidualOptions& o, const double* node,
-                                         double* trace, const double* area, double* reconstructed_flux) {
-    EulerState base;
-    if (euler_state(d, node, o.gamma, &base) != EulerStatus::Success)
+                                         double* trace, const double* area, double* reconstructed_flux,
+                                         const EulerState* known_base = nullptr, EulerState* limited_gas = nullptr) {
+    EulerState decoded;
+    if (!known_base && euler_state(d, node, o.gamma, &decoded) != EulerStatus::Success)
         return false;
+    const EulerState& base = known_base ? *known_base : decoded;
     for (unsigned k = 0; k < d + 2; ++k)
         if (!euler_detail::finite(trace[k]))
             return false;
@@ -221,8 +262,11 @@ AERO_HOST_DEVICE inline bool limit_trace(unsigned d, const ResidualOptions& o, c
             weight = ::fmin(limit_ratio(base.density, candidate.density, o),
                             limit_ratio(base.pressure, candidate.pressure, o));
     }
-    if (weight == 1)
+    if (weight == 1) {
+        if (limited_gas)
+            *limited_gas = candidate;
         return true;
+    }
     if (weight == 0) {
         for (unsigned k = 0; k < d + 2; ++k)
             trace[k] = node[k];
@@ -238,6 +282,12 @@ AERO_HOST_DEVICE inline bool limit_trace(unsigned d, const ResidualOptions& o, c
         }
         trace[d + 1] = p / (o.gamma - 1) + kinetic;
     }
+    if (limited_gas) {
+        if (weight == 0)
+            *limited_gas = base;
+        else if (euler_state(d, trace, o.gamma, limited_gas) != EulerStatus::Success)
+            return false;
+    }
     if (reconstructed_flux) {
         // В потоковых переменных тем же коэффициентом ограничиваем и восстановленный физический поток.
         double nodal_flux[5], speed;
@@ -249,38 +299,97 @@ AERO_HOST_DEVICE inline bool limit_trace(unsigned d, const ResidualOptions& o, c
     return true;
 }
 
-// Выбирает численный поток вдоль единичной нормали. В режиме flux физические потоки уже восстановлены.
-AERO_HOST_DEVICE inline EulerStatus solve_edge_flux(const Geometry& g, const Surface& surface,
-                                                    const EdgeTraces& state, const EdgeTraces* physical_flux,
-                                                    EulerFluxResult& result) {
-    const double gamma = g.options.gamma;
-    const bool roe = g.options.solver == ResidualSolver::Roe;
-    if (physical_flux) {
-        const auto& flux = *physical_flux;
-        return roe ? roe_fluxes(g.dim, flux.left, flux.right, state.left, state.right, surface.area, gamma,
-                                &result)
-                   : lax_friedrichs_fluxes(g.dim, flux.left, flux.right, state.left, state.right,
-                                           surface.area, gamma, &result);
+// Решатель выдаёт поток на единицу площади. Умножаем компоненты на площадь один раз.
+// max_wave_speed остаётся скоростью: площадь для шага CFL учитывается отдельно.
+AERO_HOST_DEVICE inline bool integrate_flux(unsigned width, double measure, EulerFluxResult& out) {
+    for (unsigned c = 0; c < width; ++c) {
+        out.flux[c] *= measure;
+        if (!euler_detail::finite(out.flux[c]))
+            return false;
     }
-    return roe ? roe_conservative(g.dim, state.left, state.right, surface.area, gamma, &result)
-               : lax_friedrichs_conservative(g.dim, state.left, state.right, surface.area, gamma, &result);
+    return true;
 }
 
-// Возвращает один интегральный поток в ориентации begin → end для обоих смежных узлов.
+// Решатель использует скорости и давления, которые уже вычислены при ограничении следов.
+AERO_HOST_DEVICE inline bool solve_edge_flux(const Geometry& g, const Surface& surface,
+                                              const double* left, const double* right,
+                                              const euler_detail::InterfaceGas& gas, const EdgeTraces* physical,
+                                              EulerFluxResult& out) {
+    EdgeTraces local;
+    double speed;
+    if (physical) {
+        if (euler_detail::interface_wave_speed(g.dim, gas, speed) != EulerStatus::Success)
+            return false;
+    } else {
+        // В режиме реконструкции состояний физический поток получаем по двум следам.
+        double sl, sr;
+        if (euler_detail::project_flux(g.dim, left, gas.left, gas.normal, local.left, &sl) != EulerStatus::Success ||
+            euler_detail::project_flux(g.dim, right, gas.right, gas.normal, local.right, &sr) != EulerStatus::Success)
+            return false;
+        speed = sl > sr ? sl : sr;
+        physical = &local;
+    }
+    const euler_detail::FaceStates face = {g.dim, left, right, surface.area, g.options.gamma};
+    const auto status = g.options.solver == ResidualSolver::Roe
+        ? roe_detail::RoeFlux::combine(face, gas, physical->left, physical->right, speed, &out)
+        : euler_detail::RusanovFlux::combine(face, gas, physical->left, physical->right, speed, &out);
+    return status == EulerStatus::Success && integrate_flux(g.components(), surface.measure, out);
+}
+
+// Из полей узлов собирает физические величины для базиса, ограничителя и потока первого порядка.
+AERO_HOST_DEVICE inline bool edge_gas(const Geometry& g, const Surface& surface, const double* begin,
+                                      const double* end, euler_detail::InterfaceGas& base) {
+    if (g.packed.gas) {
+        base.left = g.packed.gas[surface.begin];
+        base.right = g.packed.gas[surface.end];
+        if (!base.left.density || !base.right.density)
+            return false;
+        if (g.packed.normals) {
+            const auto& n = g.packed.normals[&surface - g.surfaces];
+            for (unsigned k = 0; k < g.dim; ++k)
+                base.normal[k] = n.axis[k];
+            return true;
+        }
+        return euler_unit_direction(g.dim, surface.area, base.normal) == EulerStatus::Success;
+    }
+    return euler_detail::read_interface_states(g.dim, begin, end, surface.area, g.options.gamma,
+                                               base.left, base.right, base.normal) == EulerStatus::Success;
+}
+
+// Ограничиваем след каждой стороны относительно своего узла. В тот же момент получаем газ для потока.
+AERO_HOST_DEVICE inline bool finish_edge_flux(const Geometry& g, const Surface& surface, const double* begin,
+                                              const double* end, const euler_detail::InterfaceGas& base,
+                                              EdgeTraces& state, EdgeTraces* physical, EulerFluxResult& out) {
+    euler_detail::InterfaceGas gas;
+    for (unsigned k = 0; k < g.dim; ++k)
+        gas.normal[k] = base.normal[k];
+    if (!limit_trace(g.dim, g.options, begin, state.left, surface.area, physical ? physical->left : nullptr,
+                     &base.left, &gas.left) ||
+        !limit_trace(g.dim, g.options, end, state.right, surface.area, physical ? physical->right : nullptr,
+                     &base.right, &gas.right))
+        return false;
+    return solve_edge_flux(g, surface, state.left, state.right, gas, physical, out);
+}
+
+template <bool nodal_only = false>
 AERO_HOST_DEVICE inline bool integrated_edge_flux(const Geometry& g, Index edge, const double* field,
                                                   EulerFluxResult& out) {
     const Surface& surface = g.surfaces[edge];
     const double* begin = g.node_row(field, surface.begin);
     const double* end = g.node_row(field, surface.end);
-
-    // Для характеристической реконструкции проецируем все узлы шаблона в один базис этого ребра.
-    EulerRoeBasis basis{};
-    double normal[3];
-    Reader reader = {g, field, surface, basis, normal, g.options.variables};
-    if (reader.variables == ResidualVariables::Characteristic &&
-        euler_detail::roe_basis_with_normal(g.dim, begin, end, surface.area, g.options.gamma, &basis,
-                                            normal) != EulerStatus::Success)
+    euler_detail::InterfaceGas base;
+    if (!edge_gas(g, surface, begin, end, base))
         return false;
+    EulerRoeBasis basis{};
+    Reader reader = {g, field, surface, basis, base.normal, g.options.variables};
+    // При узловых следах поток Роу сам проверяет базис. Для характеристического LF проверяем его здесь.
+    if (reader.variables == ResidualVariables::Characteristic &&
+        ((!nodal_only && !surface.use_nodal_traces) || g.options.solver != ResidualSolver::Roe) &&
+        euler_detail::build_roe_basis(g.dim, base.left, base.right, surface.area, base.normal,
+                                      g.options.gamma, &basis) != EulerStatus::Success)
+        return false;
+    if (nodal_only || surface.use_nodal_traces)
+        return solve_edge_flux(g, surface, begin, end, base, nullptr, out);
 
     // В режиме flux нужны две пары: физические потоки и консервативные состояния для диссипации.
     EdgeTraces reconstructed_flux;
@@ -294,23 +403,7 @@ AERO_HOST_DEVICE inline bool integrated_edge_flux(const Geometry& g, Index edge,
     EdgeTraces state;
     if (!reconstruct_edge_traces(reader, edge, state))
         return false;
-    // У каждой стороны свои пределы по плотности и давлению относительно её исходного узла.
-    if (!limit_trace(g.dim, g.options, begin, state.left, surface.area,
-                     physical_flux ? physical_flux->left : nullptr) ||
-        !limit_trace(g.dim, g.options, end, state.right, surface.area,
-                     physical_flux ? physical_flux->right : nullptr))
-        return false;
-
-    if (solve_edge_flux(g, surface, state, physical_flux, out) != EulerStatus::Success)
-        return false;
-    // Решатель выдаёт поток на единицу площади. Умножаем компоненты на площадь один раз.
-    // max_wave_speed остаётся скоростью: площадь для шага CFL учитывается отдельно.
-    for (unsigned c = 0; c < g.components(); ++c) {
-        out.flux[c] *= surface.measure;
-        if (!euler_detail::finite(out.flux[c]))
-            return false;
-    }
-    return true;
+    return finish_edge_flux(g, surface, begin, end, base, state, physical_flux, out);
 }
 
 // Вычисляет значение для одной записи в общем буфере: сначала рёбра, затем физические площадки.
@@ -336,19 +429,38 @@ struct FaceBatch {
     EulerFluxResult* flux;                 // Одна запись на поверхность, общая для её узлов.
     double *edge_speeds, *boundary_speeds; // Необязательные выходные массивы скоростей волн.
     AERO_HOST_DEVICE Index face(Index k) const { return indices ? indices[k] : k; }
+    // Для первого порядка размерность и решатель известны до обхода. Проверки и формулы потока общие.
+    AERO_HOST_DEVICE bool nodal_roe_2d() const {
+        return geometry.dim == 2 && geometry.options.solver == ResidualSolver::Roe && !geometry.stencil.row_owner;
+    }
+    AERO_HOST_DEVICE bool compute_nodal_roe_2d(Index f) const {
+        if (f >= geometry.edges)
+            return compute(f);
+        Geometry g = geometry;
+        g.dim = 2;
+        g.options.solver = ResidualSolver::Roe;
+        if (!integrated_edge_flux<true>(g, f, state, flux[f]))
+            return false;
+        save_speed(f);
+        return true;
+    }
     AERO_HOST_DEVICE bool compute(Index f) const {
         // Сохраняем поток даже тогда, когда вызывающей стороне не нужны отдельные массивы скоростей.
         if (!integrated_surface_flux(geometry, f, state, initial, flux[f]))
             return false;
+        save_speed(f);
+        return true;
+    }
+    AERO_HOST_DEVICE void save_speed(Index f) const {
         if (f < geometry.edges) {
             if (edge_speeds)
                 edge_speeds[f] = flux[f].max_wave_speed;
         } else if (boundary_speeds)
             boundary_speeds[f - geometry.edges] = flux[f].max_wave_speed;
-        return true;
     }
 };
 void cpu_face_fluxes(const FaceBatch&, const MeshIndex* global_nodes = nullptr);
+void gpu_prepare_face_normals(const Geometry&);
 void gpu_face_fluxes(const FaceBatch&, Index* bad, void* stream);
 
 // Собирает R одного узла в row. Один поток исполнения пишет все его компоненты.

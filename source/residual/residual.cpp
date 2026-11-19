@@ -1,4 +1,5 @@
 #include "flux_cfl.h"
+#include "packed_weno.h"
 #include "../parallel/parallel_for.h"
 #include "../parallel/wall_timer.h"
 #include <cmath>
@@ -124,12 +125,38 @@ void launch_residual(Geometry, const double*, const double*, EulerFluxResult*, d
                      Index*, cudaStream_t);
 #endif
 
+namespace {
+template <unsigned order> bool cpu_face_with_stencil(const FaceBatch& batch, Index f) {
+    using Tile = WenoEdgeTile<order>;
+    const auto& g = batch.geometry;
+    if (!g.packed.tiles || f >= g.edges)
+        return batch.compute(f);
+    const auto& tile = static_cast<const Tile*>(g.packed.tiles)[f / 32];
+    const unsigned lane = f % 32;
+    const Index slots = tile.slots[lane];
+    if (slots == ~Index(0))
+        return batch.compute(f);
+    double waves[Tile::nodes_per_edge * 4];
+    if (!packed_edge_flux<1>(g, batch.state, f, tile, lane, slots, batch.flux[f], waves))
+        return false;
+    batch.save_speed(f);
+    return true;
+}
+}
+
 void residual_detail::cpu_face_fluxes(const FaceBatch& batch, const MeshIndex* global_nodes) {
+    const auto& packed = batch.geometry.packed;
+    if (packed.gas)
+        parallel_for(packed.state_nodes, [&](Index i) {
+            decode_nodal_gas(batch.geometry.dim, batch.state, batch.geometry.options.gamma, i, packed.gas);
+        });
     parallel_for(
         batch.count,
         [&](Index k) {
             const Index f = batch.face(k);
-            if (batch.compute(f))
+            const bool ok = batch.nodal_roe_2d() ? batch.compute_nodal_roe_2d(f) :
+                (packed.order == 5 ? cpu_face_with_stencil<5>(batch, f) : cpu_face_with_stencil<3>(batch, f));
+            if (ok)
                 return;
             if (global_nodes)
                 throw std::domain_error("Invalid flux at global node " +
@@ -243,7 +270,7 @@ struct SpatialResidual::Impl {
              incidence.data(),
              patches.view(),
              stencil,
-             options};
+             options, {}};
         if (device < 0) {
             buffer.resize(surfaces.size());
             return;

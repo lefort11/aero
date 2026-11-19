@@ -33,10 +33,17 @@ PartitionOperator::PartitionOperator(const MeshPartition& part, CvView cv, const
     residual_detail::build_incidence(ids_.size(), edge_count, surfaces_, offsets_, incidence_);
     grid_ = {
         mesh.dimension,    ids_.size(),    edge_count, surfaces_.size(), surfaces_.data(), offsets_.data(),
-        incidence_.data(), patches.view(), {},         options};
+        incidence_.data(), patches.view(), {},         options, {}};
     if (!cuda) {
         flux_.resize(surfaces_.size());
+        normals_.resize(edge_count);
+        parallel_for(edge_count, [&](Id i) {
+            if (euler_unit_direction(mesh.dimension, surfaces_[i].area, normals_[i].axis) != EulerStatus::Success)
+                throw std::domain_error("Invalid edge normal");
+        });
+        grid_.packed.normals = normals_.data();
     }
+    prepare_nodal_gas();
 }
 
 void PartitionOperator::add_edge_surfaces(MeshView mesh, CvView cv, const PeriodicPartition* periodic,
@@ -108,6 +115,94 @@ PartitionWork PartitionOperator::work(Id leaves) const {
     return {leaves, owned.size(), state_nodes() - owned.size(), edges, nodes_.bytes(), edges_.bytes()};
 }
 
+namespace {
+using residual_detail::WenoEdgeTile;
+
+// Упаковываем общий центральный и два ближних наклона. Пятый порядок добавляет два дальних.
+// Для неполного шаблона солвер читает исходные разреженные строки.
+template <unsigned scheme_order>
+bool pack_weno_edge(const PartitionStencil& stencil, MeshIndex edge, WenoEdgeTile<scheme_order>& tile, unsigned lane) {
+    if (stencil.weno_order[2 * edge] != scheme_order || stencil.weno_order[2 * edge + 1] != scheme_order)
+        return false;
+    const auto& rows = stencil.slopes;
+    // В исходной записи по четыре наклона с каждой стороны. Ближний правый наклон при WENO5
+    // доступен как противоположный у левой стороны (2), при WENO3 — как собственный у правой (4 + 1).
+    const unsigned row_number[] = {0, 1, scheme_order == 5 ? 2u : 5u, 3, 7};
+    unsigned used = 0, term = 0, weight = 0;
+    MeshIndex slots = 0;
+    for (unsigned r = 0; r < tile.rows_per_edge; ++r) {
+        const auto row = 8 * edge + row_number[r];
+        const auto first = rows.offsets[row], end = rows.offsets[row + 1];
+        if (end - first != residual_detail::slope_terms(r))
+            return false;
+        for (auto i = first; i < end; ++i, ++term) {
+            // Присваиваем узлу номер при первом появлении. Порядок слагаемых внутри строки сохраняется.
+            const auto node = rows.nodes[i];
+            unsigned slot = 0;
+            while (slot < used && tile.nodes[slot][lane] != node)
+                ++slot;
+            if (slot == used) {
+                if (used == tile.nodes_per_edge)
+                    return false;
+                tile.nodes[used++][lane] = static_cast<unsigned>(node);
+            }
+            slots |= MeshIndex(slot) << (4 * term);
+            if (i != first)
+                tile.weights[weight++][lane] = rows.weights[i];
+        }
+    }
+    if (used != tile.nodes_per_edge)
+        return false;
+    tile.slots[lane] = slots;
+    return true;
+}
+}
+
+void PartitionOperator::prepare_nodal_gas() {
+    grid_.packed.state_nodes = state_nodes();
+    if (!flux_.empty()) {
+        nodal_gas_.resize(state_nodes());
+        grid_.packed.gas = nodal_gas_.data();
+    }
+}
+
+template <unsigned scheme_order>
+void PartitionOperator::prepare_weno_tiles(std::vector<WenoEdgeTile<scheme_order>>& tiles) {
+    auto& g = grid_;
+    if (g.dim != 2 || g.options.variables != ResidualVariables::Characteristic ||
+        g.options.solver != ResidualSolver::Roe || stencil_.weno_order.empty() ||
+        state_nodes() > std::numeric_limits<unsigned>::max())
+        return;
+    // На CPU потоки площадок хранятся в flux_. На GPU для малой сетки один общий запуск
+    // быстрее двух запусков для полных и остальных шаблонов. Веса реконструкции те же.
+    const MeshIndex small_gpu_edge_limit = 8192;
+    if (flux_.empty() && g.edges <= small_gpu_edge_limit)
+        return;
+    const auto count = (g.edges + 31) / 32;
+    tiles.resize(count);
+    parallel_for(count, [&](MeshIndex t) {
+        auto& tile = tiles[t];
+        for (unsigned lane = 0; lane < 32; ++lane) {
+            const auto edge = 32 * t + lane;
+            tile.slots[lane] = ~MeshIndex(0);
+            if (edge < g.edges && !g.surfaces[edge].use_nodal_traces)
+                pack_weno_edge(stencil_, edge, tile, lane);
+        }
+    });
+    for (auto f : compute_)
+        if (f >= g.edges || tiles[f / 32].slots[f % 32] == ~MeshIndex(0))
+            other_faces_.push_back(f);
+    if (other_faces_.size() == compute_.size())
+        tiles.clear();
+
+    if (tiles.empty())
+        return;
+    g.packed.tiles = tiles.data();
+    g.packed.order = scheme_order;
+    g.packed.remaining = other_faces_.data();
+    g.packed.count = other_faces_.size();
+}
+
 Id PartitionOperator::prepare_stencil(const MeshPartition& part, const PeriodicPartition* seam,
                                       const std::vector<PeriodicPair>& pairs, PartitionInput* input,
                                       const StencilRequests& requests, const ReconstructionOptions& options) {
@@ -120,6 +215,11 @@ Id PartitionOperator::prepare_stencil(const MeshPartition& part, const PeriodicP
             nodes_.imports[stencil_.extra_nodes[j].second].push_back(ids_.size() + j);
         }
         grid_.stencil = stencil_.view(state_nodes());
+        prepare_nodal_gas();
+        if (options.scheme == ReconstructionScheme::Weno5)
+            prepare_weno_tiles(weno5_tiles_);
+        else if (options.scheme == ReconstructionScheme::Weno3)
+            prepare_weno_tiles(weno3_tiles_);
     });
     return world_.sum(stencil_.incomplete);
 }
@@ -185,6 +285,13 @@ void PartitionOperator::reserve_gpu(bool compact_buffer, GpuMemoryFit& fit) {
     gpu_.reset(new PartitionGpu);
     layout_gpu(compact_buffer);
     fit.failed = !gpu_->reserve(fit);
+    // На тесной карте расчёт может поместиться с исходными разреженными строками, без дополнительных буферов.
+    if (fit.failed && grid_.packed.state_nodes) {
+        grid_.packed = {};
+        gpu_.reset(new PartitionGpu);
+        layout_gpu(compact_buffer);
+        fit.failed = !gpu_->reserve(fit);
+    }
 }
 
 void PartitionOperator::upload_state(const std::vector<double>& state, const std::vector<double>& initial) {

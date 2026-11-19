@@ -196,18 +196,14 @@ void add_scaled_row(SparseRow& destination, const SparseRow& source, double fact
 SparseRow ray_derivative(MeshIndex node, const RayPoint& hit, double h, unsigned side);
 class ReconstructionGeometry {
 public:
-    ReconstructionGeometry(const Mesh& mesh, double tolerance, bool build_stars);
+    ReconstructionGeometry(const Mesh& mesh, double tolerance);
     ~ReconstructionGeometry();
     ReconstructionGeometry(const ReconstructionGeometry&) = delete;
     ReconstructionGeometry& operator=(const ReconstructionGeometry&) = delete;
     // Проверяет положительность и конечность длины ребра.
     double edge_length(MeshIndex edge) const;
-    // Ближайший выход при продолжении ребра из его левого или правого конца.
-    RayPoint star_hit(MeshIndex edge, unsigned side) const;
     // Самое дальнее допустимое пересечение с гранями одного слоя соседей.
     RayPoint layer_hit(MeshIndex edge, unsigned side, const std::vector<MeshIndex>& faces) const;
-    // Ближайший выход из звезды произвольного узла по направлению данного ребра.
-    RayPoint parallel_star_hit(MeshIndex node, MeshIndex edge, unsigned side) const;
     // Проверяет строку на постоянном и линейном поле и сохраняет ненулевые коэффициенты.
     void append_row(ReconstructionStencilData& data, const SparseRow& row, MeshIndex edge,
                     unsigned side) const;

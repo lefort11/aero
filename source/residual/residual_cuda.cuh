@@ -1,19 +1,58 @@
 #ifndef AERO_RESIDUAL_CUDA_CUH
 #define AERO_RESIDUAL_CUDA_CUH
 #include "flux_cfl.h"
+#include "packed_weno.h"
 #include "../timestep/cfl_block_min.cuh"
 
 namespace aero {
 namespace residual_cuda_kernels {
 using namespace residual_detail;
 #ifndef AERO_MINGW_CUDA_HOST
-AERO_GPU_KERNEL void flux_kernel(FaceBatch batch, Index* bad) {
+// Нормируем в той же арифметике, что и поток на GPU. Сетка во время расчёта неподвижна.
+AERO_GPU_KERNEL void face_normals(Geometry g) {
+    for (Index i = blockIdx.x * blockDim.x + threadIdx.x; i < g.edges; i += gridDim.x * blockDim.x)
+        euler_unit_direction(g.dim, g.surfaces[i].area, g.packed.normals[i].axis);
+}
+
+// Каждое состояние читается многими смежными рёбрами. Давление, скорость и энтальпию
+// вычисляем один раз в начале стадии, после обновления поля и обмена с соседними процессами.
+AERO_GPU_KERNEL void nodal_gas(unsigned dimension, const double* field, double gamma, Index count, EulerState* gas) {
+    for (Index i = blockIdx.x * blockDim.x + threadIdx.x; i < count; i += gridDim.x * blockDim.x) {
+        decode_nodal_gas(dimension, field, gamma, i, gas);
+    }
+}
+
+template <unsigned scheme_order> __device__ __forceinline__ void packed_weno_flux(FaceBatch batch, Index* bad) {
+    using Tile = WenoEdgeTile<scheme_order>;
+    __shared__ double q[Tile::nodes_per_edge * 4 * 32];
     for (Index k = blockIdx.x * blockDim.x + threadIdx.x; k < batch.count; k += gridDim.x * blockDim.x) {
         const Index f = batch.face(k);
-        if (!batch.compute(f))
+        if (f >= batch.geometry.edges)
+            continue;
+        const auto& tile = static_cast<const Tile*>(batch.geometry.packed.tiles)[f / 32];
+        const unsigned lane = f % 32;
+        const Index slots = tile.slots[lane];
+        if (slots == ~Index(0))
+            continue;
+        if (!packed_edge_flux<32>(batch.geometry, batch.state, f, tile, lane, slots, batch.flux[f], q + threadIdx.x))
+            atomicMin(bad, f);
+        else
+            batch.save_speed(f);
+    }
+}
+
+AERO_GPU_KERNEL void weno3_flux(FaceBatch batch, Index* bad) { packed_weno_flux<3>(batch, bad); }
+AERO_GPU_KERNEL void weno5_flux(FaceBatch batch, Index* bad) { packed_weno_flux<5>(batch, bad); }
+
+template <bool nodal> __device__ __forceinline__ void compute_fluxes(const FaceBatch& batch, Index* bad) {
+    for (Index k = blockIdx.x * blockDim.x + threadIdx.x; k < batch.count; k += gridDim.x * blockDim.x) {
+        const Index f = batch.face(k);
+        if (!(nodal ? batch.compute_nodal_roe_2d(f) : batch.compute(f)))
             atomicMin(bad, f);
     }
 }
+AERO_GPU_KERNEL void flux_kernel(FaceBatch batch, Index* bad) { compute_fluxes<false>(batch, bad); }
+AERO_GPU_KERNEL void nodal_roe_2d_kernel(FaceBatch batch, Index* bad) { compute_fluxes<true>(batch, bad); }
 AERO_GPU_KERNEL void flux_cfl_kernel(FluxCfl grid, double courant, DeviceCflMinimum* result) {
     __shared__ Index minima[cfl_detail::block_threads];
     Index best = ~Index(0);

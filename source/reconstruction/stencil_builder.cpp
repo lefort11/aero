@@ -1,9 +1,18 @@
 #include "stencil_builder.h"
 #include <cmath>
+#include <algorithm>
 
 namespace aero {
 namespace detail {
 namespace {
+// Все производные умножены на длину ребра и ориентированы от начала ребра к концу.
+struct SideSupport {
+    RayPoint near_point;     // Пересечение продолжения ребра с первым слоем.
+    SparseRow near_slope;    // Производная между концом ребра и ближней точкой.
+    SparseRow far_slope;     // Дальняя производная; пустая строка означает, что её построить не удалось.
+    double far_distance = 0; // Расстояние для диагностики, в единицах координат сетки.
+};
+
 // Весовая строка удвоенного приращения. Для WENO это оптимальная линейная комбинация.
 SparseRow linear_increment(unsigned order, const SparseRow& central, const SideSupport& own,
                            const SideSupport& opposite) {
@@ -48,8 +57,8 @@ void append_weno_slopes(ReconstructionStencilData& rows, unsigned char order, do
         rows.slope_offsets.push_back(rows.slope_nodes.size());
     }
 }
-}
 
+// Записывает линейную строку и, для WENO, строки наклонов на каждой стороне ребра.
 void append_stencil_sides(ReconstructionStencilData& rows, const ReconstructionGeometry& geometry,
                           const ReconstructionOptions& options, const ReconstructionSchemeInfo& scheme,
                           MeshIndex edge, double length, const SparseRow& central,
@@ -88,6 +97,128 @@ void append_stencil_sides(ReconstructionStencilData& rows, const ReconstructionG
             append_weno_slopes(rows, order, scale, central, own, opposite);
         }
     }
+}
+
+using NodeList = std::vector<MeshIndex>;
+using FaceLists = std::vector<std::vector<MeshIndex>>;
+
+struct LayerFaces {
+    FaceLists near; // Грани, у которых все вершины принадлежат первому слою узла.
+    FaceLists far;  // Аналогичные грани второго слоя; нужны только схемам пятого порядка.
+};
+
+// Один номер может встретиться через несколько узлов. Оставляем его один раз.
+void sort_unique(NodeList& ids) {
+    std::sort(ids.begin(), ids.end());
+    ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+}
+
+// В опорной грани все вершины должны принадлежать одному слою.
+NodeList faces_inside_layer(MeshView mesh, const NodeList& layer, const FaceLists& node_faces) {
+    NodeList candidates;
+    for (MeshIndex node : layer) {
+        candidates.insert(candidates.end(), node_faces[node].begin(), node_faces[node].end());
+    }
+    sort_unique(candidates);
+    NodeList faces;
+    for (MeshIndex face : candidates) {
+        const auto vertices = mesh.face_nodes(face);
+        if (std::all_of(vertices.begin(), vertices.end(),
+                        [&](MeshIndex node) { return std::binary_search(layer.begin(), layer.end(), node); })) {
+            faces.push_back(face);
+        }
+    }
+    return faces;
+}
+
+// Первый слой — все вершины общих ячеек. Второй — их соседи за вычетом центра и первого слоя.
+LayerFaces build_layer_faces(MeshView mesh, bool need_far) {
+    FaceLists neighbours(mesh.node_count);
+    FaceLists node_faces(mesh.node_count);
+    for (MeshIndex cell = 0; cell < mesh.cell_count; ++cell) {
+        const auto nodes = mesh.cell(cell).node_ids();
+        for (MeshIndex node : nodes) {
+            for (MeshIndex other : nodes) {
+                if (other != node) {
+                    neighbours[node].push_back(other);
+                }
+            }
+        }
+    }
+    for (MeshIndex face = 0; face < mesh.face_count; ++face) {
+        for (MeshIndex node : mesh.face_nodes(face)) {
+            node_faces[node].push_back(face);
+        }
+    }
+
+    parallel_for(mesh.node_count, [&](MeshIndex node) { sort_unique(neighbours[node]); });
+    LayerFaces layers;
+    layers.near.resize(mesh.node_count);
+    if (need_far) {
+        layers.far.resize(mesh.node_count);
+    }
+    parallel_for(mesh.node_count, [&](MeshIndex node) {
+        const auto& first = neighbours[node];
+        layers.near[node] = faces_inside_layer(mesh, first, node_faces);
+        if (!need_far) {
+            return;
+        }
+        NodeList second;
+        for (MeshIndex adjacent : first) {
+            for (MeshIndex candidate : neighbours[adjacent]) {
+                if (candidate != node && !std::binary_search(first.begin(), first.end(), candidate)) {
+                    second.push_back(candidate);
+                }
+            }
+        }
+        sort_unique(second);
+        layers.far[node] = faces_inside_layer(mesh, second, node_faces);
+    });
+    return layers;
+}
+
+// Обе схемы пятого порядка берут разность интерполированных значений в двух пересечениях одного луча.
+void build_far_layer_slope(const RayPoint& far, unsigned side, double length, double tolerance,
+                          SideSupport& support) {
+    const double spacing = far.distance - support.near_point.distance;
+    if (far.weights.empty() || !(spacing > tolerance * length)) {
+        return;
+    }
+    const double factor = (side ? 1.0 : -1.0) * (length / spacing);
+    add_scaled_row(support.far_slope, far.weights, factor);
+    add_scaled_row(support.far_slope, support.near_point.weights, -factor);
+    support.far_distance = far.distance;
+}
+}
+
+void build_layer_stencil(const Mesh& mesh, const ReconstructionOptions& options,
+                        const ReconstructionSchemeInfo& scheme, ReconstructionStencilData& data) {
+    const ReconstructionGeometry geometry(mesh, options.relative_tolerance);
+    const auto view = mesh.view();
+    const auto layers = build_layer_faces(view, scheme.layers == 2);
+    build_edge_rows(data, [&](MeshIndex edge, ReconstructionStencilData& rows) {
+        const MeshIndex endpoints[] = {view.edge_begin[edge], view.edge_end[edge]};
+        const double length = geometry.edge_length(edge);
+        const SparseRow central = {{endpoints[0], -1}, {endpoints[1], 1}}; // Q_j − Q_i.
+        SideSupport support[2];
+
+        // Продлеваем ребро за каждый конец. Первый слой даёт ближнюю опору и наклон от узла к ней.
+        for (unsigned side = 0; side < 2; ++side) {
+            const MeshIndex node = endpoints[side];
+            auto& s = support[side];
+            s.near_point = geometry.layer_hit(edge, side, layers.near[node]);
+            if (!s.near_point.weights.empty())
+                s.near_slope = ray_derivative(node, s.near_point, length, side);
+        }
+        // Обе формулы пятого порядка требуют ближних опор с двух сторон и дальней опоры со своей стороны.
+        if (scheme.layers == 2 && !support[0].near_slope.empty() && !support[1].near_slope.empty()) {
+            for (unsigned side = 0; side < 2; ++side) {
+                const auto far = geometry.layer_hit(edge, side, layers.far[endpoints[side]]);
+                build_far_layer_slope(far, side, length, options.relative_tolerance, support[side]);
+            }
+        }
+        append_stencil_sides(rows, geometry, options, scheme, edge, length, central, support);
+    });
 }
 }
 }

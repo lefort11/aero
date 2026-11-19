@@ -187,19 +187,26 @@ struct PatchFace {
     MeshIndex face;  // Номер грани.
     MeshIndex cell;  // Смежная ячейка, задающая нормаль в 2D.
     int orientation; // Ориентация грани относительно ячейки.
-    unsigned count;  // Число вхождений грани в выбранную область.
+    bool boundary;   // Внешняя граница сетки. Через неё нельзя продолжать поиск опоры.
 };
-
-enum class RayTarget { StarExit, FarthestLayerFace };
 
 // Ищет одну опорную точку для заданного начала и направления луча.
 class RaySearch {
 public:
-    RaySearch(Vec origin, Vec direction, double length, double eps, RayTarget target)
-        : origin_(origin), direction_(direction), length_(length), eps_(eps), target_(target) {
-        if (target == RayTarget::FarthestLayerFace) {
-            best_.distance = 0;
-        }
+    RaySearch(Vec origin, Vec direction, double length, double eps)
+        : origin_(origin), direction_(direction), length_(length), eps_(eps) { best_.distance = 0; }
+
+    void begin_face(bool boundary) { boundary_face_ = boundary; }
+    // Для невыпуклой области ближняя физическая граница может заслонить дальнюю грань слоя.
+    bool needs_clipping() const {
+        return best_.distance > boundary_distance_ + eps_ * length_ ||
+               (!boundary_exit_ && best_.distance >= boundary_distance_ - eps_ * length_);
+    }
+    void clip_at_boundary() {
+        clipped_ = true;
+        best_.weights.clear();
+        best_.distance = 0;
+        best_.outward = false;
     }
 
     // В 1D опорная грань состоит из одной вершины с единичным весом.
@@ -263,24 +270,29 @@ public:
                  {{tri[0], 1 - u - v}, {tri[1], u}, {tri[2], v}});
     }
 
-    // Для EBR ближайшее пересечение должно быть выходом из звезды, иначе опоры нет.
     detail::RayPoint finish() {
-        if (target_ == RayTarget::StarExit && !best_.outward) {
-            best_.weights.clear();
-        }
         return std::move(best_);
     }
 
 private:
-    // WENO ищет дальнее пересечение слоя, EBR — ближайшее. При совпадении предпочитаем выход.
+    // Выбираем наиболее удалённое пересечение этого слоя. При совпадении предпочитаем выход.
     void consider(double distance, bool outward,
                   std::initializer_list<detail::SparseRow::value_type> weights) {
         const double tolerance = eps_ * length_;
         if (!(distance > tolerance) || !std::isfinite(distance)) {
             return;
         }
-        const bool better = target_ == RayTarget::StarExit ? distance < best_.distance - tolerance
-                                                           : distance > best_.distance + tolerance;
+        if (boundary_face_ && !clipped_) {
+            if (distance < boundary_distance_ - tolerance) {
+                boundary_distance_ = distance;
+                boundary_exit_ = outward;
+            } else if (std::abs(distance - boundary_distance_) <= tolerance)
+                boundary_exit_ = boundary_exit_ || outward;
+        }
+        if (clipped_ && (distance > boundary_distance_ + tolerance ||
+                         (!boundary_exit_ && distance >= boundary_distance_ - tolerance)))
+            return;
+        const bool better = distance > best_.distance + tolerance;
         const bool tied_exit = std::abs(distance - best_.distance) <= tolerance && outward && !best_.outward;
         if (better || tied_exit) {
             best_.distance = distance;
@@ -288,11 +300,12 @@ private:
             best_.weights = weights;
         }
     }
+    bool boundary_face_ = false, boundary_exit_ = false, clipped_ = false;
+    double boundary_distance_ = std::numeric_limits<double>::infinity();
     Vec origin_;            // Координаты начала луча.
     Vec direction_;         // Единичный вектор продолжения ребра.
     double length_;         // Длина ребра, задающая масштаб допуска.
     double eps_;            // Относительный допуск геометрических проверок.
-    RayTarget target_;      // Правило выбора пересечения.
     detail::RayPoint best_; // Расстояние и веса лучшего пересечения.
 };
 
@@ -300,24 +313,29 @@ private:
 template <class FaceAt>
 detail::RayPoint outer_point(MeshView mesh, MeshIndex node, Vec direction, double length,
                              std::size_t face_count, const FaceAt& face_at, const std::vector<Surface>& faces,
-                             const std::vector<Vec>& cell_normals, double eps, RayTarget target) {
-    RaySearch search(point(mesh, node), direction, length, eps, target);
-    for (std::size_t i = 0; i < face_count; ++i) {
-        const auto& entry = face_at(i);
-        if (entry.count != 1) {
-            continue;
-        }
-        const auto face = mesh.face(entry.face);
-        if (mesh.dimension == 1) {
-            search.test_point(mesh, face.node_id(0));
-        } else if (mesh.dimension == 2) {
-            search.test_segment(mesh, face, cell_normals[entry.cell], entry.orientation);
-        } else {
-            const auto& surface = faces[entry.face];
-            for (const auto& triangle : surface.triangles) {
-                search.test_triangle(mesh, triangle, surface.normal, entry.orientation);
+                             const std::vector<Vec>& cell_normals, double eps) {
+    RaySearch search(point(mesh, node), direction, length, eps);
+    const auto visit_faces = [&] {
+        for (std::size_t i = 0; i < face_count; ++i) {
+            const auto& entry = face_at(i);
+            search.begin_face(entry.boundary);
+            const auto face = mesh.face(entry.face);
+            if (mesh.dimension == 1) {
+                search.test_point(mesh, face.node_id(0));
+            } else if (mesh.dimension == 2) {
+                search.test_segment(mesh, face, cell_normals[entry.cell], entry.orientation);
+            } else {
+                const auto& surface = faces[entry.face];
+                for (const auto& triangle : surface.triangles) {
+                    search.test_triangle(mesh, triangle, surface.normal, entry.orientation);
+                }
             }
         }
+    };
+    visit_faces();
+    if (search.needs_clipping()) {
+        search.clip_at_boundary();
+        visit_faces();
     }
     return search.finish();
 }
@@ -329,13 +347,11 @@ struct detail::ReconstructionGeometry::Impl {
     double eps;                 // Относительный допуск для пересечений и проверок геометрии.
     std::vector<Surface> faces; // Разбиение 3D-граней на треугольники для поиска пересечений.
     std::vector<Vec> normals;   // Ориентированные нормали 2D-ячеек.
-    std::vector<std::vector<PatchFace>> patches; // Внешние грани звезды каждого узла для EBR.
-    std::vector<PatchFace> owners;               // Смежная ячейка и ориентация по номеру грани для WENO.
+    std::vector<PatchFace> owners;               // Смежная ячейка и ориентация по номеру опорной грани.
 
-    Impl(const Mesh& mesh, double tolerance, bool build_stars)
+    Impl(const Mesh& mesh, double tolerance)
         : m(mesh.view()), eps(tolerance), faces(m.dimension == 3 ? m.face_count : 0),
-          normals(m.dimension == 2 ? m.cell_count : 0), patches(build_stars ? m.node_count : 0),
-          owners(m.face_count) {
+          normals(m.dimension == 2 ? m.cell_count : 0), owners(m.face_count) {
         if (!std::isfinite(eps) || eps <= 0 || eps >= 0.01) {
             throw ReconstructionError("Invalid geometry tolerance");
         }
@@ -345,17 +361,11 @@ struct detail::ReconstructionGeometry::Impl {
                 faces[face] = triangulate(m, std::vector<MeshIndex>(nodes.begin(), nodes.end()), eps);
             });
         }
-        std::vector<std::vector<MeshIndex>> incident(build_stars ? m.node_count : 0);
         for (MeshIndex index = 0; index < m.cell_count; ++index) {
             const auto cell = m.cell(index);
             for (MeshIndex k = 0; k < cell.face_count(); ++k) {
                 const auto face = cell.face_id(k);
-                owners[face] = PatchFace{face, index, cell.face_orientation(k), 1};
-            }
-            if (build_stars) {
-                for (auto node : cell.node_ids()) {
-                    incident[node].push_back(index);
-                }
+                owners[face] = PatchFace{face, index, cell.face_orientation(k), false};
             }
             if (m.dimension == 2) {
                 normals[index] = triangulate(m, cell_cycle(cell), eps).normal;
@@ -364,11 +374,10 @@ struct detail::ReconstructionGeometry::Impl {
                 check_cell_volume(cell);
             }
         }
+        for (MeshIndex i = 0; i < m.boundary_face_count; ++i)
+            owners[m.boundary_faces[i]].boundary = true;
         if (m.dimension == 2 && m.cell_count) {
             check_common_plane();
-        }
-        if (build_stars) {
-            parallel_for(m.node_count, [&](MeshIndex node) { build_star(node, incident[node]); });
         }
     }
 
@@ -406,39 +415,18 @@ struct detail::ReconstructionGeometry::Impl {
         }
     }
 
-    // Грань на границе объединения ячеек узла принадлежит ровно одной ячейке звезды.
-    void build_star(MeshIndex node, const std::vector<MeshIndex>& incident) {
-        std::map<MeshIndex, PatchFace> boundary;
-        for (auto cell_id : incident) {
-            const auto cell = m.cell(cell_id);
-            for (MeshIndex k = 0; k < cell.face_count(); ++k) {
-                const auto face = cell.face_id(k);
-                const auto found = boundary.find(face);
-                if (found == boundary.end()) {
-                    boundary[face] = PatchFace{face, cell_id, cell.face_orientation(k), 1};
-                } else {
-                    ++found->second.count;
-                }
-            }
-        }
-        for (const auto& face : boundary) {
-            if (face.second.count == 1) {
-                patches[node].push_back(face.second);
-            }
-        }
-    }
     Vec edge(MeshIndex e) const { return point(m, m.edge_end[e]) - point(m, m.edge_begin[e]); }
 
     // Одна параметризация для EBR и WENO. Грани слоя читаем по индексам без копирования.
     template <class FaceAt>
-    RayPoint intersect(MeshIndex node, MeshIndex edge_id, unsigned side, double length, RayTarget target,
+    RayPoint intersect(MeshIndex node, MeshIndex edge_id, unsigned side, double length,
                        std::size_t count, const FaceAt& face_at) const {
         const Vec direction = edge(edge_id) * ((side ? 1.0 : -1.0) / length);
-        return outer_point(m, node, direction, length, count, face_at, faces, normals, eps, target);
+        return outer_point(m, node, direction, length, count, face_at, faces, normals, eps);
     }
 };
-detail::ReconstructionGeometry::ReconstructionGeometry(const Mesh& mesh, double tolerance, bool build_stars)
-    : impl_(new Impl(mesh, tolerance, build_stars)) {}
+detail::ReconstructionGeometry::ReconstructionGeometry(const Mesh& mesh, double tolerance)
+    : impl_(new Impl(mesh, tolerance)) {}
 detail::ReconstructionGeometry::~ReconstructionGeometry() {}
 double detail::ReconstructionGeometry::edge_length(MeshIndex e) const {
     const double h = norm(impl_->edge(e));
@@ -447,28 +435,13 @@ double detail::ReconstructionGeometry::edge_length(MeshIndex e) const {
     }
     return h;
 }
-detail::RayPoint detail::ReconstructionGeometry::star_hit(MeshIndex edge, unsigned side) const {
-    const MeshView mesh = impl_->m;
-    return parallel_star_hit(side ? mesh.edge_end[edge] : mesh.edge_begin[edge], edge, side);
-}
 detail::RayPoint detail::ReconstructionGeometry::layer_hit(MeshIndex e, unsigned side,
                                                            const std::vector<MeshIndex>& ids) const {
     const Impl& g = *impl_;
     const double h = edge_length(e);
     const MeshIndex node = side ? g.m.edge_end[e] : g.m.edge_begin[e];
-    return g.intersect(node, e, side, h, RayTarget::FarthestLayerFace, ids.size(),
+    return g.intersect(node, e, side, h, ids.size(),
                        [&](std::size_t i) -> const PatchFace& { return g.owners[ids[i]]; });
-}
-detail::RayPoint detail::ReconstructionGeometry::parallel_star_hit(MeshIndex node, MeshIndex e,
-                                                                   unsigned side) const {
-    const Impl& g = *impl_;
-    const double h = edge_length(e);
-    if (g.patches.empty()) {
-        return RayPoint{};
-    }
-    const auto& boundary = g.patches[node];
-    return g.intersect(node, e, side, h, RayTarget::StarExit, boundary.size(),
-                       [&](std::size_t i) -> const PatchFace& { return boundary[i]; });
 }
 void detail::ReconstructionGeometry::append_row(ReconstructionStencilData& data, const SparseRow& row,
                                                 MeshIndex e, unsigned side) const {

@@ -191,8 +191,18 @@ def verify(case, aero, meshdec, launcher, devices, fixture, scheme, recon, empty
         print(f"OK two GPUs to one GPU restart, max field difference {error:.3g}")
     if empty:
         busy = next(row for row in original if row[2] > row[1])
-        limit = (busy[3] - 1) / 1048576
-        configure(mpi_gpu_memory_mib=limit)
+        # Одна неделимая часть сетки помещается и без кэша узлового газа и нормалей.
+        # Сначала отнимаем один байт от полной конфигурации и проверяем расчёт на экономном пути.
+        configure(mpi_gpu_memory_mib=(busy[3] - 1) / 1048576)
+        compact = case / "without-cache"
+        reduced = memory_rows(launch(aero, case, compact, launcher, 2))[-2:]
+        required = next(row[3] for row in reduced if row[2] > row[1])
+        if required >= busy[3]:
+            raise AssertionError((busy, reduced))
+        error = check_output(reference, compact, 2, count, dim, names, empty)
+        print(f"OK one leaf without optional buffers, reserved {required} bytes, max field difference {error:.3g}")
+        # Теперь предел ниже измеренного минимума даже после отказа от кэша.
+        configure(mpi_gpu_memory_mib=(required - 1) / 1048576)
         out = case / "too-small"
         failure = run([launcher, "-n", 2, aero, f"--input={case}", f"--output={out}"], success=False)
         if "MPI GPU memory" not in failure or out.exists() or "Starting time integration" in failure:

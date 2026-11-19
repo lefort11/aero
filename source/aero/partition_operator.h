@@ -73,6 +73,13 @@ private:
         ids_; // Исходный номер каждого локального узла или его периодического представителя.
     const std::vector<int>& owners_;                 // MPI-процесс, отвечающий за каждый узел.
     const Processes& world_;                         // Все процессы этого расчёта.
+    void prepare_nodal_gas(); // Резервирует одну запись на собственный или удалённый узел.
+    template <unsigned order> void prepare_weno_tiles(std::vector<residual_detail::WenoEdgeTile<order>>& tiles); // Готовит общую для CPU и GPU геометрию полных двумерных шаблонов WENO3 и WENO5.
+    std::vector<residual_detail::WenoEdgeTile<3>> weno3_tiles_; // По 32 шаблона третьего порядка.
+    std::vector<residual_detail::WenoEdgeTile<5>> weno5_tiles_; // Дальние наклоны нужны пятому порядку.
+    std::vector<MeshIndex> other_faces_; // Оставшиеся поверхности этого процесса и физические границы.
+    std::vector<residual_detail::FaceNormal> normals_; // Направление потока на каждом ребре, на CPU.
+    std::vector<EulerState> nodal_gas_; // Величины текущей стадии для рёбер на CPU.
     PartitionStencil stencil_;                       // Строки реконструкции и дополнительные удалённые узлы.
     std::vector<residual_detail::Surface> surfaces_; // Сначала рёбра, затем части физических границ.
     std::vector<EulerFluxResult> flux_;              // Потоки для каждой поверхности при расчёте на CPU.

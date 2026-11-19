@@ -24,9 +24,8 @@ struct RoeFlux {
                 return EulerStatus::NonFinite;
         }
         // Раскладываем скачок U_R − U_L по волнам в уже построенном базисе грани.
-        const double kinetic =
-            basis.right[5 * (dimension + 1) + 1]; // Энергия энтропийного вектора равна |u_Roe|²/2.
-        status = euler_detail::project_characteristic(basis, gas.normal, face.gamma, kinetic, jump, strength);
+        status = euler_detail::project_characteristic(basis, gas.normal, face.gamma, basis.kinetic_energy(),
+                                                       jump, strength);
         if (status != EulerStatus::Success)
             return status;
         EulerFluxResult output = {};

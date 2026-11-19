@@ -5,6 +5,22 @@
 // Скалярная формула WENO3/WENO5 общая для CPU и CUDA и пригодна для вызова внутри ядра.
 
 namespace aero {
+// Деление кандидата на три с округлением binary64. На GPU заранее известны обе части числа 1/3.
+AERO_HOST_DEVICE inline double weno_third(double x) {
+#ifdef __CUDA_ARCH__
+    // Для нормальных x/3 расстояние до середины между соседними double не меньше 1/6 шага.
+    // Ошибка младшей части значительно меньше этого расстояния. FMA даёт то же округление,
+    // что и деление. Для очень малых x произведение с младшей частью могло бы потерять точность.
+    const unsigned exponent = (static_cast<unsigned>(__double2hiint(x)) >> 20) & 2047u;
+    if (exponent >= 80 && exponent < 2047) {
+        constexpr double high = 1.0 / 3.0;
+        constexpr double low = high / 18014398509481984.0; // (1/3 − high), округлённое к double.
+        return __fma_rn(x, high, __dmul_rn(x, low));
+    }
+#endif
+    return x / 3.0;
+}
+
 // Формула (9) Бахвалова и Козубской (2017) с весами Jiang–Shu. Наклоны равны разделённым разностям, умноженным на h.
 // Масштабирование и отношения весов позволяют обойти переполнение квадратов и прямой расчёт 1/(ε+β)².
 // Здесь применяется исходная схема JS.
@@ -30,9 +46,9 @@ AERO_HOST_DEVICE inline double weno_increment2(unsigned order, const double* slo
         beta[0] = (13.0 / 12) * a * a + 0.25 * b * b;
         beta[1] = (13.0 / 12) * c * c + 0.25 * e * e;
         beta[2] = (13.0 / 12) * f * f + 0.25 * g * g;
-        candidate[0] = (4 * d[0] - d[2]) / 3;
-        candidate[1] = (2 * d[0] + d[1]) / 3;
-        candidate[2] = (5 * d[1] - 2 * d[3]) / 3;
+        candidate[0] = weno_third(4 * d[0] - d[2]);
+        candidate[1] = weno_third(2 * d[0] + d[1]);
+        candidate[2] = weno_third(5 * d[1] - 2 * d[3]);
         ideal[0] = 0.3;
         ideal[1] = 0.6;
         ideal[2] = 0.1;
@@ -45,10 +61,20 @@ AERO_HOST_DEVICE inline double weno_increment2(unsigned order, const double* slo
     for (unsigned k = 1; k < count; ++k)
         if (denominator[k] < minimum)
             minimum = denominator[k];
+    // У WENO3 два кандидата: отношение меньшего знаменателя к себе равно 1.
+    // Одно деление даёт оставшийся вес независимо от того, какой наклон меньше.
+    double smaller_ratio = 0;
+    if (count == 2 && minimum != 0)
+        smaller_ratio = minimum / (denominator[0] < denominator[1] ? denominator[1] : denominator[0]);
     double sum = 0, result = 0;
     for (unsigned k = 0; k < count; ++k) {
-        // При округлении ε до нуля используем предельную формулу для ε → 0.
-        const double ratio = minimum == 0 ? (denominator[k] == 0 ? 1.0 : 0.0) : minimum / denominator[k];
+        double ratio;
+        if (minimum == 0)
+            ratio = denominator[k] == 0 ? 1.0 : 0.0;
+        else if (count == 2)
+            ratio = denominator[k] == minimum ? 1.0 : smaller_ratio;
+        else
+            ratio = minimum / denominator[k];
         const double weight = ideal[k] * ratio * ratio;
         sum += weight;
         result += weight * candidate[k];
