@@ -34,10 +34,17 @@ void RunControl::parse(const std::string& commands, std::ostream* warnings) {
         } else if (key == "upw_coeff") upwind = real();
         else if (key == "mp6_hybrid") hybrid = real();
         else if (key == "cfl") { cfl = real(); explicit_cfl = true; }
+        else if (key == "local_time_step" || key == "local_time_step_max_ratio") {
+            if (!steady) throw std::invalid_argument(key + " requires time_scheme=steady");
+            const auto where = "control.txt (" + key + ")";
+            if (key == "local_time_step") local_time_step = parse_local_time_step(argument(), where);
+            else local_time_step_max_ratio = parse_local_step_ratio(argument(), where);
+            change_steady_steps = true;
+        }
         else if (key == "cfl_min") limits.minimum = real();
         else if (key == "cfl_max") limits.maximum = real();
-        else if (key == "cfl:coeff") limits.factor = real();
-        else if (key == "cfl:num_steps")
+        else if (key == "cfl_coeff") limits.factor = real();
+        else if (key == "cfl_num_steps")
             limits.interval = number_codec::parse_decimal(argument(), [](const char* why) { throw std::invalid_argument(why); });
         else {
             // Опечатка не отменяет остальные команды, даже если её значение не является числом.
@@ -48,7 +55,7 @@ void RunControl::parse(const std::string& commands, std::ostream* warnings) {
         accepted_.push_back(eq == std::string::npos ? key : key + " = " + argument());
     }
     if (!has_commands) throw std::invalid_argument("empty command file");
-    const bool limits_changed = keys.count("cfl_min") || keys.count("cfl_max") || keys.count("cfl:coeff") || keys.count("cfl:num_steps");
+    const bool limits_changed = keys.count("cfl_min") || keys.count("cfl_max") || keys.count("cfl_coeff") || keys.count("cfl_num_steps");
     change_cfl = explicit_cfl || limits_changed;
     if (upwind < 0 || upwind > 1 || hybrid < 0 || hybrid > 1)
         throw std::invalid_argument("upw_coeff and mp6_hybrid must be in [0,1]");

@@ -122,11 +122,17 @@ void Aes::allocate_host(MeshIndex nodes) {
     op_.material = material_.data();
     op_.rows = rows_.data();
 }
-void Aes::evaluate(const double* state, const EulerState* cached, bool gas_is_current) {
-    if (!gas_is_current)
+void Aes::evaluate(const double* state, const EulerState* cached, bool gas_is_current, Evaluation phase) {
+    if (!gas_is_current && (phase==Evaluation::Full || phase==Evaluation::BeforeSaIterations))
         parallel_for(op_.node_count,[&](MeshIndex node) { op_.prepare_gas(node,state,cached); });
-    parallel_for(op_.cell_count,[&](MeshIndex cell) { op_.average_material(cell); });
-    parallel_for(op_.row_count,[&](MeshIndex node) { op_.assemble(node); });
+#ifdef AERO_HAS_TURBULENCE
+    if (phase==Evaluation::AfterSaUpdate)
+        parallel_for(op_.node_count,[&](MeshIndex n) { op_.prepare_sa_material(n); });
+#endif
+    if (phase!=Evaluation::RowsOnly)
+        parallel_for(op_.cell_count,[&](MeshIndex cell) { op_.average_material(cell); });
+    if (phase!=Evaluation::BeforeSaIterations)
+        parallel_for(op_.row_count,[&](MeshIndex node) { op_.assemble(node); });
 }
 }
 }

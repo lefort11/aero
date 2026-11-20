@@ -1,4 +1,5 @@
 #include "settings.h"
+#include "diagnostic_fields.h"
 #include "../reconstruction/scheme.h"
 #include "settings_text.h"
 #include <algorithm>
@@ -110,7 +111,7 @@ std::string choice(const Entry& e, std::initializer_list<const char*> allowed) {
 
 // Для сокращений BDF1, LF и BJ разрешаем также строчные буквы.
 Entry lowercase(Entry e) {
-    for (char& c : e.value) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    e.value = lower_value(e.value);
     return e;
 }
 
@@ -240,7 +241,11 @@ RunDirectories parse_run_arguments(int argc, const char* const argv[]) {
             if (file.size() >= 4 && file.substr(file.size() - 4) == ".txt")
                 file.resize(file.size() - 4);
             if ((file != "main" && file != "gas" && file != "cuda" && file != "scheme" &&
-                 file != "cfl" && file != "implicit" && file != "linear") || colon + 1 == key.size() || eq + 1 == arg.size())
+                 file != "cfl" && file != "implicit" && file != "linear"
+#ifdef AERO_HAS_TURBULENCE
+                 && file != "turbulence"
+#endif
+                 ) || colon + 1 == key.size() || eq + 1 == arg.size())
                 throw std::invalid_argument("invalid parameter override: " + arg);
             dirs.overrides[file][key.substr(colon + 1)] = arg.substr(eq + 1);
             continue;
@@ -256,9 +261,10 @@ RunDirectories parse_run_arguments(int argc, const char* const argv[]) {
     }
     if (dirs.input.empty() && dirs.output.empty())
         dirs.input = dirs.output = ".";
-    if (dirs.input.empty() || dirs.output.empty())
-        throw std::invalid_argument("usage: aero --input=<directory> --output=<directory> [--interactive] "
-                                    "[--geometry-only] [--recover [0|1]]");
+    if (dirs.input.empty())
+        throw std::invalid_argument("missing --input=<directory>");
+    if (dirs.output.empty())
+        throw std::invalid_argument("missing --output=<directory>");
     return dirs;
 }
 
@@ -319,6 +325,20 @@ RunSettings read_run_settings(const RunDirectories& directories) {
         controls.simplified_jacobian = settings.contains("simplified_jacobian") &&
             choice(lowercase(settings.take("simplified_jacobian")), {"on","off"}) == "on";
         controls.jacobian_update_every = settings.optional_count<unsigned>("jacobian_update_every");
+        // В старых файлах переиспользование матрицы уже задавалось интервалом.
+        // Явный переключатель имеет приоритет и задаёт тот же режим решателя.
+        if (settings.contains("simplified_newton"))
+            controls.set_simplified_newton(choice(lowercase(settings.take("simplified_newton")), {"on","off"}) == "on");
+        if (settings.contains("local_time_step")) {
+            const auto entry = settings.take("local_time_step");
+            run.local_time_step = parse_local_time_step(entry.value, entry.where);
+            if (run.local_time_step && !run.steady())
+                throw std::invalid_argument("implicit.txt: local_time_step=on requires time_scheme=steady");
+        }
+        if (settings.contains("local_time_step_max_ratio")) {
+            const auto entry = settings.take("local_time_step_max_ratio");
+            run.local_time_step_max_ratio = parse_local_step_ratio(entry.value, entry.where);
+        }
         if (settings.contains("steady_criterion"))
             run.steady_absolute = choice(lowercase(settings.take("steady_criterion")), {"relative", "absolute"}) == "absolute";
         if (settings.contains("steady_tol"))
@@ -348,8 +368,8 @@ RunSettings read_run_settings(const RunDirectories& directories) {
     if (stable.active()) {
         if (run.background.active()) throw std::invalid_argument("stabilization requires Equations = Euler");
         Entries control(directories, "cfl");
-        stable.interval = control.count<std::uint64_t>("num_steps");
-        stable.factor = finite_number(control.take("coeff"));
+        stable.interval = control.count<std::uint64_t>("cfl_num_steps");
+        stable.factor = finite_number(control.take("cfl_coeff"));
         run.cfl = finite_number(control.take("cfl_init"));
         stable.minimum = finite_number(control.take("cfl_min"));
         stable.maximum = finite_number(control.take("cfl_max"));
@@ -380,6 +400,24 @@ RunSettings read_run_settings(const RunDirectories& directories) {
         run.viscosity.law = choice(lowercase(main.take("viscosity")), {"off", "normal", "sutherland"});
     if (linear && run.viscosity.law != "off") throw std::invalid_argument("viscosity requires Equations = Euler");
 #endif
+    if (main.contains("Turbulence")) {
+        const bool enabled = choice(lowercase(main.take("Turbulence")), {"on","off"}) == "on";
+        if (enabled) {
+#ifdef AERO_HAS_TURBULENCE
+            if (linear || run.viscosity.law == "off")
+                throw std::invalid_argument("Turbulence = On requires Equations = Euler and viscosity = normal or sutherland");
+            Entries model(directories, "turbulence");
+            choice(lowercase(model.take("model")), {"rans"});
+            choice(lowercase(model.take("rans_eq")), {"sa"});
+            run.turbulence.enabled = true;
+            run.turbulence.nut_nu_amb = number(model.take("nut_nu_amb"), true);
+            if (model.contains("pr_t")) run.turbulence.prandtl = number(model.take("pr_t"), false);
+            model.finish(&run.input_warnings);
+#else
+            throw std::invalid_argument("Turbulence = On requires the turbulence and viscosity modules");
+#endif
+        }
+    }
     main.finish(&run.input_warnings);
     Entries gas(directories, "gas");
     const Entry gamma = gas.take("gamma");
@@ -405,6 +443,11 @@ RunSettings read_run_settings(const RunDirectories& directories) {
     run.initial_path = resolve(directories.input, "init.txt");
     run.boundary_path = resolve(directories.input, "bc.txt");
     run.output_zones = read_output_zones(resolve(directories.input, "output.txt"), &run.input_warnings);
+#ifdef AERO_HAS_TURBULENCE
+    if (!run.turbulence.enabled) for (const auto& zone:run.output_zones)
+        for (const auto& field:zone.variables) if(diagnostic::turbulent(field))
+            throw std::invalid_argument("output.txt: "+field+" requires Turbulence = On");
+#endif
 #ifdef _OPENMP
     // Настройка OpenMP действует на вызывающую задачу. При повторном запуске с omp_threads=0
     // возвращаем исходные параметры, чтобы предыдущая постановка не определяла число потоков.

@@ -1,10 +1,42 @@
 #include "tecplot.h"
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <sys/stat.h>
+#endif
 #include <limits>
 #include <ostream>
 
 namespace aero {
 namespace tecplot {
 namespace {
+// Проверяем идентификатор файла, чтобы распознать также относительный путь и ссылки.
+bool same_file(const char* input, const char* output) {
+#ifdef _WIN32
+    const auto identify = [](const char* path, BY_HANDLE_FILE_INFORMATION& info) {
+        HANDLE h = CreateFileA(path, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                               nullptr, OPEN_EXISTING, 0, nullptr);
+        if (h == INVALID_HANDLE_VALUE) {
+            const auto error = GetLastError();
+            if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) return false;
+            throw ExportError(std::string("Cannot inspect file: ") + path);
+        }
+        const bool ok = GetFileInformationByHandle(h, &info) != 0;
+        CloseHandle(h);
+        if (!ok) throw ExportError(std::string("Cannot identify file: ") + path);
+        return true;
+    };
+    BY_HANDLE_FILE_INFORMATION a{}, b{};
+    return identify(input, a) && identify(output, b) && a.dwVolumeSerialNumber == b.dwVolumeSerialNumber &&
+           a.nFileIndexHigh == b.nFileIndexHigh && a.nFileIndexLow == b.nFileIndexLow;
+#else
+    struct stat a{}, b{};
+    return stat(input, &a) == 0 && stat(output, &b) == 0 && a.st_dev == b.st_dev && a.st_ino == b.st_ino;
+#endif
+}
 void usage(std::ostream& out) {
     out << "Usage: fields_to_tecplot MESH [FIELDS] OUTPUT.plt [--threads N]\n\n"
            "  MESH        Native AEROMESH v2: text, binary or LZMA.\n"
@@ -13,7 +45,7 @@ void usage(std::ostream& out) {
            "  --threads N Positive thread count (default: OpenMP runtime settings).\n"
            "  -h, --help  Show this help.\n\n"
            "Mesh SHA-256 must match. Coordinates are exported in meters.\n"
-           "Existing output files are never overwritten.\n"
+           "A successful export replaces an existing output file.\n"
            "OpenMP: "
         << (openmp_available() ? "enabled" : "disabled (one thread)") << "\n";
 }
@@ -62,6 +94,8 @@ int run_cli(int argc, const char* const* argv, std::ostream& out, std::ostream& 
             throw ExportError("This build has no OpenMP; use --threads 1");
         const Mesh mesh = Mesh::read(argv[1]);
         const char* path = argv[end_paths - 1];
+        for (int i = 1; i < end_paths - 1; ++i)
+            if (same_file(argv[i], path)) throw ExportError("Output path refers to an input file");
         if (end_paths == 4) {
             const FieldSnapshot fields = FieldSnapshot::read(argv[2]);
             write(path, mesh, fields, options);

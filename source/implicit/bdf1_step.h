@@ -36,7 +36,8 @@ public:
     NewtonResult advance(double* state, const double* initial, const double* volumes,
                          const EulerFluxResult* flux, double dt, const NewtonSettings& settings,
                          const std::function<void()>& refresh_fluxes,
-                         const std::function<bool()>& try_prediction_fluxes = {});
+                         const std::function<bool()>& try_prediction_fluxes = {},
+                         const std::function<bool()>& confirm_prediction = {});
     // Необязательный обработчик пробного поля пересчитывает те же потоки.
     // false означает физически недопустимую пробу, которую надо откатить.
 private:

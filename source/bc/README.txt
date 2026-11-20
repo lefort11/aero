@@ -12,7 +12,7 @@ bc.cpp читает блок настроек на CPU. bc.h вычисляет 
 
 Блок применяется к метке, выбранной вызывающим кодом. Примеры отдельных блоков:
 
-  bc_type wall
+  bc_type adiabatic_wall (wall) / novisc_wall
 
   bc_type free
   superin initial

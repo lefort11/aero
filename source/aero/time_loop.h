@@ -34,10 +34,10 @@ struct StepOperations {
     // Выгружает предыдущий принятый слой только при записи контрольной точки BDF2.
     std::function<void(implicit::BdfHistory&)> checkpoint_history;
     // Печатает сводку, собранную при выполнении шага.
-    std::function<void(const TimeStep&)> report;
+    std::function<void(const TimeStep&, double)> report;
     // Записывает из одного снимка все зоны, которым подошёл срок вывода.
-    // Последний аргумент запрашивает запись всех заданных зон при завершении расчёта.
-    std::function<void(const TimeStep&, const std::vector<double>&, bool)> write_fields;
+    // Флаг завершения запрашивает запись всех заданных зон.
+    std::function<void(const TimeStep&, const std::vector<double>&, bool, SolverTimings&)> write_fields;
 };
 
 // Ведёт расчёт до конечного времени от начального состояния или контрольной точки.

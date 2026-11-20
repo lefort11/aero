@@ -1,10 +1,25 @@
 #ifndef AERO_FLOW_VALUES_H
 #define AERO_FLOW_VALUES_H
 #include "fields.h"
+#include "diagnostic_fields.h"
 #include "../eulersolver/linear_euler.h"
 #include <array>
 
 namespace aero {
+// Первые шесть столбцов — газовые. Следом могут идти рабочая и физическая
+// турбулентная вязкость. Один порядок используется и в MPI, и в локальном файле.
+inline double field_column(const std::array<double,6>& gas, unsigned column, const diagnostic::Fields& sampling, size_t node) {
+    if (column<gas.size()) return gas[column];
+    if((column==diagnostic::WorkingNu || column==diagnostic::EddyNu) && sampling.sa)
+        return sampling.sa[2*node+column-diagnostic::WorkingNu];
+    if(diagnostic::time_column(column) && sampling.moments) {
+        const auto& h=sampling.moments[node];
+        const auto c=column-diagnostic::DensityPrime; return gas[c]-h.mean[c];
+    }
+    if(column==diagnostic::DpDt && sampling.pressure_rate) return sampling.pressure_rate[node];
+    if(column==diagnostic::Vorticity && sampling.rotation) return sampling.rotation[node];
+    throw FieldError("output: missing data for "+std::string(diagnostic::name(column)));
+}
 // Собирает столбцы отчёта из плотности, скоростей и давления. Для Linear энергия — пульсация.
 inline std::array<double, 6> primitive_output_values(unsigned d, const double* q, double gamma,
                                                       const LinearBackground& background) {

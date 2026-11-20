@@ -5,6 +5,9 @@
 #ifdef AERO_HAS_VISCOSITY
 #include "../viscosity/settings.h"
 #endif
+#ifdef AERO_HAS_TURBULENCE
+#include "../turbulence/sa.h"
+#endif
 #include "../timestep/stabilization.h"
 #include "../implicit/bdf1_step.h"
 #include "../eulersolver/linear_euler.h"
@@ -34,6 +37,9 @@ enum class ExactSolution { Off, Formula, Fields };
 struct RunSettings {
     mutable std::vector<std::string> input_warnings; // Диагностика пополняется при чтении файлов, зависящих от размерности сетки.
     LinearBackground background;
+#ifdef AERO_HAS_TURBULENCE
+    turbulence::Settings turbulence;
+#endif
 #ifdef AERO_HAS_VISCOSITY
     ViscositySettings viscosity; // Настройки переноса из main.txt и gas.txt.
 #endif
@@ -46,6 +52,8 @@ struct RunSettings {
     std::string time_scheme;              // Эйлер, SSPRK3, BDF1, BDF2 или выход на стационар.
     implicit::NewtonSettings implicit_settings; // Допуски и предел итераций из implicit.txt для неявных схем.
     bool steady_absolute = false;         // Сравнивать норму напрямую или относительно начального поля.
+    double local_time_step_max_ratio = 4.; // Предел dt_i/dt_min в steady. Ноль отключает ограничение.
+    bool local_time_step = false; // Свой псевдошаг CFL в каждом узле при установлении.
     double steady_tol = 1.e-6;            // Порог в единицах выбранного критерия.
     unsigned steady_max_steps = 10000;    // Предел числа псевдошагов с начала этого запуска.
     bool steady() const { return time_scheme == "steady"; }

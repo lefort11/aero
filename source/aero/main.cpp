@@ -29,21 +29,46 @@ int report_error(const std::exception& error, int rank) {
     return 1;
 }
 
+// Один текст обслуживает запрос справки и ошибки аргументов командной строки.
+void print_usage(std::ostream& out) {
+    out << "Usage: aero [--input=DIR --output=DIR] [OPTIONS] [FILE:KEY=VALUE ...]\n\n"
+           "  --input=DIR      Read main.txt and the other case files from DIR.\n"
+           "  --output=DIR     Write fields and recovery files to DIR.\n"
+           "                   Supply both paths together. If both are omitted, use the current directory.\n"
+           "  --geometry-only  Export control-volume geometry.\n"
+           "  --interactive    Pause for editing missing boundary conditions.\n"
+           "  --recover [0|1]  Resume from the latest valid checkpoint or the specified slot.\n"
+           "  FILE:KEY=VALUE   Override a setting for this run. The .txt suffix is optional.\n"
+           "  -h, --help       Show this help.\n\n"
+           "Examples:\n"
+           "  aero --input=case --output=results main:cfl=0.4 gas:gamma=1.4\n"
+           "  aero --input=. --output=.\n";
+}
+
 // Читает постановку на каждом процессе и запускает выбранный режим.
 int run_application(int argc, char** argv, const Processes& world) {
-    if (argc == 2 && std::string(argv[1]) == "--help") {
-        if (!world.rank) {
-            std::cout
-                << "Usage: aero --input=<directory> --output=<directory> [--interactive] [--geometry-only] "
-                   "[--recover [0|1]] [main:key=value | gas:key=value | cuda:key=value | scheme:key=value | implicit:key=value ...]\n";
+    const bool no_arguments = argc == 1;
+    const bool help_requested = argc == 2 && (std::string(argv[1]) == "-h" || std::string(argv[1]) == "--help");
+    if (no_arguments || help_requested) {
+        if (world.rank == 0)
+            print_usage(help_requested ? std::cout : std::cerr);
+        return help_requested ? 0 : 1;
+    }
+    RunDirectories directories;
+    try {
+        world.local([&] { directories = parse_run_arguments(argc, argv); });
+    } catch (const std::exception& error) {
+        if (world.rank == 0) {
+            std::cerr << "aero: " << error.what() << "\n\n";
+            print_usage(std::cerr);
         }
-        return 0;
+        return 1;
     }
     RunSettings run{};
     bool archive = false;
-    // Каждый процесс узнает об ошибке до первого коллективного шага расчёта.
+    // Ошибка входного файла относится к постановке, поэтому сообщаем её отдельно.
     world.local([&] {
-        run = read_run_settings(parse_run_arguments(argc, argv));
+        run = read_run_settings(directories);
         archive = mdec::Archive::matches(run.mesh_path);
         validate_run_mode(run, world, archive);
     });

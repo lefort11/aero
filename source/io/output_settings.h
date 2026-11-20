@@ -9,6 +9,7 @@ struct OutputZone {
     std::string name, file;
     // Порядок полей в снимке этой зоны.
     std::vector<std::string> variables;
+    std::string wall_label; // Одна физическая метка для отдельного поверхностного файла Cp.
     // Интервал в принятых шагах. Для расписания по физическому времени используется every_time.
     std::uint64_t every_steps = 0;
     // Интервал снимков в единицах физического времени.

@@ -3,7 +3,7 @@ import re
 import shutil
 from pathlib import Path
 
-from mpi_common import ROOT, mpi_parser, mpi_workspace
+from mpi_common import report_rows, ROOT, mpi_parser, mpi_workspace
 from mpi_fields import binary_snapshot
 from mpi_geometry import run
 from run import settings
@@ -47,10 +47,13 @@ def check(args, work, name, equation, time_scheme, parallel):
     assert actual == expected and actual_fields != first_fields
     for field in actual_fields:
         assert max(abs(a-b) for a,b in zip(actual_fields[field], expected_fields[field])) < 1e-12, field
-    reports = [(int(n), float(t)) for n,t in re.findall(r"Report\s+Step = (\d+)\s+t = (\S+)", log)]
+    reports = [(int(n), float(t)) for n,t in report_rows(log, r"^(?:t|Pseudo-time) = (\S+)")]
     assert (checkpoint[-2], switch) in reports
+    if equation == "Linear":
+        assert all(re.search(r"(?m)^" + name + r"'\s+", log) for name in ("rho", "ux", "p", "E"))
+        assert not re.search(r"(?m)^Stabilization\s+", log)
     if equation == "Euler":
-        counts = {int(n): int(c) for n,c in re.findall(r"Step (\d+), failed cells = 0, first-order cells = (\d+)", log)}
+        counts = {int(n): int(c) for n,c in report_rows(log, r"^Stabilization .*failed since last report = 0\s+first-order now = (\d+)")}
         for step, time in reports:
             assert (counts[step] > 0) == (time <= switch)
     print(f"OK {equation} {time_scheme}, MPI={parallel}: transition at t={switch}")

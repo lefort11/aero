@@ -1,5 +1,6 @@
 #ifndef AERO_IMPLICIT_NEWTON_VECTORS_H
 #define AERO_IMPLICIT_NEWTON_VECTORS_H
+#include "../timestep/node_step.h"
 #include "../residual/residual_detail.h"
 
 namespace aero {
@@ -19,6 +20,7 @@ struct NewtonUpdate {
 
     double relaxation; // Доля пробной поправки при ослаблении вязкого предиктора.
 
+    NodeSteps local_steps;
     AERO_HOST_DEVICE void operator()(MeshIndex row) const {
         const MeshIndex node = owned ? owned[row] : row;
         const unsigned width = grid.components();
@@ -44,7 +46,7 @@ struct NewtonUpdate {
                 // Один шаг последовательных приближений к балансу BDF. Обратная
                 // временная диагональ равна dt/(a*V). Сохраняем состояние до пробы.
                 correction[i] = current;
-                current += (dt/leading/volumes[node])*rhs[i];
+                current += (local_steps.at(node, dt)/leading/volumes[node])*rhs[i];
                 break;
             case RelaxPrediction:
                 current = correction[i] + relaxation * (current - correction[i]);
@@ -63,7 +65,7 @@ struct NewtonUpdate {
                 // На первом шаге предыдущего слоя нет, используем неявный Эйлер.
                 double change = leading * (current - start[i]);
                 if (history_weight != 0.) change -= history_weight * (start[i] - previous[i]);
-                rhs[i] = valid ? -((volumes[node] / dt) * change + spatial[k]) : HUGE_VAL;
+                rhs[i] = valid ? -((volumes[node] / local_steps.at(node, dt)) * change + spatial[k]) : HUGE_VAL;
                 break;
             }
         }

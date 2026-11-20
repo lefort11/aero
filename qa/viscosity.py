@@ -54,7 +54,7 @@ def solve(case, args, name, gpu=False, distributed=False, options=()):
     if "implicit:newton_max_iter=1" in options:
         # При одной разрешённой поправке предиктор выключен. Для неоднородного поля
         # успех каждого шага действительно требует сборки и решения системы Ньютона.
-        relative = [float(s) for s in re.findall(r"Newton relative residual, step \d+: ([\d.eE+-]+)",log)]
+        relative = [float(s) for s in re.findall(r"Newton .*relative residual = ([\d.eE+-]+)",log)]
         if metadata[3] < 2 or len(relative) != metadata[3] or not all(r <= 1.e-5 for r in relative):
             raise AssertionError(f"{name}: incomplete BDF steps or Newton convergence reports: {relative}")
         print(f"{name}: {metadata[3]} BDF steps, largest relative Newton residual {max(relative):.3g}",flush=True)

@@ -1,10 +1,3 @@
-#ifdef _WIN32
-#define NOMINMAX
-#include <windows.h>
-#else
-#include <unistd.h>
-#include <cstdlib>
-#endif
 #include "scheduled_output.h"
 #include "../mesh/mesh.h"
 #include "../eulersolver/euler.h"
@@ -16,48 +9,6 @@
 #include <utility>
 
 namespace aero {
-StagedFieldFile::StagedFieldFile(const std::string& path) : path_(path) {
-    const auto directory = path.substr(0, path.find_last_of("/\\") + 1);
-#ifdef _WIN32
-    char temp[MAX_PATH];
-    if (!GetTempFileNameA(directory.c_str(), "aer", 0, temp))
-        throw FieldError("Cannot create temporary file for " + path);
-    temporary_ = temp;
-#else
-    std::string pattern = directory + ".aero-fields-XXXXXX";
-    const int fd = mkstemp(&pattern[0]);
-    if (fd < 0)
-        throw FieldError("Cannot create temporary file for " + path);
-    temporary_ = pattern;
-    if (close(fd) != 0) {
-        std::remove(temporary_.c_str());
-        throw FieldError("Cannot close temporary file for " + path);
-    }
-#endif
-}
-StagedFieldFile::~StagedFieldFile() {
-    if (!temporary_.empty())
-        std::remove(temporary_.c_str());
-}
-void StagedFieldFile::publish(bool replace) {
-#ifdef _WIN32
-    if (!MoveFileExA(temporary_.c_str(), path_.c_str(), replace ? MOVEFILE_REPLACE_EXISTING : 0))
-        throw FieldError("Cannot publish " + path_ + " (Windows error " + std::to_string(GetLastError()) +
-                         ")");
-#else
-    if (replace) {
-        if (std::rename(temporary_.c_str(), path_.c_str()) != 0)
-            throw FieldError("Cannot replace " + path_);
-    } else {
-        if (link(temporary_.c_str(), path_.c_str()) != 0)
-            throw FieldError("Cannot publish " + path_);
-        if (std::remove(temporary_.c_str()) != 0)
-            return; // Деструктор повторит попытку удалить временный файл.
-    }
-#endif
-    temporary_.clear();
-}
-
 Field output_field(const std::string& name) {
     Field f;
     f.name = name;
@@ -99,16 +50,23 @@ LocalFieldOutput::LocalFieldOutput(const std::string& directory, const Mesh& mes
 }
 OutputSchedule::OutputSchedule(const std::vector<OutputZone>& zones, unsigned dimension) {
     validate_output_zones(zones);
-    const std::vector<std::string> names = {"rho", "ux", "uy", "uz", "p", "E"};
     for (const auto& config : zones) {
         Zone z;
         z.config = config;
-        for (const auto& var : config.variables) {
-            const auto column =
-                static_cast<unsigned>(std::find(names.begin(), names.end(), var) - names.begin());
-            if (column <= 3 && column > dimension)
-                throw FieldError("[" + config.name + "] " + var + " exceeds mesh dimension");
-            z.columns.push_back(column);
+        z.config.variables.clear();
+        const auto append=[&](unsigned c) {
+            const unsigned axis=c>=diagnostic::DensityPrime && c<=diagnostic::EnergyPrime ? c-diagnostic::DensityPrime : c;
+            if(axis<=3 && axis>dimension) throw FieldError("["+config.name+"] "+diagnostic::name(c)+" exceeds mesh dimension");
+            if(std::find(z.columns.begin(),z.columns.end(),c)!=z.columns.end())
+                throw FieldError("["+config.name+"] duplicate expanded column "+diagnostic::name(c));
+            z.columns.push_back(c); z.config.variables.emplace_back(diagnostic::name(c));
+        };
+        for(const auto& key:config.variables) {
+            if(key=="primary" || key=="fluctuations") {
+                const unsigned start=key=="primary"?diagnostic::Density:diagnostic::DensityPrime;
+                for(unsigned c=0;c<6;++c) if(c<=dimension || c>=4) append(start+c);
+            } else if(key=="turbulence") {append(diagnostic::WorkingNu);append(diagnostic::EddyNu);}
+            else append(diagnostic::column(key));
         }
         zones_.push_back(z);
     }
@@ -171,6 +129,13 @@ bool OutputSchedule::due(std::uint64_t step, double time) const {
             any = true;
     return any;
 }
+bool OutputSchedule::column_due(unsigned column, std::uint64_t step, double time, bool final_field) const {
+    for (const auto& zone : zones_)
+        if ((final_field || zone.due(step, time)) &&
+            std::find(zone.columns.begin(), zone.columns.end(), column) != zone.columns.end())
+            return true;
+    return false;
+}
 void ScheduledOutput::write(std::uint64_t step, double time, const std::vector<double>& state) {
     write_due(step, time, [&](const OutputZone& zone, const std::vector<unsigned>& columns) {
         local_.write(zone, columns, step, time, state);
@@ -188,7 +153,7 @@ void OutputSchedule::write_due(std::uint64_t step, double time, const Writer& wr
         }
 }
 void LocalFieldOutput::write(const OutputZone& zone, const std::vector<unsigned>& columns, std::uint64_t step,
-                             double time, const std::vector<double>& state) const {
+                             double time, const std::vector<double>& state,const diagnostic::Fields& scalars) const {
     const unsigned width = metadata_.dimension + 2;
     if (state.size() != nodes_ * width)
         throw FieldError("output: incorrect conservative state size");
@@ -204,7 +169,7 @@ void LocalFieldOutput::write(const OutputZone& zone, const std::vector<unsigned>
         const auto node = node_dof_.empty() ? i : static_cast<std::size_t>(node_dof_[i]);
         const auto values = output_values(snap.dimension, state.data() + node * width, gamma_, node, background_);
         for (std::size_t k = 0; k < columns.size(); ++k)
-            snap.fields[k].values[i] = values[columns[k]];
+            snap.fields[k].values[i] = field_column(values,columns[k],scalars,node);
     });
     auto name = output_filename(zone, step);
     std::replace(name.begin(), name.end(), '\\', '/');

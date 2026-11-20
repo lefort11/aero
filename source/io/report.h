@@ -7,6 +7,7 @@
 #include <iostream>
 #include <limits>
 #include <vector>
+#include <string>
 
 namespace aero {
 class ExplicitIntegrator;
@@ -21,8 +22,17 @@ struct FlowSummary {
     void add_squares(long double scale, long double weight);
     void merge(const FlowSummary& other, unsigned fields);
 };
+// Сведения о принятом шаге. Нулевой предел Ньютона означает явную схему.
+struct ReportDetails {
+    std::string scheme, stabilization, steady_criterion;
+    double max_local_step = 0.; // Ненулевой при локальном установлении; dt отчёта хранит минимум.
+    bool linear = false;
+    unsigned iterations = 0, max_iterations = 0;
+    double newton_residual = 0., newton_tol = 0., steady_residual = 0., steady_tol = 0.;
+    std::uint64_t failed = 0, first_order = 0;
+};
 void write_flow_summary(const FlowSummary&, std::uint64_t step, double time, double cfl, double dt,
-                        unsigned dimension, std::ostream& out, const double* newton_relative = nullptr);
+                        unsigned dimension, std::ostream& out, const ReportDetails& details = {});
 
 // Один объект обслуживает один расчёт. Объёмы относятся к независимым расчётным узлам.
 class Report {

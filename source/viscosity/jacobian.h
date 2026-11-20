@@ -60,7 +60,21 @@ struct Jacobian {
     AERO_HOST_DEVICE void add_column(MeshIndex node, unsigned variable) const {
         if (offsets[node] == offsets[node+1]) return;
         const unsigned width = dim+2;
-        const GasDerivative derivative(dim,aes.law,aes.gas[node],variable);
+        GasDerivative derivative(dim,aes.law,aes.gas[node],variable);
+#ifdef AERO_HAS_TURBULENCE
+        if(aes.sa.active) {
+            // Газовый блок дифференцируем при фиксированной рабочей вязкости.
+            // Изменение nu_tilde учитывается повторным решением уравнения SA на итерации.
+            const auto& gas=aes.gas[node];
+            const double w=aes.sa.w[node], rho_w=gas.density*w, chi=rho_w/gas.mu;
+            const double f=turbulence::fv1(chi), slope=3.*f*(1.-f);
+            const double dmut=(variable==0 ? w*(f+slope) : 0.)-chi*slope*derivative.transport.mu;
+            derivative.transport.mu+=dmut;
+            derivative.transport.extra_heat=dmut*(aes.sa.pr_ratio-1.);
+            for(unsigned m=0;m<dim;++m) derivative.transport.mu_velocity[m]+=
+                dmut*gas.velocity[m]+rho_w*f*derivative.primitive.velocity[m];
+        }
+#endif
         for (MeshIndex k = offsets[node]; k < offsets[node+1]; ++k) {
             const auto& entry = elements[k];
             const auto& cell = aes.cells[entry.cell];

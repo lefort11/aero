@@ -1,4 +1,5 @@
 #include "residual_detail.h"
+#include "flux_cfl.h"
 #include "../../qa/test_checks.h"
 #include "../eulersolver/roe.h"
 #include "../eulersolver/lax_friedrichs.h"
@@ -104,6 +105,41 @@ void signed_surface_balance() {
                 "node balance");
     // На узле 0: +3−2=1. На узле 1: −3+7−7=−3. Сумма по сетке равна внешнему потоку −2.
     compare(residual, {1, 2, 3, -3, -6, -9});
+}
+// Разные объёмы и обратная нумерация владельцев. В одном узле шаг задаёт газ,
+// в другом его ограничивает SA. Вязкий вклад добавляется в тот же знаменатель CFL.
+void local_steady_cfl() {
+    using namespace residual_detail;
+    Surface faces[2]{};
+    faces[0].measure = faces[1].measure = 1.;
+    EulerFluxResult flux[2]{};
+    flux[0].max_wave_speed = flux[1].max_wave_speed = 2.;
+    const Index offsets[] = {0,1,2};
+    const OrientedFace incidence[] = {OrientedFace::outward(0),OrientedFace::outward(1)};
+    Geometry grid{};
+    grid.offsets = offsets; grid.incidence = incidence; grid.surfaces = faces;
+    const double volumes[] = {1.,4.}, sa_rate[] = {0.,4.};
+    const Index owned[] = {1,0};
+    double dt[2]{};
+    double expected_gas = 1.;
+#ifdef AERO_HAS_VISCOSITY
+    viscosity::Row diffusion[2]{};
+    diffusion[0].cfl_rate = 2.;
+    grid.options.diffusion = diffusion;
+    expected_gas = .5;
+#endif
+    LocalSteadySteps steps{{grid,flux,volumes,owned,2},1.,sa_rate,dt};
+    StepRange range;
+    steps.init(range);
+    steps(0,range);
+    steps(1,range);
+    require(dt[0] == expected_gas && dt[1] == .25 &&
+            range.minimum == dt[1] && range.maximum == dt[0], "per-node gas and SA step limits");
+    const LimitLocalSteps limit{owned,dt,.375};
+    limit(0); // Первая собственная строка относится к узлу 1: его шаг уже меньше предела.
+    require(dt[0] == expected_gas && dt[1] == .25, "cap respects ownership");
+    limit(1);
+    require(dt[0] == .375 && dt[1] == .25, "cap only shortens excessive local steps");
 }
 void trace_limiter_test() {
     // При γ = 2 в узле ρ = 2, u = (1,0), p = 4. Кандидат имеет ρ = 4, u = (3,2), p = 12.
@@ -582,6 +618,7 @@ void sod_step(int device) {
 int main(int argc, char** argv) {
     try {
         signed_surface_balance();
+        local_steady_cfl();
         basis_test();
         first_order_side_flux();
         trace_limiter_test();

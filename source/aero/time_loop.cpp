@@ -52,7 +52,7 @@ void write_step_results(const TimeStep& step, OutputSchedule& output, Recovery& 
     if (error_due) operations.exact_error(step, *state);
     if (fields_due) {
         WallTimer timer(timing.counter(SolverTimings::Fields));
-        operations.write_fields(step, *state, final_step);
+        operations.write_fields(step, *state, final_step, timing);
     }
     if (checkpoint_due) {
         WallTimer timer(timing.counter(SolverTimings::Recovery));
@@ -125,7 +125,7 @@ void integrate_time(const RunSettings& run, const Processes& world, OutputSchedu
         }
         // Отчёт относится к только что выполненному шагу. Затем выбираем CFL следующего шага
         // и применяем ручные команды. В контрольную точку попадёт уже готовое к продолжению состояние.
-        if (step.reporting) operations.report(step);
+        if (step.reporting) operations.report(step, criterion);
         if (operations.accepted) operations.accepted();
         if (run.control_every && (number == first_step + 1 || number % run.control_every == 0) && operations.control)
             stopped = operations.control(number);
@@ -133,7 +133,7 @@ void integrate_time(const RunSettings& run, const Processes& world, OutputSchedu
         // Один вызов обслуживает и расписание, и завершение: у зоны multi=1
         // будет ровно один снимок с номером последнего принятого шага.
         write_step_results(step, output, recovery, initial, operations, timing, run.use_cuda, final_step);
-        if (steady && !world.rank && (step.reporting || converged || exhausted))
+        if (steady && !world.rank && !step.reporting && (converged || exhausted))
             std::cout << "Steady " << criterion_name << " residual, step " << number << ": " << criterion << '\n';
         if (stopped || converged) break;
         if (exhausted) throw std::runtime_error("Steady: pseudo-step limit reached before convergence");
@@ -143,7 +143,8 @@ void integrate_time(const RunSettings& run, const Processes& world, OutputSchedu
         if (stopped) std::cout << "STOP: final fields and recovery saved at step " << number << std::endl;
         else if (steady)
             std::cout << "Steady state converged, " << criterion_name << " spatial residual = " << criterion << '\n';
-        std::cout << "Completed " << number << (steady ? " steps. Pseudo-time = " : " steps. Final time = ")
+        std::cout << "Completed " << number << (run.local_time_step ? " steps. Accumulated minimum pseudo-time step = " :
+                                               steady ? " steps. Pseudo-time = " : " steps. Final time = ")
                   << time << '\n';
     }
 }

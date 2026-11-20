@@ -1417,6 +1417,33 @@ void register_ebr3() {
 
 // Проверки времени жизни геометрии, ошибочных входов и выбора исполнителя.
 void register_lifetime_and_errors() {
+    add("ray just outside a stretched segment", [] {
+        Builder b;
+        b.d.dimension = 2;
+        for (unsigned j = 0; j < 3; ++j) {
+            b.node(-10., j*1.e-6);
+            b.node(j == 2 ? 3.e-10 : 0., j*1.e-6);
+            b.node(10., j*1.e-6);
+        }
+        for (MeshIndex i : {0u, 1u, 3u, 4u})
+            b.polygon({i, i+1, i+4, i+3});
+        const auto mesh = b.finish();
+        const auto view = mesh.view();
+        const detail::ReconstructionGeometry geometry(mesh, 1.e-10);
+        for (MeshIndex e = 0; e < view.edge_count; ++e) {
+            const auto a = view.edge_begin[e], z = view.edge_end[e];
+            if (std::min(a,z) != 1 || std::max(a,z) != 4) continue;
+            const unsigned side = z == 4 ? 1 : 0;
+            // Луч x=0 попадает в левый отрезок. Правая грань начинается в x=3e-10.
+            const auto right = b.faces.at({7,8}), left = b.faces.at({6,7});
+            require(geometry.layer_hit(e,side,{right}).weights.empty(), "hit outside segment");
+            const auto hit = geometry.layer_hit(e,side,{right,left});
+            require(hit.weights.count(6) && hit.weights.count(7), "missed valid adjacent segment");
+            near(hit.distance, 1.e-6);
+            return;
+        }
+        throw std::runtime_error("Missing test edge");
+    });
     add("geometry outlives original mesh", [] {
         const ReconstructionStencil s = prepare_reconstruction(line({0, 1, 2, 3}));
         near(reconstruct_all_sides(s, {0, 1, 4, 9}, 1).left_increment2[1], 7.0 / 3);

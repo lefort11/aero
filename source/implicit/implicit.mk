@@ -1,5 +1,5 @@
 # Предобусловливатель собирается отдельно от физики потока. Для теста достаточно диагонали якобиана.
-IMPLICIT_HEADERS := source/implicit/implicit_settings.h source/implicit/partition.h source/implicit/block_jacobi.h source/implicit/block_jacobi_detail.h source/parallel/parallel_for.h source/parallel/kernel_math.h source/mesh/mesh_index.h
+IMPLICIT_HEADERS := source/timestep/node_step.h source/implicit/implicit_settings.h source/implicit/partition.h source/implicit/block_jacobi.h source/implicit/block_jacobi_detail.h source/parallel/parallel_for.h source/parallel/kernel_math.h source/mesh/mesh_index.h
 IMPLICIT_OBJECT := $(BUILD)/block_jacobi_$(EBR_TAG).o
 SPATIAL_OBJECT := $(BUILD)/spatial_jacobian_$(EBR_TAG).o
 BICGSTAB_OBJECT := $(BUILD)/bicgstab_$(EBR_TAG).o

@@ -25,6 +25,7 @@
     <ClCompile Include="..\source\io\output_settings.cpp" />
     <ClInclude Include="..\source\io\output_settings.h" />
     <ClCompile Include="..\source\io\scheduled_output.cpp" />
+    <ClCompile Include="..\source\io\staged_field_file.cpp" />
     <ClInclude Include="..\source\io\scheduled_output.h" />
     <ClCompile Include="..\source\io\settings.cpp" />
     <ClInclude Include="..\source\io\settings.h" />

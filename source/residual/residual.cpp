@@ -49,7 +49,7 @@ void residual_detail::validate_linear_walls(const Geometry& g) {
     const double tolerance = 64 * std::numeric_limits<double>::epsilon() * speed_scale;
     for (Index f = g.edges; f < g.faces; ++f) {
         const auto& wall = g.surfaces[f];
-        if (g.patches.by_patch[wall.patch].type() != BoundaryType::Wall) continue;
+        if (!solid_wall(g.patches.by_patch[wall.patch].type())) continue;
         const double un = euler_detail::dot(g.dim, background.velocity, wall.area) / wall.measure;
         if (std::fabs(un) > tolerance)
             throw std::invalid_argument("linear.txt: background velocity must be tangent to a stationary wall");

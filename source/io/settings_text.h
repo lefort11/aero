@@ -1,6 +1,7 @@
 #ifndef AERO_IO_SETTINGS_TEXT_H
 #define AERO_IO_SETTINGS_TEXT_H
 
+#include <cctype>
 #include <fstream>
 #include <cmath>
 #include <locale>
@@ -17,6 +18,25 @@ inline double finite_real(const std::string& text, const std::string& where) {
     double value;
     if (!(stream >> value) || !stream.eof() || !std::isfinite(value))
         throw std::invalid_argument(where + ": expected a finite number");
+    return value;
+}
+
+inline std::string lower_value(std::string value) {
+    for (char& c : value) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return value;
+}
+
+// Для implicit.txt и control.txt разбираем режим и предел шага одинаково.
+inline bool parse_local_time_step(const std::string& text, const std::string& where) {
+    const auto value = lower_value(text);
+    if (value == "on") return true;
+    if (value == "off") return false;
+    throw std::invalid_argument(where + ": expected on or off");
+}
+inline double parse_local_step_ratio(const std::string& text, const std::string& where) {
+    if (lower_value(text) == "off") return 0.;
+    const double value = finite_real(text, where);
+    if (value < 1.) throw std::invalid_argument(where + ": expected off or a ratio >= 1");
     return value;
 }
 

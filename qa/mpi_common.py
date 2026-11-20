@@ -2,10 +2,21 @@
 
 import argparse
 import os
+import re
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def report_rows(log, pattern):
+    """Сопоставляет строку внутри каждого блока с номером принятого шага."""
+    headers = list(re.finditer(r"(?m)^STEP (\d+)  \|", log))
+    for i, header in enumerate(headers):
+        end = headers[i+1].start() if i+1 < len(headers) else len(log)
+        row = re.search(pattern, log[header.end():end], re.M)
+        if row:
+            yield (header[1], *row.groups())
 
 
 def mpi_parser(description, *, require_programs=False):

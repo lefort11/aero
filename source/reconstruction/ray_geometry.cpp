@@ -229,18 +229,22 @@ public:
         if (std::abs(det) <= eps_ * coordinate_length(edge)) {
             return;
         }
-        const double distance = dot(cross(from, edge), normal) / det;
-        double u = dot(cross(from, direction_), normal) / det;
-        if (u < -eps_ || u > 1 + eps_) {
-            return;
-        }
-        if (coordinate_length(direction_ * distance - (from + edge * u)) >
-            eps_ * (std::max)(length_, coordinate_length(from) + coordinate_length(edge))) {
-            return;
-        }
-        u = (std::max)(0.0, (std::min)(1.0, u));
+        // На вытянутой ячейке малый вес длинного отрезка определяет положение точки.
+        // Вычисляем его от ближайшего конца напрямую: разность 1-u теряет значащие цифры.
+        const Coordinate to = mesh.coordinate(b) - origin_;
+        const double weight_a = dot(cross(direction_, to), normal) / det;
+        const double weight_b = dot(cross(from, direction_), normal) / det;
+        if (weight_a < -eps_ || weight_b < -eps_) return;
+        const bool near_a = weight_b < weight_a;
+        const double small = (std::max)(0.0, near_a ? weight_b : weight_a);
+        const Coordinate point = near_a ? from + edge * small : to - edge * small;
+        const double distance = dot(point, direction_);
+        // Проверяем уже интерполированную точку относительно длины от начала луча.
+        // Если ближайшая вершина заметно в стороне, продолжаем поиск по соседним граням.
+        if (coordinate_length(point - direction_ * distance) > eps_ * std::abs(distance)) return;
         const Coordinate outward = cross(edge, normal) * static_cast<double>(orientation);
-        consider(distance, dot(direction_, outward) > 0, {{a, 1 - u}, {b, u}});
+        consider(distance, dot(direction_, outward) > 0,
+                 {{a, near_a ? 1. - small : small}, {b, near_a ? small : 1. - small}});
     }
 
     // В 3D веса пересечения — барицентрические координаты на одном треугольнике грани.

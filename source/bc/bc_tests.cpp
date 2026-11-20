@@ -129,6 +129,12 @@ void dimension(unsigned d) {
         t.expected.flux[k + 1] = 2 * t.area[k];
     t.expected.max_wave_speed = 2.6;
     run(t, "wall");
+    t.config=parse("bc_type adiabatic_wall",d);
+    require(t.config.type()==BoundaryType::Wall,"no-slip wall identifier");
+    run(t,"adiabatic wall pressure flux");
+    t.config=parse("bc_type novisc_wall",d);
+    require(t.config.type()==BoundaryType::SlipWall,"slip wall identifier");
+    run(t,"slip wall pressure flux");
     t.area[0] = t.area[1] = 0;
     error(t, BoundaryStatus::InvalidArgument);
 }

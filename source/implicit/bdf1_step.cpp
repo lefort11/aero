@@ -18,7 +18,7 @@ template<class Update, class Share, class Residual>
 double predict_initial_field(double norm, const NewtonSettings& settings, const Update& update,
                              const Share& share, const Residual& residual,
                              const std::function<void()>& refresh, const std::function<bool()>& trial_flux,
-                             bool viscous) {
+                             bool viscous, const std::function<bool()>& confirm_prediction) {
     if (!trial_flux || norm == 0.) return norm;
     // При быстрой сходимости последовательные подстановки дешевле сборки AES
     // и решения линейной системы. Для вязкого шага оставляем запас по допуску,
@@ -27,6 +27,10 @@ double predict_initial_field(double norm, const NewtonSettings& settings, const 
     // Хорошо сокращающаяся невязка допускает несколько дополнительных дешёвых
     // проб перед сборкой якобиана. При лимите в одну поправку сразу вызываем Ньютон.
     const unsigned limit = std::min(viscous ? 24u : 16u, settings.max_iterations - 1);
+    // На первом приближении уточняем связанные уравнения сразу. Затем проверяем их
+    // на полпути к допуску по логарифмической шкале и обязательно перед принятием.
+    const double coupled_reduction = confirm_prediction ? std::sqrt(settings.newton_relative) : 1.;
+    double next_coupled_check = norm;
     for (unsigned k = 0; k < limit && norm > target; ++k) {
         update(NewtonUpdate::Predict, 1.);
         share();
@@ -49,7 +53,14 @@ double predict_initial_field(double norm, const NewtonSettings& settings, const 
             return residual();
         }
         norm = trial;
+        // Пока подбирается газовое приближение, SA может использовать последнее
+        // рабочее поле. Перед принятием ещё раз проверяем оба уравнения совместно.
+        if (confirm_prediction && (norm <= next_coupled_check || norm <= target)) {
+            if (confirm_prediction()) norm = residual();
+            next_coupled_check = coupled_reduction * norm;
+        }
     }
+    if (confirm_prediction && confirm_prediction()) norm = residual();
     return norm;
 }
 }
@@ -110,7 +121,9 @@ struct BdfStep::Storage {
     unsigned prepare_matrix(const double* state, const double* initial, const double* volumes,
                             double effective_dt, const NewtonSettings& settings, unsigned iteration) {
         if (!cached) {
-            const bool reuse = grid.options.background.active() || settings.jacobian_update_every > 0;
+            // Для линейных уравнений пространственные производные постоянны.
+            // В упрощённом Ньютоне сохраняем их вместе с готовым предобусловливателем.
+            const bool reuse = grid.options.background.active() || settings.simplified_newton();
             linear.assemble(state, initial, volumes, effective_dt, settings, reuse);
             cached = reuse;
             cached_settings = settings;
@@ -207,7 +220,7 @@ double BdfStep::spatial_rate_norm(const double* volumes, const EulerFluxResult* 
     auto& s = *storage_;
     s.partition.local([&] {
         s.update({s.grid, flux, volumes, nullptr, nullptr, s.rhs, nullptr, nullptr,
-                  0., 0., 0., NewtonUpdate::SpatialRate, s.partition.owned, 1.});
+                  0., 0., 0., NewtonUpdate::SpatialRate, s.partition.owned, 1., {}});
     });
     const double norm = s.linear.infinity_norm(s.rhs);
     if (!std::isfinite(norm)) throw std::domain_error("Steady: nonfinite spatial residual");
@@ -216,7 +229,8 @@ double BdfStep::spatial_rate_norm(const double* volumes, const EulerFluxResult* 
 
 NewtonResult BdfStep::advance(double* state, const double* initial, const double* volumes,
                               const EulerFluxResult* flux, double dt, const NewtonSettings& settings,
-                              const std::function<void()>& refresh_fluxes, const std::function<bool()>& try_prediction_fluxes) {
+                              const std::function<void()>& refresh_fluxes, const std::function<bool()>& try_prediction_fluxes,
+                              const std::function<bool()>& confirm_prediction) {
     auto& s = *storage_;
     s.partition.local([&] {
         if (settings.second_order) s.ensure_history();
@@ -231,9 +245,10 @@ NewtonResult BdfStep::advance(double* state, const double* initial, const double
     const double fraction = ratio/(1.+ratio);
     const double leading = 1.+fraction, history_weight = ratio*fraction;
     if (!std::isfinite(history_weight)) throw std::domain_error("BDF: invalid time step ratio");
+    const NodeSteps node_steps = SteadyNodeSteps::active(s.partition.steady_steps);
     const auto update_trial = [&](NewtonUpdate::Operation op, double relaxation) {
         s.partition.local([&] {
-            s.update({s.grid, flux, volumes, state, s.start, s.rhs, s.correction, s.previous, dt, leading, history_weight, op, s.partition.owned, relaxation});
+            s.update({s.grid, flux, volumes, state, s.start, s.rhs, s.correction, s.previous, dt, leading, history_weight, op, s.partition.owned, relaxation, node_steps});
         });
     };
     const auto update = [&](NewtonUpdate::Operation op) { update_trial(op, 1.); };
@@ -262,21 +277,17 @@ NewtonResult BdfStep::advance(double* state, const double* initial, const double
         viscous = s.partition.host_aes.dim != 0; // Один выбор для всех рангов, включая пустые.
 #endif
         norm = predict_initial_field(norm, settings, update_trial, share_state, residual_norm, refresh_fluxes,
-                                     try_prediction_fluxes, viscous);
+                                     try_prediction_fluxes, viscous, confirm_prediction);
         for (unsigned iteration = 0;; ++iteration) {
             // Равновесное поле с нулевой исходной невязкой принимаем без решения системы.
             const double relative = initial_norm == 0. ? 0. : norm / initial_norm;
-            if (relative <= settings.newton_relative) {
-                // История продвигается только после успешного шага, включая равновесное поле.
+            if (relative <= settings.newton_relative || iteration == settings.max_iterations) {
+                // Оба условия завершают шаг с текущим полем и фактической невязкой.
+                // Для следующего шага BDF2 сохраняем историю и при остановке по лимиту.
                 if (settings.second_order) std::swap(s.previous, s.start);
                 s.previous_dt = settings.second_order ? dt : 0.;
                 if (s.cached && !s.grid.options.background.active()) ++s.accepted_since_build;
                 return {iteration, relative, assemblies};
-            }
-            if (iteration == settings.max_iterations) {
-                std::ostringstream message;
-                message << "Newton iteration limit (" << iteration << "), relative residual = " << relative;
-                throw std::runtime_error(message.str());
             }
             // Диагональ пространственной части берётся из баланса потоков. Временной
             // вклад a*V/dt добавляется при сборке системы для текущей поправки.

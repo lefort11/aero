@@ -57,7 +57,7 @@ struct CaseFiles {
     }
     ~CaseFiles() {
         for (const char* name :
-             {"main.txt", "bc.txt", "init.txt", "cuda.txt", "gas.txt", "scheme.txt", "implicit.txt", "linear.txt", "test.fields", "output.txt",
+             {"main.txt", "bc.txt", "init.txt", "cuda.txt", "gas.txt", "scheme.txt", "implicit.txt", "linear.txt", "turbulence.txt", "test.fields", "output.txt",
               "latest.fields", "p_000001.fields", "p_000002.fields", "p_000003.fields"})
             std::remove((dir + "/" + name).c_str());
 #ifdef _WIN32
@@ -318,6 +318,28 @@ void viscosity_settings(const CaseFiles& files) {
 }
 
 #endif
+#ifdef AERO_HAS_TURBULENCE
+void turbulence_settings(const CaseFiles& files) {
+    files.write("main.txt","mesh=grid.mesh\nreconstruction=first_order\nreconstruction_variables=conservative\n"
+                           "backend=cpu\ntime_scheme=euler\ncfl=.5\neuler_solver=lf\nfinal_time=0\nviscosity=normal");
+    files.write("gas.txt","gamma=1.4\nmach=.5\nreynolds=1000\nprandtl=.72\nt_amb=300");
+    require(!files.load().turbulence.enabled,"turbulence defaults to Off");
+    RunDirectories dirs(files.dir, "./results");
+    dirs.overrides["main"]["Turbulence"]="On";
+    rejects([&]{read_run_settings(dirs);},"turbulence.txt");
+    files.write("turbulence.txt","model=RANS\nrans_eq=SA");
+    rejects([&]{read_run_settings(dirs);},"nut_nu_amb");
+    files.write("turbulence.txt","model=RANS\nrans_eq=SA\nnut_nu_amb=.21\n");
+    const auto sa=read_run_settings(dirs).turbulence;
+    require(sa.enabled && sa.prandtl==.9 && sa.nut_nu_amb==.21,"SA parameters");
+    for(const auto& wrong:RunDirectories::Parameters{{"model","LES"},{"rans_eq","SST"},{"nut_nu_amb","nan"},{"pr_t","0"}}) {
+        dirs.overrides["turbulence"]={wrong};
+        rejects([&]{read_run_settings(dirs);},wrong.first);
+    }
+    dirs.overrides["main"]["Turbulence"]="Off";
+    require(!read_run_settings(dirs).turbulence.enabled,"Off ignores turbulence.txt");
+}
+#endif
 void main_and_cuda(const CaseFiles& files) {
     const std::string head = "\xef\xbb\xbf# test\r\nmesh = \"path #1/grid.mesh\" # relative\n";
     files.write("gas.txt", "gamma=1.67");
@@ -361,11 +383,33 @@ void main_and_cuda(const CaseFiles& files) {
     directories.overrides["implicit"]["preconditioner"]="CSGS";
     const auto second=read_run_settings(directories).implicit_settings;
     require(second.second_order && second.roe && second.csgs && second.simplified_jacobian,"BDF2 controls");
+    directories.overrides["implicit"]["local_time_step"] = "on";
+    rejects([&] { read_run_settings(directories); }, "local_time_step");
     directories.overrides["main"]["time_scheme"] = "steady";
+    require(read_run_settings(directories).local_time_step, "local time stepping in steady");
+    require(read_run_settings(directories).local_time_step_max_ratio == 4., "default local step ratio");
+    auto& ratio = directories.overrides["implicit"]["local_time_step_max_ratio"];
+    ratio = "1";
+    require(read_run_settings(directories).local_time_step_max_ratio == 1., "uniform local steps");
+    ratio = "2.5";
+    require(read_run_settings(directories).local_time_step_max_ratio == 2.5, "fractional local step ratio");
+    ratio = "off";
+    require(read_run_settings(directories).local_time_step_max_ratio == 0., "unrestricted local steps");
+    directories.overrides["implicit"].erase("local_time_step_max_ratio");
+    directories.overrides["implicit"].erase("local_time_step");
     directories.overrides["implicit"]["jacobian_update_every"] = "3";
     auto steady = read_run_settings(directories);
+    require(steady.implicit_settings.simplified_newton(), "legacy positive interval enables simplified Newton");
+    auto& newton_mode = directories.overrides["implicit"]["simplified_newton"];
+    newton_mode = "off";
+    require(read_run_settings(directories).implicit_settings.jacobian_update_every == 0, "explicit full Newton");
+    newton_mode = "on";
+    require(read_run_settings(directories).implicit_settings.jacobian_update_every == 3, "keep multistep Jacobian reuse");
+    directories.overrides["implicit"]["jacobian_update_every"] = "0";
+    require(read_run_settings(directories).implicit_settings.jacobian_update_every == 1, "one assembly in simplified Newton");
+    directories.overrides["implicit"].erase("simplified_newton");
     require(steady.steady() && steady.uses_implicit_time() && !steady.implicit_settings.second_order &&
-            !steady.steady_absolute && steady.steady_tol == 1.e-6 && steady.steady_max_steps == 10000 &&
+            !steady.local_time_step && !steady.steady_absolute && steady.steady_tol == 1.e-6 && steady.steady_max_steps == 10000 &&
             steady.implicit_settings.jacobian_update_every == 3, "steady default controls");
     directories.overrides["implicit"]["steady_criterion"] = "absolute";
     directories.overrides["implicit"]["steady_tol"] = "10";
@@ -373,8 +417,8 @@ void main_and_cuda(const CaseFiles& files) {
     directories.overrides["implicit"].erase("steady_criterion");
     directories.overrides["implicit"].erase("steady_tol");
     for (const auto& bad : std::vector<std::pair<std::string, std::string>>{
-         {"steady_criterion","unknown"}, {"steady_tol","1"}, {"steady_max_steps","0"},
-         {"jacobian_update_every","-2"}, {"simplified_jacobian","maybe"}, {"solver","gmres"}, {"jacobian_flux","unknown"}, {"preconditioner","unknown"},
+         {"local_time_step","auto"}, {"local_time_step_max_ratio","0.9"}, {"local_time_step_max_ratio","nan"}, {"steady_criterion","unknown"}, {"steady_tol","1"}, {"steady_max_steps","0"},
+         {"jacobian_update_every","-2"}, {"simplified_newton","maybe"}, {"simplified_jacobian","maybe"}, {"solver","gmres"}, {"jacobian_flux","unknown"}, {"preconditioner","unknown"},
          {"solver_tol","0"}, {"newton_tol","1"}, {"newton_max_iter","0"}, {"newton_max_iter","2.5"}}) {
         directories.overrides["implicit"][bad.first] = bad.second;
         rejects([&] { read_run_settings(directories); }, bad.first);
@@ -518,6 +562,9 @@ int main() {
         CaseFiles files;
 #ifdef AERO_HAS_VISCOSITY
         viscosity_settings(files);
+#endif
+#ifdef AERO_HAS_TURBULENCE
+        turbulence_settings(files);
 #endif
         main_and_cuda(files);
 #ifdef _OPENMP

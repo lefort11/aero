@@ -66,7 +66,7 @@ AERO_HOST_DEVICE inline bool block(unsigned d, BoundaryConfig patch, const FreeB
         return false;
     const double un = euler_detail::dot(d, gas.velocity, normal);
     const auto regime = bc_detail::free_regime(un, gas.sound_speed);
-    const bool wall = patch.type() == BoundaryType::Wall;
+    const bool wall = solid_wall(patch.type());
     const auto* rules = patch.rules(table);
     if (!wall && (!rules || bc_detail::free_boundary_state(d, *rules, gas, normal, un, gamma, initial,
                                                             boundary) != BoundaryStatus::Success))

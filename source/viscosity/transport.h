@@ -1,17 +1,31 @@
 #ifndef AERO_VISCOUS_TRANSPORT_H
 #define AERO_VISCOUS_TRANSPORT_H
 #include "grad.h"
+#include "../parallel/modules.h"
+#ifdef AERO_HAS_TURBULENCE
+#include "../turbulence/sa.h"
+#endif
 
 namespace aero {
 namespace viscosity {
+// Внутри шага BDF скаляр SA уточняется при фиксированном газе. Этап указывает,
+// какие данные устарели и нужно ли уже собирать газовую невязку.
+enum class Evaluation { Full, BeforeSaIterations, AfterSaUpdate, RowsOnly };
 struct Gas {
     double velocity[3], pressure_over_density, density, mu;
 };
 struct Material {
     double mu, mu_velocity[3]; // Средние по вершинам исходного элемента, формула (48).
+#ifdef AERO_HAS_TURBULENCE
+    double extra_heat; // Разность коэффициентов тепла и импульса при разных Pr и Pr_t.
+#endif
     // Напряжения дают поток импульса, а их работа и теплопроводность — поток энергии.
     AERO_HOST_DEVICE void add_flux(unsigned dim, const Gradient& gradient, double* flux) const {
-        flux[dim+1] += mu * gradient.heat;
+        double heat = mu;
+#ifdef AERO_HAS_TURBULENCE
+        heat += extra_heat;
+#endif
+        flux[dim+1] += heat * gradient.heat;
         for (unsigned m = 0; m < dim; ++m) {
             flux[1+m] += mu * gradient.stress[m];
             flux[dim+1] += mu_velocity[m] * gradient.stress[m];
@@ -34,6 +48,9 @@ struct Law {
 struct Operator {
     unsigned dim;
     Law law;
+#ifdef AERO_HAS_TURBULENCE
+    turbulence::View sa;
+#endif
     MeshIndex node_count, cell_count, row_count, vertex_count, neighbour_count;
     const Cell* cells;
     GradientStencil stencil; // Геометрические данные принадлежат тому же исполнителю, что и поле.
@@ -42,6 +59,15 @@ struct Operator {
     Material* material;
     Row* rows;
 
+#ifdef AERO_HAS_TURBULENCE
+    // На вершину приходится несколько элементов. Функцию демпфирования вычисляем
+    // один раз по текущему полю SA. Материал всех соседних элементов читает результат.
+    AERO_HOST_DEVICE void prepare_sa_material(MeshIndex node) const {
+        const auto& g=gas[node];
+        const double rho_w=g.density*sa.w[node];
+        sa.nodal_material[node]={g.mu/g.density,rho_w*turbulence::fv1(rho_w/g.mu)};
+    }
+#endif
     // При наличии готового газа используем давление и скорости, уже вычисленные для
     // конвективного потока. В экономичной раскладке на GPU этого буфера может не быть.
     AERO_HOST_DEVICE void prepare_gas(MeshIndex node, const double* state, const EulerState* cached) const {
@@ -59,16 +85,43 @@ struct Operator {
         value.pressure_over_density = primitive.pressure / primitive.density;
         value.mu = law.dynamic_viscosity(value.pressure_over_density);
         for (unsigned k = 0; k < dim; ++k) value.velocity[k] = primitive.velocity[k];
+#ifdef AERO_HAS_TURBULENCE
+        if (sa.active) prepare_sa_material(node);
+#endif
     }
     // Для работы напряжений в уравнении энергии усредняем именно произведение mu*u.
     AERO_HOST_DEVICE void average_material(MeshIndex index) const {
         const auto& cell = cells[index];
         Material average{};
+#ifdef AERO_HAS_TURBULENCE
+        double molecular_sum=0., working_sum=0.;
+#endif
         for (unsigned k = 0; k < cell.count; ++k) {
             const auto& point = gas[cell.node[k]];
-            average.mu += point.mu;
-            for (unsigned m = 0; m < dim; ++m) average.mu_velocity[m] += point.mu * point.velocity[m];
+            double mu = point.mu;
+#ifdef AERO_HAS_TURBULENCE
+            if (sa.active) {
+                const double working=sa.w[cell.node[k]];
+                const auto properties=sa.nodal_material[cell.node[k]];
+                molecular_sum+=properties.nu;
+                working_sum+=working;
+                const double turbulent_mu=properties.eddy_mu;
+                mu += turbulent_mu;
+                average.extra_heat += turbulent_mu*(sa.pr_ratio-1.);
+            }
+#endif
+            average.mu += mu;
+            for (unsigned m = 0; m < dim; ++m) average.mu_velocity[m] += mu * point.velocity[m];
         }
+#ifdef AERO_HAS_TURBULENCE
+        if (sa.active) {
+            // Газ и SA используют одни вершины. Средние для диффузии SA готовим
+            // при том же чтении узлов, что и напряжения и тепловой поток газа.
+            sa.diffusion.molecular_mean[index]=molecular_sum*cell.inverse_count;
+            sa.diffusion.element_mean[index]=sa.diffusion.molecular_mean[index]+working_sum*cell.inverse_count;
+        }
+        average.extra_heat *= cell.inverse_count;
+#endif
         average.mu *= cell.inverse_count;
         for (unsigned m = 0; m < dim; ++m) average.mu_velocity[m] *= cell.inverse_count;
         material[index] = average;
@@ -85,7 +138,11 @@ struct Operator {
             const unsigned i = static_cast<unsigned>(entry % 8);
             const auto gradient = stencil.vertex_gradient<d>(cells[e], i, gas);
             average.add_flux(d, gradient, result.residual);
-            result.cfl_rate += average.mu * cells[e].diffusion[i];
+            double diffusion_mu=average.mu;
+#ifdef AERO_HAS_TURBULENCE
+            diffusion_mu+=::fmax(0.,average.extra_heat);
+#endif
+            result.cfl_rate += diffusion_mu * cells[e].diffusion[i];
         }
         result.cfl_rate *= 2. / gas[node].density;
         rows[node] = result;

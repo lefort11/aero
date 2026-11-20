@@ -310,22 +310,19 @@ void PartitionGpu::update_face_batch() {
         check(gpu::copy(device_faces_, &batch, sizeof(batch), gpu::Copy::ToDevice));
     }
 }
-void PartitionGpu::fluxes(bool first_order_start) {
+void PartitionGpu::fluxes(bool first_order_start,bool defer_viscous_rows) {
+    (void)defer_viscous_rows;
     auto batch = face_batch();
     if (first_order_start) batch.use_first_order();
     residual_detail::gpu_face_fluxes(batch, grid_.bad, nullptr, first_order_start ? nullptr : device_faces_);
 #ifdef AERO_HAS_VISCOSITY
     if (aes_) {
-        const auto error = device_work::aero_device_viscosity(viscous_grid_,grid_.state,grid_.geometry.packed.gas);
+        const auto error = device_work::aero_device_viscosity(viscous_grid_,grid_.state,grid_.geometry.packed.gas,
+            defer_viscous_rows?viscosity::Evaluation::BeforeSaIterations:viscosity::Evaluation::Full);
         if (error) throw std::runtime_error(error);
     }
 #endif
     check_kernel("flux");
-}
-double PartitionGpu::cfl(double courant) {
-    return residual_detail::gpu_flux_cfl(
-        {grid_.geometry, grid_.flux, grid_.volumes, grid_.owned, grid_.owned_count}, courant,
-        nullptr);
 }
 void PartitionGpu::update(explicit_detail::Stage stage, double dt, bool save_original) {
     if (grid_.failed_count) reset_failed_count();

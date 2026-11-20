@@ -49,11 +49,12 @@ void table_example() {
     std::istringstream in(out.str());
     std::string line;
     std::getline(in, line);
-    require(line.find("Local time = ") == 0, "date before step header");
+    require(line.find("STEP 100 ") == 0 && line.size() == 72, "step and local date");
     std::getline(in, line);
-    require(line == "Report    Step = 100    t = 0.875    CFL = 0.5    dt = 1.000000e-02",
-            "step header");
+    require(line == std::string(72, '-'), "report separator");
     std::getline(in, line);
+    require(line == "t = 0.875    dt = 1.000000e-02    CFL = 0.5", "step parameters");
+    while (std::getline(in, line) && line.find("Field") != 0) {}
     require(line.find("Domain integral") != std::string::npos, "column names");
     const char* names[] = {"rho", "ux", "uy", "p", "E"};
     // Столбцы эталона содержат минимум, максимум и сумму произведений значений на объёмы.
@@ -65,13 +66,13 @@ void table_example() {
         require(name == names[k] && lo == rows[k][0] && hi == rows[k][1] && integral == rows[k][2],
                 "wrong row");
     }
-    require(out.str().find("Energy residual (volume-weighted RMS of dE/dt) = 1.802776e+00") !=
+    require(out.str().find("RMS(dE/dt) = 1.802776e+00") !=
                 std::string::npos,
             "energy RMS");
     Report disabled(0, 1.4, 2, 2, volumes);
     disabled.capture(1, previous);
     disabled.write(1, 0.01, 0.5, 0.01, current, out);
-    require(!disabled.due(1) && out.str().find("Local time", 1) == std::string::npos, "disabled reporter");
+    require(!disabled.due(1) && out.str().find("STEP", 1) == std::string::npos, "disabled reporter");
 }
 
 std::string uniform_3d() {
@@ -84,10 +85,10 @@ std::string uniform_3d() {
     report.capture(1, field);
     report.write(1, 0.25, 1, 0.25, field, out);
     require(out.str().find("uz ") != std::string::npos &&
-                out.str().find("-2050.000000") != std::string::npos &&
+                out.str().find("-2.050000e+03") != std::string::npos &&
                 out.str().find("= 0.000000e+00") != std::string::npos,
             "3D volume reduction");
-    return out.str().substr(out.str().find("Report")); // Исключаем время компьютера из сравнения.
+    return out.str().substr(out.str().find('\n')); // Исключаем время компьютера из сравнения.
 }
 
 // Проверяет отчёт после полных шагов интегратора для выбранной схемы и устройства.
@@ -117,10 +118,10 @@ void integration(ExplicitBackend backend, int device, ExplicitScheme scheme) {
         report.write(step, step * dt, 0.5, dt, solver, out);
     }
     const std::string text = out.str();
-    const auto second = text.find("Report    Step = 200    t = 2    CFL");
-    const auto first = text.find("Report    Step = 100    t = 1    CFL");
-    require(first < second && text.find("Report", first + 1) == second && second != std::string::npos &&
-                text.find("Report", second + 1) == std::string::npos,
+    const auto second = text.find("STEP 200 ");
+    const auto first = text.find("STEP 100 ");
+    require(first < second && text.find("STEP", first + 1) == second && second != std::string::npos &&
+                text.find("STEP", second + 1) == std::string::npos,
             "report schedule");
     require(text.find("uy ") == std::string::npos && text.find("uz ") == std::string::npos, "1D rows");
     require(text.find("= 1.802776e+00") < second && text.find("= 1.000000e+00", second) != std::string::npos,

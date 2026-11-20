@@ -2,7 +2,9 @@
 # Основные проверки запускаются целями test, debug-test и cuda-check.
 CXX = g++
 # Исполнитель Kokkos задаётся один раз для солвера, библиотек и тестов.
-KOKKOS_BACKEND ?= cpu
+# Обычный make в Windows выпускает тот же GPU+MPI солвер, что и make aero.
+default_solver_build := $(and $(filter Windows_NT,$(OS)),$(filter aero,$(or $(MAKECMDGOALS),aero)))
+KOKKOS_BACKEND ?= $(if $(default_solver_build),cuda,cpu)
 ifeq ($(KOKKOS_BACKEND),cuda)
 kokkos_gpu := 1
 else ifeq ($(KOKKOS_BACKEND),cpu)
@@ -96,7 +98,7 @@ else
 ifneq ($(filter clean,$(MAKECMDGOALS)),)
 $(error Run make clean separately from a build)
 endif
-.DEFAULT_GOAL := all
+.DEFAULT_GOAL := $(if $(default_solver_build),aero,all)
 ifeq ($(STATIC_LINK),1)
 BUILD := $(BUILD)/static
 endif
@@ -109,7 +111,13 @@ BUILD := $(BUILD)/inviscid
 else
 override CPPFLAGS += -DAERO_HAS_VISCOSITY=1
 endif
-BUILD_TYPE ?= $(if $(filter programs,$(MAKECMDGOALS)),Release,Default)
+ifneq ($(wildcard source/turbulence/sa.h),)
+ifneq ($(wildcard source/viscosity/transport.h),)
+BUILD := $(BUILD)/rans
+override CPPFLAGS += -DAERO_HAS_TURBULENCE=1
+endif
+endif
+BUILD_TYPE ?= $(if $(or $(default_solver_build),$(filter programs,$(MAKECMDGOALS))),Release,Default)
 ifeq ($(BUILD_TYPE),Release)
 build_optimization := -O3
 override BUILD := $(BUILD)/Release/O3
@@ -124,7 +132,7 @@ $(error BUILD_TYPE must be Default, Debug or Release)
 endif
 include source/parallel/kokkos.mk
 MESH_SOURCE := source/mesh
-MESH_HEADERS := source/parallel/modules.h $(wildcard source/viscosity/*.h) $(MESH_SOURCE)/coordinate.h $(MESH_SOURCE)/mesh.h $(MESH_SOURCE)/mesh_index.h source/parallel/kernel_math.h
+MESH_HEADERS := source/parallel/modules.h $(wildcard source/viscosity/*.h source/turbulence/*.h) $(MESH_SOURCE)/coordinate.h $(MESH_SOURCE)/mesh.h $(MESH_SOURCE)/mesh_index.h source/parallel/kernel_math.h
 ifeq ($(kokkos_gpu),1)
 # Обычный C++ компилирует вызывающую сторону. Только модуль Kokkos
 # собирается компилятором устройства; статическая сборка включает его в EXE.

@@ -299,6 +299,8 @@ void SpatialJacobian::update_time_diagonal(const double* volumes, double dt) {
     auto& s = *storage_;
     auto& b = s.blocks;
     if (!b.row_count) return;
+    // При смене режима перестраивается только временная часть диагонали и её разложение.
+    b.local_steps = SteadyNodeSteps::active(s.partition.steady_steps);
     if (!b.spatial_diagonal || !volumes) throw std::logic_error("BDF: missing cached diagonal or volumes");
 #ifdef AERO_WITH_KOKKOS_GPU
     if (s.device >= 0) {
@@ -321,6 +323,7 @@ void SpatialJacobian::assemble_matrix(const double* u, const double* initial, co
     auto& s = *storage_;
     s.ready = false;
     auto& b = s.blocks;
+    b.local_steps = SteadyNodeSteps::active(s.partition.steady_steps);
     b.simplified = simplified;
     b.roe = roe;
     // Только владелец площадки дифференцирует поток. До обмена все ранги

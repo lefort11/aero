@@ -228,6 +228,16 @@ void check_element(const Processes& world, const MeshPartition& part, double vol
         }
     };
     check_device(-1);
+#ifdef AERO_HAS_TURBULENCE
+    // Производная турбулентной вязкости входит в газовый блок Якобиана при фиксированном
+    // поле SA. Сверяем тот же набор столбцов с конечной разностью при Pr_t, отличном от Pr.
+    aes.turbulence_field.distance.assign(mesh.node_count,0.);
+    turbulence::Settings sa;
+    sa.nut_nu_amb=.8;
+    sa.prandtl=1.2;
+    aes.prepare_turbulence(sa,true);
+    check_device(-1);
+#endif
 #ifdef AERO_WITH_KOKKOS_GPU
     int devices = 0;
     const auto status = gpu::count(&devices);

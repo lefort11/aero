@@ -539,8 +539,8 @@ void register_cli() {
                 require(z.auxiliary.count("Aero.Step") == 0 &&
                             z.auxiliary.at("Aero.MeshSHA256") == expected.auxiliary.at("Aero.MeshSHA256"),
                         "Mesh metadata");
-                require(cli(args) == 1 && read_file(output.path) == bytes,
-                        "Existing geometry output protected");
+                require(cli(args) == 0 && read_file(output.path) == bytes,
+                        "Repeated geometry export");
             }
         }
     });
@@ -595,8 +595,8 @@ void register_cli() {
             std::ofstream out(output.path.c_str());
             out << "keep";
         }
-        rejects([&] { tecplot::write(output.path, mesh, data); });
-        require(read_file(output.path) == "keep", "No overwrite");
+        tecplot::write(output.path, mesh, data);
+        require(read_file(output.path) == export_bytes(mesh, data), "Existing output replaced");
         Temp input, results;
         mesh.write(input.path);
         data.write(results.path);

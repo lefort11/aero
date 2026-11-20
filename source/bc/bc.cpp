@@ -71,12 +71,13 @@ BoundaryType read_type(const Tokens& words) {
     if (words.size() == 2) {
         if (words[1] == "free")
             return BoundaryType::Free;
-        if (words[1] == "wall")
+        if (words[1] == "novisc_wall") return BoundaryType::SlipWall;
+        if (words[1] == "adiabatic_wall" || words[1] == "wall")
             return BoundaryType::Wall;
         if (words[1] == "periodic")
             return BoundaryType::Periodic;
     }
-    throw std::invalid_argument("expected bc_type wall, free or periodic");
+    throw std::invalid_argument("expected bc_type adiabatic_wall, novisc_wall, free or periodic");
 }
 
 // Промежуточное состояние одной секции позволяет задавать строки в любом порядке.
@@ -179,6 +180,7 @@ BoundaryConfig read_boundary(std::istream& input, unsigned dimension, BoundaryPa
     // Стенка и периодическая пара занимают только запись метки. Для них комплект правил не создаётся.
     if (section.type == BoundaryType::Free)
         return patches.add_free(*section.rules);
+    if (section.type == BoundaryType::SlipWall) return BoundaryConfig::slip_wall();
     if (section.type == BoundaryType::Periodic)
         return BoundaryConfig::periodic();
     return BoundaryConfig{};

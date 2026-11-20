@@ -1,5 +1,7 @@
 #include "output_settings.h"
+#include "../parallel/modules.h"
 #include "settings_text.h"
+#include "diagnostic_fields.h"
 #include "number_codec.h"
 #include <algorithm>
 #include <cerrno>
@@ -16,6 +18,7 @@ using namespace settings_detail;
 void entry(OutputZone& z, const std::string& key, const std::string& value, const std::string& where, std::vector<std::string>* warnings) {
     if (key == "file")
         z.file = label(value, where);
+    else if (key == "wall_label") z.wall_label=label(value,where);
     else if (key == "every_steps") {
         z.every_steps = number_codec::parse_decimal(value, [&](const char* reason) {
             throw std::invalid_argument(where + ": " + reason);
@@ -111,7 +114,13 @@ std::string output_filename(const OutputZone& zone, std::uint64_t step) {
 void validate_output_zones(const std::vector<OutputZone>& zones) {
     std::set<std::string> names;
     std::vector<std::string> keys;
-    const std::set<std::string> supported = {"rho", "ux", "uy", "uz", "p", "E"};
+    std::set<std::string> supported={"primary","fluctuations","dp/dt"};
+    for(unsigned c=0;c<diagnostic::ColumnCount;++c) supported.insert(diagnostic::name(c));
+#ifdef AERO_HAS_TURBULENCE
+    supported.insert("turbulence");
+#else
+    supported.erase("nut"); supported.erase("nu_tilde");
+#endif
     for (const auto& z : zones) {
         const std::string prefix = "[" + z.name + "] ";
         if (z.name.empty() || !names.insert(z.name).second)
@@ -124,6 +133,10 @@ void validate_output_zones(const std::vector<OutputZone>& zones) {
         for (const auto& var : z.variables)
             if (!supported.count(var) || !used.insert(var).second)
                 throw std::invalid_argument(prefix + "unknown or duplicate variable: " + var);
+        if(used.count("Cp") && (used.size()!=1 || z.wall_label.empty()))
+            throw std::invalid_argument(prefix+"Cp needs a separate zone with wall_label");
+        if(!used.count("Cp") && !z.wall_label.empty())
+            throw std::invalid_argument(prefix+"wall_label requires variables = Cp");
         // Проверяем, могут ли две зоны при каком-либо шаге записать в один и тот же файл.
         const auto key = output_path_key(z.file);
         if (z.global) {

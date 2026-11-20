@@ -3,7 +3,7 @@ import re
 import shutil
 from pathlib import Path
 
-from mpi_common import ROOT, mpi_parser, mpi_workspace
+from mpi_common import report_rows, ROOT, mpi_parser, mpi_workspace
 from mpi_fields import binary_snapshot
 from mpi_geometry import run
 
@@ -22,7 +22,7 @@ def check(args, case):
     run([args.meshdec, mesh, archive, "--target-ranks=2", "--compress"])
     # Уменьшаем долю сетки master: узлы у разрыва обслуживает второй процесс.
     common = [f"--input={case}", "main:time_scheme=euler", "main:final_time=.04", "main:cfl=4",
-              "cfl:cfl_init=4", "cfl:cfl_max=4", "cfl:num_steps=3", "main:report_every=2"]
+              "cfl:cfl_init=4", "cfl:cfl_max=4", "cfl:cfl_num_steps=3", "main:report_every=2"]
     mpi = [args.mpiexec, "-n", "2", args.aero]
     for mode in ("off", "cfl", "low", "on"):
         reference = None
@@ -36,13 +36,13 @@ def check(args, case):
                    f"main:stabilization={mode}"]
             log = run(cmd, success=mode != "off")
             if mode == "off":
-                assert "stage" in log and "Retry step" not in log
+                assert "stage" in log and "RETRY step" not in log
                 continue
-            reductions = re.findall(r"^Retry step (\d+): CFL reduced from (\S+) to (\S+)$", log, re.M)
-            assert reductions and len(reductions) == log.count("Retry step"), log
+            reductions = re.findall(r"^RETRY step (\d+) \| CFL (\S+) -> (\S+) \| failed nodes = [1-9]\d*$", log, re.M)
+            assert reductions and len(reductions) == log.count("RETRY step"), log
             assert all(float(new) == float(old) / 2 for _, old, new in reductions), reductions
             # Строка после нормы энергии относится к отчёту за принятый шаг.
-            counts = re.findall(r"Energy residual[^\n]*\nStep (\d+), failed cells = (\d+), first-order cells = (\d+)", log)
+            counts = list(report_rows(log, r"^Stabilization .*failed since last report = (\d+)\s+first-order now = (\d+)"))
             assert counts and any(int(failed) for _, failed, _ in counts)
             assert any(int(low) for _, _, low in counts) == (mode in ("low", "on"))
             _, fields = binary_snapshot(dest / "final.fields")
@@ -57,7 +57,7 @@ def check(args, case):
             # Уменьшение CFL сообщается сразу, даже когда обычный отчёт отключён.
             log = run([args.aero, *common, f"main:mesh={mesh}", f"--output={case / 'quiet'}",
                        "main:stabilization=cfl", "main:report_every=0"])
-            assert "CFL reduced from 4 to 2" in log, log
+            assert "CFL 4 -> 2 |" in log, log
         print("OK stabilization", mode)
 
 

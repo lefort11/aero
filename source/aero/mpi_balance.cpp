@@ -96,6 +96,7 @@ void plan_on_root(const RunSettings& run, const std::vector<Id>& resources, Leaf
         (3 + implicit::NewtonFieldCount + implicit::KrylovFieldCount);
     if (run.uses_implicit_time() && !run.directories.geometry_only) {
         if (run.background.active() || run.implicit_settings.jacobian_update_every) state_bytes += (archive.dimension+2)*sizeof(double);
+        if (run.steady()) state_bytes += sizeof(double);
         if (run.implicit_settings.second_order) state_bytes += (archive.dimension+2)*sizeof(double);
         if (run.implicit_settings.csgs)
             state_bytes += (archive.dimension+2)*sizeof(double) + 3*sizeof(MeshIndex);

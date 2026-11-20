@@ -2,9 +2,13 @@
 #define AERO_PARTITION_OPERATOR_H
 #include "partition_transfers.h"
 #include "mpi_stencil.h"
+#include "../io/diagnostic_fields.h"
 #include "solver_timings.h"
 #include "../residual/residual_detail.h"
 #include "../explicit/explicit_stage.h"
+#ifdef AERO_HAS_TURBULENCE
+#include "../turbulence/transport.h"
+#endif
 #include "../implicit/bdf1_step.h"
 
 #ifdef AERO_HAS_VISCOSITY
@@ -12,6 +16,7 @@
 #endif
 
 namespace aero {
+namespace residual_detail { struct FluxCfl; }
 // Пространственный оператор одной подобласти. Сетка и её владельцы живут дольше оператора.
 class PartitionOperator {
     using Id = MeshIndex;
@@ -23,6 +28,15 @@ public:
                       const Processes& world, StencilRequests* requests, bool cuda);
     // Число узлов состояния с учётом удалённых узлов шаблонов реконструкции.
     Id state_nodes() const;
+    // Средние нужны только при заказе пульсаций. Раскладка GPU учитывает их размер.
+    void enable_time_samples() { track_time_ = true; }
+    void start_samples(const std::vector<double>& state, std::vector<diagnostic::Moments>& saved, bool restored);
+    void sample_accepted(const std::vector<double>& state, double dt);
+    void copy_samples(std::vector<diagnostic::Moments>& target) const;
+    void enable_pressure_rate() { need_pressure_rate_ = true; }
+    // Берёт потоки записываемого слоя и возвращает dp/dt в нумерации полей вывода.
+    std::vector<double> output_pressure_rate(const std::vector<double>& state);
+    std::vector<double> output_vorticity(const std::vector<double>& state);
     Id global_node(Id local) const { return ids_[local]; }
     // Возвращает объём работы и обменов процесса для отчёта о разбиении.
     PartitionWork work(Id leaves) const;
@@ -35,6 +49,12 @@ public:
 #ifdef AERO_HAS_VISCOSITY
     void prepare_viscosity(const MeshPartition&, const PeriodicPartition*, const ResidualFrame&,
                            const ViscositySettings&, double mach, bool gpu);
+#ifdef AERO_HAS_TURBULENCE
+    void prepare_sa(const MeshPartition&,const PeriodicPartition*,const BoundaryPatches&,
+                    const std::vector<PeriodicPair>&,const turbulence::Settings&,bool gpu,bool implicit);
+    std::vector<double> sa_output(const std::vector<double>& state);
+    void sa_checkpoint(std::vector<double>& current,std::vector<double>& previous,bool restore,double previous_dt);
+#endif
     void apply_wall(std::vector<double>& field) const;
 #endif
 #ifdef AERO_WITH_KOKKOS_GPU
@@ -65,6 +85,11 @@ public:
                          SolverTimings& timing, bool trial = false);
     // Находит допустимый шаг по собственным узлам и берёт минимум по всем процессам.
     double cfl_step(double cfl);
+    void prepare_steady_steps(bool gpu, bool local, double max_ratio);
+    void set_steady_steps(bool local, double max_ratio);
+    double largest_step(double accepted_minimum) const {
+        return steady_steps_ && steady_steps_->local ? (accepted_minimum / minimum_step_) * maximum_step_ : 0.;
+    }
     // Геометрия и обмены, которыми будет пользоваться матрица на этом процессе.
     implicit::LinearGrid linear_grid();
     implicit::BdfStep& implicit_step(); // Один решатель для интегрирования и контрольных точек.
@@ -108,6 +133,33 @@ private:
     PartitionTransfers edges_; // Результаты расчёта потоков на рёбрах между подобластями.
 #ifdef AERO_HAS_VISCOSITY
     std::unique_ptr<viscosity::Aes> aes_;
+#endif
+#ifdef AERO_HAS_TURBULENCE
+    bool sa_active() const { return aes_ && aes_->view().sa.active; }
+    turbulence::Step sa_step() const;
+    void sa_apply(const turbulence::Step&, turbulence::Operation) const;
+    double sa_max(const turbulence::Step&, turbulence::Norm) const;
+    void sa_exchange();
+    void evaluate_sa(const std::vector<double>& state,SolverTimings& timing,bool rates_ready=false);
+    void solve_sa_stage(const std::vector<double>& state,bool rates_ready);
+    std::unique_ptr<PartitionTransfers> sa_nodes_; // Те же владельцы узлов, один скаляр на запись.
+    double sa_dt_ = 0., sa_previous_dt_ = 0., sa_target_ = 0., sa_tol_ = 0.;
+    unsigned sa_iterations_ = 0;
+    bool sa_bdf2_ = false, sa_implicit_time_ = false;
+    bool sa_prediction_pending_ = false; // Газовый предиктор изменил газ при фиксированной nu_tilde.
+#endif
+    residual_detail::FluxCfl cfl_grid() const;
+    double prepare_local_steps(double cfl);
+    std::unique_ptr<SteadyNodeSteps> steady_steps_; // Для steady резервируем память сразу, даже при старте с общего шага.
+    std::vector<double> host_steps_; // При работе на GPU массив входит в общую раскладку карты.
+    double minimum_step_ = 0., maximum_step_ = 0.; // Диапазон до ограничения расписанием.
+    bool need_pressure_rate_ = false; // Резервируем рабочую память только при заказе dp_dt.
+    std::unique_ptr<PartitionTransfers> pressure_exchange_; // Передаёт dp/dt от владельцев узлов.
+    bool track_time_ = false;
+    std::vector<diagnostic::Moments> moments_; // На CPU хранит средние в расчётной нумерации.
+#ifdef AERO_WITH_KOKKOS_GPU
+    double* device_pressure_rate_ = nullptr; // По одному double на собственный узел.
+    diagnostic::Moments* device_moments_ = nullptr; // Владельцем памяти остаётся PartitionGpu.
 #endif
     unsigned width_;           // Число консервативных переменных в одном узле.
     const double* volumes_;    // Объёмы контрольных ячеек в расчётной нумерации.

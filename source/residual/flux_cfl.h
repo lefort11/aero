@@ -47,6 +47,45 @@ struct FluxCfl {
         return cfl_detail::local(offsets, volume, courant, i, speeds, viscous_rate);
     }
 };
+// Один обход сохраняет шаг каждого владельца и собирает границы диапазона для отчёта.
+// Пустая подобласть участвует в MPI-редукции с нейтральными границами.
+struct StepRange { double minimum, maximum; };
+struct LocalSteadySteps {
+    using value_type = StepRange;
+    FluxCfl gas;
+    double courant;
+    const double* sa_rate; // Диагональная оценка SA в единицах обратного времени.
+    double* steps;         // Общий шаг газа и SA в нумерации узлов подобласти.
+
+    AERO_HOST_DEVICE void init(StepRange& range) const { range = {max_finite_double, 0.}; }
+    AERO_HOST_DEVICE void join(volatile StepRange& range, const volatile StepRange& next) const {
+        if (next.minimum < range.minimum) range.minimum = next.minimum;
+        if (next.maximum > range.maximum) range.maximum = next.maximum;
+    }
+    AERO_HOST_DEVICE void operator()(Index row, StepRange& range) const {
+        const Index node = gas.owned ? gas.owned[row] : row;
+        double dt = gas.local(row, courant).dt;
+        if (sa_rate) {
+            const double rate = sa_rate[node];
+            if (!(rate >= 0. && rate <= max_finite_double)) dt = -1.;
+            else if (rate > 0.) dt = ::fmin(dt, courant / rate);
+        }
+        if (!(dt > 0. && dt < max_finite_double)) dt = -1.;
+        steps[node] = dt;
+        if (dt < range.minimum) range.minimum = dt;
+        if (dt > range.maximum) range.maximum = dt;
+    }
+};
+// После MPI-редукции всем процессам известен один предел. Меняем только свои узлы.
+struct LimitLocalSteps {
+    const MeshIndex* owned;
+    double* steps;
+    double ceiling;
+    AERO_HOST_DEVICE void operator()(Index row) const {
+        const Index node = owned ? owned[row] : row;
+        if (steps[node] > ceiling) steps[node] = ceiling;
+    }
+};
 double cpu_flux_cfl(const FluxCfl&, double courant, const MeshIndex* global_ids = nullptr);
 double gpu_flux_cfl(const FluxCfl&, double courant, void* stream);
 }

@@ -34,8 +34,25 @@ kokkos_module := $(if $(filter Windows_NT,$(OS)),aero_kokkos_cuda.dll,libaero_ko
 ifeq ($(OS),Windows_NT)
 # Сначала ищем инструменты в среде пользователя. В рабочем дереве также
 # может быть локально распакован комплект MinGW для сборки Kokkos.
-local_clang := $(abspath build/kokkos-port/toolchain/mingw64/bin)/clang++.exe
-KOKKOS_GPU_CXX ?= $(or $(shell command -v clang++),$(wildcard $(local_clang)),clang++)
+llvm_dir := tools/mingw-llvm
+llvm_bin := $(abspath $(llvm_dir))/mingw64/bin
+llvm_packages := $(wildcard third_party/mingw-llvm/*.pkg.tar.zst)
+system_clang := $(shell command -v clang++)
+system_lld := $(shell command -v ld.lld)
+KOKKOS_GPU_CXX ?= $(or $(system_clang),$(llvm_bin)/clang++.exe)
+# Архивы входят в проект. Параллельные цели ждут окончания распаковки всех DLL и заголовков.
+use_local_clang := $(filter $(llvm_bin)/clang++.exe,$(KOKKOS_GPU_CXX))
+use_local_lld := $(if $(system_lld),,$(filter 1,$(STATIC_LINK)))
+ifneq ($(strip $(use_local_clang) $(use_local_lld)),)
+llvm_ready := $(llvm_dir)/.ready
+$(llvm_ready): $(llvm_packages)
+	$(call action,Preparing,MinGW Clang and LLD)
+	@mkdir -p "$(llvm_dir)"
+	@set -e; for pkg in $(llvm_packages); do tar -xf "$$pkg" -C "$(llvm_dir)" mingw64; done
+	@test -f "$(llvm_bin)/clang++.exe" && test -f "$(llvm_bin)/ld.lld.exe"
+	@touch "$@"
+export PATH := $(PATH):$(llvm_bin)
+endif
 else
 KOKKOS_GPU_CXX ?= $(NVCC)
 endif
@@ -45,14 +62,6 @@ kokkos_gpu_archive := libaero_kokkos_device.a
 kokkos_gpu_flags := --static --archiver "$(AR)"
 ifeq ($(OS),Windows_NT)
 override LDFLAGS += -fuse-ld=lld
-ifeq ($(shell command -v ld.lld),)
-local_lld := $(abspath build/kokkos-port/static-link/mingw64/bin)
-ifneq ($(wildcard $(local_lld)/ld.lld.exe),)
-# Самому ld.lld нужна libLLVM из того же комплекта Clang. Дополняем PATH
-# только для дочерних процессов Make, сохраняя приоритет системных утилит.
-export PATH := $(PATH):$(local_lld):$(dir $(local_clang))
-endif
-endif
 # CUDA вызывает строковое форматирование UCRT из состава Windows 10/11.
 # Сначала разрешаем обычные функции через тот CRT, с которым собран текущий MinGW.
 kokkos_system_crt := $(if $(findstring ucrt,$(shell $(CXX) -print-file-name=libstdc++.a)),ucrtbase,msvcrt)
@@ -66,7 +75,7 @@ endif
 ifeq ($(origin KOKKOS_DEVICE_LIBRARY),undefined)
 KOKKOS_DEVICE_LIBRARY := $(kokkos_gpu_dir)/$(kokkos_gpu_archive)
 kokkos_device_sources := source/parallel/build_kokkos_gpu.py $(wildcard source/parallel/*.cu source/*/*.h) qa/device_cases.cu qa/device_cases.h
-$(KOKKOS_DEVICE_LIBRARY): $(kokkos_stamp) $(kokkos_device_sources)
+$(KOKKOS_DEVICE_LIBRARY): $(kokkos_stamp) $(kokkos_device_sources) $(llvm_ready)
 	$(call action,Building,Kokkos GPU library)
 	python3 source/parallel/build_kokkos_gpu.py --work "$(kokkos_gpu_dir)/objects" --source "$(kokkos_source)" --cuda "$(CUDA_HOME)" --arch "$(CUDA_ARCH)" --compiler "$(KOKKOS_GPU_CXX)" --host-compiler "$(CXX)" --output "$@" $(kokkos_gpu_flags) $(if $(filter 1,$(V)),--verbose)
 endif

@@ -1,6 +1,9 @@
 #ifndef AERO_PARTITION_OUTPUT_H
 #define AERO_PARTITION_OUTPUT_H
+#include "../io/diagnostic_fields.h"
 #include "indexed_io.h"
+#include "../bc/bc.h"
+#include <map>
 #include "mpi_periodic.h"
 #include "../io/scheduled_output.h"
 
@@ -28,12 +31,19 @@ public:
     // Готовит каталоги и передаёт локальному выводу нумерацию расчётных узлов.
     PartitionOutput(const RunSettings& run, const MeshPartition& part, const PartitionFileLayout& layout,
                     const Processes& world, const std::string& directory, std::vector<MeshIndex>& node_dof,
-                    MeshIndex state_nodes);
+                    MeshIndex state_nodes, const BoundaryPatches& patches);
 
     // Записывает назначенные зоны из одного уже доступного на CPU состояния.
-    void write(std::uint64_t step, double time, const std::vector<double>& state, bool final_field = false);
+    void write(std::uint64_t step, double time, const std::vector<double>& state, bool final_field = false,const diagnostic::Fields& scalars={});
 
 private:
+    struct WallNode {
+        MeshIndex id, slot; // Исходный номер узла и его номер в массиве расчётных значений.
+        Coordinate point;
+    };
+    std::map<std::string,std::vector<WallNode>> walls_;
+    double reference_pressure_=0., dynamic_pressure_=0.;
+    void write_wall(const OutputZone&, std::uint64_t, double, const std::vector<double>&);
     const Processes& world_;            // Участники коллективной записи полей.
     const PartitionFileLayout& layout_; // Нумерация узлов принадлежит постановке расчёта.
     std::string directory_;             // Корень результатов текущего запуска или продолжения.

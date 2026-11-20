@@ -83,6 +83,11 @@ void show_settings(const RunSettings& r) {
         if (v.law == "sutherland") std::cout << "\nsutherland_s = " << v.sutherland_s;
     }
 #endif
+#ifdef AERO_HAS_TURBULENCE
+    if (r.turbulence.enabled)
+        std::cout << "\nTurbulence = On (RANS SA)\nnut_nu_amb = " << r.turbulence.nut_nu_amb
+                  << "\npr_t = " << r.turbulence.prandtl;
+#endif
     if (r.mach > 0.) std::cout << "\nmach = " << r.mach;
     if (r.background.active()) {
         std::cout << "\nBackground: rho0 = " << r.background.rho << ", p0 = " << r.background.p;
@@ -101,12 +106,19 @@ void show_settings(const RunSettings& r) {
 #endif
     std::cout << ")\nreport_every = " << r.report_every << '\n';
     if (r.steady())
-        std::cout << "steady_criterion = " << (r.steady_absolute ? "absolute" : "relative") << "\nsteady_tol = " << r.steady_tol << "\nsteady_max_steps = " << r.steady_max_steps << '\n';
+        std::cout << "local_time_step = " << (r.local_time_step ? "on" : "off") << "\nsteady_criterion = " << (r.steady_absolute ? "absolute" : "relative") << "\nsteady_tol = " << r.steady_tol << "\nsteady_max_steps = " << r.steady_max_steps << '\n';
+    if (r.local_time_step) {
+        std::cout << "local_time_step_max_ratio = ";
+        if (r.local_time_step_max_ratio) std::cout << r.local_time_step_max_ratio;
+        else std::cout << "off";
+        std::cout << '\n';
+    }
     if (r.uses_implicit_time())
         std::cout <<  "solver = BiCGSTAB\njacobian_flux = " << (r.implicit_settings.roe ? "Roe" : "LF")
                   << "\npreconditioner = " << (r.implicit_settings.csgs ? "CSGS" : "BJ") << "\nsolver_tol = "
                   << r.implicit_settings.linear_relative << "\nnewton_tol = " << r.implicit_settings.newton_relative
                   << "\nsimplified_jacobian = " << (r.implicit_settings.simplified_jacobian ? "on" : "off")
+                  << "\nsimplified_newton = " << (r.implicit_settings.simplified_newton() ? "on" : "off")
                   << "\njacobian_update_every = " << r.implicit_settings.jacobian_update_every
                   << "\nnewton_max_iter = " << r.implicit_settings.max_iterations << '\n';
     if (r.reconstruction == "mp5" || r.reconstruction == "MPWENO5")

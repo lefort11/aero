@@ -1,6 +1,6 @@
 """Сверяет каждый принятый шаг и поля MPI-расчёта с результатом на целой сетке."""
 
-from mpi_common import ROOT, mpi_parser, mpi_workspace
+from mpi_common import report_rows, ROOT, mpi_parser, mpi_workspace
 import math
 from pathlib import Path
 import re
@@ -58,13 +58,15 @@ def close(a, b):
 
 def check_report(reference, actual):
     """Сверяет строки отчёта об интегрировании с результатом на целой сетке."""
-    rows = re.compile(r"(?m)^(?:Report|Energy residual|rho\s|u[xyz]\s|p\s|E\s|Completed).*")
+    rows = re.compile(r"(?m)^(?:STEP |t = |Energy |Stabilization |(?:rho|u[xyz]|p|E)'?\s|Completed).*")
     ref, result = [
         rows.findall(log.partition("Starting time integration")[2]) for log in (reference, actual)
     ]
-    if not ref or not ref[0].startswith("Report") or len(ref) != len(result):
+    if not ref or not ref[0].startswith("STEP ") or len(ref) != len(result):
         raise AssertionError("Missing global report or different number of steps")
     for a, b in zip(ref, result):
+        if a.startswith('STEP '):  # Время компьютера может различаться.
+            a, b = a[:53], b[:53]
         if a == b:
             continue
         numbers = r"[-+]?\d+(?:\.\d*)?(?:[eE][-+]?\d+)?"
@@ -176,7 +178,7 @@ def check_mp_alpha(aero, case, launcher, ranks, overrides):
 
 def check_steady(aero, case, launcher, ranks, overrides, coords, names):
     """Сверяет оба критерия по начальному оттоку и по последнему полю MPI."""
-    options = ("main:time_scheme=steady", "main:final_time=0", "implicit:jacobian_update_every=3")
+    options = ("main:time_scheme=steady", "main:final_time=0", "implicit:simplified_newton=on", "implicit:jacobian_update_every=3")
     history = case / "output.txt"
     original = history.read_bytes()
     init = case / "init.txt"
@@ -200,13 +202,35 @@ def check_steady(aero, case, launcher, ranks, overrides, coords, names):
         abs_log = launch(aero, case, target, launcher, ranks, *overrides, *options, absolute,
                          "implicit:steady_tol=" + repr(initial_rate * .5), "implicit:steady_max_steps=100")
         def last(log, criterion):
-            rows = re.findall(r"Steady " + criterion + r" residual, step (\d+): (\S+)", log)
+            rows = list(report_rows(log, r"^Steady\s+" + criterion + r" residual = (\S+)"))
             return int(rows[-1][0]), float(rows[-1][1])
         accepted, ratio = last(relative_log, "relative")
         step, rate = last(abs_log, "absolute")
         if accepted != step or not 0. < ratio <= .5 or not math.isclose(ratio, rate/initial_rate, rel_tol=2e-8):
             raise AssertionError("The absolute and relative stopping criteria disagree")
         check_output(relative_output, target, ranks, len(coords), 1, names)
+        # Те же физические потоки, но контрольные объёмы продвигаются с разными шагами.
+        # Сравниваем одно и то же принятое состояние между CPU и разбиением.
+        local_options = [*options, "implicit:local_time_step=on", "implicit:steady_tol=.5",
+                         "implicit:steady_max_steps=100"]
+        local_ref, local_mpi = case / "local-steady-reference", case / "local-steady-mpi"
+        local_log = launch(aero, case, local_ref, launcher, 1, *local_options)
+        other_log = launch(aero, case, local_mpi, launcher, ranks, *overrides, *local_options)
+        for log in (local_log, other_log):
+            ranges = list(report_rows(log, r"^dt_min = (\S+)\s+dt_max = (\S+)"))
+            if not ranges or not all(0. < float(lo) < float(hi) <= 4.00001*float(lo) for _, lo, hi in ranges):
+                raise AssertionError("Invalid bounded local time steps on a nonuniform mesh")
+        if last(local_log, "relative")[0] != last(other_log, "relative")[0]:
+            raise AssertionError("Decomposition changed the local steady convergence step")
+        check_output(local_ref, local_mpi, ranks, len(coords), 1, names)
+        # При коэффициенте 1 все разделы должны получить общий минимум всей сетки.
+        # Сверяем поля с обычной схемой даже на узлах, удалённых от самого малого объёма.
+        capped = case / "local-steady-uniform-step"
+        capped_log = launch(aero, case, capped, launcher, ranks, *overrides, *local_options,
+                            "implicit:local_time_step_max_ratio=1")
+        if last(capped_log, "relative")[0] != accepted:
+            raise AssertionError("Uniform cap changed convergence compared with a global step")
+        check_output(relative_output, capped, ranks, len(coords), 1, names)
         limit = case / "steady-limit"
         failed = run([launcher, "-n", ranks, aero, f"--input={case}", f"--output={limit}", *overrides,
                       *options, "implicit:steady_tol=1e-12", "implicit:steady_max_steps=1"], success=False)
@@ -328,8 +352,8 @@ def verify(
         overrides = ("main:backend=cuda",) if devices else ()
         actual = launch(aero, case, target, launcher, ranks, *overrides)
         if scheme in ("bdf1","bdf2"):
-            pattern = r"(?m)^Newton relative residual, step (\d+): (\S+)"
-            expected, observed = [re.findall(pattern, text) for text in (log, actual)]
+            pattern = r"^Newton\s+\d+/\d+ iterations\s+relative residual = (\S+)\s+\[OK\]$"
+            expected, observed = [list(report_rows(text, pattern)) for text in (log, actual)]
             if not expected or [s for s, _ in expected] != [s for s, _ in observed]:
                 raise AssertionError("Missing Newton residual for an accepted step")
             for (step, reference_norm), (_, norm) in zip(expected, observed):
@@ -385,7 +409,7 @@ def verify(
         config.write_text(config.read_text().replace("report_every = 1", "report_every = 0"))
         quiet = case / "no-reports"
         actual = launch(aero, case, quiet, launcher, 4)
-        if "Report" in actual:
+        if re.search(r"(?m)^STEP ", actual):
             raise AssertionError("Unexpected report")
         check_output(reference, quiet, 4, len(coords), dim, names)
 
@@ -408,14 +432,16 @@ def verify(
             )
         print("OK SSPRK3 without reports and collective rejection of a failed intermediate stage")
     if cut and scheme in ("bdf1","bdf2") and not simplified:
-        failed = case / "newton-limit"
+        limited = case / "newton-limit"
         ranks = ranks_to_test[-1]
-        log = run([launcher, "-n", ranks, aero, f"--input={case}", f"--output={failed}",
-                   "implicit:newton_max_iter=1", "implicit:newton_tol=1e-14", *overrides], success=False)
-        if "Newton iteration limit" not in log or any(failed.rglob("*.fields")):
-            raise AssertionError(f"{scheme} published a failed step or reported the wrong error:\n{log}")
+        log = run([launcher, "-n", ranks, aero, f"--input={case}", f"--output={limited}",
+                   "implicit:newton_max_iter=1", "implicit:newton_tol=1e-14", *overrides])
+        residuals = re.findall(r"(?m)^Newton\s+1/1 iterations\s+relative residual = (\S+)\s+\[ITERATION LIMIT\]$", log)
+        times = sorted(stamp(path)[1] for path in limited.rglob("timed_*.fields"))
+        if not any(float(value) > 1.e-14 for value in residuals) or times != [final / 2] * ranks + [final] * ranks:
+            raise AssertionError(f"{scheme} did not publish the final field after limited Newton steps:\n{log}")
     if empty:
-        command = [launcher, "-n", 4, aero, f"--input={case}", f"--output={target}"]
+        command = [launcher, "-n", 4, aero, f"--input={case}", f"--output={case / 'missing-init'}"]
         (case / "init.txt").write_text("initial_type file\npath missing.fields\n")
         rejected = run(command, success=False)
         if "Cannot open fields for reading" not in rejected:

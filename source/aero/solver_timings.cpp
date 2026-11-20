@@ -32,7 +32,7 @@ void SolverTimings::report(std::uint64_t last_step, std::ostream& out) {
     if (world_.rank)
         return;
     const char* names[] = {"flux_compute",    "stage_update", "halo_exchange",  "flux_exchange", "cfl",
-                           "output_readback", "fields_write", "recovery_write", "integration"};
+                           "output_readback", "fields_write", "recovery_write", "sa_transport", "integration"};
     std::ostringstream table;
     table.imbue(std::locale::classic());
     table << (cuda_ ? "GPU" : "CPU") << " timings: ranks=" << world_.size << " start_step=" << first_

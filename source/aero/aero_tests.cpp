@@ -210,7 +210,7 @@ std::string run_case(const std::string& program, const std::string& device, bool
     std::string expected = device.empty() || expect_fallback ? "CPU" : "CUDA device " + device;
     for (const auto& key : std::vector<std::string>{"Active backend = " + expected, "Boundary label",
                                                     "Building reconstruction stencils... done",
-                                                    "Report    Step = 1", "Final time = 0.008"})
+                                                    "STEP 1  |", "Final time = 0.008"})
         require(trace.find(key) != std::string::npos, "missing " + key + " in " + log);
     require(read(dir + "/bc.txt") == rules, "existing boundary settings must be preserved");
     for (const auto& name : mesh.data().patch_names)
@@ -219,12 +219,13 @@ std::string run_case(const std::string& program, const std::string& device, bool
     final.check_mesh(mesh);
     require(final.time == 0.008 && final.step >= 2 && final.fields.size() == 3, "final step and fields");
     // Отчёт содержит достигнутую невязку каждого принятого неявного шага.
-    const std::string marker = "Newton relative residual, step ";
+    const std::string marker =  "Newton         ";
     if (implicit) {
         for (std::uint64_t step = 1; step <= final.step; ++step) {
-            const auto label = marker + std::to_string(step) + ": ";
-            const auto pos = trace.find(label);
-            require(pos != std::string::npos, "missing Newton residual for an accepted step");
+            const auto header = trace.find("STEP " + std::to_string(step) + "  |");
+            const std::string label = "relative residual = ";
+            const auto pos = trace.find(label, header);
+            require(pos != std::string::npos && pos < trace.find("\nField", header), "missing Newton residual for an accepted step");
             const double residual = std::stod(trace.substr(pos + label.size()));
             require(residual >= 0. && residual <= 1.e-6, "reported Newton residual exceeds tolerance");
         }

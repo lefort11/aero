@@ -18,7 +18,7 @@ struct Stabilization {
             throw std::invalid_argument(where + ": cfl must be finite and positive");
         if (!active()) return;
         if (!interval || !std::isfinite(factor) || factor <= 1.)
-            throw std::invalid_argument(where + ": require num_steps >= 1 and coeff > 1");
+            throw std::invalid_argument(where + ": require cfl_num_steps >= 1 and cfl_coeff > 1");
         if (!std::isfinite(minimum) || !std::isfinite(maximum) || minimum <= 0. ||
             cfl < minimum || cfl > maximum)
             throw std::invalid_argument(where + ": require 0 < cfl_min <= cfl <= cfl_max");
@@ -40,7 +40,7 @@ public:
     void configure(const Stabilization& options, double value, std::uint64_t successes = 0) {
         options.validate(value, "CFL");
         if (successes >= options.interval)
-            throw std::invalid_argument("CFL success count must be less than num_steps");
+            throw std::invalid_argument("CFL success count must be less than cfl_num_steps");
         options_ = options;
         value_ = value;
         successes_ = successes;

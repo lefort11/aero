@@ -439,13 +439,66 @@ const char* aero_device_krylov_reduce(int device, MeshIndex count, const double*
         *scalar = implicit::krylov_reduce(exec, count, x, y);
     }, device);
 }
+const char* aero_device_pressure_rate(const partition_detail::PressureRate& rate, Index count) {
+    return on_device(nullptr, [&](const Execution& exec) {
+        for_indices(exec, "Aero: pressure time derivative", count, rate);
+    });
+}
+const char* aero_device_sample(const diagnostic::Sample& input,Index count) {
+    const auto sample=input;
+    return on_device(nullptr,[&](const Execution& exec){
+        for_indices(exec,"Aero: accepted time sample",count,KOKKOS_LAMBDA(Index i){sample(i);});
+    });
+}
 #ifdef AERO_HAS_VISCOSITY
-const char* aero_device_viscosity(const viscosity::Operator& input, const double* state, const EulerState* cached) {
+#ifdef AERO_HAS_TURBULENCE
+const char* aero_device_sa_step(const turbulence::Step& input,turbulence::Operation op) {
+    const auto step=input;
+    return on_device(nullptr,[&](const Execution& exec){
+        if (op==turbulence::Operation::RepeatResidual) {
+            for_indices(exec,"Aero: SA element diffusivity",step.transport.cell_count,
+                        KOKKOS_LAMBDA(Index e){step.transport.refresh_diffusivity(e);});
+        }
+        if (op==turbulence::Operation::Residual || op==turbulence::Operation::RepeatResidual) {
+            // Решение о пересчёте завихренности общее для всего запуска ядра.
+            if (op==turbulence::Operation::Residual)
+                for_indices(exec,"Aero: SA residual",step.transport.count,
+                    KOKKOS_LAMBDA(Index i){step.transport.residual<false>(i,step.keep_gas);});
+            else
+                for_indices(exec,"Aero: SA implicit residual",step.transport.count,
+                    KOKKOS_LAMBDA(Index i){step.transport.residual<true>(i,false);});
+            return;
+        }
+        for_indices(exec,"Aero: SA transport",step.transport.count,KOKKOS_LAMBDA(Index i){step.apply(op,i);});
+    });
+}
+const char* aero_device_sa_norm(const turbulence::Step& input,turbulence::Norm mode,double* result) {
+    const auto step=input;
+    return on_device(nullptr,[&](const Execution& exec){
+        double norm=0.;
+        if(step.transport.count) {
+            using Range=Kokkos::RangePolicy<Execution,Kokkos::IndexType<Index>>;
+            Kokkos::parallel_reduce("Aero: SA maximum",Range(exec,0,step.transport.count),
+                KOKKOS_LAMBDA(Index i,double& best){const double v=step.magnitude(mode,i);if(v>best) best=v;},
+                Kokkos::Max<double>(norm));
+        }
+        *result=norm;
+    });
+}
+#endif
+const char* aero_device_viscosity(const viscosity::Operator& input, const double* state, const EulerState* cached,viscosity::Evaluation phase) {
     const auto g = input;
     return on_device(nullptr, [&](const Execution& exec) {
-        for_indices(exec,"Aero: viscous gas",g.node_count,KOKKOS_LAMBDA(Index i) { g.prepare_gas(i,state,cached); });
-        for_indices(exec,"Aero: viscous material",g.cell_count,KOKKOS_LAMBDA(Index i) { g.average_material(i); });
-        for_indices(exec,"Aero: AES edge contributions",g.row_count,KOKKOS_LAMBDA(Index i) { g.assemble(i); });
+        if (phase==viscosity::Evaluation::Full || phase==viscosity::Evaluation::BeforeSaIterations)
+            for_indices(exec,"Aero: viscous gas",g.node_count,KOKKOS_LAMBDA(Index i) { g.prepare_gas(i,state,cached); });
+#ifdef AERO_HAS_TURBULENCE
+        if (phase==viscosity::Evaluation::AfterSaUpdate)
+            for_indices(exec,"Aero: SA eddy viscosity",g.node_count,KOKKOS_LAMBDA(Index i){g.prepare_sa_material(i);});
+#endif
+        if (phase!=viscosity::Evaluation::RowsOnly)
+            for_indices(exec,"Aero: viscous material",g.cell_count,KOKKOS_LAMBDA(Index i) { g.average_material(i); });
+        if (phase!=viscosity::Evaluation::BeforeSaIterations)
+            for_indices(exec,"Aero: AES edge contributions",g.row_count,KOKKOS_LAMBDA(Index i) { g.assemble(i); });
     });
 }
 #endif
@@ -486,6 +539,16 @@ const char* aero_device_gather(const Geometry& geometry, const EulerFluxResult* 
             if (!assemble_node_residual(g, i, flux, g.node_row(residual, i)))
                 Kokkos::atomic_fetch_min(bad, g.faces+i);
         });
+    });
+}
+const char* aero_device_local_steps(const LocalSteadySteps& steps, StepRange* range) {
+    return on_device(nullptr, [&](const Execution& exec) {
+        Kokkos::parallel_reduce("Aero: local steady steps", Range(exec, 0, steps.gas.count), steps, *range);
+    });
+}
+const char* aero_device_limit_local_steps(const LimitLocalSteps& limit, Index count) {
+    return on_device(nullptr, [&](const Execution& exec) {
+        Kokkos::parallel_for("Aero: limit local steady steps", Range(exec, 0, count), limit);
     });
 }
 const char* aero_device_flux_step(const FluxCfl& input, double courant, CflStep* answer, void* stream) {

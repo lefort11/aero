@@ -63,13 +63,21 @@ void test_bdf1_step(int device) {
         refresh();
         return solver.advance(state.data(), nullptr, volumes.data(), active_flux, dt, controls, refresh);
     };
-    // Одной поправки недостаточно. Проверяем, что отказ возвращает оба узла в исходное состояние.
+    // Одной поправки мало для заданного допуска. Поле и история всё равно должны
+    // перейти на следующий слой, а отчёт должен вернуть реально достигнутую невязку.
     controls.max_iterations = 1;
-    bool rejected = false;
-    try { advance(); } catch (const std::runtime_error& e) {
-        rejected = std::string(e.what()).find("Newton iteration limit") != std::string::npos;
+    {
+        BdfStep limited(host, active, device);
+        refresh();
+        const auto step = limited.advance(state.data(), nullptr, volumes.data(), active_flux, dt, controls, refresh);
+        BdfHistory history;
+        limited.export_history(history);
+        require(step.iterations == 1 && std::isfinite(step.relative_residual) &&
+                step.relative_residual > controls.newton_relative, "Newton iteration cap");
+        require(state.read() != initial && history.dt == dt && history.previous == initial,
+                "limited Newton step must accept the field and advance BDF2 history");
     }
-    require(rejected && state.read() == initial, "failed Newton step changed the accepted state");
+    state.set(initial);
     controls.max_iterations = 20;
     const auto result = advance();
     const auto u = state.read();
@@ -93,11 +101,15 @@ void test_bdf1_step(int device) {
     controls.csgs = true;
     controls.roe = true;
     controls.max_iterations = 1;
-    rejected = false;
+    // Если пространственный оператор отклоняет поле после поправки, шаг всё ещё
+    // должен откатиться вместе с историей, даже на последней разрешённой итерации.
+    bool rejected = false;
+    refresh();
     try {
-        advance();
-    } catch (const std::runtime_error&) {
-        rejected = true;
+        solver.advance(state.data(), nullptr, volumes.data(), active_flux, dt, controls,
+                       [] { throw std::domain_error("invalid trial field"); });
+    } catch (const std::domain_error& error) {
+        rejected = std::string(error.what()) == "invalid trial field";
     }
     BdfHistory after_failure;
     solver.export_history(after_failure);
@@ -122,6 +134,39 @@ void test_bdf1_step(int device) {
     advance();
     require(state.read() == next, "BDF2 history round trip changed the solution");
     controls.second_order = false;
+    // Для двух разных псевдошагов каждый объём должен уравновешивать один
+    // и тот же межузловой поток со своим V/dt. Повторяем с кешированной матрицей.
+    {
+        aero_test::TestField local_dt(device, 2);
+        Partition partition;
+        SteadyNodeSteps steps;
+        steps.values = local_dt.data();
+        partition.steady_steps = &steps;
+        BdfStep local_solver(host, active, device, partition);
+        NewtonSettings local_controls = controls;
+        local_controls.roe = false; // Правая часть теста построена по потоку LF.
+        local_controls.jacobian_update_every = 3;
+        state.set(initial);
+        for (double second_dt : {.3, 0., .15}) {
+            // Меняем режим на той же матрице. При общем шаге в памяти остаются
+            // старые узловые dt: проверка баланса обнаружит их ошибочное применение.
+            steps.local = second_dt > 0.;
+            if (steps.local) local_dt.set({.1, second_dt});
+            const double step_argument = steps.local ? .5 : .08;
+            const double dt_left = steps.local ? .5*.1 : step_argument;
+            const double dt_right = steps.local ? .5*second_dt : step_argument;
+            const auto old = state.read();
+            refresh();
+            const auto steady_step = local_solver.advance(state.data(), nullptr, volumes.data(), active_flux,
+                                                     step_argument, local_controls, refresh);
+            require(steady_step.jacobian_assemblies == (second_dt == .3 ? 1u : 0u), "unexpected spatial assembly on time step switch");
+            const auto updated = state.read();
+            const double mass_flux = std::sqrt(1.4/std::min(updated[0],updated[3])) * (updated[0]-updated[3]);
+            require(std::abs(.4*(updated[0]-old[0])/dt_left + mass_flux) < 1.e-9 &&
+                    std::abs(.6*(updated[3]-old[3])/dt_right - mass_flux) < 1.e-9,
+                    "steady balance after switching local and global time steps");
+        }
+    }
     // Однородное состояние должно приниматься без вызова линейного решателя.
     state.set({1., 0., 2.5, 1., 0., 2.5});
     const auto uniform = advance();
@@ -140,7 +185,10 @@ void test_bdf1_step(int device) {
         controls.second_order = true;
         controls.roe = false;
         controls.csgs = true;
-        controls.jacobian_update_every = interval;
+        // Для интервала 1 включаем режим тем же переключателем, что в implicit.txt.
+        // Интервал 3 проверяет совместное использование матрицы на нескольких шагах.
+        controls.jacobian_update_every = interval == 1 ? 0 : interval;
+        controls.set_simplified_newton(interval != 0);
         state.set(initial);
         bool rejected_trial = false;
         for (unsigned n = 0; n < 5; ++n) {

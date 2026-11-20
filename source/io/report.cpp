@@ -35,20 +35,6 @@ void FlowSummary::merge(const FlowSummary& other, unsigned fields) {
         field[k].integral += other.field[k].integral;
     }
 }
-namespace {
-std::string cell(long double value) {
-    std::ostringstream s;
-    s.imbue(std::locale::classic());
-    const auto magnitude = std::abs(value);
-    if (magnitude >= 1e8L || (magnitude > 0 && magnitude < 1e-4L))
-        s << std::scientific;
-    else
-        s << std::fixed;
-    s << std::setprecision(6) << value;
-    return s.str();
-}
-}
-
 Report::Report(std::uint64_t every, double gamma, unsigned dimension, std::size_t nodes,
                        const double* volumes, const LinearBackground& background)
     : every_(every), captured_step_(0), background_(background), gamma_(gamma), dimension_(dimension), total_volume_(0) {
@@ -104,7 +90,9 @@ void Report::write(std::uint64_t step, double time, double cfl, double dt,
 void Report::write_values(std::uint64_t step, double time, double cfl, double dt, const double* u,
                               std::ostream& out) {
     const auto total = measure_values(step, u);
-    write_flow_summary(total, step, time, cfl, dt, dimension_, out);
+    ReportDetails details;
+    details.linear = background_.active();
+    write_flow_summary(total, step, time, cfl, dt, dimension_, out, details);
     captured_step_ = 0;
 }
 FlowSummary Report::measure(std::uint64_t step, const std::vector<double>& current) {
@@ -152,30 +140,49 @@ FlowSummary Report::measure_values(std::uint64_t step, const double* u) {
     return total;
 }
 void write_flow_summary(const FlowSummary& total, std::uint64_t step, double time, double cfl, double dt,
-                        unsigned dimension, std::ostream& out, const double* newton_relative) {
+                        unsigned dimension, std::ostream& out, const ReportDetails& details) {
     if (!(dt > 0 && std::isfinite(dt) && cfl > 0 && std::isfinite(cfl) && total.volume > 0))
         throw std::invalid_argument("report: expected positive finite CFL, dt and volume");
     const unsigned width = dimension + 2, fields = width + 1;
-    const long double rms = total.rate_scale * std::sqrt(total.scaled_squares / total.volume) / dt;
+    const long double rms = total.rate_scale * std::sqrt(total.scaled_squares / total.volume) / (details.max_local_step ? 1. : dt);
     if (!std::isfinite(rms))
         throw std::overflow_error("report: energy residual overflow");
     std::ostringstream table;
     table.imbue(std::locale::classic());
     // Время компьютера в момент формирования отчёта, отдельно от физического времени t.
     const std::time_t now = std::time(nullptr);
+    std::ostringstream title;
+    title << "STEP " << step;
+    if (!details.scheme.empty()) title << "  |  " << details.scheme;
+    table << std::left << std::setw(53) << title.str();
     std::tm local{};
 #ifdef _WIN32
     if (localtime_s(&local, &now) == 0)
 #else
     if (localtime_r(&now, &local))
 #endif
-        table << "Local time = " << std::put_time(&local, "%Y-%m-%d %H:%M:%S");
-    table << '\n';
-    table << "Report    Step = " << step << "    t = " << std::setprecision(12) << time
-          << "    CFL = " << std::setprecision(6) << cfl << "    dt = " << std::scientific << dt << '\n';
-    if (newton_relative)
-        table << "Newton relative residual, step " << step << ": " << *newton_relative << '\n';
-    table << std::left << std::setw(9) << "Variable" << std::right << std::setw(15) << "Minimum"
+        table << std::put_time(&local, "%Y-%m-%d %H:%M:%S");
+    table << '\n' << std::string(72, '-') << '\n';
+    if (details.max_local_step)
+        table << "dt_min = " << std::scientific << std::setprecision(6) << dt
+              << "    dt_max = " << details.max_local_step;
+    else
+        table << (details.steady_criterion.empty() ? "t = " : "Pseudo-time = ") << std::setprecision(12) << time
+          << "    dt = " << std::scientific << std::setprecision(6) << dt;
+    table << "    CFL = " << std::defaultfloat << cfl << "\n\n" << std::scientific;
+    if (details.max_iterations)
+        table << "Newton         " << details.iterations << '/' << details.max_iterations
+              << " iterations    relative residual = " << details.newton_residual
+              << (details.newton_residual <= details.newton_tol ? "  [OK]\n" : "  [ITERATION LIMIT]\n");
+    if (!details.steady_criterion.empty())
+        table << "Steady         " << details.steady_criterion << " residual = " << details.steady_residual
+              << "    target = " << details.steady_tol << '\n';
+    table << "Energy         " << (details.max_local_step ? "RMS(delta E" : "RMS(dE")
+          << (details.linear ? "'" : "") << (details.max_local_step ? ") = " : "/dt) = ") << rms << '\n';
+    if (!details.stabilization.empty())
+        table << "Stabilization  " << details.stabilization << "    failed since last report = " << details.failed
+              << "    first-order now = " << details.first_order << '\n';
+    table << '\n' << std::left << std::setw(9) << "Field" << std::right << std::setw(15) << "Minimum"
           << std::setw(15) << "Maximum" << std::setw(20) << "Domain integral" << '\n';
     const char* names[] = {"rho", "ux", "uy", "uz", "p", "E"};
     for (unsigned k = 0; k < fields; ++k) {
@@ -183,10 +190,10 @@ void write_flow_summary(const FlowSummary& total, std::uint64_t step, double tim
         if (!std::isfinite(s.integral))
             throw std::overflow_error("report: domain integral overflow");
         const char* name = k <= dimension ? names[k] : names[k == width ? 5 : 4];
-        table << std::left << std::setw(9) << name << std::right << std::setw(15) << cell(s.low)
-              << std::setw(15) << cell(s.high) << std::setw(20) << cell(s.integral) << '\n';
+        table << std::left << std::setw(9) << (std::string(name) + (details.linear ? "'" : "")) << std::right << std::setw(15) << s.low
+              << std::setw(15) << s.high << std::setw(20) << s.integral << '\n';
     }
-    table << "\nEnergy residual (volume-weighted RMS of dE/dt) = " << rms << "\n";
+    table << '\n';
     const auto text = table.str();
     out.write(text.data(), static_cast<std::streamsize>(text.size()));
     out.flush();

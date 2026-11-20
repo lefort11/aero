@@ -1,5 +1,6 @@
 #ifndef AERO_IMPLICIT_PARTITION_H
 #define AERO_IMPLICIT_PARTITION_H
+#include "../timestep/node_step.h"
 #include "../mesh/mesh_index.h"
 #include <functional>
 #include "../parallel/modules.h"
@@ -15,6 +16,7 @@ enum { NewtonFieldCount = 3, KrylovFieldCount = 6 };
 // Связь численного метода с разбиением сетки. Сам решатель не зависит от MPI:
 // в обычном расчёте списки пусты, номера узлов и строк совпадают.
 struct Partition {
+    const SteadyNodeSteps* steady_steps = nullptr; // Владелец меняет режим между принятыми шагами.
 #ifdef AERO_HAS_VISCOSITY
     viscosity::Operator host_aes{}, active_aes{}; // Топология для CSR и массивы исполнителя для производных.
 #endif

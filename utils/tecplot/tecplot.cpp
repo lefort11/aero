@@ -11,14 +11,8 @@
 #include <streambuf>
 #include <utility>
 #include <vector>
-#include <fcntl.h>
-#include <sys/stat.h>
-#ifdef _WIN32
-#include <io.h>
-#include <share.h>
-#else
-#include <unistd.h>
-#endif
+#include "../../source/io/scheduled_output.h"
+#include <fstream>
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -560,79 +554,18 @@ void write_plan(std::ostream& out, const Plan& plan, const FieldSnapshot* snapsh
     writer.flush();
 }
 
-// Открываем на исключительное создание. Так существующие результаты и входные файлы защищены также при совпадении путей.
-class FileBuffer : public std::streambuf {
-public:
-    explicit FileBuffer(std::FILE* file) : file_(file) {}
-
-protected:
-    std::streamsize xsputn(const char* data, std::streamsize count) override {
-        return static_cast<std::streamsize>(std::fwrite(data, 1, static_cast<std::size_t>(count), file_));
-    }
-    int_type overflow(int_type value) override {
-        if (traits_type::eq_int_type(value, traits_type::eof()))
-            return traits_type::not_eof(value);
-        return std::fputc(traits_type::to_char_type(value), file_) == EOF ? traits_type::eof() : value;
-    }
-    int sync() override { return std::fflush(file_) == 0 ? 0 : -1; }
-
-private:
-    std::FILE* file_;
-};
-std::FILE* create_file(const std::string& path) {
-#if defined(_MSC_VER)
-    int fd = -1;
-    if (_sopen_s(&fd, path.c_str(), _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY, _SH_DENYWR,
-                 _S_IREAD | _S_IWRITE) != 0)
-        fd = -1;
-#elif defined(_WIN32)
-    const int fd = _open(path.c_str(), _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY, _S_IREAD | _S_IWRITE);
-#else
-    const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0666);
-#endif
-    if (fd < 0)
-        fail("Cannot create output (existing paths are not overwritten): " + path);
-#ifdef _WIN32
-    std::FILE* file = _fdopen(fd, "wb");
-#else
-    std::FILE* file = fdopen(fd, "wb");
-#endif
-    if (!file) {
-#ifdef _WIN32
-        _close(fd);
-#else
-        ::close(fd);
-#endif
-        std::remove(path.c_str());
-        fail("Cannot open output stream: " + path);
-    }
-    return file;
-}
 void write_file(const std::string& path, const Mesh& mesh, const FieldSnapshot* snapshot,
                 const Options& options) {
     if (path.empty() || path.find('\0') != std::string::npos)
         fail("Invalid output path");
     const Plan plan(mesh, snapshot, options);
-    std::FILE* file = create_file(path);
-    try {
-        {
-            FileBuffer buffer(file);
-            std::ostream output(&buffer);
-            write_plan(output, plan, snapshot);
-            output.flush();
-            if (!output)
-                fail("Cannot flush Tecplot output");
-        }
-        const int status = std::fclose(file);
-        file = nullptr;
-        if (status)
-            fail("Cannot close Tecplot output");
-    } catch (...) {
-        if (file)
-            std::fclose(file);
-        std::remove(path.c_str());
-        throw;
-    }
+    // Сначала завершаем запись рядом с назначением. Только готовый результат заменяет прежний PLT.
+    StagedFieldFile file(path);
+    std::ofstream output(file.temporary().c_str(), std::ios::binary);
+    write_plan(output, plan, snapshot);
+    output.close();
+    if (!output) fail("Cannot finish Tecplot output: " + path);
+    file.publish(true);
 }
 } // namespace
 void write(std::ostream& output, const Mesh& mesh, const FieldSnapshot& snapshot, const Options& options) {

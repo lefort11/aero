@@ -20,7 +20,7 @@ def check(case):
            f"main:mesh={source / 'grid.mesh'}", "main:exact_solution=on",
            "main:report_every=1", "main:final_time=.01"]
     log = run([*cmd, f"--output={case / 'out'}"])
-    reports = len(re.findall(r"^Report\s+Step =", log, re.M))
+    reports = len(re.findall(r"^STEP \d+  \|", log, re.M))
     assert reports >= 2, log
     for name in ("main", "gas", "scheme", "output", "exact", "init", "bc"):
         assert len(re.findall(rf"^WARNING: .*\btypo_{name}\b", log, re.M)) == reports + 1, log

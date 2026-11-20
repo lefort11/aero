@@ -19,6 +19,42 @@ struct Grid {
     Index* bad;
     Index *failed_count, *failed_nodes; // Список недопустимых собственных узлов для отката на GPU.
 };
+// Пространственный оператор хранит интегральные потоки на гранях. Складываем их
+// с теми же знаками и вязкими членами, что и при обновлении решения.
+struct PressureRate {
+    residual_detail::Geometry geometry;
+    const EulerFluxResult* flux;
+    const double *volumes, *state;
+    const MeshIndex* owned;
+    double* values; // По одному результату на собственный узел процесса.
+
+    AERO_HOST_DEVICE void operator()(Index row) const {
+        const Index node = owned ? owned[row] : row;
+        double residual[5];
+        if (!residual_detail::assemble_node_residual(geometry, node, flux, residual)) {
+            values[row] = HUGE_VAL; // Процесс сообщит номер недопустимого узла до обмена.
+            return;
+        }
+        const unsigned dim = geometry.dim;
+        // В Linear последняя компонента состояния уже является пульсацией давления.
+        double pressure_balance = residual[dim + 1];
+        if (!geometry.options.background.active()) {
+            // В Euler p = (gamma-1)*(E - |m|²/(2*rho)). Дифференцируем по
+            // консервативным переменным в состоянии именно записываемого слоя.
+            const double* u = geometry.node_row(state, node);
+            double speed_squared = 0.;
+            for (unsigned axis = 0; axis < dim; ++axis) {
+                const double velocity = u[1 + axis] / u[0];
+                pressure_balance -= velocity * residual[1 + axis];
+                speed_squared += velocity * velocity;
+            }
+            pressure_balance = (geometry.options.gamma - 1.) *
+                               (pressure_balance + .5 * speed_squared * residual[0]);
+        }
+        // Невязка положительна при оттоке. Правая часть для узла равна -R/V.
+        values[row] = -pressure_balance / volumes[node];
+    }
+};
 // Тот же критерий плотности и давления используется на обеих архитектурах.
 AERO_HOST_DEVICE inline bool admissible_node(const residual_detail::Geometry& geometry, const double* state, Index node) {
     EulerState gas;

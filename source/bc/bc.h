@@ -5,7 +5,12 @@
 #include "../eulersolver/euler.h"
 
 namespace aero {
-enum class BoundaryType { Wall, Free, Periodic };
+enum class BoundaryType { Wall, Free, Periodic, SlipWall };
+// Давление действует на обе непроницаемые стенки. Только Wall закрепляет
+// касательную скорость и рабочую вязкость SA при включённой вязкости.
+AERO_HOST_DEVICE inline bool solid_wall(BoundaryType type) {
+    return type==BoundaryType::Wall || type==BoundaryType::SlipWall;
+}
 enum class BoundaryMode { Pressure, NormalVelocity, Density };
 enum class BoundarySource { Current, Initial, Constant };
 
@@ -28,18 +33,20 @@ struct FreeBoundaryRules {
     BoundaryRule outflow;     // Дозвуковой выход, включая нулевую нормальную скорость.
 };
 // В сетке у метки хранится одно число. Только у free это индекс в массиве FreeBoundaryRules.
-// Два специальных значения обозначают стенку и периодическую метку, у которых правил течения нет.
+// Отрицательные значения обозначают варианты стенки и периодическую метку.
 class BoundaryConfig {
-    enum : long long { Wall = -1, Periodic = -2 };
-    long long index_; // Номер комплекта free или одно из двух значений выше.
+    enum : long long { Wall = -1, Periodic = -2, SlipWall = -3 };
+    long long index_; // Номер комплекта free или код физической границы.
     AERO_HOST_DEVICE explicit BoundaryConfig(long long index) : index_(index) {}
     friend struct BoundaryPatches; // Только владелец массива назначает индексы free.
 public:
     AERO_HOST_DEVICE BoundaryConfig() : index_(Wall) {}
+    AERO_HOST_DEVICE static BoundaryConfig slip_wall() { return BoundaryConfig(SlipWall); }
     AERO_HOST_DEVICE static BoundaryConfig periodic() { return BoundaryConfig(Periodic); }
     AERO_HOST_DEVICE BoundaryType type() const {
         if (index_ == Wall)
             return BoundaryType::Wall;
+        if (index_ == SlipWall) return BoundaryType::SlipWall;
         if (index_ == Periodic)
             return BoundaryType::Periodic;
         return BoundaryType::Free;
@@ -242,7 +249,7 @@ boundary_flux(unsigned d, BoundaryConfig patch, const FreeBoundaryRules* free_ru
     EulerFluxResult flux = {};
     flux.components = d + 2;
     flux.max_wave_speed = ::fabs(un) + inside.sound_speed;
-    if (patch.type() == BoundaryType::Wall) {
+    if (solid_wall(patch.type())) {
         // Непроницаемая стенка передаёт только давление. Потоки массы и энергии уже равны нулю.
         for (unsigned k = 0; k < d; ++k)
             flux.flux[k + 1] = inside.pressure * area[k];
@@ -302,7 +309,7 @@ struct PeriodicPair {
     Coordinate translation; // Сдвиг от patch к pair в исходных единицах координат сетки.
 };
 // Читает условия одного участка. При ошибке в его описании выбрасывает std::invalid_argument.
-// bc_type wall
+// bc_type adiabatic_wall или bc_type novisc_wall
 // bc_type free требует три отдельные строки в любом порядке:
 // superin [initial] [rho=...] [p=...] [ux=...] [uy=...] [uz=...]
 // inflow  base_p|base_u|base_rho [initial|число]

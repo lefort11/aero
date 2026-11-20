@@ -1,5 +1,6 @@
 #ifndef AERO_IMPLICIT_SPATIAL_JACOBIAN_DETAIL_H
 #define AERO_IMPLICIT_SPATIAL_JACOBIAN_DETAIL_H
+#include "../timestep/node_step.h"
 #include "boundary_jacobian.h"
 #include "roe_edge_jacobian.h"
 #include "lf_edge_jacobian.h"
@@ -19,6 +20,7 @@ struct SpatialBlocks {
 #ifdef AERO_HAS_VISCOSITY
     bool viscous;                // Блоки AES уже заполнены перед добавлением производных конвективных потоков.
 #endif
+    NodeSteps local_steps;
     bool roe;                    // Выбор численного потока для матрицы поправки.
     bool simplified;             // Фиксировать диссипацию LF или Роу при дифференцировании.
     AERO_HOST_DEVICE MeshIndex node(MeshIndex row) const { return columns[rows[row]]; }
@@ -142,7 +144,7 @@ struct SpatialBlocks {
         }
 #endif
         if (volumes) {
-            const double mass = volumes[i]/dt;
+            const double mass = volumes[i]/local_steps.at(i, dt);
             if (!(mass>0.) || !euler_detail::finite(mass)) return false;
             for (unsigned r = 0; r < Equations; ++r) {
                 const unsigned k = first + r;
@@ -163,7 +165,7 @@ struct SpatialBlocks {
     // пространственное значение напрямую, чтобы не вычитать старое большое V/dt.
     AERO_HOST_DEVICE bool update_time_diagonal(MeshIndex row, const double* volumes, double dt) const {
         const unsigned width = grid.components();
-        const double mass = volumes[node(row)] / dt;
+        const double mass = volumes[node(row)] / local_steps.at(node(row), dt);
         if (!(mass > 0.) || !euler_detail::finite(mass)) return false;
         double* block = values + rows[row] * stride();
         for (unsigned k = 0; k < width; ++k) {

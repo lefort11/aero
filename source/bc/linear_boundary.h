@@ -56,7 +56,7 @@ AERO_HOST_DEVICE inline bool linear_boundary_flux(const LinearFace& face, Bounda
         const FreeBoundaryRules* table, const double* inside, const double* initial,
         bool homogeneous, EulerFluxResult& out) {
     const unsigned d = face.dim;
-    if (patch.type() == BoundaryType::Wall) {
+    if (solid_wall(patch.type())) {
         // Неподвижная стенка исключает нормальное движение. Остаётся сила давления.
         for (unsigned k = 0; k < d + 2; ++k) out.flux[k] = 0.;
         for (unsigned j = 0; j < d; ++j) out.flux[j + 1] = inside[d + 1] * face.normal[j] / face.gas.rho;

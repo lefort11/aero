@@ -3,6 +3,8 @@
 #include "../parallel/parallel_for.h"
 #ifdef AERO_WITH_KOKKOS_GPU
 #include "../parallel/device_check.h"
+#include "../parallel/device_work.h"
+#include "../io/fields.h"
 #ifdef AERO_HAS_VISCOSITY
 #include "../viscosity/jacobian.h"
 #endif
@@ -367,6 +369,16 @@ void PartitionOperator::connect(bool cuda, bool implicit_time) {
         }
         nodes_.allocate(cuda);
         edges_.allocate(cuda);
+        if (need_pressure_rate_ && world_.size > 1) {
+            pressure_exchange_.reset(new PartitionTransfers(nodes_, 1));
+            pressure_exchange_->allocate(false); // Поля для файлов собираются в памяти CPU.
+        }
+#ifdef AERO_HAS_TURBULENCE
+        if(sa_active()) {
+            sa_nodes_.reset(new PartitionTransfers(nodes_,1));
+            sa_nodes_->allocate(cuda);
+        }
+#endif
         if (implicit_time) {
             derivative_exchange_.reset(new PartitionTransfers(edges_, 2 * width_ * width_));
             derivative_exchange_->allocate(cuda);
@@ -381,8 +393,14 @@ void PartitionOperator::layout_gpu(bool compact_buffer) {
     gpu_->set_viscosity(aes_.get());
 #endif
     gpu_->layout(grid_, stencil_, compute_, owned, volumes_, state_nodes(), compact_buffer, world_.size == 1);
+    if (need_pressure_rate_) device_pressure_rate_ = gpu_->layout_node_scalars(owned.size());
+    if (steady_steps_) steady_steps_->values = gpu_->layout_node_scalars(grid_.nodes);
+    if (track_time_) device_moments_ = gpu_->layout_moments(grid_.nodes);
     nodes_.prepare_gpu(*gpu_);
     edges_.prepare_gpu(*gpu_);
+#ifdef AERO_HAS_TURBULENCE
+    if(sa_nodes_) sa_nodes_->prepare_gpu(*gpu_);
+#endif
     if (derivative_exchange_) {
         derivative_exchange_->prepare_gpu(*gpu_);
         gpu_->layout_linear_input(state_nodes() * width_);
@@ -449,6 +467,12 @@ void PartitionOperator::upload_state(const std::vector<double>& state, const std
 
 void PartitionOperator::copy_backup(std::vector<double>& state, std::vector<double>& backup, bool restore) {
     if (restore) gas_current_ = false;
+#ifdef AERO_HAS_TURBULENCE
+    if(sa_active()) {
+        if(restore) sa_dt_=0.;
+        sa_apply(sa_step(),restore?turbulence::Operation::RestoreBackup:turbulence::Operation::SaveBackup);
+    }
+#endif
 #ifdef AERO_WITH_KOKKOS_GPU
     if (gpu_) { gpu_->copy_backup(state.size(), restore); return; }
 #endif
@@ -536,6 +560,138 @@ void PartitionOperator::halo(std::vector<double>& u, double* seconds) {
     if (gpu_) field = gpu_->active_grid().state;
 #endif
     nodes_.transfer(world_, {width_, field, nullptr}, device(), seconds);
+#ifdef AERO_HAS_TURBULENCE
+    if(sa_nodes_) sa_exchange();
+#endif
+}
+
+// Накопление выполняется там же, где хранится принятое состояние. На GPU
+// за один шаг читаем только узел и его историю, без копирования поля на CPU.
+void PartitionOperator::sample_accepted(const std::vector<double>& state, double dt) {
+    if (!track_time_) return;
+    diagnostic::Sample sample{grid_.dim, grid_.options.gamma, dt, grid_.options.background,
+                              moments_.data(), state.data()};
+#ifdef AERO_WITH_KOKKOS_GPU
+    if (gpu_) {
+        sample.values = device_moments_;
+        sample.state = gpu_->active_grid().state;
+        if (const auto error = device_work::aero_device_sample(sample, grid_.nodes)) throw FieldError(error);
+        return;
+    }
+#endif
+    parallel_for(grid_.nodes, [&](MeshIndex i) { sample(i); });
+}
+
+void PartitionOperator::copy_samples(std::vector<diagnostic::Moments>& target) const {
+    if (!track_time_) { target.clear(); return; }
+#ifdef AERO_WITH_KOKKOS_GPU
+    if (gpu_) {
+        target.resize(grid_.nodes);
+        if (!target.empty() && gpu::copy(target.data(),device_moments_,target.size()*sizeof(target[0]),
+                                         gpu::Copy::ToHost)!=gpu::Status::Success)
+            throw FieldError("Cannot download time averages");
+        return;
+    }
+#endif
+    target = moments_;
+}
+
+void PartitionOperator::start_samples(const std::vector<double>& state, std::vector<diagnostic::Moments>& saved, bool restored) {
+    if (!track_time_) { saved.clear(); return; }
+    if (!restored) {
+        // На GPU историю уже хранит массив устройства. Память CPU нужна только при записи снимка.
+#ifdef AERO_WITH_KOKKOS_GPU
+        if (!gpu_)
+#endif
+            moments_.resize(grid_.nodes);
+        sample_accepted(state,0.);
+        return;
+    }
+    // При смене числа процессов в файле есть все собственные строки. Заполняем
+    // соседние узлы тем же обменом, что используется для начального поля газа.
+    if (world_.size>1) {
+        std::vector<double> pack(state.size());
+        for (unsigned first=0; first<diagnostic::Moments::words; first+=width_) {
+            const unsigned count=std::min<unsigned>(width_,diagnostic::Moments::words-first);
+            for (auto i:owned) for (unsigned k=0;k<count;++k) pack[i*width_+k]=saved[i].get(first+k);
+            halo_host(pack);
+            for (Id i=0;i<grid_.nodes;++i) for (unsigned k=0;k<count;++k) saved[i].set(first+k,pack[i*width_+k]);
+        }
+    }
+    saved.resize(grid_.nodes);
+#ifdef AERO_WITH_KOKKOS_GPU
+    if (gpu_) {
+        if (!saved.empty() && gpu::copy(device_moments_,saved.data(),saved.size()*sizeof(saved[0]),
+                                        gpu::Copy::ToDevice)!=gpu::Status::Success)
+            throw FieldError("Cannot restore time averages on GPU");
+        saved.clear();
+        return;
+    }
+#endif
+    moments_.swap(saved);
+}
+
+std::vector<double> PartitionOperator::output_pressure_rate(const std::vector<double>& state) {
+    std::vector<double> compact, result;
+    world_.local([&] {
+        compact.resize(owned.size());
+#ifdef AERO_WITH_KOKKOS_GPU
+        if (gpu_) {
+            const auto& g = gpu_->active_grid();
+            const partition_detail::PressureRate rate{
+                g.geometry, g.flux, g.volumes, g.state, g.owned, device_pressure_rate_};
+            if (const char* error = device_work::aero_device_pressure_rate(rate, owned.size()))
+                throw std::runtime_error(error);
+            // Потоки и вязкие члены остаются на карте. Для вывода нужен лишь один скаляр на узел.
+            if (!compact.empty())
+                gpu::checked(gpu::copy(compact.data(), device_pressure_rate_, compact.size()*sizeof(double),
+                                       gpu::Copy::ToHost), "Cannot download dp_dt: ");
+        } else
+#endif
+        {
+            const partition_detail::PressureRate rate{
+                grid_, flux_.data(), volumes_, state.data(), owned.data(), compact.data()};
+            parallel_for(owned.size(), rate);
+        }
+        if (pressure_exchange_) result.resize(state_nodes());
+        for (Id row = 0; row < compact.size(); ++row) {
+            if (!std::isfinite(compact[row]))
+                throw std::domain_error("Nonfinite dp_dt at global node " + std::to_string(ids_[owned[row]]));
+            if (pressure_exchange_) result[owned[row]] = compact[row];
+        }
+    });
+    if (!pressure_exchange_) return compact;
+    // Соседу принадлежит полная строка невязки его узла, включая грани за пределами нашей подобласти.
+    pressure_exchange_->transfer(world_, {1, result.data(), nullptr});
+    return result;
+}
+
+// Снимок уже находится на CPU. По теореме Гаусса собираем ротор из скоростей
+// на внутренних площадках. На физической границе скорость площадки равна узловой.
+std::vector<double> PartitionOperator::output_vorticity(const std::vector<double>& state) {
+    std::vector<double> buffer(state.size(),0.);
+    const auto velocity=[&](Id i,unsigned axis) {
+        const double* u=state.data()+i*width_;
+        return grid_.options.background.active()?u[axis+1]:u[axis+1]/u[0];
+    };
+    parallel_for(owned.size(),[&](Id row){
+        const auto i=owned[row];
+        diagnostic::Curl curl{};
+        for (auto k=offsets_[i];k<offsets_[i+1];++k) {
+            const auto entry=incidence_[k];
+            if (entry.face()>=grid_.edges) continue;
+            const auto& face=surfaces_[entry.face()];
+            const Id j=i==face.begin?face.end:face.begin;
+            double jump[3]{};
+            for (unsigned a=0;a<grid_.dim;++a) jump[a]=velocity(j,a)-velocity(i,a);
+            curl.add(face.area,jump,entry.outward_flux(.5));
+        }
+        buffer[i*width_]=curl.magnitude(1./volumes_[i]);
+    });
+    if (world_.size>1) halo_host(buffer);
+    std::vector<double> result(grid_.nodes);
+    for (Id i=0;i<grid_.nodes;++i) result[i]=buffer[i*width_];
+    return result;
 }
 
 void PartitionOperator::halo_host(std::vector<double>& u) {
@@ -544,12 +700,21 @@ void PartitionOperator::halo_host(std::vector<double>& u) {
 
 bool PartitionOperator::assemble_fluxes(const std::vector<double>& u, const std::vector<double>& initial,
                                         SolverTimings& timing, bool trial) {
+#ifdef AERO_HAS_TURBULENCE
+    if(sa_nodes_) sa_exchange();
+#endif
+    bool defer_viscous_rows=false;
+#ifdef AERO_HAS_TURBULENCE
+    const bool frozen_sa=sa_dt_>0. && trial;
+    defer_viscous_rows=sa_dt_>0. && !frozen_sa;
+#endif
+    (void)defer_viscous_rows;
     bool physical = true;
     const auto compute = [&] {
         WallTimer timer(timing.counter(SolverTimings::Flux));
 #ifdef AERO_WITH_KOKKOS_GPU
         if (gpu_) {
-            gpu_->fluxes(first_order_start);
+            gpu_->fluxes(first_order_start,defer_viscous_rows);
             return;
         }
 #endif
@@ -560,7 +725,8 @@ bool PartitionOperator::assemble_fluxes(const std::vector<double>& u, const std:
         if (first_order_start) batch.use_first_order();
         residual_detail::cpu_face_fluxes(batch, ids_.data());
 #ifdef AERO_HAS_VISCOSITY
-        if (aes_) aes_->evaluate(u.data(), grid_.packed.gas, gas_current_ && grid_.packed.gas);
+        if (aes_) aes_->evaluate(u.data(), grid_.packed.gas, gas_current_ && grid_.packed.gas,
+            defer_viscous_rows?viscosity::Evaluation::BeforeSaIterations:viscosity::Evaluation::Full);
 #endif
     };
     world_.local([&] {
@@ -570,7 +736,19 @@ bool PartitionOperator::assemble_fluxes(const std::vector<double>& u, const std:
             physical = false;
         }
     });
-    if (world_.size == 1) return physical;
+#ifdef AERO_HAS_TURBULENCE
+    const auto update_sa=[&] {
+        if (!sa_active()) return;
+        sa_prediction_pending_=frozen_sa;
+        if (!frozen_sa) evaluate_sa(u,timing);
+    };
+#endif
+    if (world_.size == 1) {
+#ifdef AERO_HAS_TURBULENCE
+        if (physical) update_sa();
+#endif
+        return physical;
+    }
     // До обмена потоками все процессы должны принять одно решение об откате.
     if (trial && world_.sum(physical ? 0 : 1)) return false;
     // На стыке сосед получает тот же интегральный поток. Знак задаст его узловой список при сборке.
@@ -580,23 +758,102 @@ bool PartitionOperator::assemble_fluxes(const std::vector<double>& u, const std:
 #endif
     edges_.transfer(world_, {width_, nullptr, flux}, device(),
                            timing.counter(SolverTimings::FluxExchange));
+#ifdef AERO_HAS_TURBULENCE
+    update_sa();
+#endif
     return true;
 }
 
+void PartitionOperator::set_steady_steps(bool local, double max_ratio) {
+    steady_steps_->local = local;
+    steady_steps_->max_ratio = max_ratio;
+}
+
+void PartitionOperator::prepare_steady_steps(bool gpu, bool local, double max_ratio) {
+    // Адрес описания остаётся постоянным для газа, SA и матрицы на всех шагах.
+    steady_steps_.reset(new SteadyNodeSteps);
+    set_steady_steps(local, max_ratio);
+    if (!gpu) {
+        host_steps_.resize(grid_.nodes);
+        steady_steps_->values = host_steps_.data();
+    }
+}
+
+// Для общего и локального шага читаем один буфер площадок и те же вязкие оценки.
+residual_detail::FluxCfl PartitionOperator::cfl_grid() const {
+#ifdef AERO_WITH_KOKKOS_GPU
+    if (gpu_) {
+        const auto& g = gpu_->active_grid();
+        return {g.geometry, g.flux, g.volumes, g.owned, g.owned_count};
+    }
+#endif
+    return {grid_, flux_.data(), volumes_, world_.size == 1 ? nullptr : owned.data(), owned.size()};
+}
+
+double PartitionOperator::prepare_local_steps(double cfl) {
+    residual_detail::StepRange range{max_finite_double, 0.};
+    world_.local([&] {
+        if (owned.empty()) return;
+        const double* sa_rate = nullptr;
+#ifdef AERO_HAS_TURBULENCE
+        if (sa_active()) sa_rate = sa_step().transport.sa.diagonal;
+#endif
+        const residual_detail::LocalSteadySteps steps{cfl_grid(), cfl, sa_rate, steady_steps_->values};
+#ifdef AERO_WITH_KOKKOS_GPU
+        if (gpu_) {
+            if (const char* error = device_work::aero_device_local_steps(steps, &range))
+                throw std::runtime_error(error);
+            return;
+        }
+#endif
+        host_parallel::ensure_runtime();
+        Kokkos::parallel_reduce("Aero: local steady steps", host_parallel::Range(0, owned.size()), steps, range);
+    });
+    minimum_step_ = world_.minimum(range.minimum);
+    maximum_step_ = world_.reduce_double(range.maximum, true);
+    if (!(minimum_step_ > 0. && maximum_step_ >= minimum_step_))
+        throw std::domain_error("Invalid local steady time step");
+    // Минимум уже учитывает и газ, и SA на всех процессах. Ограничиваем поле один
+    // раз перед Ньютоном: матрица, невязка и перенос SA затем читают один шаг узла.
+    if (steady_steps_->max_ratio >= 1. && minimum_step_ <= max_finite_double / steady_steps_->max_ratio) {
+        const double ceiling = minimum_step_ * steady_steps_->max_ratio;
+        if (maximum_step_ > ceiling) {
+            world_.local([&] {
+                if (range.maximum <= ceiling) return;
+                const residual_detail::LimitLocalSteps limit{cfl_grid().owned, steady_steps_->values, ceiling};
+#ifdef AERO_WITH_KOKKOS_GPU
+                if (gpu_) {
+                    device_work::check(device_work::aero_device_limit_local_steps(limit, owned.size()));
+                    return;
+                }
+#endif
+                Kokkos::parallel_for("Aero: limit local steady steps", host_parallel::Range(0, owned.size()), limit);
+            });
+            maximum_step_ = ceiling; // В report попадает фактически применённый максимум.
+        }
+    }
+    return minimum_step_;
+}
+
 double PartitionOperator::cfl_step(double cfl) {
+    if (steady_steps_ && steady_steps_->local) return prepare_local_steps(cfl);
     // Пустая подобласть не ограничивает шаг. Минимум по процессам выбирает конечное значение.
     double local = std::numeric_limits<double>::infinity();
     world_.local([&] {
 #ifdef AERO_WITH_KOKKOS_GPU
         if (gpu_) {
-            local = gpu_->cfl(cfl);
+            local = residual_detail::gpu_flux_cfl(cfl_grid(), cfl, nullptr);
             return;
         }
 #endif
-        const Id* nodes = world_.size == 1 ? nullptr : owned.data();
-        local = residual_detail::cpu_flux_cfl({grid_, flux_.data(), volumes_, nodes, owned.size()}, cfl,
-                                              ids_.data());
+        local = residual_detail::cpu_flux_cfl(cfl_grid(), cfl, ids_.data());
     });
+#ifdef AERO_HAS_TURBULENCE
+    if(sa_active()) {
+        const double rate=sa_max(sa_step(),turbulence::Norm::Diagonal);
+        if(rate>0.) local=std::min(local,cfl/rate);
+    }
+#endif
     const double dt = world_.minimum(local);
     if (!std::isfinite(dt)) {
         throw std::domain_error("No finite global CFL step");
@@ -624,6 +881,7 @@ const double* PartitionOperator::extend_linear_vector(const double* compact) {
 
 implicit::Partition PartitionOperator::linear_partition() {
     implicit::Partition part;
+    part.steady_steps = steady_steps_.get();
 #ifdef AERO_HAS_VISCOSITY
     if (aes_) {
         part.host_aes = aes_->view();
@@ -689,21 +947,61 @@ PartitionOperator::ImplicitFields PartitionOperator::implicit_fields(
 
 double PartitionOperator::steady_residual(std::vector<double>& state, const std::vector<double>& initial) {
     const auto fields = implicit_fields(state, initial);
-    return bdf_->spatial_rate_norm(fields.volumes, fields.flux);
+    double norm=bdf_->spatial_rate_norm(fields.volumes, fields.flux);
+#ifdef AERO_HAS_TURBULENCE
+    if(sa_active()) norm=std::max(norm,sa_max(sa_step(),turbulence::Norm::Rate));
+#endif
+    return norm;
 }
 
 implicit::NewtonResult PartitionOperator::advance_bdf(std::vector<double>& state, const std::vector<double>& initial,
         double dt, const implicit::NewtonSettings& settings, SolverTimings& timing, const std::function<void()>& validate) {
     const auto fields = implicit_fields(state, initial);
+    // При попадании в t_fo или срок вывода сокращаем все узловые шаги в одной пропорции.
+    // На протяжении Ньютона, включая пробные поправки и обновления SA, шаги уже зафиксированы.
+    const double dt_or_fraction = steady_steps_ && steady_steps_->local ? dt / minimum_step_ : dt;
     // При каждой поправке используем тот же поток и ту же реконструкцию из main.txt.
     // В матрицу поправки входят производные выбранного потока первого порядка.
     const auto refresh = [&] { if (validate) validate(); assemble_fluxes(state, initial, timing); };
     const auto trial = [&] { if (validate) validate(); return assemble_fluxes(state, initial, timing, true); };
-    return bdf_->advance(fields.state, fields.initial, fields.volumes, fields.flux, dt, settings, refresh, trial);
+    std::function<bool()> confirm_prediction;
+#ifdef AERO_HAS_TURBULENCE
+    if(sa_active()) {
+        sa_prediction_pending_=false;
+        confirm_prediction=[&] {
+            if (!sa_prediction_pending_) return false;
+            // Потоки массы уже построены для нынешнего газа. Доводим SA до заданного
+            // допуска, обновляем вязкие напряжения, затем BDF проверяет невязку газа.
+            evaluate_sa(state,timing);
+            sa_prediction_pending_=false;
+            return true;
+        };
+        sa_dt_=dt_or_fraction; sa_bdf2_=settings.second_order; sa_tol_=settings.newton_relative*.1;
+        sa_iterations_=std::max(200u,settings.max_iterations);
+        sa_target_=0.;
+        sa_apply(sa_step(),turbulence::Operation::SaveStart);
+        evaluate_sa(state,timing,true); // Первый остаток Ньютона тоже должен учитывать новый слой SA.
+    }
+#endif
+    const auto result=bdf_->advance(fields.state, fields.initial, fields.volumes, fields.flux, dt_or_fraction, settings, refresh, trial,confirm_prediction);
+#ifdef AERO_HAS_TURBULENCE
+    if(sa_active()) {
+        if(sa_bdf2_) sa_apply(sa_step(),turbulence::Operation::CommitHistory);
+        sa_previous_dt_=sa_bdf2_?dt:0.; sa_dt_=0.;
+    }
+#endif
+    return result;
 }
 
 void PartitionOperator::update_owned(explicit_detail::Stage stage, std::vector<double>& start, double dt,
                                      std::vector<double>& state, bool save_original) {
+#ifdef AERO_HAS_TURBULENCE
+    if(sa_active()) {
+        auto step=sa_step(); step.stage=stage; step.dt=dt;
+        if(save_original) sa_apply(step,turbulence::Operation::SaveStart);
+        sa_apply(step,turbulence::Operation::Explicit);
+    }
+#endif
 #ifdef AERO_WITH_KOKKOS_GPU
     if (gpu_) {
         gpu_->update(stage, dt, save_original);

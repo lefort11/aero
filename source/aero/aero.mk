@@ -7,7 +7,7 @@ AERO_SOURCES += source/aero/mpi_stencil.cpp source/aero/partition_report.cpp sou
 AERO_SOURCES += source/aero/geometry.cpp source/aero/case_geometry.cpp source/mesh/mdec.cpp source/mesh/partition.cpp source/parallel/processes.cpp
 AERO_HEADERS := source/aero/run_control.h source/aero/exact_error.h source/io/expression.h $(MESH_SOURCE)/archive_format.h $(NUMBER_CODEC) source/aero/solver_timings.h source/aero/startup.h source/io/settings.h source/io/settings_text.h source/io/settings_boundary.h source/io/report.h $(OUTPUT_HEADERS) $(INITIAL_HEADERS) $(RES_HDR) $(TIMESTEP_HEADERS) $(EXPLICIT_HEADERS)
 AERO_LIBS := $(IMPLICIT_LIBRARY) $(RES_LIB) $(INITIAL_LIB) $(TIMESTEP_LIBRARY) $(EXPLICIT_LIBRARY) $(IO_LIBRARY) $(RES_DEPS)
-AERO_SOURCES += $(wildcard source/viscosity/aes.cpp source/viscosity/grad.cpp)
+AERO_SOURCES += $(wildcard source/viscosity/aes.cpp source/viscosity/grad.cpp) $(if $(wildcard source/viscosity/transport.h),$(wildcard source/turbulence/*.cpp))
 AERO_HEADERS += source/io/flow_values.h
 AERO_HEADERS += source/implicit/implicit_settings.h source/implicit/bdf1_step.h source/implicit/partition.h
 AERO_HEADERS += source/aero/geometry.h source/aero/case_geometry.h source/mesh/mdec.h source/mesh/partition.h source/mesh/mesh_reader.h source/parallel/processes.h
@@ -104,3 +104,13 @@ mpi-timing-test mpi-fields-test mpi-recovery-test mpi-geometry-test mpi-balance-
 endif
 $(AERO_TEST): qa/test_checks.h
 -include source/viscosity/tests.mk
+ifneq ($(wildcard source/viscosity/transport.h),)
+-include source/turbulence/tests.mk
+endif
+
+# Сверка физических величин на выходе, в том числе при продолжении на других рангах.
+.PHONY: output-diagnostics-qa
+output-diagnostics-qa: aero meshdec
+	$(running_test)
+	"$(PYTHON)" qa/output_diagnostics.py --aero "$(BIN)/aero$(EXE)" --meshdec "$(BIN)/meshdec$(EXE)" $(if $(filter 1,$(WITH_MPI)),--mpi --mpiexec "$(MPIEXEC)") $(if $(filter 1,$(kokkos_gpu)),--gpu $(if $(MPI_BDF1_DEVICES),--devices=$(MPI_BDF1_DEVICES)))
+test: output-diagnostics-qa

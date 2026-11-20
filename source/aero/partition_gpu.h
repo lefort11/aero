@@ -1,6 +1,7 @@
 #ifndef AERO_PARTITION_GPU_H
 #define AERO_PARTITION_GPU_H
 #include "partition_kernels.h"
+#include "../io/diagnostic_fields.h"
 #include "../residual/flux_cfl.h"
 #include "mpi_balance.h"
 #include "mpi_stencil.h"
@@ -93,12 +94,13 @@ public:
     void set_flux_options(const ResidualOptions& options);
     void set_alpha(double alpha);
     void update_surfaces(const std::vector<residual_detail::Surface>& surfaces);
-    void fluxes(bool first_order_start);
-    double cfl(double courant);
+    void fluxes(bool first_order_start,bool defer_viscous_rows=false);
     void update(explicit_detail::Stage stage, double dt, bool save_original);
     // Собирает только собственные узлы раздела для отчёта или многостадийного шага.
     void download_owned(std::vector<double>& compact) const;
     void download(std::vector<double>& state) const;
+    double* layout_node_scalars(MeshIndex count) { return storage_.allocate<double>(count); }
+    diagnostic::Moments* layout_moments(MeshIndex count) { return storage_.allocate<diagnostic::Moments>(count); }
     void layout_linear_input(MeshIndex count) { krylov_input_ = storage_.allocate<double>(count); }
     double* expand_owned(const double* compact) const;
 
