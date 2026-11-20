@@ -261,7 +261,7 @@ EBR5 и WENO3, 24 для WENO5. Это начальная оценка врем�
   mpiexec -n 4 ./bin/aero --input=case --output=results
 
 Параметр time_scheme принимает euler (явный Эйлер) и ssprk3 (три стадии).
-Параметр reconstruction принимает first_order, ebr3, ebr5, weno3 и weno5.
+Параметр reconstruction принимает first_order, ebr3, ebr5, weno3, weno5 и mp5.
 Для MPI с EBR3 и WENO3 подходит .mdec начиная с версии 2. Для EBR5 и WENO5
 нужна версия 3 или новее с дальним слоем halo. При запуске процесс читает из архива
 ячейки выбранного слоя и один раз определяет, какие узловые значения ему

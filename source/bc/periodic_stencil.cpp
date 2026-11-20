@@ -147,6 +147,8 @@ ReconstructionStencil PeriodicDomain::prepare(const ReconstructionOptions& optio
     const auto& src = all.data();
     auto& dst = result.data_;
     dst.scheme = options.scheme;
+    dst.mp5_alpha = src.mp5_alpha;
+    dst.mpweno_ad_corr = src.mpweno_ad_corr;
     dst.node_count = volumes_.size();
     dst.edge_count = edges_.size();
     const MeshView m = mesh_.view(), h = lifted.view();

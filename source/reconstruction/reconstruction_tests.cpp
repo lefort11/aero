@@ -1,6 +1,7 @@
 #include "weno.h" // Заголовок должен компилироваться и при первом включении.
 #include "../../qa/test_checks.h"
 #include "reconstruction.h"
+#include "mp6_hybrid.h"
 #include <algorithm>
 #include <cmath>
 #include <functional>
@@ -466,16 +467,18 @@ void single_side_device_test(int device) {
         }
     }
 }
-void device_test(int device, ReconstructionScheme scheme = ReconstructionScheme::Ebr3) {
+void device_test(int device, ReconstructionScheme scheme = ReconstructionScheme::Ebr3, bool correction = true) {
     checked(cudaSetDevice(device));
-    const Mesh mesh = (scheme == ReconstructionScheme::Ebr5 || scheme == ReconstructionScheme::Weno5)
-                          ? plane(true, 7, 7)
-                          : plane(true);
+    // Пятиузловым схемам нужны два слоя соседей. В середине этой сетки
+    // сравниваем с CPU полный шаблон, а по краям того же поля — укороченный.
+    const bool two_layers = reconstruction_scheme(scheme).layers == 2;
+    const Mesh mesh = two_layers ? plane(true, 7, 7) : plane(true);
     ReconstructionOptions options;
     options.scheme = scheme;
+    options.mpweno_ad_corr = correction;
     const ReconstructionStencil s = prepare_reconstruction(mesh, options);
-    if (scheme == ReconstructionScheme::Ebr5)
-        require(s.incomplete_sides() < 2 * s.data().edge_count, "GPU EBR5 fixture has no full stencils");
+    if (two_layers)
+        require(s.incomplete_sides() < 2 * s.data().edge_count, "GPU fixture has no full stencils");
     TestReconstructor gpu(s, ReconstructionBackend::Cuda, device);
     const std::vector<double> v = values(mesh, 5, false);
     const TestResult expected = reconstruct_all_sides(s, v, 5);
@@ -621,6 +624,43 @@ void register_side_access() {
 
 // Проверки весов WENO и выбора опорных точек на луче.
 void register_weno_formulas() {
+    add("MPWENO5 standalone reconstruction, independent left and right weights", [] {
+        // У центрального ребра пять последовательных наклонов: −0.1, 0.3, 0.4, 0.7, 1.
+        // Левая сторона выбирает нелинейные веса, правая — линейный полином.
+        // Эталоны получены отдельной исходной формулой MPWENO5 при alpha = 1.
+        const Mesh mesh = line({0, 1, 2, 3, 4, 5});
+        const std::vector<double> state = {0., -.1, .2, .6, 1.3, 2.3};
+        for (bool correction : {false, true}) {
+            ReconstructionOptions options;
+            options.scheme = ReconstructionScheme::MPWENO5;
+            options.mp5_alpha = 1.;
+            options.mpweno_ad_corr = correction;
+            const auto stencil = prepare_reconstruction(mesh, options);
+            const auto traces = reconstruct_all_sides(stencil, state, 1);
+            const double nonlinear = correction ? .39057843304740597 : .38263893305467572;
+            near(traces.left_increment2[2], nonlinear, 2.e-14);
+            near(traces.right_increment2[2], .48, 2.e-14);
+
+            // Разворачиваем само поле: теперь нелинейная сторона справа, меняется знак наклона.
+            const auto reversed = reconstruct_all_sides(stencil, std::vector<double>(state.rbegin(), state.rend()), 1);
+            near(reversed.left_increment2[2], -.48, 2.e-14);
+            near(reversed.right_increment2[2], -nonlinear, 2.e-14);
+        }
+    });
+    add("MPWENO5 preserves a constant and clips an isolated jump", [] {
+        for (bool correction : {false, true}) {
+            double left, right;
+            mpweno5::pair(0., 0., 0., 0., 0., 1., correction, left, right);
+            near(left, 0., 0.);
+            near(right, 0., 0.);
+            mpweno5::pair(1., 1., 1., 1., 1., 1., correction, left, right);
+            near(left, 1.);
+            near(right, 1.);
+            mpweno5::pair(0., 0., 1., 0., 0., 1., correction, left, right);
+            near(left, 0., 0.);
+            near(right, 0., 0.);
+        }
+    });
     add("WENO3 hand-computed nonlinear weights and signs", [] {
         ReconstructionOptions o;
         o.scheme = ReconstructionScheme::Weno3;
@@ -998,9 +1038,10 @@ void register_ebr5() {
         const ReconstructionStencil empty = prepare_reconstruction(Mesh(), o);
         require(empty.data().side_scheme.empty() && empty.incomplete_sides() == 0, "Empty EBR5 stencil");
     });
-    add("EBR5 fifth-order uniform-grid flux derivative", [] {
+    for (auto scheme : {ReconstructionScheme::Ebr5, ReconstructionScheme::Mp5})
+    add(std::string(reconstruction_scheme(scheme).name) + " fifth-order uniform-grid flux derivative", [scheme] {
         ReconstructionOptions o;
-        o.scheme = ReconstructionScheme::Ebr5;
+        o.scheme = scheme;
         const double frequency = 2 * std::acos(-1.0);
         double previous = 0;
         for (unsigned n : std::vector<unsigned>{16, 32, 64}) {
@@ -1014,8 +1055,7 @@ void register_ebr5() {
             const TestResult r = reconstruct_all_sides(s, u, 1);
             double error = 0;
             for (unsigned i = 3; i < n + 3; ++i) {
-                require(s.data().side_scheme[2 * i] == ReconstructionSideScheme::Ebr5 &&
-                            s.data().side_scheme[2 * (i - 1)] == ReconstructionSideScheme::Ebr5,
+                require(s.data().complete[2 * i] && s.data().complete[2 * (i - 1)],
                         "Convergence test used a downgrade");
                 const double derivative =
                     (u[i] + 0.5 * r.left_increment2[i] - u[i - 1] - 0.5 * r.left_increment2[i - 1]) / h;
@@ -1444,6 +1484,112 @@ int main(int argc, char** argv) {
         return 2;
     }
     register_side_access();
+    add("MP5 CFL, constant state, isolated jump and paired bounds", [] {
+        near(mp5_alpha_from_cfl(.125), 4);
+        near(mp5_alpha_from_cfl(.5), 1);
+        near(mp5_alpha_from_cfl(1.25), 0);
+        near(mp5::increment(0, 0, 1, 0, 4), 0);
+        near(mp5::increment(0, 0, 0, 0, 1), 0);
+        // Прямой эталон использует четыре аргумента minmod и явное пересечение интервалов.
+        const auto dm = [](double a, double b) {
+            const double x = 4*a-b, y = 4*b-a;
+            return std::max(0., std::min({x,y,a,b})) + std::min(0., std::max({x,y,a,b}));
+        };
+        const auto reference = [&](double f, double l, double c, double r, double alpha) {
+            const double v = -.1*r + .8*c + 11./30*l - f/15;
+            const double bound = std::max(0., std::min(c,alpha*l)) + std::min(0., std::max(c,alpha*l));
+            if (v*(v-bound) < 1.e-10) return v;
+            const double md = c-dm(c-l,r-c), lc = l+8./3*dm(l-f,c-l);
+            const double lo = std::max(std::min({0.,2*c,md}), std::min({0.,2*alpha*l,lc}));
+            const double hi = std::min(std::max({0.,2*c,md}), std::max({0.,2*alpha*l,lc}));
+            return std::min(hi,std::max(lo,v));
+        };
+        for (double alpha : {0., 1., 4.})
+            for (int i = 1; i <= 500; ++i) {
+                const double f = std::sin(i), l = std::cos(i*.29), c = std::sin(i*.51);
+                const double r = std::sin(i*.75), g = std::cos(i*.91);
+                double left, right;
+                mp5::pair(f,l,c,r,g,alpha,left,right);
+                near(left,reference(f,l,c,r,alpha));
+                near(right,reference(g,r,c,l,alpha));
+                near(mp5::increment(f,l,c,r,alpha),left);
+            }
+    });
+    add("MP6 mean limiter is continuous for either sign and respects local bounds", [] {
+        const double eps = mp6::mean_tolerance;
+        const mp5::Bounds fixed = {0., 0.}, free = {-1., 1.};
+        for (double sign : {-1., 1.}) {
+            for (double x : {0., .25*eps, .75*eps, std::nextafter(eps, 0.),
+                             eps, std::nextafter(eps, 2.*eps), 2.*eps}) {
+                // Обе стороны малой волны закреплены в нуле. По мере роста |dS|
+                // её вклад в общий вес ребра должен непрерывно убывать от 1 до 0.
+                mp6::Correction small, large;
+                const double weight = small.prepare(0., 0., 0., 0., true, true, sign*x, 1., fixed, fixed);
+                const double expected = std::max(0., 1.-x/eps);
+                near(weight, expected, 2.e-15);
+                double left = 0., right = 0.;
+                small.apply(mp6::MeanLimit::Shared, weight, left, right);
+                near(left, 0., 0.);
+                near(right, 0., 0.);
+
+                // Вторая волна сама целиком допустима. Связанная компонента получает
+                // общий вес ребра, а независимая сохраняет всю свою поправку.
+                near(large.prepare(0., 0., 0., 0., false, false, .25, 1., free, free), 1.);
+                for (unsigned width : {3u, 4u, 5u})
+                    for (unsigned k = 0; k < width; ++k) {
+                        left = right = 0.;
+                        large.apply(mp6::face_mean_limit(k, width), weight, left, right);
+                        const bool shear = (width >= 4 && k == 2) || (width == 5 && k == 3);
+                        const double shift = .25 * (shear ? 1. : expected);
+                        near(left, shift, 2.e-15);
+                        near(right, shift, 2.e-15);
+                    }
+            }
+        }
+        // При частично допустимом сдвиге нормируем только запрещённую долю.
+        near(mp6::mean_weight(.75*eps, 0., .25*eps), .5);
+        near(mp6::mean_weight(-.75*eps, -.25*eps, 0.), .5);
+        near(mp6::mean_weight(2.*eps, 0., .25*eps), .125);
+    });
+    add("MP6 one-sided bound agrees with the complete interval", [] {
+        // Если оба исходных значения уже внутри интервалов, достаточно границы
+        // в направлении поправки. Полный расчёт здесь служит независимой проверкой
+        // выбора стороны при разных знаках среднего сдвига и полуразности.
+        for (unsigned i = 0; i < 180; ++i) {
+            const double left = std::sin(.19*i), right = std::cos(.37*i);
+            const mp5::Bounds bl = {left-.3, left+.7}, br = {right-.6, right+.2};
+            const double center = .5*(left+right) + std::sin(.31*i)*(i%3 ? 2. : 1.e-8);
+            const bool skip_l = i%2 == 0, skip_r = i%5 == 0;
+            mp6::Correction full, reduced;
+            const double w = full.prepare(left, right, .1, -.4, skip_l, skip_r, center, .75, bl, br);
+            near(reduced.prepare<true>(left, right, .1, -.4, skip_l, skip_r, center, .75, bl, br), w, 0.);
+            near(reduced.smin, full.smin, 0.);
+            near(reduced.smax, full.smax, 0.);
+        }
+    });
+    add("MP6 coupled wave correction and MPWENO5 switch", [] {
+        // Один несимметричный шаблон содержит гладкие и ограниченные волны.
+        // Эталон вычислен прямой двухпроходной формулой при h=0.75 и alpha=1.
+        const double slopes[5][5] = {{.4,.3,.01,-.5,-.1}, {.3,.7,-.09,-.6,-.4},
+                                     {.7,-.3,.25,-.2,-.6}, {-.1,1.2,-.2,-.8,-.9}, {1.,-.4,.6,.1,-.3}};
+        const double expected[3][2][5] = {
+            {{.349166666666667,.504166666666667,-.041166666666667,-.559166666666667,-.066666666666667},
+             {.4625,.0575,.064166666666667,-.4325,-.16}},
+            {{.353218333224483,.495104166666667,-.044252981410357,-.562291666666667,-.054166666666667},
+             {.456569000065310,.0809375,.067235962206430,-.435625,-.1625}},
+            {{.356319700409143,.495104166666667,-.046496969964287,-.562291666666667,-.054166666666667},
+             {.454708179754514,.0809375,.068748185830593,-.435625,-.1625}}};
+        for (unsigned mode=0; mode<3; ++mode) {
+            const Mp5Settings settings = {mode==0, mode!=0, mode==2, 1.};
+            double left[5], right[5];
+            if (settings.weno) mp6::reconstruct<true>(slopes,5,settings,.75,left,right);
+            else mp6::reconstruct<false>(slopes,5,settings,.75,left,right);
+            for (unsigned k=0; k<5; ++k) {
+                near(left[k],expected[mode][0][k],2.e-14);
+                near(right[k],expected[mode][1][k],2.e-14);
+            }
+        }
+    });
     register_weno_formulas();
     register_weno_schemes();
     register_ebr5();
@@ -1458,6 +1604,13 @@ int main(int argc, char** argv) {
 #ifdef AERO_WITH_CUDA
             add("CUDA " + std::to_string(device) + " one side, explicit owner and guarded output",
                 [device] { single_side_device_test(device); });
+            add("CUDA " + std::to_string(device) + " MP5 full and shortened stencils",
+                [device] { device_test(device, ReconstructionScheme::Mp5); });
+            add("CUDA " + std::to_string(device) + " MPWENO5 full and shortened stencils, correction on/off",
+                [device] {
+                    for (bool correction : {false, true})
+                        device_test(device, ReconstructionScheme::MPWENO5, correction);
+                });
 #endif
             for (ReconstructionScheme scheme : std::vector<ReconstructionScheme>{
                      ReconstructionScheme::Weno3, ReconstructionScheme::Weno5}) {

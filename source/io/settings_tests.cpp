@@ -56,7 +56,7 @@ struct CaseFiles {
     }
     ~CaseFiles() {
         for (const char* name :
-             {"main.txt", "bc.txt", "init.txt", "cuda.txt", "gas.txt", "test.fields", "output.txt",
+             {"main.txt", "bc.txt", "init.txt", "cuda.txt", "gas.txt", "scheme.txt", "test.fields", "output.txt",
               "latest.fields", "p_000001.fields", "p_000002.fields", "p_000003.fields"})
             std::remove((dir + "/" + name).c_str());
 #ifdef _WIN32
@@ -205,8 +205,9 @@ void output_zones(const CaseFiles& files) {
     for (std::size_t i = 0; i < map.size(); ++i)
         require(current.fields[2].values[i] == state[4 * map[i]] &&
                     current.fields[0].values[i] == state[4 * map[i] + 3] &&
-                    current.fields[1].values[i] == 2 && current.fields[3].values[i] == -1,
-                "periodic node field");
+                    std::abs(current.fields[1].values[i] - 2) < 1e-14 &&
+                    std::abs(current.fields[3].values[i] + 1) < 1e-14,
+                "periodic node field at " + std::to_string(i));
     writer.write(3, 0.3, changed);
     require(!writer.due(3, 0.3) && writer.due(4, 0.31), "accepted step schedule");
     writer.write(4, 0.31, changed);
@@ -278,7 +279,7 @@ void main_and_cuda(const CaseFiles& files) {
     const std::string common =
         "time_scheme=euler\ncfl=2e-1\neuler_solver=lf\nfinal_time=0\nreconstruction_variables=flux\n";
     const std::string base = head + common + "reconstruction=weno5\n";
-    for (const char* scheme : {"first_order", "ebr3", "ebr5", "weno3", "weno5"}) {
+    for (const char* scheme : {"first_order", "ebr3", "ebr5", "weno3", "weno5", "mp5", "MPWENO5"}) {
         files.write("main.txt", head + common + "backend=cpu\nreconstruction=" + scheme);
         const auto run = files.load();
         require(run.reconstruction == scheme && run.euler_solver == "lf" && run.time_scheme == "euler" &&
@@ -286,6 +287,14 @@ void main_and_cuda(const CaseFiles& files) {
                     run.mesh_path == files.dir + "/path #1/grid.mesh",
                 "CPU main.txt");
     }
+    require(files.load().mpweno_ad_corr && files.load().mp6_hybrid == 0, "optional scheme defaults");
+    files.write("scheme.txt", "mpweno_ad_corr=off\nmp6_hybrid=0.4");
+    require(!files.load().mpweno_ad_corr && files.load().mp6_hybrid == .4, "MP options");
+    for (const char* bad : {"mpweno_ad_corr=2", "mp6_hybrid=-0.1", "mp6_hybrid=1.1"}) {
+        files.write("scheme.txt",bad);
+        rejects([&] { files.load(); }, "scheme.txt");
+    }
+    files.write("scheme.txt", "mpweno_ad_corr=on\nmp6_hybrid=1");
     files.write("main.txt", base + "backend=cuda");
     rejects([&] { files.load(); }, "cuda.txt");
     files.write("cuda.txt", "devices = 2, 0, 1");

@@ -2,6 +2,7 @@
 #define AERO_IO_SETTINGS_H
 #include "output_settings.h"
 
+#include <map>
 #include <string>
 #include <cstdint>
 #include <vector>
@@ -9,6 +10,8 @@
 namespace aero {
 struct RunDirectories {
     std::string input, output;  // Каталоги постановки и результатов запуска.
+    using Parameters = std::map<std::string, std::string>;
+    std::map<std::string, Parameters> overrides; // Значения по имени файла и ключу для этого запуска.
     bool interactive;           // Разрешить паузу для редактирования граничных условий.
     bool geometry_only = false; // Записать геометрию контрольных объёмов.
     bool recover = false;       // Возобновить расчёт с контрольной точки.
@@ -26,6 +29,9 @@ struct RunSettings {
     std::string reconstruction_variables; // В каких переменных восстанавливаются следы.
     std::string time_scheme;              // Эйлер или SSPRK3.
     std::string euler_solver;             // Численный поток Roe или LF.
+    bool mpweno_ad_corr; // Антидиссипативная поправка к весам MPWENO5 из scheme.txt.
+    double mp6_hybrid; // Вес связанной центральной коррекции двух следов.
+    double upw_coeff; // Доля диссипации LF/Roe и доля EBR при смешивании с центральной реконструкцией.
     double cfl;                           // Число Куранта для шага по времени.
     double final_time;                    // Физическое время окончания расчёта.
     double gamma;                         // Отношение теплоёмкостей идеального газа.

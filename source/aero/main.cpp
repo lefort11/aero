@@ -35,7 +35,7 @@ int run_application(int argc, char** argv, const Processes& world) {
         if (!world.rank) {
             std::cout
                 << "Usage: aero --input=<directory> --output=<directory> [--interactive] [--geometry-only] "
-                   "[--recover [0|1]]\n";
+                   "[--recover [0|1]] [main:key=value | gas:key=value | cuda:key=value ...]\n";
         }
         return 0;
     }
@@ -53,6 +53,9 @@ int run_application(int argc, char** argv, const Processes& world) {
     }
     ReconstructionOptions options;
     options.scheme = reconstruction_scheme(run.reconstruction).scheme;
+    options.mpweno_ad_corr = run.mpweno_ad_corr;
+    if (reconstruction_scheme(options.scheme).family == ReconstructionFamily::Mp)
+        options.mp5_alpha = mp5_alpha_from_cfl(run.cfl);
     return calculate_case(run, options, world, archive);
 }
 }

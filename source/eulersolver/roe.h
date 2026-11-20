@@ -6,13 +6,16 @@ namespace aero {
 namespace roe_detail {
 // Поток Роу равен полусумме физических потоков минус половина волновой диссипации.
 struct RoeFlux {
-    AERO_HOST_DEVICE static EulerStatus combine(const euler_detail::FaceStates& face,
+    // На полном двумерном шаблоне размерность уже известна. Компилятор может
+    // развернуть циклы по четырём компонентам и оставить состояние в регистрах.
+    template <unsigned fixed_dimension = 0>
+    AERO_HOST_DEVICE static AERO_KERNEL_INLINE EulerStatus combine(const euler_detail::FaceStates& face,
                                                 const euler_detail::InterfaceGas& gas, const double* fl,
                                                 const double* fr, double speed, EulerFluxResult* result) {
-        const unsigned dimension = face.dimension;
-        EulerRoeBasis basis;
-        EulerStatus status = euler_detail::build_roe_basis<false>(dimension, gas.left, gas.right, face.direction,
-                                                           gas.normal, face.gamma, &basis);
+        const unsigned dimension = fixed_dimension ? fixed_dimension : face.dimension;
+        euler_detail::RoeAverage average;
+        const auto status = euler_detail::average_roe_state(dimension, gas.left, gas.right, gas.normal,
+                                                            face.gamma, average);
         if (status != EulerStatus::Success)
             return status;
         const unsigned count = dimension + 2;
@@ -23,17 +26,19 @@ struct RoeFlux {
                 !euler_detail::finite(fr[k]))
                 return EulerStatus::NonFinite;
         }
-        // Раскладываем скачок U_R − U_L по волнам в уже построенном базисе грани.
-        status = euler_detail::project_characteristic<0, false>(basis, gas.normal, face.gamma, basis.kinetic_energy(),
-                                                       jump, strength);
-        if (status != EulerStatus::Success)
-            return status;
+        // Для диссипации нужны только две звуковые поправки. Полную матрицу на этом пути не храним.
+        double momentum[3];
+        const double inverse_sound = inverse_value(average.sound_speed);
+        euler_detail::project_normal_waves(dimension, average.velocity, gas.normal, face.gamma, average.kinetic,
+                                           average.sound_speed, inverse_sound, jump, momentum, strength);
+        if (!euler_detail::finite(strength[1]))
+            return EulerStatus::NonFinite;
         EulerFluxResult output = {};
         output.components = count;
         const unsigned plus = count - 1;
-        const double transport = euler_detail::absolute(basis.eigenvalues[1]);
-        const double left_speed = euler_detail::absolute(basis.eigenvalues[0]);
-        const double right_speed = euler_detail::absolute(basis.eigenvalues[plus]);
+        const double transport = euler_detail::absolute(average.normal_speed);
+        const double left_speed = euler_detail::absolute(average.normal_speed - average.sound_speed);
+        const double right_speed = euler_detail::absolute(average.normal_speed + average.sound_speed);
         // u·n лежит между u·n−c и u·n+c. Для CFL достаточно сравнить модули этих двух
         // звуковых скоростей с оценкой по левому и правому состояниям.
         output.max_wave_speed = left_speed > speed ? left_speed : speed;
@@ -46,10 +51,11 @@ struct RoeFlux {
         const double left_correction = (left_speed - transport) * strength[0];
         const double right_correction = (right_speed - transport) * strength[plus];
         for (unsigned r = 0; r < count; ++r) {
+            double minus, plus_wave;
+            average.acoustic_row(r, dimension, gas.normal, minus, plus_wave);
             const double dissipation = transport * jump[r] +
-                                       basis.right[5 * r] * left_correction +
-                                       basis.right[5 * r + plus] * right_correction;
-            output.flux[r] = 0.5 * fl[r] + 0.5 * fr[r] - 0.5 * dissipation;
+                                       minus * left_correction + plus_wave * right_correction;
+            output.flux[r] = 0.5 * fl[r] + 0.5 * fr[r] - (0.5 * face.upw_coeff) * dissipation;
             if (!euler_detail::finite(output.flux[r]))
                 return EulerStatus::NonFinite;
         }
@@ -63,7 +69,7 @@ struct RoeFlux {
 AERO_HOST_DEVICE inline EulerStatus roe_conservative(unsigned dimension, const double* left,
                                                      const double* right, const double* direction,
                                                      double gamma, EulerFluxResult* result) {
-    return euler_detail::flux_from_states<roe_detail::RoeFlux>({dimension, left, right, direction, gamma},
+    return euler_detail::flux_from_states<roe_detail::RoeFlux>({dimension, left, right, direction, gamma, 1},
                                                                result);
 }
 
@@ -73,7 +79,7 @@ AERO_HOST_DEVICE inline EulerStatus roe_fluxes(unsigned dimension, const double*
                                                const double* direction, double gamma,
                                                EulerFluxResult* result) {
     return euler_detail::flux_from_reconstructed_fluxes<roe_detail::RoeFlux>(
-        {dimension, left, right, direction, gamma}, fl, fr, result);
+        {dimension, left, right, direction, gamma, 1}, fl, fr, result);
 }
 #if !defined(AERO_EULERSOLVER_KERNEL_ONLY) && !defined(__CUDACC_RTC__)
 EulerFluxResult roe_conservative(const std::vector<double>& left, const std::vector<double>& right,

@@ -4,31 +4,40 @@
 #include "euler.h"
 namespace aero {
 namespace euler_detail {
-// Проецирует вектор на волны, используя заранее проверенные базис Роу и единичную нормаль.
-template <unsigned fixed_dimension = 0, bool full_basis = true>
-AERO_HOST_DEVICE inline EulerStatus project_characteristic(const EulerRoeBasis& basis, const double* n,
-                                                           double gamma, double kinetic, const double* u,
-                                                           double* w, double inverse_sound = 0) {
-    const unsigned d = fixed_dimension ? fixed_dimension : basis.dimension;
-    double momentum[3] = {}, result[5] = {};
+// Первая и последняя волны — звук, вторая переносит энтропию. Поперечные волны нужны реконструкции.
+// Возвращаем также приращение импульса относительно средней скорости для их последующей проекции.
+AERO_HOST_DEVICE AERO_KERNEL_INLINE void project_normal_waves(unsigned d, const double* velocity, const double* n,
+                                                  double gamma, double kinetic, double sound_speed,
+                                                  double inverse_sound, const double* u,
+                                                  double* momentum, double* result) {
     for (unsigned k = 0; k < d; ++k)
-        momentum[k] = u[k + 1] - basis.velocity[k] * u[0];
+        momentum[k] = u[k + 1] - velocity[k] * u[0];
     // Линеаризуем давление в базисе Роу. Это приращение может быть отрицательным.
     const double pressure =
-        (gamma - 1) * (u[d + 1] - euler_detail::dot(d, basis.velocity, u + 1) + kinetic * u[0]);
+        (gamma - 1) * (u[d + 1] - dot(d, velocity, u + 1) + kinetic * u[0]);
     // Все наклоны ребра имеют общую скорость звука. При повторных проекциях вызывающая
     // функция подаёт готовое 1/c. Для разового вызова выполняем обычное деление.
     const double normal_momentum = euler_detail::dot(d, momentum, n);
     const double sum = inverse_sound ? (pressure * inverse_sound) * inverse_sound
-                                     : (pressure / basis.sound_speed) / basis.sound_speed;
-    const double difference = inverse_sound ? normal_momentum * inverse_sound : normal_momentum / basis.sound_speed;
+                                     : (pressure / sound_speed) / sound_speed;
+    const double difference = inverse_sound ? normal_momentum * inverse_sound : normal_momentum / sound_speed;
     // Нормальная составляющая даёт пару акустических волн. Оставшаяся часть плотности переходит в энтропийную волну.
     result[0] = 0.5 * (sum - difference);
     result[1] = u[0] - sum;
     result[d + 1] = 0.5 * (sum + difference);
+}
+
+// Проецирует вектор на волны, используя заранее проверенные базис Роу и единичную нормаль.
+template <unsigned fixed_dimension = 0, bool full_basis = true, class Basis>
+AERO_HOST_DEVICE AERO_KERNEL_INLINE EulerStatus project_characteristic(const Basis& basis, const double* n,
+                                                           double gamma, double kinetic, const double* u,
+                                                           double* w, double inverse_sound = 0) {
+    const unsigned d = fixed_dimension ? fixed_dimension : basis.dimension;
+    double momentum[3] = {}, result[5] = {};
+    project_normal_waves(d, basis.velocity, n, gamma, kinetic, basis.sound_speed, inverse_sound, u, momentum, result);
     for (unsigned t = 0; full_basis && t + 1 < d; ++t)
         for (unsigned k = 0; k < d; ++k)
-            result[2 + t] += basis.right[5 * (k + 1) + 2 + t] * momentum[k];
+            result[2 + t] += basis.coefficient(k + 1, 2 + t) * momentum[k];
     for (unsigned c = 0; c < d + 2; ++c)
         if (!euler_detail::finite(result[c]))
             return EulerStatus::NonFinite;
@@ -39,15 +48,15 @@ AERO_HOST_DEVICE inline EulerStatus project_characteristic(const EulerRoeBasis& 
 
 // Восстанавливает U = R·W. В расчёте рёбер build_roe_basis уже проверил матрицу.
 // Если вызывающий код передал неконечный элемент, он попадёт в результат и будет обнаружен до записи.
-template <unsigned fixed_width = 0>
-AERO_HOST_DEVICE inline EulerStatus expand_characteristic(unsigned width, const EulerRoeBasis& basis,
+template <unsigned fixed_width = 0, class Basis>
+AERO_HOST_DEVICE AERO_KERNEL_INLINE EulerStatus expand_characteristic(unsigned width, const Basis& basis,
                                                            const double* waves, double* state) {
     const unsigned count = fixed_width ? fixed_width : width;
     double result[5] = {};
     for (unsigned r = 0; r < count; ++r) {
         // Элементы одной строки R лежат подряд. Порядок сложения волн тот же для CPU и GPU.
         for (unsigned c = 0; c < count; ++c)
-            result[r] += basis.right[5 * r + c] * waves[c];
+            result[r] += basis.coefficient(r, c) * waves[c];
         if (!finite(result[r]))
             return EulerStatus::NonFinite;
     }

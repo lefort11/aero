@@ -1,4 +1,5 @@
 #include "flowreport.h"
+#include <ctime>
 #include "../eulersolver/euler.h"
 #include "../parallel/parallel_for.h"
 #include <algorithm>
@@ -160,7 +161,17 @@ void write_flow_summary(const FlowSummary& total, std::uint64_t step, double tim
     std::ostringstream table;
     table.imbue(std::locale::classic());
     table << "Flow report    Step = " << step << "    t = " << std::setprecision(12) << time
-          << "    CFL = " << std::setprecision(6) << cfl << "    dt = " << std::scientific << dt << "\n\n";
+          << "    CFL = " << std::setprecision(6) << cfl << "    dt = " << std::scientific << dt << '\n';
+    // Время компьютера в момент формирования отчёта, отдельно от физического времени t.
+    const std::time_t now = std::time(nullptr);
+    std::tm local{};
+#ifdef _WIN32
+    if (localtime_s(&local, &now) == 0)
+#else
+    if (localtime_r(&now, &local))
+#endif
+        table << "Local time = " << std::put_time(&local, "%Y-%m-%d %H:%M:%S");
+    table << '\n';
     table << std::left << std::setw(9) << "Variable" << std::right << std::setw(15) << "Minimum"
           << std::setw(15) << "Maximum" << std::setw(20) << "Domain integral" << '\n';
     const char* names[] = {"rho", "ux", "uy", "uz", "p", "E"};

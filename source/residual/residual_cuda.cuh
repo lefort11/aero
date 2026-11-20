@@ -22,23 +22,17 @@ AERO_GPU_KERNEL void nodal_gas(unsigned dimension, const double* field, double g
     }
 }
 
-template <unsigned scheme_order> __device__ __forceinline__ void packed_weno_flux(FaceBatch batch, Index* bad) {
-    using Tile = WenoEdgeTile<scheme_order>;
+template <unsigned scheme_order, bool use_mp5 = false, bool use_mpweno = false> __device__ __forceinline__ void packed_weno_flux(FaceBatch batch, Index* bad) {
     for (Index k = blockIdx.x * blockDim.x + threadIdx.x; k < batch.count; k += gridDim.x * blockDim.x) {
         const Index f = batch.face(k);
-        if (f >= batch.geometry.edges)
-            continue;
-        const auto& tile = static_cast<const Tile*>(batch.geometry.packed.tiles)[f / 32];
-        const unsigned lane = f % 32;
-        if (!tile.complete[lane])
-            continue;
-        if (!packed_edge_flux(batch.geometry, batch.state, f, tile, lane, batch.flux[f]))
+        const auto* tile = complete_tile<scheme_order>(batch.geometry, f);
+        if (tile && !compute_packed_face<use_mp5, use_mpweno>(batch, f, *tile))
             atomicMin(bad, f);
-        else
-            batch.save_speed(f);
     }
 }
 
+AERO_GPU_KERNEL void mpweno5_flux(FaceBatch batch, Index* bad) { packed_weno_flux<5, false, true>(batch, bad); }
+AERO_GPU_KERNEL void mp5_flux(FaceBatch batch, Index* bad) { packed_weno_flux<5, true>(batch, bad); }
 AERO_GPU_KERNEL void weno3_flux(FaceBatch batch, Index* bad) { packed_weno_flux<3>(batch, bad); }
 AERO_GPU_KERNEL void weno5_flux(FaceBatch batch, Index* bad) { packed_weno_flux<5>(batch, bad); }
 

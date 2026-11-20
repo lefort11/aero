@@ -2,6 +2,7 @@
 #include "partition_kernels.h"
 #include "../parallel/parallel_for.h"
 #include "../residual/flux_cfl.h"
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
@@ -116,33 +117,55 @@ PartitionWork PartitionOperator::work(Id leaves) const {
 }
 
 namespace {
+using residual_detail::PackedEdgeOrder;
 using residual_detail::WenoEdgeTile;
 
+// У полной пары обе строки имеют запрошенный порядок. Только ядро чистой
+// MPWENO5 умеет в одной плитке совместить полную сторону и укороченную WENO3.
+PackedEdgeOrder packed_side_order(unsigned requested, unsigned left, unsigned right, bool allow_mixed) {
+    if (left == requested && right == requested)
+        return PackedEdgeOrder::from_sides(false, false);
+    if (allow_mixed && (left == 3 || left == 5) && (right == 3 || right == 5))
+        return PackedEdgeOrder::from_sides(left == 3, right == 3);
+    return {}; // Эту пару обработает общий обход разреженных строк.
+}
+
 // Упаковываем общий центральный и два ближних наклона. Пятый порядок добавляет два дальних.
-// Для неполного шаблона солвер читает исходные разреженные строки.
+// Возвращаем порядки сторон только после успешной упаковки. Пустая запись
+// оставит ребро в списке для прохода по исходным разреженным строкам.
 template <unsigned scheme_order>
-bool pack_weno_edge(const PartitionStencil& stencil, MeshIndex edge, WenoEdgeTile<scheme_order>& tile, unsigned lane) {
-    if (stencil.weno_order[2 * edge] != scheme_order || stencil.weno_order[2 * edge + 1] != scheme_order)
-        return false;
+PackedEdgeOrder pack_weno_edge(const PartitionStencil& stencil, MeshIndex edge, WenoEdgeTile<scheme_order>& tile,
+                               unsigned lane, bool allow_mixed) {
+    const unsigned left = stencil.weno_order[2 * edge], right = stencil.weno_order[2 * edge + 1];
+    const auto order = packed_side_order(scheme_order, left, right, allow_mixed);
+    if (!order.ready())
+        return {};
     const auto& rows = stencil.slopes;
     // В исходной записи по четыре наклона с каждой стороны. Ближний правый наклон при WENO5
     // доступен как противоположный у левой стороны (2), при WENO3 — как собственный у правой (4 + 1).
-    const unsigned row_number[] = {0, 1, scheme_order == 5 ? 2u : 5u, 3, 7};
+    const unsigned row_number[] = {0, 1, left == 5 ? 2u : 5u, 3, 7};
     unsigned term = 0, weight = 0;
     for (unsigned r = 0; r < tile.rows_per_edge; ++r) {
         const auto row = 8 * edge + row_number[r];
         const auto first = rows.offsets[row], end = rows.offsets[row + 1];
-        if (end - first != residual_detail::slope_terms(r))
-            return false;
-        for (auto i = first; i < end; ++i, ++term) {
-                // Сохраняем индекс прямо у слагаемого, даже если узел встречался в соседней строке.
-                // Так при каждом расчёте потока читается один индекс вместо двух зависимых обращений.
-            tile.nodes[term][lane] = static_cast<unsigned>(rows.nodes[i]);
-            if (i != first)
-                tile.weights[weight++][lane] = rows.weights[i];
+        const unsigned capacity = residual_detail::slope_terms(r);
+        const bool unused = (r == residual_detail::FarLeftSlope && order.shortened(0)) ||
+                            (r == residual_detail::FarRightSlope && order.shortened(1));
+        // Укороченной стороне дальний наклон не нужен. Для неё берём центральный
+        // узел и нулевые веса. Такую же нулевую разность дописываем, если луч
+        // попал точно в вершину и в строке оказалось меньше слагаемых.
+        const auto terms = unused ? 0 : end - first;
+        if (!unused && (terms == 0 || terms > capacity))
+            return {};
+        const auto anchor = unused ? rows.offsets[8 * edge] : first;
+        for (unsigned j = 0; j < capacity; ++j, ++term) {
+            const auto node = j < terms ? first + j : anchor;
+            tile.nodes[term][lane] = static_cast<unsigned>(rows.nodes[node]);
+            if (j)
+                tile.weights[weight++][lane] = j < terms ? rows.weights[node] : 0.;
         }
     }
-    return true;
+    return order;
 }
 }
 
@@ -167,23 +190,50 @@ void PartitionOperator::prepare_weno_tiles(std::vector<WenoEdgeTile<scheme_order
     if (flux_.empty() && g.edges <= small_gpu_edge_limit)
         return;
     const auto count = (g.edges + 31) / 32;
+    const bool allow_mixed = scheme_order == 5 && flux_.empty() && g.stencil.mp5.weno && g.options.mp6_hybrid == 0;
     tiles.resize(count);
     parallel_for(count, [&](MeshIndex t) {
         auto& tile = tiles[t];
         for (unsigned lane = 0; lane < 32; ++lane) {
             const auto edge = 32 * t + lane;
-            tile.complete[lane] = edge < g.edges && !g.surfaces[edge].use_nodal_traces &&
-                                  pack_weno_edge(stencil_, edge, tile, lane);
+            tile.order[lane] = edge < g.edges && !g.surfaces[edge].use_nodal_traces
+                ? pack_weno_edge(stencil_, edge, tile, lane, allow_mixed) : PackedEdgeOrder{};
         }
     });
-    for (auto f : compute_)
-        if (f >= g.edges || !tiles[f / 32].complete[f % 32])
-            other_faces_.push_back(f);
-    if (other_faces_.size() == compute_.size())
+    bool have_packed_edges = false;
+    for (const auto face : compute_) {
+        if (face < g.edges) {
+            const auto& tile = tiles[face / 32];
+            const unsigned lane = face % 32;
+            if (tile.order[lane].complete()) {
+                have_packed_edges = true;
+                continue;
+            }
+            // При разных порядках сторон GPU возьмёт ребро в общий пакет MPWENO5.
+            // Сохраняем его место в списке остальных площадок для обычного пути.
+            have_packed_edges |= tile.order[lane].ready();
+        }
+        other_faces_.push_back(face);
+    }
+    if (!have_packed_edges) {
         tiles.clear();
-
-    if (tiles.empty())
         return;
+    }
+    // Границы уже идут после внутренних рёбер в compute_. Разделяем оставшиеся рёбра
+    // по способу расчёта следов один раз, до первой стадии. Это верно и для списка MPI.
+    auto boundary = std::find_if(other_faces_.begin(), other_faces_.end(), [&](Id f) { return f >= g.edges; });
+    auto nodal = std::stable_partition(other_faces_.begin(), boundary,
+                                       [&](Id f) { return !g.surfaces[f].use_nodal_traces; });
+    g.packed.mixed_edges = 0;
+    if (allow_mixed) {
+        // Уже включённые в пакет рёбра перемещаем в хвост разреженного списка.
+        const auto mixed = std::stable_partition(other_faces_.begin(), nodal, [&](Id f) {
+            return !tiles[f / 32].order[f % 32].ready();
+        });
+        g.packed.mixed_edges = static_cast<Id>(nodal - mixed);
+    }
+    g.packed.sparse_edges = static_cast<Id>(nodal - other_faces_.begin());
+    g.packed.nodal_edges = static_cast<Id>(boundary - nodal);
     g.packed.tiles = tiles.data();
     g.packed.order = scheme_order;
     g.packed.remaining = other_faces_.data();
@@ -203,7 +253,7 @@ Id PartitionOperator::prepare_stencil(const MeshPartition& part, const PeriodicP
         }
         grid_.stencil = stencil_.view(state_nodes());
         prepare_nodal_gas();
-        if (options.scheme == ReconstructionScheme::Weno5)
+        if (options.scheme == ReconstructionScheme::Weno5 || reconstruction_scheme(options.scheme).family == ReconstructionFamily::Mp)
             prepare_weno_tiles(weno5_tiles_);
         else if (options.scheme == ReconstructionScheme::Weno3)
             prepare_weno_tiles(weno3_tiles_);
@@ -329,7 +379,7 @@ void PartitionOperator::assemble_fluxes(const std::vector<double>& u, const std:
         // Каждый процесс вычисляет назначенные ему поверхности, включая физические площадки своих узлов.
         const Id* faces = world_.size == 1 ? nullptr : compute_.data();
         residual_detail::cpu_face_fluxes(
-            {grid_, faces, compute_.size(), u.data(), initial.data(), flux_.data(), nullptr, nullptr},
+            {grid_, faces, compute_.size(), u.data(), initial.data(), flux_.data(), nullptr, nullptr, gas_current_},
             ids_.data());
     });
     if (world_.size == 1) {
@@ -362,7 +412,7 @@ double PartitionOperator::cfl_step(double cfl) {
 }
 
 void PartitionOperator::update_owned(explicit_detail::Stage stage, std::vector<double>& start, double dt,
-                                     std::vector<double>& state, bool save_original) const {
+                                     std::vector<double>& state, bool save_original) {
 #ifdef AERO_WITH_CUDA
     if (gpu_) {
         gpu_->update(stage, dt, save_original);
@@ -379,6 +429,7 @@ void PartitionOperator::update_owned(explicit_detail::Stage stage, std::vector<d
             }
         },
         256);
+    gas_current_ = world_.size == 1;
 }
 
 PartitionGpu* PartitionOperator::device() const {

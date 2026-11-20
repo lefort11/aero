@@ -11,6 +11,14 @@ struct SideSupport {
     SparseRow near_slope;    // Производная между концом ребра и ближней точкой.
     SparseRow far_slope;     // Дальняя производная; пустая строка означает, что её построить не удалось.
     double far_distance = 0; // Расстояние для диагностики, в единицах координат сетки.
+
+    // Дальняя опора строится только после обеих ближних. Без своей ближней
+    // точки доступна лишь центральная разность между концами ребра.
+    unsigned char available_order() const {
+        if (!far_slope.empty())
+            return 5;
+        return near_slope.empty() ? 0 : 3;
+    }
 };
 
 // Весовая строка удвоенного приращения. Для WENO это оптимальная линейная комбинация.
@@ -39,7 +47,7 @@ void append_weno_slopes(ReconstructionStencilData& rows, unsigned char order, do
     rows.weno_order.push_back(order);
     rows.weno_epsilon_scale.push_back(epsilon_scale);
     const SparseRow* slopes[] = {&central, &own.near_slope, &opposite.near_slope, &own.far_slope};
-    const unsigned used = order == 5 ? 4 : (order == 3 ? 2 : 0);
+    const unsigned used = order ? weno_slope_count(order) : 0;
     for (unsigned k = 0; k < 4; ++k) {
         if (k < used) {
             for (const auto& term : *slopes[k]) {
@@ -58,29 +66,36 @@ void append_weno_slopes(ReconstructionStencilData& rows, unsigned char order, do
     }
 }
 
+// Геометрия определяет достижимый порядок отдельно слева и справа.
+// Укороченные MP-стороны используют ту же формулу WENO3, что и укороченная WENO5.
+ReconstructionSideScheme effective_side_scheme(unsigned order, const ReconstructionSchemeInfo& scheme) {
+    if (order == 0)
+        return ReconstructionSideScheme::EdgeAverage;
+    if (order == 3)
+        return uses_slope_rows(scheme.family) ? ReconstructionSideScheme::Weno3 : ReconstructionSideScheme::Ebr3;
+    if (scheme.scheme == ReconstructionScheme::Mp5)
+        return ReconstructionSideScheme::Mp5;
+    if (scheme.scheme == ReconstructionScheme::MPWENO5)
+        return ReconstructionSideScheme::MPWENO5;
+    return uses_slope_rows(scheme.family) ? ReconstructionSideScheme::Weno5 : ReconstructionSideScheme::Ebr5;
+}
+
 // Записывает линейную строку и, для WENO, строки наклонов на каждой стороне ребра.
 void append_stencil_sides(ReconstructionStencilData& rows, const ReconstructionGeometry& geometry,
                           const ReconstructionOptions& options, const ReconstructionSchemeInfo& scheme,
                           MeshIndex edge, double length, const SparseRow& central,
                           const SideSupport (&support)[2]) {
-    const bool weno = scheme.family == ReconstructionFamily::Weno;
+    const bool nonlinear = uses_slope_rows(scheme.family);
     const unsigned requested_order = scheme.layers == 2 ? 5 : 3;
     for (unsigned side = 0; side < 2; ++side) {
         const auto& own = support[side];
         const auto& opposite = support[1 - side];
         // Понижаем только ту сторону, для которой не хватило опорных точек.
-        unsigned char order = 0;
-        ReconstructionSideScheme actual = ReconstructionSideScheme::EdgeAverage;
-        if (!own.far_slope.empty()) {
-            order = 5;
-            actual = weno ? ReconstructionSideScheme::Weno5 : ReconstructionSideScheme::Ebr5;
-        } else if (!own.near_slope.empty()) {
-            order = 3;
-            actual = weno ? ReconstructionSideScheme::Weno3 : ReconstructionSideScheme::Ebr3;
-        }
+        const unsigned char order = own.available_order();
+        const auto actual = effective_side_scheme(order, scheme);
         const bool complete = order == requested_order;
         if (!complete && options.require_complete_stencil) {
-            const std::string family = weno ? "WENO" : "EBR";
+            const std::string family = scheme.name;
             throw ReconstructionError("Incomplete requested " + family + " stencil at edge " +
                                       std::to_string(edge) + " side " + std::to_string(side));
         }
@@ -89,7 +104,7 @@ void append_stencil_sides(ReconstructionStencilData& rows, const ReconstructionG
         rows.side_scheme.push_back(actual);
         rows.outer_distance.push_back(order ? own.near_point.distance : 0);
         rows.far_distance.push_back(own.far_distance);
-        if (weno) {
+        if (nonlinear) {
             const double scale = length * std::sqrt(options.weno_epsilon);
             if (!std::isfinite(scale)) {
                 throw ReconstructionError("WENO epsilon/edge scale overflow");

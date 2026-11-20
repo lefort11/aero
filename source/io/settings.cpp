@@ -3,6 +3,7 @@
 #include "settings_text.h"
 #include <algorithm>
 #include <cmath>
+#include <cerrno>
 #include <initializer_list>
 #include <locale>
 #include <map>
@@ -30,8 +31,12 @@ struct Entry {
 // Таблица ещё не прочитанных ключей одного файла. take удаляет ключ, а finish находит опечатки и лишние поля.
 class Entries {
 public:
-    explicit Entries(const std::string& path) : path_(path) {
-        auto input = open(path);
+    Entries(const RunDirectories& dirs, const std::string& file, bool optional = false) : path_(resolve(dirs.input, file + ".txt")) {
+        const auto& path = path_;
+        std::ifstream input(path.c_str());
+        const bool absent = !input && optional && errno == ENOENT;
+        if (!input && !absent)
+            throw std::runtime_error("cannot open settings file: " + path);
         std::string line;
         std::size_t row = 0;
         while (std::getline(input, line)) {
@@ -49,8 +54,13 @@ public:
             if (!entries_.emplace(key, Entry{value, where + " (" + key + ")"}).second)
                 throw std::invalid_argument(where + ": duplicate " + key);
         }
-        if (input.bad() || !input.eof())
+        if (!absent && (input.bad() || !input.eof()))
             throw std::runtime_error("error reading " + path);
+        // Подменяем значения в памяти до общей проверки типов и допустимых диапазонов.
+        const auto overrides = dirs.overrides.find(file);
+        if (overrides != dirs.overrides.end())
+            for (const auto& item : overrides->second)
+                entries_[item.first] = {item.second, file + ":" + item.first};
     }
 
     Entry take(const std::string& key) {
@@ -173,7 +183,7 @@ RunDirectories parse_run_arguments(int argc, const char* const argv[]) {
             std::string slot;
             if (eq != std::string::npos)
                 slot = arg.substr(eq + 1);
-            else if (i + 1 < argc && std::string(argv[i + 1]).compare(0, 2, "--") != 0)
+            else if (i + 1 < argc && std::string(argv[i + 1]).find('=') == std::string::npos && std::string(argv[i + 1]).compare(0, 2, "--") != 0)
                 slot = argv[++i];
             else
                 continue;
@@ -194,6 +204,16 @@ RunDirectories parse_run_arguments(int argc, const char* const argv[]) {
             dirs.interactive = true;
             continue;
         }
+        const auto colon = key.find(':');
+        if (colon != std::string::npos && eq != std::string::npos) {
+            std::string file = key.substr(0, colon);
+            if (file.size() >= 4 && file.substr(file.size() - 4) == ".txt")
+                file.resize(file.size() - 4);
+            if ((file != "main" && file != "gas" && file != "cuda" && file != "scheme") || colon + 1 == key.size() || eq + 1 == arg.size())
+                throw std::invalid_argument("invalid parameter override: " + arg);
+            dirs.overrides[file][key.substr(colon + 1)] = arg.substr(eq + 1);
+            continue;
+        }
         if (key != "--input" && key != "--output")
             throw std::invalid_argument("unknown argument: " + arg);
         if (eq == std::string::npos || eq + 1 == arg.size())
@@ -203,6 +223,8 @@ RunDirectories parse_run_arguments(int argc, const char* const argv[]) {
             throw std::invalid_argument("duplicate " + key);
         path = arg.substr(eq + 1);
     }
+    if (dirs.input.empty() && dirs.output.empty())
+        dirs.input = dirs.output = ".";
     if (dirs.input.empty() || dirs.output.empty())
         throw std::invalid_argument("usage: aero --input=<directory> --output=<directory> [--interactive] "
                                     "[--geometry-only] [--recover [0|1]]");
@@ -214,15 +236,25 @@ RunSettings read_run_settings(const RunDirectories& directories) {
         throw std::invalid_argument("input and output directories are required");
     RunSettings run{};
     run.directories = directories;
-    Entries main(resolve(directories.input, "main.txt"));
+    Entries main(directories, "main");
     const auto mesh = main.take("mesh");
     run.mesh_path = resolve(directories.input, settings_detail::label(mesh.value, mesh.where));
     const auto entry = main.take("reconstruction");
     const auto scheme = reconstruction_scheme(entry.value, entry.where);
     run.reconstruction = scheme.name;
+    Entries scheme_settings(directories, "scheme", true);
+    run.mpweno_ad_corr = !scheme_settings.contains("mpweno_ad_corr") ||
+        choice(scheme_settings.take("mpweno_ad_corr"), {"on", "off"}) == "on";
+    run.mp6_hybrid = scheme_settings.contains("mp6_hybrid") ? number(scheme_settings.take("mp6_hybrid"), true) : 0;
+    if (run.mp6_hybrid > 1)
+        throw std::invalid_argument("scheme.txt: mp6_hybrid must be in [0, 1]");
+    scheme_settings.finish();
     run.reconstruction_variables =
         choice(main.take("reconstruction_variables"), {"conservative", "characteristic", "flux"});
     run.time_scheme = choice(main.take("time_scheme"), {"euler", "ssprk3"});
+    run.upw_coeff = main.contains("upw_coeff") ? number(main.take("upw_coeff"), true) : 1;
+    if (run.upw_coeff > 1)
+        throw std::invalid_argument("main.txt: upw_coeff must be in [0, 1]");
     run.cfl = number(main.take("cfl"), false);
     run.use_cuda = choice(main.take("backend"), {"cpu", "cuda"}) == "cuda";
     run.euler_solver = choice(main.take("euler_solver"), {"roe", "lf"});
@@ -237,14 +269,14 @@ RunSettings read_run_settings(const RunDirectories& directories) {
     run.flowreport_every = main.optional_count<std::uint64_t>("flowreport_every");
     run.recovery_every_steps = main.optional_count<std::uint64_t>("recovery_every_steps");
     main.finish();
-    Entries gas(resolve(directories.input, "gas.txt"));
+    Entries gas(directories, "gas");
     const Entry gamma = gas.take("gamma");
     run.gamma = number(gamma, false);
     if (run.gamma <= 1)
         throw std::invalid_argument(gamma.where + ": expected gamma > 1");
     gas.finish();
     if (run.use_cuda) {
-        Entries cuda(resolve(directories.input, "cuda.txt"));
+        Entries cuda(directories, "cuda");
         run.devices = device_list(cuda.take("devices"));
         cuda.finish();
     }

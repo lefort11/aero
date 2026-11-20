@@ -1,0 +1,126 @@
+--- a/core/src/Kokkos_Atomic.hpp
++++ b/core/src/Kokkos_Atomic.hpp
+@@ -73,7 +73,7 @@
+ #include <impl/Kokkos_Traits.hpp>
+ 
+ //----------------------------------------------------------------------------
+-#if defined(_WIN32)
++#if defined(_WIN32) && !defined(__MINGW32__)
+ #define KOKKOS_ENABLE_WINDOWS_ATOMICS
+ #if defined(KOKKOS_ENABLE_CUDA)
+ #define KOKKOS_ENABLE_CUDA_ATOMICS
+@@ -190,7 +190,7 @@
+ #include <HIP/Kokkos_HIP_Atomic.hpp>
+ #endif
+ 
+-#ifdef _WIN32
++#ifdef KOKKOS_ENABLE_WINDOWS_ATOMICS
+ #include "impl/Kokkos_Atomic_Windows.hpp"
+ #endif
+ //----------------------------------------------------------------------------
+--- a/core/src/Kokkos_Macros.hpp
++++ b/core/src/Kokkos_Macros.hpp
+@@ -664,7 +664,7 @@
+ 
+ #if (defined(KOKKOS_COMPILER_GNU) || defined(KOKKOS_COMPILER_CLANG) ||  \
+      defined(KOKKOS_COMPILER_INTEL) || defined(KOKKOS_COMPILER_PGI)) && \
+-    !defined(KOKKOS_COMPILER_MSVC)
++    !defined(KOKKOS_COMPILER_MSVC) && !defined(_WIN32)
+ #define KOKKOS_IMPL_ENABLE_STACKTRACE
+ #define KOKKOS_IMPL_ENABLE_CXXABI
+ #endif
+--- a/core/src/impl/Kokkos_Atomic_Compare_Exchange_Strong.hpp
++++ b/core/src/impl/Kokkos_Atomic_Compare_Exchange_Strong.hpp
+@@ -209,10 +209,10 @@
+ inline T atomic_compare_exchange(
+     volatile T* const dest, const T& compare,
+     typename std::enable_if<sizeof(T) != sizeof(int) &&
+-                                sizeof(T) == sizeof(long),
++                                sizeof(T) == sizeof(long long),
+                             const T&>::type val) {
+   union U {
+-    long i;
++    long long i;
+     T t;
+     KOKKOS_INLINE_FUNCTION U() {}
+   } tmp;
+@@ -221,8 +221,8 @@
+   _mm_prefetch((const char*)dest, _MM_HINT_ET0);
+ #endif
+ 
+-  tmp.i = __sync_val_compare_and_swap((long*)dest, *((long*)&compare),
+-                                      *((long*)&val));
++  tmp.i = __sync_val_compare_and_swap((long long*)dest, *((long long*)&compare),
++                                      *((long long*)&val));
+   return tmp.t;
+ }
+ 
+--- a/core/src/impl/Kokkos_Core.cpp
++++ b/core/src/impl/Kokkos_Core.cpp
+@@ -55,6 +55,8 @@
+ #include <cerrno>
+ #ifndef _WIN32
+ #include <unistd.h>
++#else
++#include <processthreadsapi.h>
+ #endif
+ 
+ //----------------------------------------------------------------------------
+--- a/core/src/impl/Kokkos_MemoryPool.cpp
++++ b/core/src/impl/Kokkos_MemoryPool.cpp
+@@ -44,6 +44,7 @@
+ 
+ #include <impl/Kokkos_Error.hpp>
+ 
++#include <cstdint>
+ #include <ostream>
+ #include <sstream>
+ 
+--- a/core/src/Cuda/Kokkos_Cuda_Instance.cpp
++++ b/core/src/Cuda/Kokkos_Cuda_Instance.cpp
+@@ -830,8 +830,10 @@
+     : m_space_instance(new Impl::CudaInternal), m_counter(new int(1)) {
+   Impl::CudaInternal::singleton().verify_is_initialized(
+       "Cuda instance constructor");
+-  m_space_instance->initialize(Impl::CudaInternal::singleton().m_cudaDev,
+-                               stream);
++  // Чужой поток принадлежит карте, выбранной вызывающей стороной.
++  int device;
++  CUDA_SAFE_CALL(cudaGetDevice(&device));
++  m_space_instance->initialize(device, stream);
+ }
+ 
+ KOKKOS_FUNCTION Cuda::Cuda(Cuda &&other) noexcept {
+--- a/core/src/Cuda/Kokkos_Cuda_KernelLaunch.hpp
++++ b/core/src/Cuda/Kokkos_Cuda_KernelLaunch.hpp
+@@ -112,19 +112,28 @@
+   driver();
+ }
+ 
++// One read-only kernel parameter per grid, including functors passed by reference.
++#if defined(__grid_constant__) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700 && \
++    ((defined(__clang__) && __clang_major__ >= 19) || (defined(__CUDACC_VER_MAJOR__) && __CUDACC_VER_MAJOR__ >= 12))
++#define KOKKOS_IMPL_GRID_CONSTANT __grid_constant__
++#else
++#define KOKKOS_IMPL_GRID_CONSTANT
++#endif
+ template <class DriverType>
+ __global__ static void cuda_parallel_launch_local_memory(
+-    const DriverType driver) {
++    const KOKKOS_IMPL_GRID_CONSTANT DriverType driver) {
+   driver();
+ }
+ 
+ template <class DriverType, unsigned int maxTperB, unsigned int minBperSM>
+ __global__ __launch_bounds__(
+     maxTperB,
+-    minBperSM) static void cuda_parallel_launch_local_memory(const DriverType
++    minBperSM) static void cuda_parallel_launch_local_memory(const KOKKOS_IMPL_GRID_CONSTANT DriverType
+                                                                  driver) {
+   driver();
+ }
++
++#undef KOKKOS_IMPL_GRID_CONSTANT
+ 
+ template <class DriverType>
+ __global__ static void cuda_parallel_launch_global_memory(

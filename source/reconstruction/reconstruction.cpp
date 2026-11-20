@@ -40,7 +40,9 @@ ReconstructionStencilView ReconstructionStencil::view() const {
                                               data_.slope_nodes.data(),
                                               data_.slope_weights.data(),
                                               data_.weno_order.empty() ? nullptr : data_.weno_order.data(),
-                                              data_.weno_epsilon_scale.data()};
+                                              data_.weno_epsilon_scale.data(),
+                                              {data_.scheme == ReconstructionScheme::Mp5, data_.scheme == ReconstructionScheme::MPWENO5,
+                                               data_.mpweno_ad_corr, data_.mp5_alpha}};
     return result;
 }
 ReconstructionIndex ReconstructionStencil::incomplete_sides() const {
@@ -51,7 +53,7 @@ ReconstructionIndex ReconstructionStencil::incomplete_sides() const {
 ReconstructionStencil prepare_reconstruction(const Mesh& mesh, const ReconstructionOptions& options) {
     const auto scheme = reconstruction_scheme(options.scheme);
     mesh.validate();
-    if (scheme.family == ReconstructionFamily::Weno &&
+    if (uses_slope_rows(scheme.family) &&
         (!(options.weno_epsilon > 0) || !std::isfinite(options.weno_epsilon))) {
         throw ReconstructionError("WENO epsilon must be positive and finite");
     }
@@ -59,10 +61,14 @@ ReconstructionStencil prepare_reconstruction(const Mesh& mesh, const Reconstruct
     auto& data = result.data_;
     const auto view = mesh.view();
     data.scheme = options.scheme;
+    data.mp5_alpha = options.mp5_alpha;
+    data.mpweno_ad_corr = options.mpweno_ad_corr;
+    if (scheme.family == ReconstructionFamily::Mp)
+        validate_mp5_alpha(options.mp5_alpha);
     data.node_count = view.node_count;
     data.edge_count = view.edge_count;
     // Две стороны ребра. Для WENO у каждой стороны ещё четыре строки производных.
-    const unsigned rows_per_edge = scheme.family == ReconstructionFamily::Weno ? 8 : 2;
+    const unsigned rows_per_edge = uses_slope_rows(scheme.family) ? 8 : 2;
     if (data.edge_count > ((std::numeric_limits<ReconstructionIndex>::max)() - 1) / rows_per_edge) {
         throw ReconstructionError("Too many mesh edges");
     }
@@ -71,6 +77,7 @@ ReconstructionStencil prepare_reconstruction(const Mesh& mesh, const Reconstruct
         build_first_order_rows(view, data);
         break;
     case ReconstructionFamily::Ebr:
+    case ReconstructionFamily::Mp:
     case ReconstructionFamily::Weno:
         detail::build_layer_stencil(mesh, options, scheme, data);
         break;

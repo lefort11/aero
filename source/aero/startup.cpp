@@ -69,7 +69,7 @@ void show_settings(const RunSettings& r) {
               << "\nreconstruction = " << r.reconstruction
               << "\nreconstruction_variables = " << r.reconstruction_variables
               << "\neuler_solver = " << r.euler_solver << "\ntime_scheme = " << r.time_scheme
-              << "\ntrace_ratio_min = " << r.trace_ratio_min << "\ntrace_ratio_max = " << r.trace_ratio_max
+              << "\nupw_coeff = " << r.upw_coeff << "\ntrace_ratio_min = " << r.trace_ratio_min << "\ntrace_ratio_max = " << r.trace_ratio_max
               << "\ngamma = " << r.gamma << "\ncfl = " << r.cfl << "\nfinal_time = " << r.final_time
               << "\nomp_threads = " << r.omp_threads << " (runtime maximum ";
 #ifdef _OPENMP
@@ -78,6 +78,10 @@ void show_settings(const RunSettings& r) {
     std::cout << 1;
 #endif
     std::cout << ")\nflowreport_every = " << r.flowreport_every << '\n';
+    if (r.reconstruction == "mp5" || r.reconstruction == "MPWENO5")
+        std::cout << "mp6_hybrid = " << r.mp6_hybrid << '\n';
+    if (r.reconstruction == "MPWENO5")
+        std::cout << "mpweno_ad_corr = " << (r.mpweno_ad_corr ? "on" : "off") << '\n';
     if (r.use_cuda) {
         std::cout << "devices =";
         for (auto id : r.devices)

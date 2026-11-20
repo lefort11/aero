@@ -8,6 +8,8 @@ template <class SideInput>
 AERO_HOST_DEVICE inline void reconstruct_ebr_increment2(const SideInput& input, unsigned long long components,
                                                         double* output,
                                                         unsigned long long output_stride = 1) {
+    // Строка уже содержит сумму геометрических весов для нужного порядка.
+    // Один обход по компонентам обслуживает EBR3 и EBR5, включая строку у границы.
     for (unsigned long long c = 0; c < components; ++c)
         output[c * output_stride] = input.linear(c);
 }

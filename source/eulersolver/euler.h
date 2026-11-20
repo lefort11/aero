@@ -33,6 +33,7 @@ struct EulerState {
     double pressure;    // Термодинамическое давление идеального газа.
     double sound_speed; // Локальная скорость звука.
     double enthalpy;    // Полная энтальпия на единицу массы.
+    double density_root; // Вес состояния при осреднении Роу. Для узла используется всеми смежными рёбрами.
 };
 struct EulerRoeBasis {
     unsigned dimension;    // Число пространственных координат.
@@ -42,6 +43,7 @@ struct EulerRoeBasis {
     double right[25];      // Правые собственные векторы по столбцам, шаг строки равен пяти.
     // В столбце энтропийной волны энергетическая компонента равна |v_Roe|²/2.
     AERO_HOST_DEVICE double kinetic_energy() const { return right[5 * (dimension + 1) + 1]; }
+    AERO_HOST_DEVICE double coefficient(unsigned row, unsigned wave) const { return right[5 * row + wave]; }
     double eigenvalues[5]; // Скорости волн в порядке: звук−, энтропия, сдвиговые волны, звук+.
 };
 
@@ -58,21 +60,26 @@ AERO_HOST_DEVICE inline bool finite(double x) {
 AERO_HOST_DEVICE inline double absolute(double x) {
     return x < 0 ? -x : x;
 }
-AERO_HOST_DEVICE inline double dot(unsigned d, const double* a, const double* b) {
+// Размер вектора известен при компиляции. На GPU обе координаты плоской задачи
+// остаются в регистрах даже внутри составного ядра реконструкции.
+template <unsigned dimension>
+AERO_HOST_DEVICE inline double dot_components(const double* a, const double* b) {
     double value = 0;
-    for (unsigned k = 0; k < d; ++k)
+    for (unsigned k = 0; k < dimension; ++k)
         value += a[k] * b[k];
     return value;
 }
+AERO_HOST_DEVICE inline double dot(unsigned dimension, const double* a, const double* b) {
+    if (dimension == 2)
+        return dot_components<2>(a, b);
+    if (dimension == 3)
+        return dot_components<3>(a, b);
+    return dot_components<1>(a, b);
 }
 
-// Строит единичную нормаль. Площадь грани учитывается при сборке невязки.
-AERO_HOST_DEVICE inline EulerStatus euler_unit_direction(unsigned dimension, const double* direction,
-                                                         double* unit) {
-    if (dimension < 1 || dimension > 3)
-        return EulerStatus::InvalidDimension;
-    if (!direction || !unit)
-        return EulerStatus::NullPointer;
+// Нормирует направление в размерности, которую уже проверила вызывающая функция.
+template <unsigned dimension>
+AERO_HOST_DEVICE inline EulerStatus normalized_coordinates(const double* direction, double* unit) {
     // Сначала делим на наибольшую компоненту, чтобы квадрат длины не переполнился.
     double scale = 0, n[3] = {0, 0, 0};
     for (unsigned k = 0; k < dimension; ++k) {
@@ -86,14 +93,29 @@ AERO_HOST_DEVICE inline EulerStatus euler_unit_direction(unsigned dimension, con
         return EulerStatus::InvalidDirection;
     for (unsigned k = 0; k < dimension; ++k)
         n[k] = direction[k] / scale;
-    const double length = ::sqrt(euler_detail::dot(dimension, n, n));
+    const double length = ::sqrt(dot_components<dimension>(n, n));
     for (unsigned k = 0; k < dimension; ++k)
         unit[k] = n[k] / length;
     return EulerStatus::Success;
 }
+}
+
+// Строит единичную нормаль для потока и граничных условий. Площадь учитывается при сборке невязки.
+AERO_HOST_DEVICE inline EulerStatus euler_unit_direction(unsigned dimension, const double* direction,
+                                                         double* unit) {
+    if (dimension < 1 || dimension > 3)
+        return EulerStatus::InvalidDimension;
+    if (!direction || !unit)
+        return EulerStatus::NullPointer;
+    if (dimension == 2)
+        return euler_detail::normalized_coordinates<2>(direction, unit);
+    if (dimension == 3)
+        return euler_detail::normalized_coordinates<3>(direction, unit);
+    return euler_detail::normalized_coordinates<1>(direction, unit);
+}
 
 // Переводит вектор [ρ, ρu, E] в физические величины. Результат записывается после всех проверок.
-AERO_HOST_DEVICE inline EulerStatus euler_state(unsigned dimension, const double* u, double gamma,
+AERO_HOST_DEVICE AERO_KERNEL_INLINE EulerStatus euler_state(unsigned dimension, const double* u, double gamma,
                                                 EulerState* result) {
     if (dimension < 1 || dimension > 3)
         return EulerStatus::InvalidDimension;
@@ -108,9 +130,18 @@ AERO_HOST_DEVICE inline EulerStatus euler_state(unsigned dimension, const double
         return EulerStatus::InvalidDensity;
     EulerState state = {};
     state.density = u[0];
+    state.density_root = ::sqrt(u[0]);
+    // Для скорости, удельной энергии и давления знаменатель один. В обычном диапазоне
+    // плотности вычисляем его обратное значение один раз. У пределов double оставляем
+    // прямое деление, чтобы промежуточное 1/ρ не переполнилось и не стало субнормальным.
+    const bool common_denominator = u[0] > 1.e-150 && u[0] < 1.e150;
+    const double inverse_density = common_denominator ? inverse_value(u[0]) : 0;
+    const auto per_mass = [&](double amount) {
+        return common_denominator ? amount * inverse_density : amount / u[0];
+    };
     double kinetic = 0;
     for (unsigned k = 0; k < dimension; ++k) {
-        state.velocity[k] = u[k + 1] / u[0];
+        state.velocity[k] = per_mass(u[k + 1]);
         kinetic += 0.5 * u[k + 1] * state.velocity[k];
         if (!euler_detail::finite(state.velocity[k]))
             return EulerStatus::NonFinite;
@@ -121,9 +152,10 @@ AERO_HOST_DEVICE inline EulerStatus euler_state(unsigned dimension, const double
         return EulerStatus::NonFinite;
     if (!(state.pressure > 0))
         return EulerStatus::InvalidPressure;
-    const double sound2 = gamma * (state.pressure / u[0]);
+    const double pressure_per_mass = per_mass(state.pressure);
+    const double sound2 = gamma * pressure_per_mass;
     state.sound_speed = ::sqrt(sound2);
-    state.enthalpy = u[dimension + 1] / u[0] + state.pressure / u[0];
+    state.enthalpy = per_mass(u[dimension + 1]) + pressure_per_mass;
     if (!euler_detail::finite(state.sound_speed) || !euler_detail::finite(state.enthalpy))
         return EulerStatus::NonFinite;
     if (!(state.sound_speed > 0))
@@ -134,7 +166,7 @@ AERO_HOST_DEVICE inline EulerStatus euler_state(unsigned dimension, const double
 
 namespace euler_detail {
 // Вычисляет один физический поток по готовым состоянию газа и единичной нормали.
-AERO_HOST_DEVICE inline EulerStatus project_flux(unsigned dimension, const double* u, const EulerState& state,
+AERO_HOST_DEVICE AERO_KERNEL_INLINE EulerStatus project_flux(unsigned dimension, const double* u, const EulerState& state,
                                                  const double* n, double* flux, double* wave_speed) {
     const double un = euler_detail::dot(dimension, state.velocity, n);
     // Массу переносит нормальный импульс. В потоки импульса и энергии входит также работа давления.
@@ -250,6 +282,7 @@ struct FaceStates {
     const double* right;     // Консервативные переменные с правой стороны.
     const double* direction; // Направление от левой стороны к правой до нормализации.
     double gamma;            // Показатель адиабаты.
+    double upw_coeff;        // Доля противопоточной поправки.
 };
 
 // Общий путь для реконструкции состояний. Тип схемы известен компилятору и задаёт формулу диссипации.
@@ -282,34 +315,74 @@ flux_from_reconstructed_fluxes(const FaceStates& face, const double* left_flux, 
     return Scheme::combine(face, gas, left_flux, right_flux, speed, result);
 }
 
-// Для реконструкции строим полный базис. Потоку Роу достаточно акустических столбцов и скоростей волн.
-template <bool full_basis = true, unsigned fixed_dimension = 0>
-AERO_HOST_DEVICE inline EulerStatus build_roe_basis(unsigned mesh_dimension, const EulerState& left,
-                                                    const EulerState& right, const double* direction,
-                                                    const double* n, double gamma, EulerRoeBasis* result) {
-    const unsigned dimension = fixed_dimension ? fixed_dimension : mesh_dimension;
+// Состояние на грани после осреднения Роу. Его достаточно для потока во всех трёх размерностях.
+struct RoeAverage {
+    double velocity[3];   // Скорость газа в декартовых координатах.
+    double enthalpy;      // Полная удельная энтальпия.
+    double sound_speed;   // Скорость звука c.
+    double kinetic;       // Кинетическая энергия единицы массы.
+    double normal_speed;  // Скорость переноса u·n по нормали ребра.
+
+    // Компоненты энтропийной волны в порядке: масса, импульс, энергия.
+    AERO_HOST_DEVICE double entropy_row(unsigned row, unsigned dimension) const {
+        return row == 0 ? 1 : (row == dimension + 1 ? kinetic : velocity[row - 1]);
+    }
+    // Для этих пределов все компоненты собственных векторов конечны при единичной нормали.
+    AERO_HOST_DEVICE bool bounded_basis() const {
+        return kinetic <= 1.e100 && absolute(enthalpy) <= 1.e100 &&
+               sound_speed <= 1.e50 && absolute(normal_speed) <= 1.e51;
+    }
+    // Компоненты двух акустических векторов в строке плотности, импульса или энергии.
+    AERO_HOST_DEVICE void acoustic_row(unsigned r, unsigned dimension, const double* n,
+                                       double& minus, double& plus) const {
+        if (r == 0) {
+            minus = plus = 1;
+            return;
+        }
+        const bool energy = r == dimension + 1;
+        const double center = energy ? enthalpy : velocity[r - 1];
+        const double shift = sound_speed * (energy ? normal_speed : n[r - 1]);
+        minus = center - shift;
+        plus = center + shift;
+    }
+};
+
+AERO_HOST_DEVICE AERO_KERNEL_INLINE EulerStatus average_roe_state(unsigned dimension, const EulerState& left,
+                                                       const EulerState& right, const double* n,
+                                                       double gamma, RoeAverage& gas) {
     // Веса Роу пропорциональны квадратным корням плотностей соседних состояний.
-    const double root_left = ::sqrt(left.density), root_right = ::sqrt(right.density);
-    const double a = root_left / (root_left + root_right), b = root_right / (root_left + root_right);
-    EulerRoeBasis basis = {};
-    basis.dimension = dimension;
+    const double root_left = left.density_root, root_right = right.density_root;
+    // Плотности проверены, а их корни лежат далеко от переполнения и потери порядка.
+    const double inverse_sum = inverse_value(root_left + root_right);
+    const double a = root_left * inverse_sum, b = root_right * inverse_sum;
     for (unsigned k = 0; k < dimension; ++k)
-        basis.velocity[k] = a * left.velocity[k] + b * right.velocity[k];
-    basis.enthalpy = a * left.enthalpy + b * right.enthalpy;
-    const double kinetic = 0.5 * euler_detail::dot(dimension, basis.velocity, basis.velocity);
-    const double sound2 = (gamma - 1) * (basis.enthalpy - kinetic);
-    if (!euler_detail::finite(sound2) || !euler_detail::finite(basis.enthalpy))
+        gas.velocity[k] = a * left.velocity[k] + b * right.velocity[k];
+    gas.enthalpy = a * left.enthalpy + b * right.enthalpy;
+    gas.kinetic = 0.5 * dot(dimension, gas.velocity, gas.velocity);
+    const double sound2 = (gamma - 1) * (gas.enthalpy - gas.kinetic);
+    if (!finite(sound2) || !finite(gas.enthalpy))
         return EulerStatus::NonFinite;
     if (!(sound2 > 0))
         return EulerStatus::InvalidRoeState;
-    basis.sound_speed = ::sqrt(sound2);
-    const double un = euler_detail::dot(dimension, basis.velocity, n), c = basis.sound_speed;
-    double tangent[2][3] = {{0, 0, 0}, {0, 0, 0}};
-    if (full_basis && dimension == 2) {
-        tangent[0][0] = -n[1];
-        tangent[0][1] = n[0];
+    gas.sound_speed = ::sqrt(sound2);
+    gas.normal_speed = dot(dimension, gas.velocity, n);
+    return EulerStatus::Success;
+}
+
+// Поворот плоской единичной нормали на 90° задаёт направление сдвиговой волны.
+AERO_HOST_DEVICE inline double plane_tangent(const double* normal, unsigned axis) {
+    return axis == 0 ? -normal[1] : normal[0];
+}
+
+// Единичные касательные к грани. Этот же выбор осей задаёт поперечные характеристики Роу
+// и локальные компоненты импульса в гибриде MP6. В 1D касательных нет.
+AERO_HOST_DEVICE inline void face_tangents(unsigned dimension, const double* direction, const double* n,
+                                           double tangent[2][3]) {
+    if (dimension == 2) {
+        tangent[0][0] = plane_tangent(n, 0);
+        tangent[0][1] = plane_tangent(n, 1);
     }
-    if (full_basis && dimension == 3) {
+    if (dimension == 3) {
         unsigned axis = 0;
         // Сравниваем исходные компоненты, чтобы округление нормали на CPU и GPU не меняло выбор касательной.
         for (unsigned k = 1; k < 3; ++k)
@@ -324,35 +397,94 @@ AERO_HOST_DEVICE inline EulerStatus build_roe_basis(unsigned mesh_dimension, con
         tangent[1][1] = n[2] * tangent[0][0] - n[0] * tangent[0][2];
         tangent[1][2] = n[0] * tangent[0][1] - n[1] * tangent[0][0];
     }
+}
+
+// Базис полного двумерного шаблона. Вместо хранения всей матрицы вычисляем запрошенную
+// компоненту волны из среднего газа и нормали. Формулы акустических столбцов общие с потоком Роу.
+struct PlaneWaveBasis : RoeAverage {
+    static constexpr unsigned dimension = 2; // Плоский базис содержит четыре характеристики.
+    double normal[2];     // Направление от первого конца ребра ко второму.
+    double tangent_speed; // Скалярное произведение средней скорости на касательную.
+
+    AERO_HOST_DEVICE double kinetic_energy() const { return kinetic; }
+    AERO_HOST_DEVICE double coefficient(unsigned row, unsigned wave) const {
+        if (wave == 1)
+            return entropy_row(row, dimension);
+        if (wave == 2)
+            return row == 0 ? 0 : (row == 3 ? tangent_speed : plane_tangent(normal, row - 1));
+        double minus, plus;
+        acoustic_row(row, dimension, normal, minus, plus);
+        return wave == 0 ? minus : plus;
+    }
+
+    // Подготавливает один базис на обе стороны ребра. В крайнем диапазоне double
+    // проверяем элементы и волновые скорости так же, как в полном матричном представлении.
+    AERO_HOST_DEVICE bool prepare(const InterfaceGas& gas, double gamma) {
+        normal[0] = gas.normal[0];
+        normal[1] = gas.normal[1];
+        if (average_roe_state(dimension, gas.left, gas.right, normal, gamma, *this) != EulerStatus::Success)
+            return false;
+        const double tangent[] = {plane_tangent(normal, 0), plane_tangent(normal, 1)};
+        tangent_speed = dot_components<2>(velocity, tangent);
+        if (bounded_basis())
+            return true;
+        for (unsigned row = 0; row < 4; ++row)
+            for (unsigned wave = 0; wave < 4; ++wave)
+                if (!finite(coefficient(row, wave)))
+                    return false;
+        return finite(normal_speed - sound_speed) && finite(normal_speed + sound_speed);
+    }
+};
+
+// Для перехода между характеристиками и состоянием готовим матрицу из осреднённого газа.
+// Если вызывающей стороне нужна только проверка, она передаёт пустой указатель.
+template <bool full_basis = true, unsigned fixed_dimension = 0>
+AERO_HOST_DEVICE inline EulerStatus build_roe_basis(unsigned mesh_dimension, const EulerState& left,
+                                                    const EulerState& right, const double* direction,
+                                                    const double* n, double gamma, EulerRoeBasis* result) {
+    const unsigned dimension = fixed_dimension ? fixed_dimension : mesh_dimension;
+    RoeAverage gas;
+    const auto status = average_roe_state(dimension, left, right, n, gamma, gas);
+    if (status != EulerStatus::Success)
+        return status;
+    // Для линейного EBR прямое и обратное преобразования сокращаются. Осталось
+    // проверить, что сам базис существует. Нормаль единичная, а скорость ограничена
+    // кинетической энергией. При этих границах даже H ± c·uₙ заведомо помещается в double.
+    // За пределами этого диапазона проверяем каждый элемент обычным способом ниже.
+    if (!result && gas.bounded_basis())
+        return EulerStatus::Success;
+    EulerRoeBasis basis = {};
+    basis.dimension = dimension;
+    basis.sound_speed = gas.sound_speed;
+    basis.enthalpy = gas.enthalpy;
+    for (unsigned k = 0; k < dimension; ++k)
+        basis.velocity[k] = gas.velocity[k];
+    double tangent[2][3] = {};
+    if (full_basis)
+        face_tangents(dimension, direction, n, tangent);
     // Крайние столбцы описывают акустические волны, между ними стоят энтропийная и сдвиговые.
     const unsigned energy = dimension + 1, plus = dimension + 1;
-    basis.right[0] = 1;
-    basis.right[1] = 1;
-    basis.right[plus] = 1;
-    for (unsigned k = 0; k < dimension; ++k) {
-        basis.right[5 * (k + 1)] = basis.velocity[k] - c * n[k];
-        basis.right[5 * (k + 1) + 1] = basis.velocity[k];
-        basis.right[5 * (k + 1) + plus] = basis.velocity[k] + c * n[k];
+    for (unsigned row = 0; row <= energy; ++row) {
+        gas.acoustic_row(row, dimension, n, basis.right[5 * row], basis.right[5 * row + plus]);
+        basis.right[5 * row + 1] = gas.entropy_row(row, dimension);
     }
-    basis.right[5 * energy] = basis.enthalpy - c * un;
-    basis.right[5 * energy + 1] = kinetic;
-    basis.right[5 * energy + plus] = basis.enthalpy + c * un;
     for (unsigned t = 0; full_basis && t + 1 < dimension; ++t) {
         for (unsigned k = 0; k < dimension; ++k)
             basis.right[5 * (k + 1) + 2 + t] = tangent[t][k];
         basis.right[5 * energy + 2 + t] = euler_detail::dot(dimension, basis.velocity, tangent[t]);
     }
     for (unsigned k = 0; k < dimension + 2; ++k)
-        basis.eigenvalues[k] = un;
-    basis.eigenvalues[0] = un - c;
-    basis.eigenvalues[plus] = un + c;
+        basis.eigenvalues[k] = gas.normal_speed;
+    basis.eigenvalues[0] = gas.normal_speed - gas.sound_speed;
+    basis.eigenvalues[plus] = gas.normal_speed + gas.sound_speed;
     for (unsigned k = 0; k < 25; ++k)
         if (!euler_detail::finite(basis.right[k]))
             return EulerStatus::NonFinite;
     for (unsigned k = 0; k < dimension + 2; ++k)
         if (!euler_detail::finite(basis.eigenvalues[k]))
             return EulerStatus::NonFinite;
-    *result = basis;
+    if (result)
+        *result = basis;
     return EulerStatus::Success;
 }
 AERO_HOST_DEVICE inline EulerStatus roe_basis_with_normal(unsigned dimension, const double* original_left,

@@ -5,7 +5,9 @@
 # mesh — путь относительно этого каталога. Один процесс читает .mesh или .mdec.
 # Для нескольких процессов подготовьте .mdec утилитой meshdec.
 mesh           = "../examples/tecplot/demo_2d.mesh"
-# reconstruction — first_order, ebr3, ebr5, weno3 или weno5.
+# reconstruction — first_order, ebr3, ebr5, weno3, weno5, mp5 или MPWENO5. Для MPWENO5 см. scheme.txt.
+# У MP5 alpha = min(4, max(0, 1/cfl - 1)) для Эйлера и SSPRK3.
+# Если дальняя точка недоступна, используется WENO3; без ближней точки — среднее на ребре.
 reconstruction = ebr3
 # reconstruction_variables — conservative (консервативные переменные),
 # characteristic (характеристические переменные) или flux (потоки).
@@ -55,5 +57,10 @@ flowreport_every = 100
 # На CPU явное auto включает учёт доступной памяти при планировании.
 # mpi_node_memory_mib = auto
 # mpi_memory_factor — положительный множитель оценки оперативной памяти.
-# По умолчанию: first_order — 4, ebr3 — 12, ebr5 и weno3 — 16, weno5 — 24.
+# По умолчанию: first_order — 4, ebr3 — 12, ebr5 и weno3 — 16, weno5, mp5 и MPWENO5 — 24.
 # mpi_memory_factor = 12
+
+# Доля противопоточной поправки LF или Roe (от 0 до 1).
+# Для EBR3 и EBR5 этим же коэффициентом задаётся доля EBR в реконструкции:
+# 1 — исходные следы EBR, 0 — общий центральный след до ограничения.
+upw_coeff = 1

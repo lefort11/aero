@@ -196,8 +196,10 @@ prepare_partition_operator(const RunSettings& run, const ReconstructionOptions& 
     StencilRequests requests;
     std::unique_ptr<PartitionOperator> op;
     world.local([&] {
-        const auto physics = residual_options(run.reconstruction_variables, run.euler_solver, run.gamma,
+        auto physics = residual_options(run.reconstruction_variables, run.euler_solver, run.gamma,
                                               run.trace_ratio_min, run.trace_ratio_max);
+        physics.upw_coeff = run.upw_coeff;
+        physics.mp6_hybrid = run.mp6_hybrid;
         op.reset(new PartitionOperator(part, geometry.dual->view(), seam, boundaries.patches, physics, frame,
                                        world, needs_stencil ? &requests : nullptr, run.use_cuda));
     });
@@ -401,7 +403,7 @@ int calculate_case(RunSettings run, const ReconstructionOptions& reconstruction,
         world.broadcast(&automatic, 1, 0);
         if (automatic) {
             // Для калибровки берём один и тот же газ, чтобы выбор разбиения не зависел от начального поля.
-            const auto physics = residual_options(run.reconstruction_variables, run.euler_solver, 1.4);
+            auto physics = residual_options(run.reconstruction_variables, run.euler_solver, 1.4);
             world.local([&] { query_gpu_memory(gpu.local, run.mpi_gpu_memory_mib, world); });
             run.mpi_rank_weights = PartitionGpu::measure_weights(world, physics, gpu.local.budget);
         }

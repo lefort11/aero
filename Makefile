@@ -19,14 +19,16 @@ LDFLAGS ?=
 LDLIBS ?=
 NVCCFLAGS ?= -std=c++11
 WITH_OPENMP ?= 1
+WITH_MPI ?= 1
+WITH_KOKKOS ?= 0
 build_optimization := -O2
 STATIC_LINK ?= 1
 CUDA_LIBDIR ?= $(if $(wildcard $(CUDA_HOME)/lib64),$(CUDA_HOME)/lib64,$(CUDA_HOME)/lib)
 ifeq ($(STATIC_LINK),1)
 ifeq ($(OS),Windows_NT)
 override LDFLAGS += -static
-else ifeq ($(WITH_CUDA),1)
-# Драйвер NVIDIA использует системную glibc при загрузке в процесс.
+else ifneq ($(filter 1,$(WITH_CUDA) $(WITH_MPI)),)
+# MPI и драйвер NVIDIA использует системную glibc при загрузке в процесс.
 override LDFLAGS += -static-libgcc -static-libstdc++
 else
 override LDFLAGS += -static
@@ -87,6 +89,13 @@ override LDLIBS += -pthread
 endif
 
 BIN := bin
+ifeq ($(WITH_KOKKOS),1)
+# Изолированные программы позволяют измерять исходный и перенесённый варианты на одной машине.
+BIN := bin/kokkos
+ifeq ($(USE_CMD),1)
+$(error Use the MSYS2 MinGW64 shell for the C++11 Kokkos build on Windows)
+endif
+endif
 ifeq ($(MAKECMDGOALS),clean)
 include utils/clean.mk
 else
@@ -116,12 +125,21 @@ override CPPFLAGS += -DNDEBUG
 override CXXFLAGS := $(filter-out -O%,$(CXXFLAGS)) $(build_optimization)
 override NVCCFLAGS := $(filter-out -O%,$(NVCCFLAGS)) $(build_optimization) -DNDEBUG
 endif
+ifeq ($(WITH_KOKKOS),1)
+include source/parallel/kokkos.mk
+endif
 MESH_SOURCE := source/mesh
 MESH_HEADERS := $(MESH_SOURCE)/mesh.h $(MESH_SOURCE)/mesh_index.h source/parallel/kernel_math.h
 ifeq ($(MINGW_CUDA),1)
 include source/cuda/mingw.mk
 else
 compile_cuda = $(NVCC) $(NVCCFLAGS) -arch=sm_$(CUDA_ARCH) -c $< -o $@
+endif
+compile_solver_cuda = $(compile_cuda)
+ifeq ($(WITH_KOKKOS)$(WITH_CUDA),11)
+# Файлы интерфейса принимают представления солвера. GPU-обходы компилируются один раз в модуле Kokkos.
+compile_solver_cuda = $(CXX) $(CPPFLAGS) $(CXXFLAGS) -DAERO_WITH_CUDA -DAERO_WITH_KOKKOS_GPU -isystem "$(CUDA_HOME)/include" -x c++ -c "$<" -o "$@"
+override LDLIBS += "$(KOKKOS_DEVICE_LIBRARY)" $(kokkos_static_runtime)
 endif
 TEST := $(BUILD)/mesh_tests$(EXE)
 DEBUG_TEST := $(BUILD)/mesh_tests_debug$(EXE)
@@ -242,6 +260,13 @@ $(BUILD)/mesh.o $(BUILD)/cv.o $(BUILD)/periodic.o $(BUILD)/initial.o $(BUILD)/io
 ifneq ($(filter 1,$(WITH_CUDA)),)
 cuda_objects := $(AERO_GPU) $(EBR_CUDA_OBJECT) $(RECONSTRUCTION_CUDA_TEST_OBJECT) $(EULER_CUDA_TEST_OBJECT) $(BC_GPU) $(CV_GPU) $(RES_GPU) $(EXPLICIT_GPU) $(EXPLICIT_TEST_GPU) $(TIMESTEP_GPU) $(TIMESTEP_TEST_GPU)
 $(cuda_objects): source/cuda/check.h source/cuda/runtime.h source/parallel/kernel_math.h source/mesh/mesh_index.h
+ifeq ($(WITH_KOKKOS),1)
+$(AERO_GPU) $(TIMESTEP_GPU) $(EXPLICIT_GPU) $(RES_GPU): source/parallel/device_work.h
+ifeq ($(STATIC_LINK),1)
+# У статического теста код ядра находится в EXE. Обновление архива требует повторной линковки.
+$(RES_TEST) $(RES_DEBUG) $(TIMESTEP_TEST) $(TIMESTEP_DEBUG) $(EXPLICIT_TEST) $(EXPLICIT_DEBUG) $(EBR_TEST) $(EBR_DEBUG_TEST) $(EULER_TEST) $(EULER_DEBUG_TEST): $(KOKKOS_DEVICE_LIBRARY)
+endif
+endif
 $(AERO_PROGRAM) $(RES_OBJ) $(EXPLICIT_OBJ) $(EBR_TEST) $(RES_TEST) $(REPORT_TEST): source/cuda/check.h source/cuda/runtime.h
 $(CV_GPU) $(BC_GPU) $(TIMESTEP_TEST_GPU) $(EBR_TEST) $(EBR_DEBUG_TEST) $(RES_TEST) $(RES_DEBUG): qa/cuda_test_buffer.h
 ifeq ($(MINGW_CUDA),1)

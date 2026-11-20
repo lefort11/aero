@@ -24,7 +24,9 @@
 
 В main.txt каждая строка имеет вид «ключ = значение». Все перечисленные ключи обязательны.
   mesh             Путь к файлу сетки. Относительный путь отсчитывается от --input.
-  reconstruction   first_order, ebr3, ebr5, weno3 или weno5.
+  reconstruction   first_order, ebr3, ebr5, weno3, weno5, mp5 или MPWENO5.
+  В scheme.txt задаются mpweno_ad_corr (on/off, по умолчанию on) и вес mp6_hybrid
+  (от 0 до 1, по умолчанию 0). Гибрид применяется к полному шаблону MP5 и MPWENO5.
   reconstruction_variables   conservative, characteristic или flux.
   time_scheme      euler или ssprk3.
   cfl              Положительное конечное число.

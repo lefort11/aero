@@ -28,6 +28,7 @@
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <PropertyGroup>
+    <WithMPI Condition="'$(WithMPI)'==''">true</WithMPI>
     <WithCuda Condition="'$(WithCuda)'==''">false</WithCuda>
     <WithOpenMP Condition="'$(WithOpenMP)'==''">true</WithOpenMP>
     <CudaToolkitDir Condition="'$(CudaToolkitDir)'==''">$(CUDA_PATH)</CudaToolkitDir>

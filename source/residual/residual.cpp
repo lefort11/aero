@@ -26,6 +26,8 @@ void validate(ResidualOptions o) {
     if (!(o.trace_ratio_min >= 0 && o.trace_ratio_min < 1 && o.trace_ratio_max > 1 &&
           std::isfinite(o.trace_ratio_max)))
         throw std::invalid_argument("residual: invalid trace ratio bounds");
+    if (!(o.mp6_hybrid >= 0 && o.mp6_hybrid <= 1))
+        throw std::invalid_argument("residual: mp6_hybrid must be in [0, 1]");
     if (o.variables != ResidualVariables::Conservative && o.variables != ResidualVariables::Characteristic &&
         o.variables != ResidualVariables::Flux)
         throw std::invalid_argument("residual: invalid reconstruction variables");
@@ -126,25 +128,42 @@ void launch_residual(Geometry, const double*, const double*, EulerFluxResult*, d
 #endif
 
 namespace {
+// Полная плитка хранит геометрию сразу обеих сторон. Выбираем только формулу
+// реконструкции, а построение базиса и запись потока общие с ядрами GPU.
+template <unsigned order>
+bool cpu_packed_flux(const FaceBatch& batch, Index face, const WenoEdgeTile<order>& tile) {
+    const auto& mp = batch.geometry.stencil.mp5;
+    if (order == 5 && mp.weno)
+        return compute_packed_face<false, true>(batch, face, tile);
+    if (order == 5 && mp.enabled)
+        return compute_packed_face<true>(batch, face, tile);
+    return compute_packed_face<false>(batch, face, tile);
+}
+
 template <unsigned order> bool cpu_face_with_stencil(const FaceBatch& batch, Index f) {
-    using Tile = WenoEdgeTile<order>;
-    const auto& g = batch.geometry;
-    if (!g.packed.tiles || f >= g.edges)
-        return batch.compute(f);
-    const auto& tile = static_cast<const Tile*>(g.packed.tiles)[f / 32];
-    const unsigned lane = f % 32;
-    if (!tile.complete[lane])
-        return batch.compute(f);
-    if (!packed_edge_flux(g, batch.state, f, tile, lane, batch.flux[f]))
-        return false;
-    batch.save_speed(f);
-    return true;
+    // У линейных схем EBR все четыре компоненты в 2D используют одну строку весов.
+    if (batch.linear_roe_2d())
+        return batch.compute_roe_2d<false, 4>(f);
+    const auto* tile = complete_tile<order>(batch.geometry, f);
+    if (tile)
+        return cpu_packed_flux(batch, f, *tile);
+    // Для границы либо неполной стороны порядок и способ чтения определяются на месте.
+    return batch.roe_2d() ? batch.compute_roe_2d<false>(f) : batch.compute(f);
+}
+
+// Номер face уже переведён из локального списка MPI в индекс площадки подобласти.
+bool cpu_flux_for_face(const FaceBatch& batch, Index face) {
+    if (batch.nodal_roe_2d())
+        return batch.compute_nodal_roe_2d(face);
+    if (batch.geometry.packed.order == 5)
+        return cpu_face_with_stencil<5>(batch, face);
+    return cpu_face_with_stencil<3>(batch, face);
 }
 }
 
 void residual_detail::cpu_face_fluxes(const FaceBatch& batch, const MeshIndex* global_nodes) {
     const auto& packed = batch.geometry.packed;
-    if (packed.gas)
+    if (batch.needs_gas_update())
         parallel_for(packed.state_nodes, [&](Index i) {
             decode_nodal_gas(batch.geometry.dim, batch.state, batch.geometry.options.gamma, i, packed.gas);
         });
@@ -152,9 +171,7 @@ void residual_detail::cpu_face_fluxes(const FaceBatch& batch, const MeshIndex* g
         batch.count,
         [&](Index k) {
             const Index f = batch.face(k);
-            const bool ok = batch.nodal_roe_2d() ? batch.compute_nodal_roe_2d(f) :
-                (packed.order == 5 ? cpu_face_with_stencil<5>(batch, f) : cpu_face_with_stencil<3>(batch, f));
-            if (ok)
+            if (cpu_flux_for_face(batch, f))
                 return;
             if (global_nodes)
                 throw std::domain_error("Invalid flux at global node " +
@@ -253,9 +270,12 @@ struct SpatialResidual::Impl {
                 project_surface(s, b.area, d, frame);
             }
         }
+        // При пустых линейных строках приращения с обеих сторон равны нулю.
+        // Узловые следы сразу дают тот же поток, включая шаблон первого порядка из публичного API.
+        const bool all_nodal = !stencil.weno_order && stencil.offsets && stencil.offsets[2 * edges] == 0;
         for (Index f = 0; f < edges; ++f) {
             auto& s = surfaces[f];
-            s.use_nodal_traces = inlet_outlet_node[s.begin] || inlet_outlet_node[s.end];
+            s.use_nodal_traces = all_nodal || inlet_outlet_node[s.begin] || inlet_outlet_node[s.end];
         }
         build_incidence(nodes, edges, surfaces, offsets, incidence);
         patches = bc;
@@ -377,7 +397,7 @@ void SpatialResidual::Impl::assemble(const double* u, const double* u0, double* 
     // Первый проход по поверхностям: каждое ребро или площадка заполняет свою запись в buffer.
     {
         WallTimer timer(flux_seconds);
-        cpu_face_fluxes({g, nullptr, g.faces, u, u0, buffer.data(), edge, boundary});
+        cpu_face_fluxes({g, nullptr, g.faces, u, u0, buffer.data(), edge, boundary, false});
     }
     // Второй проход по узлам: каждый поток читает готовые вклады и пишет только строку своего узла.
     parallel_for(

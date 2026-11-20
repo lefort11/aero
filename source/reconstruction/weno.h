@@ -8,7 +8,7 @@
 // Скалярная формула WENO3/WENO5 общая для CPU и CUDA и пригодна для вызова внутри ядра.
 
 namespace aero {
-// Деление кандидата на три с округлением binary64. На GPU заранее известны обе части числа 1/3.
+// Деление на три с округлением binary64. На GPU заранее известны обе части числа 1/3.
 AERO_HOST_DEVICE inline double weno_third(double x) {
 #ifdef __CUDA_ARCH__
     // Для нормальных x/3 расстояние до середины между соседними double не меньше 1/6 шага.
@@ -52,88 +52,141 @@ struct WenoScale {
     }
 };
 
-// Индикатор гладкости Jiang–Shu для одного из трёх кандидатов пятого порядка.
-// curvature задаёт изменение наклона, gradient — комбинацию наклонов для первой производной.
-AERO_HOST_DEVICE inline double weno_smoothness(double curvature, double gradient) {
-    return (13.0 / 12) * curvature * curvature + 0.25 * gradient * gradient;
+// Число используемых строк у нелинейной стороны. Для третьего порядка
+// нужны центральный и свой ближний наклоны. Пятый добавляет противоположный и дальний.
+// Нулевой порядок вызывающая сторона обрабатывает по отдельной линейной строке.
+AERO_HOST_DEVICE constexpr unsigned weno_slope_count(unsigned order) { return order == 5 ? 4u : 2u; }
+
+// На ребре два индикатора используют одну пару наклонов. Если d = near − center,
+// разложение квадратов Jiang–Shu даёт общую часть center² + 4d²/3 и поправку ±center·d.
+struct WenoIndicators {
+    double outer, inner; // Кандидат, смещённый наружу, и кандидат, содержащий оба соседних узла.
+    AERO_HOST_DEVICE WenoIndicators(double center, double near) {
+        const double difference = near - center;
+        const double base = (4.0 / 3.0) * difference * difference + center * center;
+        const double cross = center * difference;
+        outer = base - cross;
+        inner = base + cross;
+    }
+};
+
+// Выражаем обратный знаменатель через наименьший в этой тройке (или паре).
+// Если минимум нулевой, вклад сохраняют только кандидаты с таким же нулевым знаменателем.
+AERO_HOST_DEVICE AERO_KERNEL_INLINE double relative_weno_weight(double minimum, double denominator) {
+    return minimum == 0 ? double(denominator == 0) : minimum / denominator;
 }
 
-// Формула (9) Бахвалова и Козубской (2017) с весами Jiang–Shu. Наклоны равны разделённым разностям, умноженным на h.
-// Масштабирование и отношения весов позволяют обойти переполнение квадратов и прямой расчёт 1/(ε+β)².
-// Здесь применяется исходная схема JS.
-AERO_HOST_DEVICE inline double weno_increment2(unsigned order, const double* slopes, double epsilon_scale) {
-    const unsigned count = order == 5 ? 3 : 2, slope_count = order == 5 ? 4 : 2;
-    double scale = epsilon_scale;
-    for (unsigned k = 0; k < slope_count; ++k) {
-        const double magnitude = slopes[k] < 0 ? -slopes[k] : slopes[k];
-        if (magnitude > scale)
-            scale = magnitude;
+// Возвращает ненормированные веса для двух или трёх кандидатов. Делитель у всех один.
+// После сокращения произведения знаменателей остаются только умножения и одно обращение суммы.
+template <unsigned order, bool safe_products>
+AERO_HOST_DEVICE AERO_KERNEL_INLINE void weno_weights(double a, double b, double c, double* weights) {
+    double first = b, second = a, third = 0;
+    const double minimum = order == 5 ? ::fmin(a, ::fmin(b, c)) : ::fmin(a, b);
+    if (safe_products || minimum >= 1.e-18) {
+        if (order == 5) {
+            // Общий множитель a·b·c превращает три обратных знаменателя в b·c, a·c, a·b.
+            third = a * b;
+            first *= c;
+            second *= c;
+        }
+    } else {
+        // На границах диапазона double нормируем отношения к самому малому знаменателю.
+        // Если он равен нулю, вес получают только кандидаты с нулевым индикатором.
+        first = relative_weno_weight(minimum, a);
+        second = relative_weno_weight(minimum, b);
+        if (order == 5)
+            third = relative_weno_weight(minimum, c);
     }
+    // Линейные веса пропорциональны (2,1) для WENO3 и (3,6,1) для WENO5.
+    weights[0] = (order == 5 ? 3 : 2) * first * first;
+    weights[1] = (order == 5 ? 6 : 1) * second * second;
+    weights[2] = third * third;
+}
+
+template <bool safe_products>
+AERO_HOST_DEVICE AERO_KERNEL_INLINE double weno_three(double center, double near, double epsilon) {
+    double w[3];
+    weno_weights<3, safe_products>(epsilon + center * center, epsilon + near * near, 0, w);
+    const double inverse = 1 / (w[0] + w[1]);
+    if (safe_products)
+        return center + (w[1] * inverse) * (near - center);
+    return (w[0] * inverse) * center + (w[1] * inverse) * near;
+}
+
+// Смешивает три полинома формулы (9). Веса нормируются до умножения на наклоны,
+// чтобы малое размерное приращение не исчезло при умножении на малый общий множитель.
+template <bool safe_products>
+AERO_HOST_DEVICE AERO_KERNEL_INLINE double weno_five(double center, double near, double opposite, double far,
+                                                      double a, double b, double c) {
+    double w[3];
+    weno_weights<5, safe_products>(a, b, c, w);
+    const double inverse = 1 / (w[0] + w[1] + w[2]);
+    if (!safe_products) {
+        // После масштабирования крайних величин возможны сильно различающиеся
+        // кандидаты. Смешиваем их напрямую, чтобы сохранить слабый вклад.
+        return weno_third((w[0] * inverse) * (4 * center - opposite) +
+                          (w[1] * inverse) * (2 * center + near) +
+                          (w[2] * inverse) * (5 * near - 2 * far));
+    }
+    // У всех трёх кандидатов выделяем центральный наклон. Веса суммируются в
+    // единицу, поэтому смешиваем только отклонения, а общий наклон прибавляем один раз.
+    const double change = -(w[0] * inverse) * (opposite - center) +
+                           ((w[1] + 3 * w[2]) * inverse) * (near - center) -
+                           (2 * w[2] * inverse) * (far - near);
+    return center + weno_third(change);
+}
+
+template <unsigned order, bool safe_products>
+AERO_HOST_DEVICE AERO_KERNEL_INLINE double weighted_weno_increment(const double* d, double epsilon) {
+    if (order == 3)
+        return weno_three<safe_products>(d[0], d[1], epsilon);
+    return weno_five<safe_products>(d[0], d[1], d[2], d[3], epsilon + WenoIndicators(d[0], d[2]).outer,
+        epsilon + WenoIndicators(d[0], d[1]).inner, epsilon + WenoIndicators(d[1], d[3]).outer);
+}
+
+// Вне обычного диапазона выбираем единицы отдельно для каждой характеристики.
+// Этот путь нужен при очень большой амплитуде или малом ε, в том числе при ε = 0.
+template <unsigned order>
+AERO_HOST_DEVICE inline double scaled_weno_increment(const double* slopes, double epsilon_scale, double scale) {
     if (scale == 0)
         return 0;
     const WenoScale units(scale);
-    double d[4] = {0, 0, 0, 0};
-    for (unsigned k = 0; k < slope_count; ++k)
-        d[k] = units.normalize(slopes[k]);
-    // У третьего порядка два кандидата. Их квадраты наклонов служат индикаторами гладкости β.
-    double candidate[3] = {d[0], d[1], 0}, beta[3] = {d[0] * d[0], d[1] * d[1], 0};
-    double ideal[3] = {2.0 / 3, 1.0 / 3, 0};
-    if (order == 5) {
-        // d[0] — центральный наклон, d[1] — ближний со своей стороны, d[2] — с противоположной,
-        // d[3] — дальний со своей стороны. Каждая пара определяет один из трёх кандидатов.
-        beta[0] = weno_smoothness(d[2] - d[0], d[2] - 3 * d[0]);
-        beta[1] = weno_smoothness(d[0] - d[1], d[0] + d[1]);
-        beta[2] = weno_smoothness(d[1] - d[3], 3 * d[1] - d[3]);
-        candidate[0] = weno_third(4 * d[0] - d[2]);
-        candidate[1] = weno_third(2 * d[0] + d[1]);
-        candidate[2] = weno_third(5 * d[1] - 2 * d[3]);
-        ideal[0] = 0.3;
-        ideal[1] = 0.6;
-        ideal[2] = 0.1;
-    }
-    // На гладком шаблоне знаменатель ε + β мал, и кандидат получает больший вес.
-    const double t = units.normalize(epsilon_scale), epsilon = t * t;
-    double denominator[3] = {0, 0, 0};
-    for (unsigned k = 0; k < count; ++k)
-        denominator[k] = epsilon + beta[k];
-    double minimum = denominator[0];
-    for (unsigned k = 1; k < count; ++k)
-        if (denominator[k] < minimum)
-            minimum = denominator[k];
-    double factors[3] = {denominator[1], denominator[0], 0};
-    if (minimum >= 1e-18) {
-        // Нормированные наклоны ограничены по величине. Здесь можно умножить все веса
-        // на общий квадрат произведения знаменателей: он сократится при делении на сумму.
-        if (count == 3) {
-            factors[2] = factors[0] * factors[1];
-            factors[0] *= denominator[2];
-            factors[1] *= denominator[2];
-        }
-    } else {
-        // Вблизи нуля произведения могут потерять точность. Отношения к минимуму
-        // лежат в [0, 1]. При нулевом минимуме остаются только гладкие кандидаты.
-        for (unsigned k = 0; k < count; ++k)
-            factors[k] = minimum == 0 ? double(denominator[k] == 0) : minimum / denominator[k];
-    }
-    double weights[3], sum = 0;
-    for (unsigned k = 0; k < count; ++k) {
-        weights[k] = ideal[k] * factors[k] * factors[k];
-        sum += weights[k];
-    }
-    // Сначала нормируем веса: малый общий множитель не должен обнулить вклад малого наклона.
-    const double inverse_sum = 1 / sum;
-    double result = 0;
-    for (unsigned k = 0; k < count; ++k)
-        result += (weights[k] * inverse_sum) * candidate[k];
-    return units.unit * result;
+    double normalized[4] = {};
+    for (unsigned k = 0; k < weno_slope_count(order); ++k)
+        normalized[k] = units.normalize(slopes[k]);
+    const double epsilon = units.normalize(epsilon_scale);
+    return units.unit * weighted_weno_increment<order, false>(normalized, epsilon * epsilon);
+}
+
+// При h·√ε ≥ 1e−34 квадрат произведения двух знаменателей ≥ 1e−272.
+// Верхняя граница защищает те же произведения от переполнения.
+AERO_HOST_DEVICE inline bool regular_weno_scale(double maximum, double epsilon) {
+    return epsilon >= 1.e-34 && epsilon <= 32 && maximum <= 32;
+}
+
+template <unsigned order>
+AERO_HOST_DEVICE inline double side_weno_increment(const double* slopes, double epsilon) {
+    double scale = epsilon;
+    for (unsigned k = 0; k < weno_slope_count(order); ++k)
+        scale = ::fmax(scale, ::fabs(slopes[k]));
+    if (regular_weno_scale(scale, epsilon))
+        return weighted_weno_increment<order, true>(slopes, epsilon * epsilon);
+    return scaled_weno_increment<order>(slopes, epsilon, scale);
+}
+
+// Порядок разреженной строки может понижаться на одной из сторон у границы.
+template <unsigned fixed_order = 0>
+AERO_HOST_DEVICE inline double weno_increment2(unsigned row_order, const double* slopes, double epsilon_scale) {
+    return (fixed_order ? fixed_order : row_order) == 5 ? side_weno_increment<5>(slopes, epsilon_scale)
+                                                       : side_weno_increment<3>(slopes, epsilon_scale);
 }
 
 // Восстанавливает вектор на одной подготовленной стороне ребра. Веса Jiang–Shu зависят от текущего решения.
 // Формула одинакова на CPU и CUDA.
-template <class SideInput>
-AERO_HOST_DEVICE inline void reconstruct_weno_increment2(const SideInput& input,
-                                                         unsigned long long components, double* output,
-                                                         unsigned long long output_stride = 1) {
+template <class SideInput, class Formula>
+AERO_HOST_DEVICE inline void reconstruct_slope_rows(const SideInput& input, unsigned long long components,
+                                                    double* output, unsigned long long output_stride,
+                                                    const Formula& formula) {
     const unsigned order = input.order();
     for (unsigned long long c = 0; c < components; ++c) {
         if (!order) {
@@ -141,10 +194,23 @@ AERO_HOST_DEVICE inline void reconstruct_weno_increment2(const SideInput& input,
             continue;
         }
         double slopes[4] = {0, 0, 0, 0};
-        for (unsigned k = 0; k < (order == 5 ? 4u : 2u); ++k)
+        for (unsigned k = 0; k < weno_slope_count(order); ++k)
             slopes[k] = input.slope(k, c);
-        output[c * output_stride] = weno_increment2(order, slopes, input.epsilon_scale());
+        output[c * output_stride] = formula(order, slopes, input.epsilon_scale());
     }
+}
+
+struct WenoFormula {
+    AERO_HOST_DEVICE double operator()(unsigned order, const double* slopes, double epsilon) const {
+        return weno_increment2(order, slopes, epsilon);
+    }
+};
+
+// Сохраняем прямой интерфейс WENO для библиотечных вызовов.
+template <class SideInput>
+AERO_HOST_DEVICE inline void reconstruct_weno_increment2(const SideInput& input, unsigned long long components,
+                                                         double* output, unsigned long long output_stride = 1) {
+    reconstruct_slope_rows(input, components, output, output_stride, WenoFormula{});
 }
 
 #if !defined(AERO_RECONSTRUCTION_KERNEL_ONLY) && !defined(__CUDACC_RTC__)

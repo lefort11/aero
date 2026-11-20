@@ -19,15 +19,16 @@ struct Grid {
     Index* bad;
 };
 // Обновляет один собственный узел прямо в массиве состояния. k — его номер среди узлов процесса.
+template <unsigned fixed_width = 0>
 AERO_HOST_DEVICE inline bool update_node(const residual_detail::Geometry& geometry,
                                          const EulerFluxResult* flux, const double* volumes,
                                          const MeshIndex* owned, double* state, double* original, Index k,
                                          explicit_detail::Stage stage, double dt, bool save_original) {
     const Index node = owned ? owned[k] : k;
-    const unsigned width = geometry.components();
+    const unsigned width = fixed_width ? fixed_width : geometry.components();
     double residual[5];
     // Сначала собираем всю строку выходящих потоков из готового буфера стадии.
-    if (!residual_detail::assemble_node_residual(geometry, node, flux, residual))
+    if (!residual_detail::assemble_node_residual<fixed_width>(geometry, node, flux, residual))
         return false;
 
     for (unsigned c = 0; c < width; ++c) {
@@ -42,6 +43,10 @@ AERO_HOST_DEVICE inline bool update_node(const residual_detail::Geometry& geomet
                                                 current))
             return false;
     }
+    // Без списка owned обрабатываем всё поле. Пока строка в кэше, готовим газ для следующей стадии.
+    // В разделённой сетке сначала должен закончиться обмен состояниями с соседями.
+    if (!owned && geometry.packed.gas)
+        residual_detail::decode_nodal_gas(geometry.dim, state, geometry.options.gamma, node, geometry.packed.gas);
     return true;
 }
 AERO_HOST_DEVICE inline void transfer_record(MeshIndex i, unsigned width, double* state,

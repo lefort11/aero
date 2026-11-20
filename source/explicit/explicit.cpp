@@ -1,5 +1,8 @@
 #include "explicit.h"
 #include "stage_sequence.h"
+#ifdef AERO_WITH_KOKKOS
+#include "../parallel/kokkos_host.h"
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -112,7 +115,14 @@ struct ExplicitIntegrator::Impl {
 #endif
         {
             const auto count = static_cast<std::ptrdiff_t>(size);
-#ifdef _OPENMP
+#ifdef AERO_WITH_KOKKOS
+            if (size >= 4096) {
+                // Каждая компонента обновляется ровно один раз. Любая ошибка отклоняет стадию.
+                host_parallel::ensure_runtime();
+                Kokkos::parallel_reduce("Aero: update stage", host_parallel::Range(0, size),
+                    [&](std::size_t k, int& flags) { flags |= !update.apply(k); }, Kokkos::BOr<int>(bad));
+            } else
+#elif defined(_OPENMP)
 #pragma omp parallel for if (count >= 4096) reduction(| : bad)
 #endif
             for (std::ptrdiff_t k = 0; k < count; ++k) {

@@ -64,11 +64,54 @@ END
 """)
 
 
-def contact_trace(scheme, values, h):
+def contact_trace(scheme, values, h, cfl):
     """Вычисляет след на контакте по заданной формуле реконструкции для независимой сверки."""
     a, b, c, d, e = values
-    if scheme == "ebr5":
-        return (2 * a - 13 * b + 47 * c + 27 * d - 3 * e) / 60
+    if scheme in ("ebr5", "mp5", "MPWENO5"):
+        trace = (2 * a - 13 * b + 47 * c + 27 * d - 3 * e) / 60
+        if scheme == "ebr5":
+            return trace
+        # Проверяем MP5 в значениях узлов независимо от упаковки наклонов в солвере.
+        alpha = min(4, max(0, 1 / cfl - 1))
+        def minmod(*x):
+            return max(0, min(x)) + min(0, max(x))
+        delta = 2 * (trace - c)
+        bound = minmod(d-c, alpha*(c-b))
+        if scheme == "MPWENO5":
+            far, near, center, opposite = b-a, c-b, d-c, e-d
+            beta = (13/12*(near-far)**2 + .25*(3*near-far)**2,
+                    13/12*(center-near)**2 + .25*(center+near)**2,
+                    13/12*(opposite-center)**2 + .25*(opposite-3*center)**2)
+            if abs(beta[0]-beta[2]) >= min(beta):
+                # Эталон работает с тремя независимыми весами без общего произведения знаменателей.
+                eps = 1e-40
+                tau = abs(.5*(beta[0]+beta[2])-beta[1])
+                variation = math.sqrt(sum((beta[i]-beta[(i+1)%3])**2 for i in range(3)))
+                hden = sum(w*v for w,v in zip((.1,.6,.3),beta)) + variation + eps
+                chi = variation/hden
+                peak = max(beta)+eps
+                factors = [peak*(v+eps+tau)-.8*(v+eps)*(peak+tau) for v in beta]
+                weights = [w * (hden**2*(v+eps+tau**2/(v+eps))
+                                  +(v+eps)*chi*(2-chi)*hden**2*v/(v+eps+variation))
+                           *factors[(i+1)%3]*factors[(i+2)%3]
+                           for i,(w,v) in enumerate(zip((.1,.6,.3),beta))]
+                slopes = ((5*near-2*far)/3,(near+2*center)/3,(4*center-opposite)/3)
+                delta = sum(w*v for w,v in zip(weights,slopes))/(sum(weights)+eps)
+                trace = c+.5*delta
+            acceptable = min(0,bound) <= delta <= max(0,bound)
+        else:
+            acceptable = delta * (delta - bound) < 1e-10
+        if acceptable:
+            return trace
+        def curvature(x, y):
+            return minmod(x, y, 4*x-y, 4*y-x)
+        prev, mid, nxt = a-2*b+c, b-2*c+d, c-2*d+e
+        md = (c+d-curvature(mid,nxt)) / 2
+        lc = c + (c-b)/2 + 4/3*curvature(prev,mid)
+        ul = c + alpha*(c-b)
+        low = max(min(c,d,md),min(c,ul,lc))
+        high = min(max(c,d,md),max(c,ul,lc))
+        return min(high,max(low,trace))
     if scheme == "weno3":
         candidates = ((3 * c - b) / 2, (c + d) / 2)
         beta = ((c - b) ** 2, (d - c) ** 2)
@@ -85,7 +128,7 @@ def contact_trace(scheme, values, h):
     return sum(w * q for w, q in zip(weights, candidates)) / sum(weights)
 
 
-def check_contact(ref, logical, names, reconstruction):
+def check_contact(ref, logical, names, reconstruction, cfl):
     """Сверяет эталонный перенос контакта со значениями в узлах."""
     path = next(p for p in ref.glob("*.fields") if stamp(p)[0] == 1)
     _, dt = stamp(path)
@@ -94,7 +137,7 @@ def check_contact(ref, logical, names, reconstruction):
     rho = [1 + 0.25 * math.cos(math.pi * (x - 0.25)) ** 4 for x, _, _ in logical[:-1]]
     # Схема Роу переносит этот контакт с единичной скоростью. Донорные узлы берём через периодический шов.
     flux = [
-        contact_trace(reconstruction, [rho[(i + k) % n] for k in range(-2, 3)], 1 / n) for i in range(n)
+        contact_trace(reconstruction, [rho[(i + k) % n] for k in range(-2, 3)], 1 / n, cfl) for i in range(n)
     ]
     for i, value in enumerate(actual):
         j = i % n
@@ -353,7 +396,7 @@ def verify(
         ref = case / f"ref-{scheme}"
         (case / f"{scheme}.log").write_text(run([aero, f"--input={case}", f"--output={ref}"]))
     if narrow:
-        check_contact(case / "ref-euler", logical, names, reconstruction)
+        check_contact(case / "ref-euler", logical, names, reconstruction, float(options["cfl"]))
     if archive is None:
         run(
             [meshdec, native, case / "grid.mdec", "--compress", *([] if empty else ["--target-ranks=4"])]
@@ -489,8 +532,8 @@ END
 def main():
     parser = mpi_parser(__doc__)
     group = parser.add_mutually_exclusive_group()
-    for order in ("ebr3", "ebr5", "weno3", "weno5"):
-        group.add_argument("--" + order, dest="reconstruction", action="store_const", const=order)
+    for order in ("ebr3", "ebr5", "weno3", "weno5", "mp5", "MPWENO5"):
+        group.add_argument("--" + order.lower(), dest="reconstruction", action="store_const", const=order)
     args = parser.parse_args()
     programs = args.aero.resolve(), args.meshdec.resolve(), args.mpiexec
     with mpi_workspace("mpi-periodic-") as directory:
@@ -501,7 +544,7 @@ def main():
             verify(work, "plane", "shear_jump_2d", 2, {0, 1}, *programs, **order)
             if args.reconstruction != "ebr3":
                 verify(work, "narrow", "pulse_1d", 1, {0}, *programs, narrow=True, **order)
-            if args.reconstruction.startswith("weno"):
+            if args.reconstruction in ("weno3", "weno5", "mp5", "MPWENO5"):
                 verify_layer_face(work, *programs, args.reconstruction)
                 for scheme in ("euler", "ssprk3"):
                     verify_euler(

@@ -1,5 +1,5 @@
 # На Windows подключаем заголовки и библиотеку MS-MPI, на Unix используем обёртку компилятора MPI.
-WITH_MPI ?= 0
+WITH_MPI ?= 1
 MPI_CXX ?= mpicxx
 ifeq ($(WITH_MPI),1)
 ifeq ($(OS),Windows_NT)

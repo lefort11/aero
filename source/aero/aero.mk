@@ -17,10 +17,10 @@ AERO_GPU := $(BUILD)/partition_kernels.o
 AERO_SOURCES += source/aero/partition_gpu.cpp
 AERO_HEADERS += source/aero/partition_gpu.h
 $(AERO_GPU): source/aero/partition_kernels.cu source/aero/partition_kernels.cuh source/aero/partition_kernels.h $(RES_HDR) $(TIMESTEP_HEADERS) source/timestep/cfl_detail.h source/explicit/explicit_stage.h | $(BUILD)
-	$(compile_cuda)
+	$(compile_solver_cuda)
 endif
 AERO_PROGRAM := $(BUILD)/aero_$(EBR_TAG)$(if $(filter 1,$(WITH_MPI)),_mpi)$(EXE)
-$(AERO_PROGRAM): $(AERO_SOURCES) $(AERO_HEADERS) $(AERO_LIBS) $(AERO_GPU)
+$(AERO_PROGRAM): $(AERO_SOURCES) $(AERO_HEADERS) $(AERO_LIBS) $(AERO_GPU) $(KOKKOS_DEVICE_LIBRARY)
 	$(MPI_HOST_CXX) $(CPPFLAGS) $(if $(filter 1,$(WITH_MPI)),-DAERO_WITH_MPI $(MPI_CPPFLAGS)) $(CXXFLAGS) $(EBR_FLAGS) $(AERO_SOURCES) $(AERO_GPU) $(LDFLAGS) $(AERO_LIBS) $(EBR_LIBS) $(if $(filter 1,$(WITH_MPI)),$(MPI_LIBS)) $(LDLIBS) $(if $(filter Windows_NT,$(OS)),-lpsapi) -o $@
 $(BIN)/aero$(EXE): $(AERO_PROGRAM) publish-programs | bin-runtime
 	$(publish_exe)
@@ -51,7 +51,7 @@ else
 mpi-gpu-test:
 	$(MAKE) WITH_CUDA=1 WITH_MPI=1 $@
 endif
-MPI_RECONSTRUCTION_TESTS := mpi-ebr3-test mpi-ebr5-test mpi-weno3-test mpi-weno5-test
+MPI_RECONSTRUCTION_TESTS := mpi-ebr3-test mpi-ebr5-test mpi-weno3-test mpi-weno5-test mpi-mp5-test mpi-mpweno5-test
 .PHONY: mpi-timing-test mpi-fields-test mpi-recovery-test mpi-geometry-test mpi-balance-test mpi-euler-test mpi-ssprk3-test mpi-periodic-test $(MPI_RECONSTRUCTION_TESTS)
 ifeq ($(WITH_MPI),1)
 # Для проверок с одноимённым Python-сценарием берём его имя из выбранной цели Make.

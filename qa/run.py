@@ -15,7 +15,7 @@ from exact import CASES
 
 QA = Path(__file__).resolve().parent
 ROOT = QA.parent
-RECONSTRUCTIONS = ("first_order", "ebr3", "ebr5", "weno3", "weno5")
+RECONSTRUCTIONS = ("first_order", "ebr3", "ebr5", "weno3", "weno5", "mp5", "MPWENO5")
 VARIABLES = ("conservative", "characteristic", "flux")
 FLUXES = ("roe", "lf")
 TIME_SCHEMES = ("euler", "ssprk3")
@@ -218,7 +218,7 @@ def run_case(name, options, solver, exporter, progress, total):
     outdir.mkdir(parents=True, exist_ok=True)
     active = f"CUDA device {options.device}" if options.backend == "cuda" else "CPU"
     failures = 0
-    recs = RECONSTRUCTIONS if smooth else ("weno3", "weno5")
+    recs = RECONSTRUCTIONS if smooth else ("weno3", "weno5", "mp5", "MPWENO5")
     for variant in itertools.product(recs, VARIABLES, FLUXES, TIME_SCHEMES):
         label = "_".join(variant)
         progress += 1
@@ -283,7 +283,7 @@ def main():
     )
     cases = list(dict.fromkeys(options.case or CASES))
     counts = {
-        name: (len(RECONSTRUCTIONS) if CASES[name][2] else 2)
+        name: (len(RECONSTRUCTIONS) if CASES[name][2] else 4)
         * len(VARIABLES)
         * len(FLUXES)
         * len(TIME_SCHEMES)

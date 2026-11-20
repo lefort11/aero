@@ -193,7 +193,7 @@ ReconstructionStencilView PartitionStencil::view(MeshIndex state_nodes) const {
             row_owner.data(),      linear.weights.data(),
             slopes.offsets.data(), slopes.nodes.data(),
             slopes.weights.data(), weno_order.empty() ? nullptr : weno_order.data(),
-            epsilon_scale.data()};
+            epsilon_scale.data(), mp5};
 }
 
 namespace {
@@ -269,7 +269,7 @@ PartitionStencil prepare_partition_stencil(const MeshPartition& part, const Peri
     const auto& ids = seam ? seam->ids : part.nodes;
     const auto scheme = reconstruction_scheme(options.scheme);
     const bool fifth = scheme.layers == 2;
-    const bool weno = scheme.family == ReconstructionFamily::Weno;
+    const bool weno = uses_slope_rows(scheme.family);
     MeshPartition support;
     std::set<Id> nodal;
     if (input) {
@@ -279,6 +279,8 @@ PartitionStencil prepare_partition_stencil(const MeshPartition& part, const Peri
     const MeshPartition& halo = input ? support : part;
     const auto native_states = input ? support_states(part, seam, halo, w) : std::vector<Ref>();
     PartitionStencil result;
+    result.mp5 = {options.scheme == ReconstructionScheme::Mp5, options.scheme == ReconstructionScheme::MPWENO5,
+                  options.mpweno_ad_corr, options.mp5_alpha};
     w.local([&] {
         allocate_stencil_rows(result, surfaces, weno);
         if (computed.empty())

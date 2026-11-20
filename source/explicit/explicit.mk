@@ -16,7 +16,7 @@ EXPLICIT_LIBS := $(CUDA_RUNTIME_LINK)
 EXPLICIT_GPU := $(BUILD)/explicit_kernel.o
 EXPLICIT_TEST_GPU := $(BUILD)/explicit_cuda_tests.o
 $(EXPLICIT_GPU): $(EXPLICIT_DIR)/explicit_cuda.cu $(EXPLICIT_DIR)/explicit_cuda.cuh $(EXPLICIT_HEADERS) | $(BUILD)
-	$(compile_cuda)
+	$(compile_solver_cuda)
 $(EXPLICIT_TEST_GPU): $(EXPLICIT_DIR)/explicit_cuda_tests.cu $(EXPLICIT_DIR)/explicit_cuda_tests.cuh $(EXPLICIT_DIR)/explicit_test_problem.h $(EXPLICIT_HEADERS) | $(BUILD)
 	$(compile_cuda)
 endif

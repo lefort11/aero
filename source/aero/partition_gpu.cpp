@@ -156,8 +156,20 @@ void PartitionGpu::layout(residual_detail::Geometry g, const PartitionStencil& s
                           const std::vector<MeshIndex>& computed, const std::vector<MeshIndex>& owned,
                           const double* volumes, std::size_t state_nodes, bool compact_buffer,
                           bool whole_mesh) {
+#ifdef AERO_WITH_KOKKOS
+    const bool store_face_batch = g.packed.tiles != nullptr;
+#endif
     if (g.packed.tiles) {
         const auto count = (g.edges + 31) / 32;
+#ifdef AERO_WITH_KOKKOS
+        // Один буфер обслуживает все стадии. Большую подобласть проходим частями:
+        // отложенные веса не требуют дополнительной памяти пропорционально всей сетке.
+        if (g.packed.order == 5 && g.stencil.mp5.weno && g.options.mp6_hybrid == 0) {
+            using Tile = residual_detail::MpEdgeTile;
+            const auto faces = std::min<MeshIndex>(computed.size(), MeshIndex(Tile::batch_limit));
+            g.packed.mp_work = storage_.allocate<Tile>((faces + Tile::width - 1) / Tile::width);
+        }
+#endif
         if (g.packed.order == 5)
             g.packed.tiles = storage_.allocate(count, static_cast<const residual_detail::WenoEdgeTile<5>*>(g.packed.tiles));
         else
@@ -195,6 +207,15 @@ void PartitionGpu::layout(residual_detail::Geometry g, const PartitionStencil& s
         grid_.original = storage_.allocate<double>(owned.size() * (g.dim + 2));
     minimum_ = storage_.allocate<residual_detail::DeviceCflMinimum>(1);
     grid_.bad = minimum_ ? &minimum_->bad : nullptr;
+#ifdef AERO_WITH_KOKKOS
+    // Выделяем запись в том же порядке при оценке памяти и при заполнении. После
+    // резервирования поля обновляются на месте, поэтому их адреса сохраняются между стадиями.
+    if (store_face_batch) {
+        const residual_detail::FaceBatch batch = {g, grid_.computed, grid_.computed_count, grid_.state,
+            grid_.initial, grid_.flux, nullptr, nullptr, false};
+        device_faces_ = storage_.allocate(1, &batch);
+    }
+#endif
 }
 bool PartitionGpu::reserve(GpuMemoryFit& fit) {
     fit.required = storage_.used;
@@ -213,6 +234,7 @@ bool PartitionGpu::reserve(GpuMemoryFit& fit) {
     return true;
 }
 void PartitionGpu::upload_state(const std::vector<double>& state, const std::vector<double>& initial) {
+    gas_current_ = false;
     if (storage_.used != storage_.capacity)
         throw std::logic_error("GPU layout changed after reservation");
     if (grid_.geometry.packed.normals)
@@ -222,18 +244,37 @@ void PartitionGpu::upload_state(const std::vector<double>& state, const std::vec
         check(cudaMemcpy(grid_.initial, initial.data(), initial.size() * sizeof(double),
                          cudaMemcpyHostToDevice));
     }
-    check(cudaMemsetAsync(grid_.bad, 0xff, sizeof(*grid_.bad), nullptr));
+    // Ядро меняет индекс только при ошибке. На обычной стадии процессору достаточно
+    // дождаться ядра и прочитать закреплённое слово, без отдельной передачи PCIe.
+    if (!error_index_.host()) {
+        const auto status = error_index_.allocate(1);
+        if (status == cudaErrorMemoryAllocation)
+            cudaGetLastError();
+        else
+            check(status);
+    }
+    if (error_index_.device()) {
+        *error_index_.host() = ~partition_detail::Index(0);
+        grid_.bad = error_index_.device();
+    } else {
+        check(cudaMemsetAsync(grid_.bad, 0xff, sizeof(*grid_.bad), nullptr));
+    }
 }
 void PartitionGpu::check_kernel(const char* phase) {
     partition_detail::Index bad;
-    check(cudaMemcpy(&bad, grid_.bad, sizeof(bad), cudaMemcpyDeviceToHost));
+    if (error_index_.device()) {
+        synchronize();
+        bad = *error_index_.host();
+    } else {
+        check(cudaMemcpy(&bad, grid_.bad, sizeof(bad), cudaMemcpyDeviceToHost));
+    }
     if (bad != ~partition_detail::Index(0))
         throw std::domain_error(std::string("MPI CUDA ") + phase + " at local index " + std::to_string(bad));
 }
 void PartitionGpu::fluxes() {
     residual_detail::gpu_face_fluxes({grid_.geometry, grid_.computed, grid_.computed_count, grid_.state,
-                                      grid_.initial, grid_.flux, nullptr, nullptr},
-                                     grid_.bad, nullptr);
+                                      grid_.initial, grid_.flux, nullptr, nullptr, gas_current_},
+                                     grid_.bad, nullptr, device_faces_);
     check_kernel("flux");
 }
 double PartitionGpu::cfl(double courant) {
@@ -244,6 +285,7 @@ double PartitionGpu::cfl(double courant) {
 void PartitionGpu::update(explicit_detail::Stage stage, double dt, bool save_original) {
     partition_detail::update(grid_, stage, dt, save_original);
     check_kernel("update");
+    gas_current_ = !grid_.owned;
 }
 void PartitionGpu::download_owned(std::vector<double>& compact) const {
     if (compact.empty())

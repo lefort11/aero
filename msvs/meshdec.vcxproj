@@ -33,6 +33,7 @@
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <PropertyGroup>
+    <WithMPI Condition="'$(WithMPI)'==''">true</WithMPI>
     <OutDir>$(MSBuildProjectDirectory)\..\build\msvs\$(Platform)\$(Configuration)\</OutDir>
     <OutDir Condition="'$(WithMPI)'=='true'">$(OutDir)meshdec-mpi\</OutDir>
     <IntDir>$(OutDir)obj\$(MSBuildProjectName)\mpi$(WithMPI)\</IntDir>

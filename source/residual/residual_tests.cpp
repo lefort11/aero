@@ -163,43 +163,54 @@ Result reference(const Mesh& mesh, CvView cv, const ReconstructionStencil& stenc
     }
     for (MeshIndex e = 0; e < m.edge_count; ++e) {
         const auto i = m.edge_begin[e], j = m.edge_end[e];
-        const double n = cv.edge_areas[e].x;
+        // Базис хранит размерность во время выполнения. Передаём нормаль в том же трёхкомпонентном буфере, что и солвер.
+        const double normal[3] = {cv.edge_areas[e].x, 0, 0};
         EulerRoeBasis basis;
-        require(euler_roe_basis(1, &u[i * 3], &u[j * 3], &n, options.gamma, &basis) == EulerStatus::Success,
+        require(euler_roe_basis(1, &u[i * 3], &u[j * 3], normal, options.gamma, &basis) == EulerStatus::Success,
                 "reference basis");
         Values q = u;
         for (MeshIndex k = 0; k < m.node_count; ++k) {
             double speed;
             if (options.variables == ResidualVariables::Characteristic)
-                require(conservative_to_characteristic(basis, &n, options.gamma, &u[3 * k], &q[3 * k]) ==
+                require(conservative_to_characteristic(basis, normal, options.gamma, &u[3 * k], &q[3 * k]) ==
                             EulerStatus::Success,
                         "project");
             if (options.variables == ResidualVariables::Flux)
-                require(euler_flux(1, &u[3 * k], &n, options.gamma, &q[3 * k], &speed) ==
+                require(euler_flux(1, &u[3 * k], normal, options.gamma, &q[3 * k], &speed) ==
                             EulerStatus::Success,
                         "project flux");
         }
-        auto side = [&](const Values& field, MeshIndex node, ReconstructionSide which, double* value) {
+        auto pair = [&](const Values& field, double* left, double* right) {
             if (open_node[i] || open_node[j]) {
-                std::copy_n(field.data() + 3 * node, 3, value);
+                std::copy_n(field.data() + 3 * i, 3, left);
+                std::copy_n(field.data() + 3 * j, 3, right);
                 return;
             }
             const ReconstructionFieldView read = {field.data(), 3, 1};
-            double delta[3];
-            reconstruct_increment2(stencil.view(), e, which, &field[3 * node], 3, read, delta);
-            for (unsigned k = 0; k < 3; ++k)
-                value[k] = field[3 * node + k] + (which == ReconstructionSide::Left ? .5 : -.5) * delta[k];
+            double dl[3], dr[3];
+            reconstruct_increment2(stencil.view(), e, ReconstructionSide::Left, &field[3*i], 3, read, dl);
+            reconstruct_increment2(stencil.view(), e, ReconstructionSide::Right, &field[3*j], 3, read, dr);
+            for (unsigned k = 0; k < 3; ++k) {
+                const double a = field[3*i+k], b = field[3*j+k];
+                // Независимый эталон смешивает именно приращения, до построения следов.
+                const double w = options.upw_coeff;
+                if (stencil.data().scheme == ReconstructionScheme::Ebr3 || stencil.data().scheme == ReconstructionScheme::Ebr5) {
+                    const double lr = 0.5 * (dl[k] - dr[k]);
+                    dl[k] = w * dl[k] + (1 - w) * ((b - a) + lr);
+                    dr[k] = w * dr[k] + (1 - w) * ((b - a) - lr);
+                }
+                left[k] = a + .5 * dl[k];
+                right[k] = b - .5 * dr[k];
+            }
         };
         double l[3], r[3], ul[3], ur[3];
-        side(q, i, ReconstructionSide::Left, l);
-        side(q, j, ReconstructionSide::Right, r);
+        pair(q, l, r);
         EulerFluxResult f{};
         const bool roe = options.solver == ResidualSolver::Roe;
         if (options.variables == ResidualVariables::Flux) {
-            side(u, i, ReconstructionSide::Left, ul);
-            side(u, j, ReconstructionSide::Right, ur);
-            require((roe ? roe_fluxes(1, l, r, ul, ur, &n, options.gamma, &f)
-                         : lax_friedrichs_fluxes(1, l, r, ul, ur, &n, options.gamma, &f)) ==
+            pair(u, ul, ur);
+            require((roe ? roe_fluxes(1, l, r, ul, ur, normal, options.gamma, &f)
+                         : lax_friedrichs_fluxes(1, l, r, ul, ur, normal, options.gamma, &f)) ==
                         EulerStatus::Success,
                     "reference fluxes");
         } else {
@@ -207,14 +218,20 @@ Result reference(const Mesh& mesh, CvView cv, const ReconstructionStencil& stenc
                 characteristic_to_conservative(basis, l, l);
                 characteristic_to_conservative(basis, r, r);
             }
-            require((roe ? roe_conservative(1, l, r, &n, options.gamma, &f)
-                         : lax_friedrichs_conservative(1, l, r, &n, options.gamma, &f)) ==
+            require((roe ? roe_conservative(1, l, r, normal, options.gamma, &f)
+                         : lax_friedrichs_conservative(1, l, r, normal, options.gamma, &f)) ==
                         EulerStatus::Success,
                     "reference states");
+            double speed;
+            require(euler_flux(1, l, normal, options.gamma, ul, &speed) == EulerStatus::Success &&
+                    euler_flux(1, r, normal, options.gamma, ur, &speed) == EulerStatus::Success, "central flux");
         }
         for (unsigned k = 0; k < 3; ++k) {
-            out.r[3 * i + k] += std::abs(n) * f.flux[k];
-            out.r[3 * j + k] -= std::abs(n) * f.flux[k];
+            // Публичный решатель вернул полный LF/Roe. Масштабируем только отличие от среднего потока.
+            const double center = options.variables == ResidualVariables::Flux ? .5*(l[k]+r[k]) : .5*(ul[k]+ur[k]);
+            f.flux[k] = center + options.upw_coeff * (f.flux[k] - center);
+            out.r[3 * i + k] += std::abs(normal[0]) * f.flux[k];
+            out.r[3 * j + k] -= std::abs(normal[0]) * f.flux[k];
         }
         out.edge[e] = f.max_wave_speed;
     }
@@ -246,20 +263,116 @@ void edge_modes(int device) {
     }
     for (auto scheme :
          {ReconstructionScheme::FirstOrder, ReconstructionScheme::Ebr3, ReconstructionScheme::Ebr5,
-          ReconstructionScheme::Weno3, ReconstructionScheme::Weno5}) {
+          ReconstructionScheme::Weno3, ReconstructionScheme::Weno5, ReconstructionScheme::Mp5, ReconstructionScheme::MPWENO5}) {
         ReconstructionOptions opts;
         opts.scheme = scheme;
         auto stencil = prepare_reconstruction(mesh, opts);
         for (const char* vars : {"conservative", "characteristic", "flux"})
             for (const char* solver : {"lf", "roe"}) {
-                const auto o = residual_options(vars, solver, gamma_gas);
-                SpatialResidual op(m, cv, stencil, bc, o, device);
-                Result result(u.size(), cv.edge_count, cv.boundary_count);
-                evaluate(device, op, u, result);
-                compare(result, reference(mesh, cv, stencil, o, u, bc));
+                auto o = residual_options(vars, solver, gamma_gas);
+                for (double weight : {0., .4, 1.}) {
+                    o.upw_coeff = weight;
+                    SpatialResidual op(m, cv, stencil, bc, o, device);
+                    Result result(u.size(), cv.edge_count, cv.boundary_count);
+                    evaluate(device, op, u, result);
+                    compare(result, reference(mesh, cv, stencil, o, u, bc));
+                    if (weight != 1. || (scheme != ReconstructionScheme::Mp5 &&
+                                         scheme != ReconstructionScheme::MPWENO5))
+                        continue;
+
+                    // Проверяем, что параметр действительно доходит от невязки до полной пары
+                    // следов. На непостоянном поле включение центральной части меняет невязку.
+                    o.mp6_hybrid = 1.;
+                    SpatialResidual hybrid(m, cv, stencil, bc, o, device);
+                    Result corrected(u.size(), cv.edge_count, cv.boundary_count);
+                    evaluate(device, hybrid, u, corrected);
+                    require(corrected.r != result.r, "MP6 correction did not change residual");
+                    if (device >= 0) {
+                        SpatialResidual host(m, cv, stencil, bc, o);
+                        evaluate(-1, host, u, result);
+                        compare(corrected, result);
+                    }
+                }
             }
     }
 }
+// Первая компонента полностью запрещает общую поправку. Вектор импульса
+// должен получить ровно свою проекцию на касательную плоскость.
+void oblique_mp_limit() {
+    for (unsigned d : {2u, 3u}) {
+        const double normal[3] = {d == 2 ? .6 : 2./3., d == 2 ? .8 : 1./3., d == 2 ? 0. : 2./3.};
+        const double momentum[] = {1., 2., -1.};
+        const residual_detail::FaceMomentumAxes axes(d, normal, normal);
+        double slopes[5][5] = {};
+        slopes[residual_detail::CentralSlope][0] = 1.;
+        for (auto& row : slopes) {
+            for (unsigned j = 0; j < d; ++j)
+                row[1+j] = momentum[j];
+            row[d+1] = 1.;
+        }
+        for (bool weno : {false, true}) {
+            double left[5] = {}, right[5] = {};
+            const Mp5Settings settings = {!weno, weno, true, 1.};
+            if (weno) residual_detail::correct_cartesian_pair<true>(axes, slopes, settings, 1., left, right);
+            else residual_detail::correct_cartesian_pair<false>(axes, slopes, settings, 1., left, right);
+            const double normal_part = euler_detail::dot(d, momentum, normal);
+            for (const double* side : {left, right}) {
+                near(side[0], 0.);
+                near(side[d+1], 0.);
+                for (unsigned j = 0; j < d; ++j)
+                    near(side[1+j], momentum[j] - normal[j]*normal_part);
+            }
+        }
+    }
+}
+
+// Поворачиваем сетку, чтобы ни один из плоских координатных импульсов
+// нельзя было целиком принять за нормальный или касательный к ребру.
+void cartesian_hybrid_limit(unsigned d, int device) {
+    MeshData data = Mesh::read("examples/tecplot/demo_" + std::to_string(d) + "d.mesh").data();
+    for (size_t i = 0; i < data.x.size(); ++i) {
+        const double x = data.x[i], y = data.y[i];
+        data.x[i] = .8*x - .6*y;
+        data.y[i] = .6*x + .8*y;
+    }
+    const Mesh mesh(std::move(data));
+    const auto m = mesh.view();
+    MedianDual dual(mesh);
+    const auto cv = dual.view();
+    const auto bc = free_patches(mesh);
+    Values u((d+2)*m.node_count);
+    for (MeshIndex i = 0; i < m.node_count; ++i) {
+        double* node = &u[(d+2)*i];
+        node[0] = 1. + .1*std::sin(3*m.x[i] + 4*m.y[i]);
+        for (unsigned j = 0; j < d; ++j)
+            node[1+j] = .12*std::cos((j+1)*m.x[i] - 5*m.y[i] + 2*m.z[i]);
+        node[d+1] = 3. + .2*std::sin(7*m.x[i] + m.y[i]);
+    }
+    for (auto scheme : {ReconstructionScheme::Mp5, ReconstructionScheme::MPWENO5}) {
+        ReconstructionOptions st;
+        st.scheme = scheme;
+        const auto stencil = prepare_reconstruction(mesh, st);
+        for (const char* variables : {"conservative", "flux"}) {
+            auto options = residual_options(variables, "roe", gamma_gas);
+            const auto run = [&](double h, int backend) {
+                options.mp6_hybrid = h;
+                SpatialResidual op(m, cv, stencil, bc, options, backend);
+                Result result(u.size(), cv.edge_count, cv.boundary_count);
+                evaluate(backend, op, u, result);
+                return result;
+            };
+            const Result base = run(0., device);
+            // Малый положительный h проходит весь гибридный путь. Невязка и
+            // скорости распространения должны сходиться к обычной схеме.
+            compare(run(1.e-14, device), base);
+            const Result full = run(1., device);
+            require(full.r != base.r, "No active MP6 correction on the rotated mesh");
+            if (device >= 0)
+                compare(full, run(1., -1));
+        }
+    }
+}
+
 void constant_test(unsigned d, int device) {
     const Mesh mesh = Mesh::read("examples/tecplot/demo_" + std::to_string(d) + "d.mesh");
     const auto m = mesh.view();
@@ -431,6 +544,7 @@ int main(int argc, char** argv) {
         signed_surface_balance();
         basis_test();
         trace_limiter_test();
+        oblique_mp_limit();
         const int devices = ReconstructionContext::cuda_device_count();
         if (argc > 1 && std::string(argv[1]) == "--require-cuda")
             require(devices > 0, "CUDA device required");
@@ -443,6 +557,8 @@ int main(int argc, char** argv) {
             inlet_outlet_edges(dev);
             constant_test(2, dev);
             constant_test(3, dev);
+            cartesian_hybrid_limit(2, dev);
+            cartesian_hybrid_limit(3, dev);
             std::cout << "Residual tests passed: " << (dev < 0 ? "CPU" : "GPU " + std::to_string(dev))
                       << "\n";
         }

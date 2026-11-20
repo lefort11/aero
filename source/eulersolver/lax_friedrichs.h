@@ -19,7 +19,7 @@ struct RusanovFlux {
                 return EulerStatus::NonFinite;
             // К центральному потоку добавляем затухание скачка с максимальной скоростью волн.
             value.flux[k] =
-                0.5 * flux_left[k] + 0.5 * flux_right[k] - (0.5 * alpha) * (face.right[k] - face.left[k]);
+                0.5 * flux_left[k] + 0.5 * flux_right[k] - ((0.5 * face.upw_coeff) * alpha) * (face.right[k] - face.left[k]);
             if (!finite(value.flux[k]))
                 return EulerStatus::NonFinite;
         }
@@ -34,7 +34,7 @@ AERO_HOST_DEVICE inline EulerStatus lax_friedrichs_conservative(unsigned dimensi
                                                                 const double* right, const double* direction,
                                                                 double gamma, EulerFluxResult* result) {
     return euler_detail::flux_from_states<euler_detail::RusanovFlux>(
-        {dimension, left, right, direction, gamma}, result);
+        {dimension, left, right, direction, gamma, 1}, result);
 }
 
 // Потоки уже спроецированы на общую единичную нормаль. Состояния нужны для диссипации.
@@ -43,7 +43,7 @@ AERO_HOST_DEVICE inline EulerStatus lax_friedrichs_fluxes(unsigned dimension, co
                                                           const double* state_right, const double* direction,
                                                           double gamma, EulerFluxResult* result) {
     return euler_detail::flux_from_reconstructed_fluxes<euler_detail::RusanovFlux>(
-        {dimension, state_left, state_right, direction, gamma}, flux_left, flux_right, result);
+        {dimension, state_left, state_right, direction, gamma, 1}, flux_left, flux_right, result);
 }
 
 } // namespace aero

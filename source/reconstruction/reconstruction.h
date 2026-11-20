@@ -2,6 +2,7 @@
 #define AERO_RECONSTRUCTION_H
 #include "../parallel/kernel_math.h"
 #include "ebr.h"
+#include "mpweno5.h"
 #include "weno.h"
 
 namespace aero {
@@ -23,6 +24,7 @@ struct ReconstructionStencilView {
     const unsigned char*
         weno_order; // Ноль задаёт линейную формулу, 3 или 5 — соответствующий порядок WENO-JS.
     const double* weno_epsilon_scale; // h·√ε в единицах поля.
+    Mp5Settings mp5; // Для полной строки MP5 подставляем ограничитель вместо весов WENO.
 };
 
 struct ReconstructionFieldView {
@@ -55,6 +57,24 @@ evaluate_reconstruction_sparse(const ReconstructionIndex* offsets, const Reconst
     return result;
 }
 
+// При неполном шаблоне MP5 использует доступную WENO3; при нулевом порядке вызывающий код читает линейную строку.
+AERO_HOST_DEVICE inline double nonlinear_increment(unsigned order, const double* slopes, double epsilon,
+                                                   Mp5Settings settings) {
+    if (order == 5 && settings.weno)
+        return mpweno5::increment(slopes[3], slopes[1], slopes[0], slopes[2], settings.alpha, settings.correction);
+    if (order == 5 && settings.enabled)
+        return mp5::increment(slopes[3], slopes[1], slopes[0], slopes[2], settings.alpha);
+    return weno_increment2(order, slopes, epsilon);
+}
+
+// Выбирает формулу по запрошенной схеме и числу доступных слоёв на этой стороне.
+struct NonlinearFormula {
+    Mp5Settings mp5;
+    AERO_HOST_DEVICE double operator()(unsigned order, const double* slopes, double epsilon) const {
+        return nonlinear_increment(order, slopes, epsilon, mp5);
+    }
+};
+
 enum class ReconstructionSide { Left, Right };
 enum class ReconstructionStatus { Success, InvalidEdge, InvalidSide, InvalidLayout, NullPointer };
 
@@ -64,8 +84,8 @@ template <class Reader> struct ReconstructionSideInput {
     ReconstructionStencilView stencil;
     ReconstructionIndex row;
     const double* own;
-    ReconstructionIndex own_stride;
-    const Reader& neighbours;
+    ReconstructionIndex own_stride; // Расстояние в элементах между компонентами состояния владельца.
+    const Reader& neighbours; // Чтение остальных узлов, в том числе импортированных для MPI.
     AERO_HOST_DEVICE double operator()(ReconstructionIndex r, ReconstructionIndex node,
                                        ReconstructionIndex component) const {
         return node == stencil.row_owner[row] ? own[component * own_stride] : neighbours(r, node, component);
@@ -103,8 +123,10 @@ reconstruct_increment2(ReconstructionStencilView stencil, ReconstructionIndex ed
         return ReconstructionStatus::NullPointer;
     const ReconstructionIndex row = 2 * edge + (side == ReconstructionSide::Right ? 1 : 0);
     const ReconstructionSideInput<Reader> input = {stencil, row, own, own_stride, neighbours};
+    // В линейной схеме коэффициенты можно объединить до первого шага.
+    // В нелинейной схеме геометрия тоже постоянна, но наклоны и веса зависят от поля.
     if (stencil.weno_order)
-        reconstruct_weno_increment2(input, components, output, output_stride);
+        reconstruct_slope_rows(input, components, output, output_stride, NonlinearFormula{stencil.mp5});
     else
         reconstruct_ebr_increment2(input, components, output, output_stride);
     return ReconstructionStatus::Success;
@@ -127,12 +149,14 @@ void aero_reconstruction_cuda_view(void* state, aero::ReconstructionStencilView*
 #include <map>
 
 namespace aero {
-enum class ReconstructionSideScheme { FirstOrder, EdgeAverage, Ebr3, Ebr5, Weno3, Weno5 };
+enum class ReconstructionSideScheme { FirstOrder, EdgeAverage, Ebr3, Ebr5, Weno3, Weno5, Mp5, MPWENO5 };
 
 struct ReconstructionOptions {
     ReconstructionScheme scheme; // Схема, запрошенная для обеих сторон всех рёбер.
     // Параметры геометрии относятся к EBR и WENO. Для первого порядка внешние точки не требуются.
     double relative_tolerance;
+    bool mpweno_ad_corr = true; // Добавлять chi_boost к нелинейным весам MPWENO5.
+    double mp5_alpha = 4; // Для самостоятельного API; солвер вычисляет по CFL.
     // Параметр ε для квадратов разделённых разностей WENO в единицах сетки.
     double weno_epsilon;
     // В строгом режиме понижение порядка относительно запрошенной схемы считается ошибкой.
@@ -149,6 +173,8 @@ struct ReconstructionStencilData {
     std::vector<ReconstructionIndex> offsets; // Границы строки 2*ребро + сторона в массивах nodes и weights.
     std::vector<ReconstructionIndex> nodes;   // Номера опорных узлов в порядке коэффициентов.
     std::vector<ReconstructionIndex> row_owner; // Конец ребра, значение которого передаёт вызывающий код.
+    bool mpweno_ad_corr = true; // Добавлять chi_boost к нелинейным весам MPWENO5.
+    double mp5_alpha = 4; // Общий параметр MP5 для всех рёбер.
     std::vector<double> weights;                // Коэффициенты линейной части удвоенного приращения.
     // Для WENO верхние веса задают оптимальный линейный оператор. Дополнительные строки CSR
     // содержат геометрию для вычисления нелинейных весов по текущему полю.

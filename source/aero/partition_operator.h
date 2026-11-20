@@ -49,7 +49,7 @@ public:
     double cfl_step(double cfl);
     // Обновляет собственные узлы на одной стадии интегратора.
     void update_owned(explicit_detail::Stage stage, std::vector<double>& start, double dt,
-                      std::vector<double>& state, bool save_original) const;
+                      std::vector<double>& state, bool save_original);
 
     std::vector<MeshIndex> owned; // Локальные номера узлов, которые обновляет этот процесс.
 private:
@@ -80,6 +80,7 @@ private:
     std::vector<MeshIndex> other_faces_; // Оставшиеся поверхности этого процесса и физические границы.
     std::vector<residual_detail::FaceNormal> normals_; // Направление потока на каждом ребре, на CPU.
     std::vector<EulerState> nodal_gas_; // Величины текущей стадии для рёбер на CPU.
+    bool gas_current_ = false; // В однопроцессном расчёте стадия обновляет сразу и поле, и этот массив.
     PartitionStencil stencil_;                       // Строки реконструкции и дополнительные удалённые узлы.
     std::vector<residual_detail::Surface> surfaces_; // Сначала рёбра, затем части физических границ.
     std::vector<EulerFluxResult> flux_;              // Потоки для каждой поверхности при расчёте на CPU.

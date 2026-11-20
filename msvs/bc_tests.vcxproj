@@ -109,6 +109,9 @@
     <GpuKernelInput Include="..\source\bc\periodic.h" />
     <GpuKernelInput Include="..\source\reconstruction\reconstruction.h" />
     <GpuKernelInput Include="..\source\reconstruction\weno.h" />
+    <GpuKernelInput Include="..\source\reconstruction\mp5.h" />
+    <GpuKernelInput Include="..\source\reconstruction\mpweno5.h" />
+    <GpuKernelInput Include="..\source\reconstruction\mp6_hybrid.h" />
     <GpuKernelInput Include="..\source\reconstruction\ebr.h" />
     <GpuKernelInput Include="..\source\eulersolver\euler.h" />
     <GpuKernelInput Include="..\qa\cuda_test_buffer.h" />

@@ -5,6 +5,7 @@
 #include "mpi_balance.h"
 #include "mpi_stencil.h"
 #include "../cuda/runtime.h"
+#include "../cuda/pinned_buffer.h"
 #include "../parallel/processes.h"
 #include <limits>
 
@@ -46,7 +47,11 @@ class PartitionGpu {
         }
     } storage_;
     partition_detail::Grid grid_{};
+    // Та же геометрия и адреса полей нужны Kokkos на каждой стадии. Запись живёт в storage_.
+    const residual_detail::FaceBatch* device_faces_ = nullptr;
+    bool gas_current_ = false; // Для цельной сетки обновление узлов готовит газ одновременно с полем.
     residual_detail::DeviceCflMinimum* minimum_ = nullptr;
+    PinnedBuffer<partition_detail::Index> error_index_; // Индекс сбоя, доступный CPU после окончания стадии.
     static void check(cudaError_t status);
     void check_kernel(const char* phase);
     static double measure_flux_rate(ResidualOptions options, std::size_t faces, MeshIndex budget);

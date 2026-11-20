@@ -60,6 +60,7 @@
     <ClCompile Include="..\source\residual\residual.cpp" />
     <ClInclude Include="..\source\residual\residual_detail.h" />
     <ClInclude Include="..\source\residual\packed_weno.h" />
+    <ClInclude Include="..\source\residual\mp6_cartesian.h" />
     <ClInclude Include="..\source\residual\flux_cfl.h" />
   </ItemGroup>
   <PropertyGroup>
@@ -116,6 +117,7 @@
     <GpuKernelInput Include="..\source\mesh\mesh_index.h" />
     <GpuKernelInput Include="..\source\residual\residual_detail.h" />
     <GpuKernelInput Include="..\source\residual\packed_weno.h" />
+    <GpuKernelInput Include="..\source\residual\mp6_cartesian.h" />
     <GpuKernelInput Include="..\source\residual\residual.h" />
     <GpuKernelInput Include="..\source\bc\bc.h" />
     <GpuKernelInput Include="..\source\eulersolver\euler.h" />
@@ -124,6 +126,9 @@
     <GpuKernelInput Include="..\source\eulersolver\roe.h" />
     <GpuKernelInput Include="..\source\reconstruction\ebr.h" />
     <GpuKernelInput Include="..\source\reconstruction\weno.h" />
+    <GpuKernelInput Include="..\source\reconstruction\mp5.h" />
+    <GpuKernelInput Include="..\source\reconstruction\mpweno5.h" />
+    <GpuKernelInput Include="..\source\reconstruction\mp6_hybrid.h" />
     <GpuKernelInput Include="..\source\reconstruction\reconstruction.h" />
     <GpuKernelInput Include="..\source\timestep\cfl_block_min.cuh" />
     <GpuKernelInput Include="..\source\bc\periodic.h" />

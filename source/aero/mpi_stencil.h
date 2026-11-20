@@ -21,6 +21,7 @@ struct PartitionStencil {
     };
     // Линейная строка на сторону EBR или четыре строки наклонов для WENO.
     Rows linear, slopes;
+    Mp5Settings mp5{}; // Выбор и коэффициент ограничителя для локальных рёбер.
     // Номер локального конца ребра, относительно которого считается приращение.
     std::vector<ReconstructionIndex> row_owner;
     std::vector<double> epsilon_scale;

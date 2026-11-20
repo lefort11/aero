@@ -84,23 +84,10 @@ private:
     double* allocate_storage(std::size_t total, bool cuda) {
 #ifdef AERO_WITH_CUDA
         if (cuda) {
-            void* data = nullptr;
-            const auto status = cudaMallocHost(&data, total * sizeof(double));
-            if (status != cudaSuccess) {
+            const auto status = pinned_.allocate(total);
+            if (status != cudaSuccess)
                 throw std::runtime_error(std::string("MPI pinned buffer: ") + cudaGetErrorString(status));
-            }
-            pinned_.reset(static_cast<double*>(data));
-            void* alias = nullptr;
-            const auto mapping = cudaHostGetDevicePointer(&alias, data, 0);
-            if (mapping == cudaSuccess) {
-                mapped_ = static_cast<double*>(alias);
-            } else if (mapping == cudaErrorInvalidValue || mapping == cudaErrorNotSupported) {
-                // Без адреса карты обмен использует обычное копирование через закреплённую память.
-                cudaGetLastError();
-            } else {
-                throw std::runtime_error(cudaGetErrorString(mapping));
-            }
-            return pinned_.get();
+            return pinned_.host();
         }
 #else
         (void)cuda;
@@ -119,7 +106,7 @@ private:
                 auto& records = pack ? buffers_.send[p] : buffers_.receive[p];
 #ifdef AERO_WITH_CUDA
                 if (gpu) {
-                    double* alias = mapped_ ? mapped_ + (records.data - pinned_.get()) : nullptr;
+                    double* alias = pinned_.device() ? pinned_.device() + (records.data - pinned_.host()) : nullptr;
                     gpu->exchange(device_peers_[j], records, alias, edges, pack);
                     continue;
                 }
@@ -159,15 +146,7 @@ private:
     }
     std::vector<double> host_; // Обычная память для обменов CPU.
 #ifdef AERO_WITH_CUDA
-    struct FreePinned {
-        // Дожидается последних операций карты перед возвратом закреплённой памяти.
-        void operator()(double* p) const {
-            cudaStreamSynchronize(nullptr);
-            cudaFreeHost(p);
-        }
-    };
-    std::unique_ptr<double, FreePinned> pinned_;   // Закреплённая память CPU для передач CUDA.
-    double* mapped_ = nullptr;                     // Адрес того же буфера на карте, если доступен.
+    PinnedBuffer<double> pinned_; // Закреплённое хранилище записей всех соседей.
     std::vector<PartitionGpu::Peer> device_peers_; // Индексы соседей в памяти GPU.
 #endif
     DoubleExchange buffers_; // Срезы буферов передачи и приёма.

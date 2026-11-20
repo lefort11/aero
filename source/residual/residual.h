@@ -7,7 +7,9 @@ enum class ResidualSolver { Roe, LocalLF };
 struct ResidualOptions {
     ResidualVariables variables;
     ResidualSolver solver;
+    double upw_coeff = 1; // Вес EBR в реконструкции и множитель диссипации LF/Roe. Оценка CFL полная.
     double gamma;
+    double mp6_hybrid = 0; // Доля ограниченной центральной поправки на полном MP-шаблоне.
     double trace_ratio_min, trace_ratio_max;
     ResidualOptions(ResidualVariables v = ResidualVariables::Conservative,
                     ResidualSolver s = ResidualSolver::Roe, double g = 1.4, double lo = 0, double hi = 1e16)
