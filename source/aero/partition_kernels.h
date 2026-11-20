@@ -49,24 +49,28 @@ AERO_HOST_DEVICE inline bool update_node(const residual_detail::Geometry& geomet
         residual_detail::decode_nodal_gas(geometry.dim, state, geometry.options.gamma, node, geometry.packed.gas);
     return true;
 }
-AERO_HOST_DEVICE inline void transfer_record(MeshIndex i, unsigned width, double* state,
-                                             EulerFluxResult* flux, double* record, bool edges, bool pack) {
-    double* values = edges ? flux[i].flux : state + i * width;
-    for (unsigned v = 0; v < width; ++v) {
-        if (pack)
-            record[v] = values[v];
-        else
-            values[v] = record[v];
+// Вид передаваемой записи. Обычное поле имеет width последовательных чисел.
+ // Для потока к ним добавляется оценка скорости, хранящаяся отдельно в EulerFluxResult.
+struct RecordField {
+    unsigned width;
+    double* values;
+    EulerFluxResult* flux;
+    AERO_HOST_DEVICE unsigned stride() const { return width + unsigned(flux != nullptr); }
+    AERO_HOST_DEVICE void copy_record(MeshIndex i, MeshIndex k, const double* input, double* output) const {
+        double* field = flux ? flux[i].flux : values + i * width;
+        const auto offset = k * stride();
+        for (unsigned v = 0; v < width; ++v) {
+            if (output) output[offset + v] = field[v];
+            else field[v] = input[offset + v];
+        }
+        if (flux) {
+            if (output) output[offset + width] = flux[i].max_wave_speed;
+            else flux[i].max_wave_speed = input[offset + width];
+        }
     }
-    if (edges) {
-        if (pack)
-            record[width] = flux[i].max_wave_speed;
-        else
-            flux[i].max_wave_speed = record[width];
-    }
-}
+};
 void update(Grid grid, explicit_detail::Stage stage, double dt, bool save_original);
-void transfer(Grid grid, const MeshIndex* ids, Index count, double* records, bool edges, bool pack);
+void transfer(RecordField field, const MeshIndex* ids, Index count, const double* input, double* output);
 }
 }
 #endif

@@ -6,7 +6,7 @@ namespace aero {
 namespace euler_detail {
 // Первая и последняя волны — звук, вторая переносит энтропию. Поперечные волны нужны реконструкции.
 // Возвращаем также приращение импульса относительно средней скорости для их последующей проекции.
-AERO_HOST_DEVICE AERO_KERNEL_INLINE void project_normal_waves(unsigned d, const double* velocity, const double* n,
+KOKKOS_FORCEINLINE_FUNCTION void project_normal_waves(unsigned d, const double* velocity, const double* n,
                                                   double gamma, double kinetic, double sound_speed,
                                                   double inverse_sound, const double* u,
                                                   double* momentum, double* result) {
@@ -29,7 +29,7 @@ AERO_HOST_DEVICE AERO_KERNEL_INLINE void project_normal_waves(unsigned d, const 
 
 // Проецирует вектор на волны, используя заранее проверенные базис Роу и единичную нормаль.
 template <unsigned fixed_dimension = 0, bool full_basis = true, class Basis>
-AERO_HOST_DEVICE AERO_KERNEL_INLINE EulerStatus project_characteristic(const Basis& basis, const double* n,
+KOKKOS_FORCEINLINE_FUNCTION EulerStatus project_characteristic(const Basis& basis, const double* n,
                                                            double gamma, double kinetic, const double* u,
                                                            double* w, double inverse_sound = 0) {
     const unsigned d = fixed_dimension ? fixed_dimension : basis.dimension;
@@ -49,7 +49,7 @@ AERO_HOST_DEVICE AERO_KERNEL_INLINE EulerStatus project_characteristic(const Bas
 // Восстанавливает U = R·W. В расчёте рёбер build_roe_basis уже проверил матрицу.
 // Если вызывающий код передал неконечный элемент, он попадёт в результат и будет обнаружен до записи.
 template <unsigned fixed_width = 0, class Basis>
-AERO_HOST_DEVICE AERO_KERNEL_INLINE EulerStatus expand_characteristic(unsigned width, const Basis& basis,
+KOKKOS_FORCEINLINE_FUNCTION EulerStatus expand_characteristic(unsigned width, const Basis& basis,
                                                            const double* waves, double* state) {
     const unsigned count = fixed_width ? fixed_width : width;
     double result[5] = {};
@@ -99,7 +99,7 @@ AERO_HOST_DEVICE inline EulerStatus characteristic_to_conservative(const EulerRo
         return EulerStatus::NullPointer;
     return euler_detail::expand_characteristic(basis.dimension + 2, basis, characteristic, conservative);
 }
-#if !defined(AERO_EULERSOLVER_KERNEL_ONLY) && !defined(__CUDACC_RTC__)
+#if !defined(AERO_EULERSOLVER_KERNEL_ONLY)
 std::vector<double> characteristic_to_conservative(const EulerRoeBasis& basis,
                                                    const std::vector<double>& characteristic);
 #endif

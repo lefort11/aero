@@ -12,9 +12,9 @@
 #ifdef _OPENMP
 #include <omp.h>
 #endif
-#ifdef AERO_WITH_CUDA
-#include "../../qa/cuda_test_buffer.h"
-#include "../cuda/runtime.h"
+#ifdef AERO_WITH_KOKKOS_GPU
+#include "../../qa/device_test_buffer.h"
+#include "../parallel/device_memory.h"
 #endif
 
 using namespace aero;
@@ -29,32 +29,32 @@ struct Result {
     Values r, edge, bc;
     Result(size_t n, size_t e, size_t b) : r(n), edge(e), bc(b) {}
 };
-#ifdef AERO_WITH_CUDA
-using aero::cuda_detail::checked;
+#ifdef AERO_WITH_KOKKOS_GPU
+using aero::gpu::checked;
 #endif
 void evaluate(int device, SpatialResidual& op, const Values& u, Result& output) {
     if (device < 0) {
         op.assemble(u.data(), u.data(), output.r.data(), output.edge.data(), output.bc.data());
         return;
     }
-#ifdef AERO_WITH_CUDA
-    checked(cudaSetDevice(device));
+#ifdef AERO_WITH_KOKKOS_GPU
+    checked(aero::gpu::select(device));
     aero_test::DeviceBuffer<double> state(u.size()), r(u.size()), edge(output.edge.size()),
         bc(output.bc.size());
-    cudaStream_t stream;
-    checked(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+    aero::gpu::Stream stream;
+    checked(aero::gpu::create_stream(&stream, true));
     try {
         checked(
-            cudaMemcpyAsync(state.data, u.data(), u.size() * sizeof(double), cudaMemcpyHostToDevice, stream));
+            aero::gpu::copy_async(state.data, u.data(), u.size() * sizeof(double), aero::gpu::Copy::ToDevice, stream));
         op.assemble(state.data, state.data, r.data, edge.data, bc.data, stream);
         r.download(output.r.data(), output.r.size());
         edge.download(output.edge.data(), output.edge.size());
         bc.download(output.bc.data(), output.bc.size());
     } catch (...) {
-        cudaStreamDestroy(stream);
+        aero::gpu::destroy_stream(stream);
         throw;
     }
-    checked(cudaStreamDestroy(stream));
+    checked(aero::gpu::destroy_stream(stream));
 #endif
 }
 void compare(const Values& a, const Values& b) {
@@ -352,7 +352,7 @@ void cartesian_hybrid_limit(unsigned d, int device) {
         ReconstructionOptions st;
         st.scheme = scheme;
         const auto stencil = prepare_reconstruction(mesh, st);
-        for (const char* variables : {"conservative", "flux"}) {
+        for (const char* variables : {"conservative", "flux", "characteristic"}) {
             auto options = residual_options(variables, "roe", gamma_gas);
             const auto run = [&](double h, int backend) {
                 options.mp6_hybrid = h;
@@ -362,6 +362,10 @@ void cartesian_hybrid_limit(unsigned d, int device) {
                 return result;
             };
             const Result base = run(0., device);
+            // При h=0 двумерный характеристический MPWENO5 использует на GPU очередь
+            // для полных шаблонов. Сверяем результат с обычным обходом рёбер на CPU.
+            if (device >= 0)
+                compare(base, run(0., -1));
             // Малый положительный h проходит весь гибридный путь. Невязка и
             // скорости распространения должны сходиться к обычной схеме.
             compare(run(1.e-14, device), base);

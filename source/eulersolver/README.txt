@@ -15,7 +15,7 @@ characteristic.h/.cpp -- переходы между U и W в замороже�
 lax_friedrichs.h/.cpp -- локальный ЛФ (Русанов).
 roe.h/.cpp -- классический Роу с модулем собственных значений.
 eulersolver_tests.cpp -- CPU-тесты и верхнеуровневый тестовый драйвер.
-eulersolver_cuda_tests.cu -- настоящие CUDA-вызовы обоих солверов и перехода.
+qa/device_cases.cu -- настоящие CUDA-вызовы обоих солверов и перехода.
 Численные функции в заголовках имеют __host__ __device__; дублирующих GPU-формул нет.
 Файлы .cpp содержат проверяемые CPU-перегрузки со std::vector и сообщения ошибок.
 
@@ -131,7 +131,7 @@ CPU/CUDA
 Для ЛФ аналогичные указательные перегрузки.
 Вызовы из CUDA выполняются внутри ядра верхнего уровня; все указатели должны
 быть доступны в его памяти. Рабочий пример -- one_interface в
-eulersolver_cuda_tests.cu: переход вынесен в вызывающее ядро, затем выбирается
+qa/device_cases.cu: переход вынесен в вызывающее ядро, затем выбирается
 ЛФ либо Роу. Производственный модуль сам ядра и обход сетки не запускает.
 При AERO_EULERSOLVER_KERNEL_ONLY заголовки не подключают host STL.
 
@@ -153,17 +153,8 @@ CPU-сборка не зависит от CUDA; при отсутствии GPU 
   make test
 
 В msvs/aero.sln проекты aero_eulersolver и eulersolver_tests.
-  MSBuild msvs\aero.sln /t:eulersolver_tests /p:Configuration=Release /p:Platform=x64 /p:WithCuda=true /p:RunEulersolverTests=true /p:RequireCudaTests=true
-Для Debug заменить Configuration, для CPU -- WithCuda=false.
-В MSYS2 выполните make eulersolver-cuda-test для проверки g++ и CUDA.
-Из нативного mingw32-make доступна сборка через MSBuild:
-  mingw32-make eulersolver-cuda-test MSBUILD="полный путь к MSBuild.exe" MSBUILD_CUDA_FLAGS="..."
-В текущей конфигурации CUDA 12.3 используется ранее установленный явный обход:
-  /p:VCToolsVersion=14.44.35207 /p:AllowUnsupportedCudaHostCompiler=true
-По умолчанию обход выключен. Строгий C++11 проверяется GCC; MSVC использует
-минимальный режим stdcpp14, nvcc предупреждает об игнорировании -std=c++11.
-Успех тестов не означает официальной поддержки этой пары компиляторов.
-Linux-ветка Make добавлена, но в Windows-сессии не проверялась.
+  MSBuild msvs\aero.sln /t:eulersolver_tests /p:Configuration=Release /p:Platform=x64 /p:KokkosBackend=cuda
+В MSYS2 выполните make eulersolver-cuda-test для обязательной проверки GPU.
 Для исключения модуля из Make удаляется include source/eulersolver/eulersolver.mk.
 
 Тесты

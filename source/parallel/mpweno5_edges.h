@@ -50,16 +50,19 @@ KOKKOS_INLINE_FUNCTION void project(const FaceBatch& batch, Index face, MpEdgeTi
 
 // Один исполнитель сначала владеет одной парой следов. После срабатывания
 // датчика свободные исполнители помогают вычислять веса других пар той же группы.
-constexpr unsigned team_size = 320;
+// team_scan в Kokkos 3.2 на NVIDIA требует степень двойки; 256 потоков
+// одновременно восстанавливают четыре характеристики для двух плиток по 32 ребра.
+constexpr unsigned team_size = 256;
+static_assert((team_size & (team_size - 1)) == 0, "Kokkos team_scan requires a power-of-two team size");
 constexpr unsigned warp_size = MpEdgeTile::width;
-using Teams = Kokkos::TeamPolicy<Kokkos::Cuda, Kokkos::LaunchBounds<team_size>>;
+using Teams = Kokkos::TeamPolicy<Kokkos::DefaultExecutionSpace, Kokkos::LaunchBounds<team_size>>;
 
 struct WeightQueue {
     // На пару приходится не больше двух нелинейных задач. Компоненты храним
     // отдельно: при обработке очереди соседние потоки читают соседние double.
     double beta[3][2 * team_size];
     double polynomial[3][2 * team_size];
-    unsigned count[team_size / warp_size]; // Сколько задач прислала каждая группа из 32 потоков.
+    unsigned jobs; // Суммарное число активных сторон у исполнителей этой команды.
 
     // В очередь передаём только шесть чисел. Интервал MP остаётся у владельца стороны.
     KOKKOS_INLINE_FUNCTION void put(unsigned slot, const mpweno5::Side& side) {
@@ -70,17 +73,6 @@ struct WeightQueue {
         polynomial[0][slot] = values.first;
         polynomial[1][slot] = values.middle;
         polynomial[2][slot] = values.last;
-    }
-
-    // Вызывается после барьера, когда известны размеры очередей всех групп.
-    // first указывает начало заданий этой группы, total ограничивает общий обход блока.
-    KOKKOS_INLINE_FUNCTION void task_range(unsigned warp, unsigned& first, unsigned& total) const {
-        first = total = 0;
-        for (unsigned group = 0; group < team_size / warp_size; ++group) {
-            if (group < warp)
-                first += count[group];
-            total += count[group];
-        }
     }
 
     KOKKOS_INLINE_FUNCTION void solve(unsigned slot, bool correction) {
@@ -100,13 +92,15 @@ struct WeightQueue {
 // Второй проход. Четыре последовательные группы по 32 потока разбирают одну
 // плитку: в каждой группе одна волна, у каждого потока своё ребро.
 template <bool correction>
-inline void reconstruct_waves(const Kokkos::Cuda& exec, MpEdgeTile* tiles, Index faces, double alpha) {
+inline void reconstruct_waves(const Kokkos::DefaultExecutionSpace& exec, MpEdgeTile* tiles, Index faces, double alpha) {
     const Index tiles_count = (faces + warp_size - 1) / warp_size;
     const Index teams_count = (tiles_count * 4 * warp_size + team_size - 1) / team_size;
-    Kokkos::parallel_for("Aero: MPWENO5 wave pairs", Teams(exec, teams_count, team_size, 1),
+    Teams policy(exec, teams_count, team_size, 1);
+    policy.set_scratch_size(0, Kokkos::PerTeam(sizeof(WeightQueue)));
+    Kokkos::parallel_for("Aero: MPWENO5 wave pairs", policy,
         KOKKOS_LAMBDA(const Teams::member_type& team) {
-            __shared__ WeightQueue queue;
-            const unsigned rank = team.team_rank(), warp = rank / warp_size, lane = rank % warp_size;
+            auto& queue = *static_cast<WeightQueue*>(team.team_scratch(0).get_shmem(sizeof(WeightQueue)));
+            const unsigned rank = team.team_rank(), lane = rank % warp_size;
             const Index task = team_size * static_cast<Index>(team.league_rank()) + rank;
             const unsigned wave = (task / warp_size) % 4;
             const Index tile_id = task / (4 * warp_size);
@@ -123,28 +117,18 @@ inline void reconstruct_waves(const Kokkos::Cuda& exec, MpEdgeTile* tiles, Index
             mpweno5::prepare_pair<true>(slope[FarLeftSlope], slope[NearLeftSlope], slope[CentralSlope],
                                        slope[NearRightSlope], slope[FarRightSlope], alpha, sides[0], sides[1]);
 
-            // Один бит маски соответствует одному владельцу. Считаем задачи слева
-            // и справа до выделения мест, чтобы не использовать глобальный атомарный счётчик.
+            // Префиксная сумма по команде отводит каждой паре место ровно для
+            // тех сторон, которым нужны нелинейные веса. Все потоки участвуют в scan.
             bool weighted[2];
-            unsigned votes[2];
-            for (unsigned side = 0; side < 2; ++side) {
+            for (unsigned side = 0; side < 2; ++side)
                 weighted[side] = valid && !order.shortened(side) && sides[side].needs_weights<true>();
-                votes[side] = __ballot_sync(0xffffffffu, weighted[side]);
-            }
-            if (lane == 0)
-                queue.count[warp] = __popc(votes[0]) + __popc(votes[1]);
-            team.team_barrier();
-
-            // Сумма размеров предыдущих групп даёт начало нашей очереди. Сумма
-            // по всему блоку нужна ниже, когда свободные потоки разберут задания.
-            unsigned first, total;
-            queue.task_range(warp, first, total);
-            unsigned slot[2];
+            const unsigned jobs = unsigned(weighted[0]) + unsigned(weighted[1]);
+            const unsigned first = team.team_scan(jobs);
+            if (rank + 1 == team_size)
+                queue.jobs = first + jobs;
+            const unsigned slot[2] = {first, first + unsigned(weighted[0])};
             double answer[2];
             for (unsigned side = 0; side < 2; ++side) {
-                // Младшие биты показывают, сколько задач той же стороны уже стоит перед нами.
-                slot[side] = first + __popc(votes[side] & ((1u << lane) - 1u));
-                first += __popc(votes[side]);
                 if (weighted[side])
                     queue.put(slot[side], sides[side]);
                 else if (order.shortened(side))
@@ -156,7 +140,7 @@ inline void reconstruct_waves(const Kokkos::Cuda& exec, MpEdgeTile* tiles, Index
 
             // Теперь задания лежат подряд. Каждый исполнитель считает одну и ту же
             // скалярную формулу MPWENO5; датчик, интервалы и положения рёбер уже известны.
-            for (unsigned job = rank; job < total; job += team_size)
+            for (unsigned job = rank; job < queue.jobs; job += team_size)
                 queue.solve(job, correction);
             team.team_barrier();
 
@@ -175,7 +159,7 @@ inline void reconstruct_waves(const Kokkos::Cuda& exec, MpEdgeTile* tiles, Index
 
 // Поправка задана для всего расчёта. Выбираем формулу один раз на пакет рёбер,
 // чтобы каждой стороне не приходилось проверять один и тот же параметр.
-inline void reconstruct(const Kokkos::Cuda& exec, MpEdgeTile* tiles, Index faces, Mp5Settings settings) {
+inline void reconstruct(const Kokkos::DefaultExecutionSpace& exec, MpEdgeTile* tiles, Index faces, Mp5Settings settings) {
     if (settings.correction)
         reconstruct_waves<true>(exec, tiles, faces, settings.alpha);
     else

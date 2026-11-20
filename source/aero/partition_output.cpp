@@ -112,7 +112,7 @@ PartitionOutput::PartitionOutput(const RunSettings& run, const MeshPartition& pa
     }
 }
 
-void PartitionOutput::write(std::uint64_t step, double time, const std::vector<double>& state) {
+void PartitionOutput::write(std::uint64_t step, double time, const std::vector<double>& state, bool final_field) {
     schedule.write_due(step, time, [&](const OutputZone& zone, const std::vector<unsigned>& columns) {
         if (world_.size > 1 && zone.global) {
             write_global_fields(world_, directory_, zone, columns, layout_.selection, layout_.rows, gamma_,
@@ -120,6 +120,6 @@ void PartitionOutput::write(std::uint64_t step, double time, const std::vector<d
         } else {
             world_.local([&] { local_.write(zone, columns, step, time, state); });
         }
-    });
+    }, final_field);
 }
 }

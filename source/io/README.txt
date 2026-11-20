@@ -28,11 +28,23 @@
   В scheme.txt задаются mpweno_ad_corr (on/off, по умолчанию on) и вес mp6_hybrid
   (от 0 до 1, по умолчанию 0). Гибрид применяется к полному шаблону MP5 и MPWENO5.
   reconstruction_variables   conservative, characteristic или flux.
-  time_scheme      euler или ssprk3.
+  time_scheme      euler, ssprk3, BDF1, BDF2 или steady.
   cfl              Положительное конечное число.
   backend          cpu или cuda.
   euler_solver     roe или lf (локальный поток Русанова).
   final_time       Конечное время расчёта, число >= 0.
+
+Для steady задайте в implicit.txt steady_criterion (relative или absolute), steady_tol и
+steady_max_steps. При relative сравнивается норма текущей пространственной невязки с начальной,
+при absolute — с порогом в единицах скорости изменения поля. final_time можно опустить.
+jacobian_update_every задаёт интервал в принятых шагах для всех неявных режимов.
+Ноль включает сборку на каждой поправке Ньютона.
+
+При BDF1, BDF2 и steady нужен implicit.txt из templates. solver = BiCGSTAB,
+jacobian_flux = LF или Roe, preconditioner = BJ или CSGS. solver_tol задаёт относительный допуск линейного решателя,
+newton_tol — относительный допуск по полной неявной невязке, newton_max_iter —
+предельное число поправок за шаг. simplified_jacobian = on фиксирует скорость LF или матрицу диссипации Роу при
+вычислении производных, по умолчанию off. Явные схемы пропускают этот файл.
 
 Для MPI-расчёта на CPU в main.txt можно задать mpi_rank_weights (относительные
 мощности рангов), mpi_node_memory_mib (auto или бюджеты узлов в МиБ) и
@@ -173,7 +185,7 @@ limit_dt сокращает шаг до ближайшего срока сред
 
 Проверки парсера, расписания и чтения сохранённых файлов входят в make
 io-settings-test и io-settings-debug-test. Проект io_settings_tests с
-WithCuda=true также проверяет запись снимка каждого доступного CUDA-устройства.
+KokkosBackend=cuda также проверяет запись снимка каждого доступного CUDA-устройства.
 
 Консольный отчёт
 ----------------
@@ -195,8 +207,8 @@ WithCuda=true также проверяет запись снимка каждо
 
 Пример вывода в 2D
 
+  Local time = 2026-11-20 12:00:00
   Flow report    Step = 100    t = 0.875    CFL = 0.5    dt = 1.000000e-02
-
   Variable         Minimum        Maximum     Domain integral
   rho             1.000000       2.000000            1.750000
   ux             -1.000000       2.000000           -0.250000

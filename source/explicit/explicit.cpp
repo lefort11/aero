@@ -1,25 +1,21 @@
 #include "explicit.h"
 #include "stage_sequence.h"
-#ifdef AERO_WITH_KOKKOS
 #include "../parallel/kokkos_host.h"
-#endif
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
 #include <string>
-#ifdef AERO_WITH_CUDA
-#include "../cuda/check.h"
-#include "../cuda/device_scope.h"
+#ifdef AERO_WITH_KOKKOS_GPU
+#include "../parallel/device_check.h"
+#include "../parallel/device_scope.h"
 #endif
 
 namespace aero {
 namespace {
-#ifdef AERO_WITH_CUDA
-void checked(cudaError_t code) {
-    cuda_detail::checked(code, "explicit CUDA: ");
-}
+#ifdef AERO_WITH_KOKKOS_GPU
+using gpu::checked;
 #endif
 }
 
@@ -33,25 +29,25 @@ struct ExplicitIntegrator::Impl {
     double* stage_values = nullptr;                  // Сначала Y1, затем Y2 и окончательное U_next.
     double* residual = nullptr;                      // Невязка текущей стадии.
     bool busy = false;                               // Защита от повторного входа через обратный вызов.
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
     double* allocation = nullptr;  // Владелец непрерывной области массивов на GPU.
     int* invalid = nullptr;        // Флаг ошибки обновления в ядре CUDA.
-    cudaStream_t stream = nullptr; // Очередь сборки невязки и обновления этого интегратора.
+    aero::gpu::Stream stream = nullptr; // Очередь сборки невязки и обновления этого интегратора.
 #endif
     ~Impl() {
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
         if (device < 0)
             return;
-        cuda_detail::DeviceScope scope(device);
-        if (scope.status == cudaSuccess) {
+        gpu::DeviceScope scope(device);
+        if (scope.status == aero::gpu::Status::Success) {
             if (stream)
-                cudaStreamSynchronize(stream);
+                aero::gpu::wait(stream);
             if (allocation)
-                cudaFree(allocation);
+                aero::gpu::release(allocation);
             if (invalid)
-                cudaFree(invalid);
+                aero::gpu::release(invalid);
             if (stream)
-                cudaStreamDestroy(stream);
+                aero::gpu::destroy_stream(stream);
         }
 #endif
     }
@@ -63,7 +59,7 @@ struct ExplicitIntegrator::Impl {
         residual = stage_values + size;
     }
     void* stream_handle() const {
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
         return stream;
 #else
         return nullptr;
@@ -79,18 +75,18 @@ struct ExplicitIntegrator::Impl {
     void with_exclusive_access(const char* nested_error, const Operation& operation) {
         if (busy)
             throw std::logic_error(nested_error);
-#ifdef AERO_WITH_CUDA
-        cuda_detail::DeviceScope scope(device);
+#ifdef AERO_WITH_KOKKOS_GPU
+        gpu::DeviceScope scope(device);
         checked(scope.status);
 #endif
         busy = true;
         try {
             operation();
         } catch (...) {
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
             // Вызывающий код мог поставить работу в очередь перед ошибкой. Дожидаемся её перед повторной попыткой.
             if (stream)
-                cudaStreamSynchronize(stream);
+                aero::gpu::wait(stream);
 #endif
             busy = false;
             throw;
@@ -103,28 +99,24 @@ struct ExplicitIntegrator::Impl {
         const explicit_detail::FieldStageUpdate update = {formula, components, volumes, accepted,
                                                           current, rhs,        dt,      stage_values};
         int bad = 0;
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
         if (backend == ExplicitBackend::Cuda) {
-            checked(cudaMemsetAsync(invalid, 0, sizeof(int), stream));
+            checked(aero::gpu::fill_async(invalid, 0, sizeof(int), stream));
             explicit_detail::launch_update(update, size, invalid, stream);
-            checked(cudaGetLastError());
+
             // До следующей стадии нужно знать, получились ли конечные значения во всём поле.
-            checked(cudaMemcpyAsync(&bad, invalid, sizeof(int), cudaMemcpyDeviceToHost, stream));
-            checked(cudaStreamSynchronize(stream));
+            checked(aero::gpu::copy_async(&bad, invalid, sizeof(int), aero::gpu::Copy::ToHost, stream));
+            checked(aero::gpu::wait(stream));
         } else
 #endif
         {
             const auto count = static_cast<std::ptrdiff_t>(size);
-#ifdef AERO_WITH_KOKKOS
             if (size >= 4096) {
                 // Каждая компонента обновляется ровно один раз. Любая ошибка отклоняет стадию.
                 host_parallel::ensure_runtime();
                 Kokkos::parallel_reduce("Aero: update stage", host_parallel::Range(0, size),
                     [&](std::size_t k, int& flags) { flags |= !update.apply(k); }, Kokkos::BOr<int>(bad));
             } else
-#elif defined(_OPENMP)
-#pragma omp parallel for if (count >= 4096) reduction(| : bad)
-#endif
             for (std::ptrdiff_t k = 0; k < count; ++k) {
                 if (!update.apply(static_cast<std::size_t>(k)))
                     bad = 1;
@@ -136,11 +128,11 @@ struct ExplicitIntegrator::Impl {
 };
 
 int ExplicitIntegrator::cuda_device_count() {
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
     int count = 0;
-    const cudaError_t code = cudaGetDeviceCount(&count);
-    if (code == cudaErrorNoDevice || code == cudaErrorInsufficientDriver) {
-        cudaGetLastError();
+    const aero::gpu::Status code = aero::gpu::count(&count);
+    if (code == aero::gpu::Status::NoDevice || code == aero::gpu::Status::Unavailable) {
+
         return 0;
     }
     checked(code);
@@ -175,20 +167,20 @@ ExplicitIntegrator::ExplicitIntegrator(std::size_t nodes, std::size_t components
     if (backend == ExplicitBackend::Cuda || (backend == ExplicitBackend::Auto && devices > 0)) {
         if (device >= devices)
             throw std::invalid_argument("requested CUDA device unavailable");
-#ifdef AERO_WITH_CUDA
-        cuda_detail::DeviceScope scope(device);
+#ifdef AERO_WITH_KOKKOS_GPU
+        gpu::DeviceScope scope(device);
         checked(scope.status);
         p.backend = ExplicitBackend::Cuda;
         p.device = device;
-        checked(cudaStreamCreateWithFlags(&p.stream, cudaStreamNonBlocking));
-        checked(cudaMalloc(reinterpret_cast<void**>(&p.allocation), (nodes + 3 * p.size) * sizeof(double)));
-        checked(cudaMalloc(reinterpret_cast<void**>(&p.invalid), sizeof(int)));
+        checked(aero::gpu::create_stream(&p.stream, true));
+        checked(aero::gpu::allocate(reinterpret_cast<void**>(&p.allocation), (nodes + 3 * p.size) * sizeof(double)));
+        checked(aero::gpu::allocate(reinterpret_cast<void**>(&p.invalid), sizeof(int)));
         p.bind(p.allocation);
         checked(
-            cudaMemcpyAsync(p.volumes, volumes, nodes * sizeof(double), cudaMemcpyHostToDevice, p.stream));
+            aero::gpu::copy_async(p.volumes, volumes, nodes * sizeof(double), aero::gpu::Copy::ToDevice, p.stream));
         checked(
-            cudaMemcpyAsync(p.accepted, initial, p.size * sizeof(double), cudaMemcpyHostToDevice, p.stream));
-        checked(cudaStreamSynchronize(p.stream));
+            aero::gpu::copy_async(p.accepted, initial, p.size * sizeof(double), aero::gpu::Copy::ToDevice, p.stream));
+        checked(aero::gpu::wait(p.stream));
 #endif
     } else {
         p.cpu.resize(nodes + 3 * p.size);
@@ -208,9 +200,9 @@ void ExplicitIntegrator::inspect(const std::function<void(const ExplicitField&)>
         throw std::invalid_argument("missing field reader");
     p.with_exclusive_access("field inspection requires an idle integrator", [&] {
         reader(p.view(p.accepted));
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
         if (p.stream)
-            checked(cudaStreamSynchronize(p.stream));
+            checked(aero::gpu::wait(p.stream));
 #endif
     });
 }
@@ -264,14 +256,14 @@ void ExplicitIntegrator::step(ExplicitScheme scheme, double time, double dt, con
 }
 std::vector<double> ExplicitIntegrator::state() const {
     const Impl& p = *impl_;
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
     if (p.backend == ExplicitBackend::Cuda) {
-        cuda_detail::DeviceScope scope(p.device);
+        gpu::DeviceScope scope(p.device);
         checked(scope.status);
         std::vector<double> out(p.size);
-        checked(cudaMemcpyAsync(out.data(), p.accepted, p.size * sizeof(double), cudaMemcpyDeviceToHost,
+        checked(aero::gpu::copy_async(out.data(), p.accepted, p.size * sizeof(double), aero::gpu::Copy::ToHost,
                                 p.stream));
-        checked(cudaStreamSynchronize(p.stream));
+        checked(aero::gpu::wait(p.stream));
         return out;
     }
 #endif

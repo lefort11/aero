@@ -30,7 +30,8 @@ public:
     double limit_dt(double time, double candidate) const;
     bool due(std::uint64_t step, double time) const;
     using Writer = std::function<void(const OutputZone&, const std::vector<unsigned>& columns)>;
-    void write_due(std::uint64_t step, double time, const Writer& writer);
+    bool has_zones() const { return !zones_.empty(); }
+    void write_due(std::uint64_t step, double time, const Writer& writer, bool final_field = false);
 
 private:
     struct Zone {

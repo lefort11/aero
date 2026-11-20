@@ -10,6 +10,14 @@ double Processes::minimum(double value) const {
 #endif
     return value;
 }
+double Processes::reduce_double(double value, bool maximum) const {
+#ifdef AERO_WITH_MPI
+    if (size > 1) MPI_Allreduce(MPI_IN_PLACE, &value, 1, MPI_DOUBLE, maximum ? MPI_MAX : MPI_SUM, MPI_COMM_WORLD);
+#else
+    (void)maximum;
+#endif
+    return value;
+}
 std::uint64_t Processes::first_id(std::uint64_t value) const {
 #ifdef AERO_WITH_MPI
     MPI_Allreduce(MPI_IN_PLACE, &value, 1, MPI_UINT64_T, MPI_MIN, MPI_COMM_WORLD);

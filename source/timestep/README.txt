@@ -87,9 +87,7 @@ CFL и объёмы должны быть положительными и кон
   make timestep-debug-test
   make timestep-cuda-test
 
-MSVS: aero_timestep и timestep_tests. Для обязательной проверки на GPU
-используйте WithCuda=true и RequireCudaTests=true. Параметры установленной
-связки MSVC и CUDA описаны в ../explicit/README.txt.
+Проект timestep_tests в msvs/aero.sln вызывает GNU Make. Для GPU укажите /p:KokkosBackend=cuda. Команда make timestep-cuda-test требует хотя бы одну доступную видеокарту.
 
 Тесты охватывают равномерную и неравномерную линию, физические границы,
 объединённые периодические узлы, ребро-петлю, длину наклонного вектора

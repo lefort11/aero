@@ -5,6 +5,9 @@
 namespace aero {
 // Эйлер и SSPRK3 имеют C_ssp = 1. Вычисляем alpha один раз по заданному CFL.
 double mp5_alpha_from_cfl(double cfl);
+// Для неявного шага MP5 и MPWENO5 берут alpha = 4 при любом допустимом CFL.
+// Решатель выбирает коэффициент один раз перед построением шаблонов.
+double mp5_alpha_for_time_scheme(double cfl, bool implicit_time);
 // Самостоятельный вызов реконструкции может передать alpha напрямую.
 void validate_mp5_alpha(double alpha);
 
@@ -38,18 +41,18 @@ struct Candidate {
     }
 };
 
-#ifdef __CUDA_ARCH__
+#ifndef KOKKOS_ACTIVE_EXECUTION_MEMORY_SPACE_HOST
 // Код конечного double, монотонный по его численному значению. Для положительных
 // чисел меняем знаковый бит; для отрицательных обращаем все биты (порядок модулей обратный).
 // На GPU сравнения границ тогда не занимают арифметические устройства double.
 using OrderKey = unsigned long long;
 constexpr OrderKey sign_bit = 1ull << 63;
-__device__ inline OrderKey order_key(double value) {
-    const OrderKey bits = __double_as_longlong(value);
+KOKKOS_INLINE_FUNCTION OrderKey order_key(double value) {
+    const OrderKey bits = double_bits(value);
     return bits ^ ((bits & sign_bit) ? ~0ull : sign_bit);
 }
-__device__ inline double ordered_value(OrderKey key) {
-    return __longlong_as_double(key ^ ((key & sign_bit) ? sign_bit : ~0ull));
+KOKKOS_INLINE_FUNCTION double ordered_value(OrderKey key) {
+    return from_double_bits(key ^ ((key & sign_bit) ? sign_bit : ~0ull));
 }
 #endif
 
@@ -57,9 +60,9 @@ __device__ inline double ordered_value(OrderKey key) {
 // может дополнительно сузить модуль результата.
 template <bool packed = false>
 AERO_HOST_DEVICE inline double curvature(double a, double b) {
-#ifdef __CUDA_ARCH__
+#ifndef KOKKOS_ACTIVE_EXECUTION_MEMORY_SPACE_HOST
     if (packed) {
-        const OrderKey bits_a = __double_as_longlong(a), bits_b = __double_as_longlong(b);
+        const OrderKey bits_a = double_bits(a), bits_b = double_bits(b);
         const OrderKey abs_a = bits_a & ~sign_bit, abs_b = bits_b & ~sign_bit;
         // У конечных модулей порядок битов совпадает с порядком величин. При NaN
         // или бесконечности используем стандартные правила fmin/fmax ниже.
@@ -70,9 +73,9 @@ AERO_HOST_DEVICE inline double curvature(double a, double b) {
             const OrderKey small = abs_a < abs_b ? abs_a : abs_b;
             const OrderKey large = abs_a < abs_b ? abs_b : abs_a;
             // Саму кривизну 4·small − large по-прежнему считаем в double.
-            const OrderKey cap = __double_as_longlong(4 * __longlong_as_double(small) - __longlong_as_double(large));
+            const OrderKey cap = double_bits(4 * from_double_bits(small) - from_double_bits(large));
             const OrderKey magnitude = (cap & sign_bit) ? 0 : (small < cap ? small : cap);
-            return __longlong_as_double((bits_a & sign_bit) | magnitude);
+            return from_double_bits((bits_a & sign_bit) | magnitude);
         }
     }
 #endif
@@ -90,23 +93,23 @@ struct Bounds {
     // Оба конца MP-интервала включают ноль. Интервал фиксирует значение,
     // только когда оба его конца равны нулю, включая два представления ±0.
     template <bool packed = false> AERO_HOST_DEVICE bool fixed() const {
-#ifdef __CUDA_ARCH__
+#ifndef KOKKOS_ACTIVE_EXECUTION_MEMORY_SPACE_HOST
         if (packed) {
-            const OrderKey bits = __double_as_longlong(low) | __double_as_longlong(high);
+            const OrderKey bits = double_bits(low) | double_bits(high);
             return (bits & ~sign_bit) == 0;
         }
 #endif
         return low == high;
     }
     template <bool packed = false> AERO_HOST_DEVICE double clamp(double value) const {
-#ifdef __CUDA_ARCH__
+#ifndef KOKKOS_ACTIVE_EXECUTION_MEMORY_SPACE_HOST
         if (packed) {
-            const OrderKey bits = __double_as_longlong(value), magnitude = bits & ~sign_bit;
+            const OrderKey bits = double_bits(value), magnitude = bits & ~sign_bit;
             // Для конечного значения достаточно одной границы: нижней для
             // отрицательного следа и верхней для положительного. Сравнение точное.
             if (magnitude < 0x7ff0000000000000ull && magnitude != 0) {
                 const double limit = (bits & sign_bit) ? low : high;
-                const OrderKey bound = __double_as_longlong(limit) & ~sign_bit;
+                const OrderKey bound = double_bits(limit) & ~sign_bit;
                 return magnitude <= bound ? value : limit;
             }
         }
@@ -123,12 +126,12 @@ AERO_HOST_DEVICE inline Bounds bounds(double outer_slope, double inner_slope, do
     // Гибрид сохраняет арифметику боковой кривизны при ускоренном сравнении границ.
     const double lc = inner_slope + (8.0 / 3.0) * curvature<packed_curvature>(
         inner_slope - outer_slope, center - inner_slope);
-#ifdef __CUDA_ARCH__
+#ifndef KOKKOS_ACTIVE_EXECUTION_MEMORY_SPACE_HOST
     if (packed) {
         // В обычном диапазоне все четыре границы конечны (alpha не превышает 4).
         // Вне него оставляем fmin/fmax, в том числе при переполнении промежуточной разности.
         const auto moderate = [](double value) {
-            return (static_cast<unsigned>(__double2hiint(value)) & 0x7fffffffu) < 0x5cd00000u; // |x| < 2^462
+            return (static_cast<unsigned>(high_word(value)) & 0x7fffffffu) < 0x5cd00000u; // |x| < 2^462
         };
         if (moderate(outer_slope) && moderate(inner_slope) && moderate(center) && moderate(central_curvature)) {
             const OrderKey x = order_key(gc), y = order_key(md), u = order_key(ul), v = order_key(lc);

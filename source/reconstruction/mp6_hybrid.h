@@ -81,7 +81,7 @@ struct Correction {
 
     // Средний сдвиг s уже выбран. Пересекаем ограничения для s+2d и s−2d
     // с отрезком между нулём и целью dd. Ближайшая к dd точка даёт разностную поправку.
-    AERO_HOST_DEVICE AERO_KERNEL_INLINE double limited_difference(double s) const {
+    KOKKOS_FORCEINLINE_FUNCTION double limited_difference(double s) const {
         const double dlo = ::fmax(::fmin(0., dd), ::fmax(.5 * (min1 - s), .5 * (s - max2)));
         const double dhi = ::fmin(::fmax(0., dd), ::fmin(.5 * (max1 - s), .5 * (s - min2)));
         return ::fmax(dlo, ::fmin(dhi, dd));
@@ -117,7 +117,7 @@ struct Correction {
 
 // Одна компонента в локальных осях или в базисе Роу. Вычисляем оба ограничения до выбора общего веса по компонентам.
 template <bool weno, bool anchored>
-AERO_HOST_DEVICE AERO_KERNEL_INLINE double prepare_wave(double fl, double l, double c, double r, double fr,
+KOKKOS_FORCEINLINE_FUNCTION double prepare_wave(double fl, double l, double c, double r, double fr,
                                                         Mp5Settings settings, double h, Correction &correction,
                                                         double &left, double &right) {
     const double alpha = settings.alpha;

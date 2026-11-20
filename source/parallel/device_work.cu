@@ -3,6 +3,12 @@
 #define AERO_BUILD_DEVICE_WORK
 #include <Kokkos_Core.hpp>
 #include "device_work.h"
+#include "../implicit/block_jacobi_detail.h"
+#include "../implicit/csgs_sweep.h"
+#include "../implicit/spatial_jacobian_detail.h"
+#include "../implicit/bicgstab_vectors.h"
+#include "../implicit/newton_vectors.h"
+#include "device_execution.h"
 #include "mpweno5_edges.h"
 #include <map>
 #include <memory>
@@ -24,7 +30,6 @@ namespace aero {
 namespace device_work {
 namespace {
 using namespace residual_detail;
-using Execution = Kokkos::Cuda;
 using Range = Kokkos::RangePolicy<Execution, Kokkos::IndexType<Index>, Kokkos::LaunchBounds<128>>;
 
 // Запускаем Kokkos после выбора карты для данного MPI-процесса.
@@ -73,36 +78,17 @@ std::unique_ptr<DeviceRuntime>& runtime_holder() {
 Execution select_execution(int device, cudaStream_t stream) {
     auto& runtime = runtime_holder();
     static std::once_flag initialized;
-    std::call_once(initialized, [&] { runtime.reset(new DeviceRuntime(device)); });
+    std::call_once(initialized, [&] {
+        runtime.reset(new DeviceRuntime(device));
+        // Копирование полей может быть единственной операцией на GPU. В этом
+        // случае host-обёртки вычислительных ядер вообще не вызываются. Регистрируем
+        // завершение после инициализации внутренних объектов Kokkos, пока они ещё живы.
+        if (std::atexit(aero_device_shutdown)) {
+            runtime.reset();
+            throw std::runtime_error("Unable to register Kokkos finalizer");
+        }
+    });
     return runtime->execution(device, stream);
-}
-
-// Исключения библиотеки остаются внутри модуля. На хост уходит только текст ошибки.
-template <class Work>
-const char* on_device(void* stream, Work work) {
-    static thread_local std::string error;
-    try {
-        int device;
-        const auto status = cudaGetDevice(&device);
-        if (status != cudaSuccess)
-            throw std::runtime_error(cudaGetErrorString(status));
-        const Execution exec = select_execution(device, static_cast<cudaStream_t>(stream));
-        work(exec);
-        return nullptr;
-    } catch (const std::exception& e) {
-        error = e.what();
-        return error.c_str();
-    }
-}
-
-// Одна итерация соответствует одному индексу. Kokkos выбирает сетку запуска.
-// HintLightWeight помещает аргументы небольшого ядра непосредственно в его параметры.
-template <unsigned min_blocks = 0, class Work>
-void for_indices(const Execution& exec, const char* name, Index count, Work work) {
-    using Policy = Kokkos::RangePolicy<Execution, Kokkos::IndexType<Index>, Kokkos::LaunchBounds<128, min_blocks>>;
-    if (count)
-        Kokkos::parallel_for(name, Kokkos::Experimental::require(Policy(exec, 0, count),
-                             Kokkos::Experimental::WorkItemProperty::HintLightWeight), work);
 }
 
 // Полный шаблон обслуживает обе стороны ребра. Геометрия и формула WENO общие с CPU.
@@ -118,7 +104,7 @@ KOKKOS_INLINE_FUNCTION void packed_flux(const FaceBatch& batch, Index face, Inde
 template <unsigned order, bool use_mp5 = false, bool use_mpweno = false, bool hybrid = false>
 void full_edges(const Execution& exec, FaceBatch batch, Index* bad, const FaceBatch* device_faces) {
     if (device_faces) {
-        const Index* indices = batch.indices;
+        const MeshIndex* indices = batch.indices;
         for_indices<use_mpweno ? 4 : 0>(exec, "Aero: WENO edges", batch.count, KOKKOS_LAMBDA(Index k) {
             packed_flux<order, use_mp5, use_mpweno, hybrid>(*device_faces, indices ? indices[k] : k, bad);
         });
@@ -266,8 +252,152 @@ void update_nodes(const Execution& exec, partition_detail::Grid g, explicit_deta
 }
 }
 
+Execution current_execution(void* stream) {
+    int device;
+    const auto status = cudaGetDevice(&device);
+    if (status != cudaSuccess)
+        throw std::runtime_error(cudaGetErrorString(status));
+    return select_execution(device, static_cast<cudaStream_t>(stream));
+}
 void aero_device_shutdown() {
     runtime_holder().reset();
+}
+const char* aero_device_jacobi_allocate(int device, implicit::JacobiBlocks& blocks) {
+    return on_device(nullptr, [&](const Execution&) {
+        // Пустому MPI-разделу не нужны буферы. Проверка номера карты уже выполнена.
+        if (!blocks.nodes)
+            return;
+        Execution::memory_space memory;
+        const auto rows = blocks.nodes * blocks.width;
+        blocks.factors = static_cast<double*>(memory.allocate(rows * blocks.width * sizeof(double)));
+        blocks.pivots = static_cast<unsigned char*>(memory.allocate(rows * sizeof(unsigned char)));
+    }, device);
+}
+const char* aero_device_jacobi_release(int device, const implicit::JacobiBlocks& blocks) {
+    return on_device(nullptr, [&](const Execution&) {
+        Execution::memory_space memory;
+        const auto rows = blocks.nodes * blocks.width;
+        if (blocks.factors)
+            memory.deallocate(blocks.factors, rows * blocks.width * sizeof(double));
+        if (blocks.pivots)
+            memory.deallocate(blocks.pivots, rows * sizeof(unsigned char));
+    }, device);
+}
+const char* aero_device_jacobi_factor(int device, const implicit::JacobiBlocks& input, const double* diagonal,
+                                       const MeshIndex* row_starts, MeshIndex* first_bad) {
+    const auto blocks = input;
+    return on_device(nullptr, [&](const Execution& exec) {
+        // Одна строка редукции разлагает один узловой блок. На CPU нужен лишь
+        // минимальный номер сбоя, чтобы не начинать итерации с вырожденной диагональю.
+        Kokkos::parallel_reduce("Aero: factor block Jacobi", Range(exec, 0, blocks.nodes),
+            KOKKOS_LAMBDA(Index node, MeshIndex& bad) {
+                if (!blocks.factor_node(node, diagonal, row_starts) && node < bad)
+                    bad = node;
+            }, Kokkos::Min<MeshIndex>(*first_bad));
+    }, device);
+}
+const char* aero_device_jacobi_apply(int device, const implicit::JacobiBlocks& input, const double* residual,
+                                     double* correction) {
+    const auto blocks = input;
+    return on_device(nullptr, [&](const Execution& exec) {
+        for_indices(exec, "Aero: apply block Jacobi", blocks.nodes, KOKKOS_LAMBDA(Index node) {
+            blocks.solve_node(node, residual, correction);
+        });
+    }, device);
+}
+const char* aero_device_csgs_color(int device, const implicit::CsgsSweep& sweep,
+                                   MeshIndex first, MeshIndex count) {
+    const auto operation = sweep;
+    return on_device(nullptr, [&](const Execution& exec) {
+        for_indices(exec, "Aero: CSGS color", count,
+                    KOKKOS_LAMBDA(Index i) { operation(first+i); });
+    }, device);
+}
+const char* aero_device_spatial_faces(int device, const implicit::SpatialBlocks& matrix, const double* u,
+                                      const double* initial, MeshIndex* bad) {
+    const auto blocks = matrix;
+    return on_device(nullptr, [&](const Execution& exec) {
+        const auto light = Kokkos::Experimental::WorkItemProperty::HintLightWeight;
+        Kokkos::parallel_reduce("Aero: differentiate face fluxes",
+            Kokkos::Experimental::require(Range(exec, 0, blocks.face_count), light),
+            KOKKOS_LAMBDA(Index k, MeshIndex& first) {
+                const auto f = blocks.face(k);
+                if (!blocks.differentiate(f, u, initial) && f < first) first = f;
+            }, Kokkos::Min<MeshIndex>(*bad));
+    }, device);
+}
+// На GPU соседние потоки считают соседние уравнения одного узла. Для каждого
+// ребра они читают соседние строки блока из памяти. Индексы CSR общие для всех.
+template<unsigned Width>
+void assemble_matrix_rows(const Execution& exec, implicit::SpatialBlocks blocks,
+                          const double* volumes, double dt, MeshIndex* bad) {
+    const auto range=Kokkos::Experimental::require(Range(exec,0,blocks.row_count*Width),
+                           Kokkos::Experimental::WorkItemProperty::HintLightWeight);
+    Kokkos::parallel_reduce("Aero: assemble Jacobian rows",range,KOKKOS_LAMBDA(Index i, MeshIndex& first) {
+        const auto row=i/Width;
+        if (!blocks.assemble_equations<Width,1>(row,static_cast<unsigned>(i%Width),volumes,dt)) {
+            const auto node=blocks.node(row);
+            if (node<first) first=node;
+        }
+    }, Kokkos::Min<MeshIndex>(*bad));
+}
+const char* aero_device_spatial_rows(int device, const implicit::SpatialBlocks& matrix,
+                                     const double* volumes, double dt, MeshIndex* bad) {
+    return on_device(nullptr, [&](const Execution& exec) {
+        switch (matrix.grid.dim) {
+        case 1: return assemble_matrix_rows<3>(exec,matrix,volumes,dt,bad);
+        case 2: return assemble_matrix_rows<4>(exec,matrix,volumes,dt,bad);
+        default: return assemble_matrix_rows<5>(exec,matrix,volumes,dt,bad);
+        }
+    }, device);
+}
+const char* aero_device_time_diagonal(int device, const implicit::SpatialBlocks& matrix,
+                                      const double* volumes, double dt, MeshIndex* bad) {
+    const auto blocks = matrix;
+    return on_device(nullptr, [&](const Execution& exec) {
+        // Передаём описание матрицы в аргументах ядра выбранной карты.
+        // В одном процессе каждая карта использует свой поток исполнения.
+        const auto range = Kokkos::Experimental::require(Range(exec, 0, blocks.row_count),
+                                  Kokkos::Experimental::WorkItemProperty::HintLightWeight);
+        Kokkos::parallel_reduce("Aero: update BDF time diagonal", range,
+            KOKKOS_LAMBDA(Index row, MeshIndex& first) {
+                if (!blocks.update_time_diagonal(row, volumes, dt) && blocks.node(row) < first)
+                    first = blocks.node(row);
+            }, Kokkos::Min<MeshIndex>(*bad));
+    }, device);
+}
+template<unsigned Width>
+void multiply_matrix_rows(const Execution& exec, implicit::SpatialBlocks blocks, const double* x, double* y) {
+    for_indices(exec,"Aero: spatial Jacobian times vector",blocks.row_count*Width,KOKKOS_LAMBDA(Index i) {
+        blocks.multiply_equations<Width,1>(i/Width,static_cast<unsigned>(i%Width),x,y);
+    });
+}
+const char* aero_device_spatial_apply(int device, const implicit::SpatialBlocks& matrix,
+                                      const double* x, double* y) {
+    return on_device(nullptr, [&](const Execution& exec) {
+        switch (matrix.grid.dim) {
+        case 1: return multiply_matrix_rows<3>(exec,matrix,x,y);
+        case 2: return multiply_matrix_rows<4>(exec,matrix,x,y);
+        default: return multiply_matrix_rows<5>(exec,matrix,x,y);
+        }
+    }, device);
+}
+const char* aero_device_newton_update(int device, MeshIndex nodes, const implicit::NewtonUpdate& update) {
+    const auto operation = update;
+    return on_device(nullptr, [&](const Execution& exec) {
+        for_indices(exec, "Aero: BDF Newton", nodes, operation);
+    }, device);
+}
+const char* aero_device_krylov_update(int device, MeshIndex count, const implicit::KrylovUpdate& update) {
+    const auto operation = update;
+    return on_device(nullptr, [&](const Execution& exec) {
+        for_indices(exec, "Aero: BiCGSTAB update", count, operation);
+    }, device);
+}
+const char* aero_device_krylov_reduce(int device, MeshIndex count, const double* x, const double* y, double* scalar) {
+    return on_device(nullptr, [&](const Execution& exec) {
+        *scalar = implicit::krylov_reduce(exec, count, x, y);
+    }, device);
 }
 const char* aero_device_normals(const Geometry& geometry) {
     const Geometry g = geometry;
@@ -280,11 +410,18 @@ const char* aero_device_normals(const Geometry& geometry) {
 const char* aero_device_faces(const FaceBatch& input, Index* bad, void* stream, const FaceBatch* device_faces) {
     return on_device(stream, [&](const Execution& exec) {
         FaceBatch batch = input;
-        const auto packed = batch.geometry.packed;
-        if (batch.needs_gas_update())
+        const auto& packed = batch.geometry.packed;
+        if (batch.needs_gas_update()) {
+            // Ядру нужны только поля узлов. Передаём адреса и два параметра газа,
+            // чтобы nvcc не включал в параметры ядра всю геометрию рёбер.
+            const unsigned dimension = batch.geometry.dim;
+            const double gamma = batch.geometry.options.gamma;
+            const double* state = batch.state;
+            EulerState* gas = packed.gas;
             for_indices(exec, "Aero: nodal gas", packed.state_nodes, KOKKOS_LAMBDA(Index i) {
-                decode_nodal_gas(batch.geometry.dim, batch.state, batch.geometry.options.gamma, i, packed.gas);
+                decode_nodal_gas(dimension, state, gamma, i, gas);
             });
+        }
         if (packed.tiles)
             compute_packed_fluxes(exec, batch, bad, device_faces);
         else
@@ -334,14 +471,12 @@ const char* aero_device_owned_stage(const partition_detail::Grid& input, explici
         }
     });
 }
-const char* aero_device_records(const partition_detail::Grid& input, const MeshIndex* ids, Index count,
-                                double* records, bool edges, bool pack) {
-    const auto g = input;
+const char* aero_device_records(const partition_detail::RecordField& data, const MeshIndex* ids, Index count,
+                                const double* input, double* output) {
+    const auto field = data;
     return on_device(nullptr, [&](const Execution& exec) {
-        const unsigned width = g.geometry.dim + 2;
         for_indices(exec, "Aero: MPI records", count, KOKKOS_LAMBDA(Index k) {
-            partition_detail::transfer_record(ids ? ids[k] : k, width, g.state, g.flux,
-                                               records + k * (width + unsigned(edges)), edges, pack);
+            field.copy_record(ids ? ids[k] : k, k, input, output);
         });
     });
 }

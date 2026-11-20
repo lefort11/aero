@@ -21,7 +21,7 @@ struct FlowSummary {
     void merge(const FlowSummary& other, unsigned fields);
 };
 void write_flow_summary(const FlowSummary&, std::uint64_t step, double time, double cfl, double dt,
-                        unsigned dimension, std::ostream& out);
+                        unsigned dimension, std::ostream& out, const double* newton_relative = nullptr);
 
 // Один объект обслуживает один расчёт. Объёмы относятся к независимым расчётным узлам.
 class FlowReport {

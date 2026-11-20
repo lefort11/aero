@@ -1,142 +1,31 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003" DefaultTargets="Build" ToolsVersion="Current">
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003" DefaultTargets="Build">
   <ItemGroup Label="ProjectConfigurations">
-    <ProjectConfiguration Include="Debug|x64">
-      <Configuration>Debug</Configuration>
-      <Platform>x64</Platform>
-    </ProjectConfiguration>
-    <ProjectConfiguration Include="Release|x64">
-      <Configuration>Release</Configuration>
-      <Platform>x64</Platform>
-    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{1EAEAC46-A263-4B61-A48B-4D3CA6CE2BA4}</ProjectGuid>
-    <Keyword>Win32Proj</Keyword>
-    <RootNamespace>aero</RootNamespace>
-    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
-    <ImportDirectoryBuildProps>false</ImportDirectoryBuildProps>
-    <ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets>
+    <Keyword>MakeFileProj</Keyword>
+    <MakeGoal>reconstruction</MakeGoal>
   </PropertyGroup>
-  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
-    <ConfigurationType>StaticLibrary</ConfigurationType>
-    <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v145</PlatformToolset>
-    <CharacterSet>Unicode</CharacterSet>
-  </PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
-    <ConfigurationType>StaticLibrary</ConfigurationType>
-    <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v145</PlatformToolset>
-    <CharacterSet>Unicode</CharacterSet>
-  </PropertyGroup>
-  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
-  <PropertyGroup>
-    <OutDir>$(MSBuildProjectDirectory)\..\build\msvs\$(Platform)\$(Configuration)\</OutDir>
-    <IntDir>$(OutDir)obj\$(MSBuildProjectName)\</IntDir>
-    <TargetName>aero_reconstruction</TargetName>
-  </PropertyGroup>
-  <Import Project="module_compiler.props" />
-  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <ClCompile>
-      <Optimization>Disabled</Optimization>
-      <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
-      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
-      <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-    </ClCompile>
-  </ItemDefinitionGroup>
-  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <ClCompile>
-      <Optimization>MaxSpeed</Optimization>
-      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
-      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-    </ClCompile>
-  </ItemDefinitionGroup>
+  <Import Project="kokkos_make.props" />
   <ItemGroup>
-    <ClInclude Include="..\source\cuda\device_scope.h" />
-    <ClInclude Include="..\source\reconstruction\reconstruction.h" />
-    <ClCompile Include="..\source\reconstruction\reconstruction.cpp" />
-    <ClInclude Include="..\source\reconstruction\ebr.h" />
-    <ClInclude Include="..\source\reconstruction\weno.h" />
-    <ClInclude Include="..\source\reconstruction\mp5.h" />
-    <ClInclude Include="..\source\reconstruction\mpweno5.h" />
-    <ClInclude Include="..\source\reconstruction\mp6_hybrid.h" />
-    <ClInclude Include="..\source\reconstruction\scheme.h" />
-    <ClInclude Include="..\source\reconstruction\stencil_builder.h" />
-    <ClCompile Include="..\source\reconstruction\ray_geometry.cpp" />
-    <ClCompile Include="..\source\reconstruction\stencil_builder.cpp" />
-    <ClCompile Include="..\source\reconstruction\mp5.cpp" />
-  </ItemGroup>
-  <ItemGroup>
-    <ProjectReference Include="aero_io.vcxproj">
-      <Project>{C9C96040-05C8-498C-8E4D-D6C4B07A468E}</Project>
-    </ProjectReference>
-  </ItemGroup>
-  <ItemGroup>
-    <ProjectReference Include="mesh.vcxproj">
-      <Project>{AC02F971-EC49-4E02-B1A2-B906BACDE494}</Project>
-    </ProjectReference>
-  </ItemGroup>
-  <PropertyGroup>
-    <WithCuda Condition="'$(WithCuda)'==''">false</WithCuda>
-    <WithOpenMP Condition="'$(WithOpenMP)'==''">true</WithOpenMP>
-    <CudaToolkitDir Condition="'$(CudaToolkitDir)'==''">$(CUDA_PATH)</CudaToolkitDir>
-    <CudaArchitecture Condition="'$(CudaArchitecture)'==''">86</CudaArchitecture>
-    <EbrBuildVariant>cpu</EbrBuildVariant>
-    <EbrBuildVariant Condition="'$(WithCuda)'=='true'">cuda-sm$(CudaArchitecture)</EbrBuildVariant>
-    <EbrBuildVariant Condition="'$(WithOpenMP)'=='false'">$(EbrBuildVariant)-serial</EbrBuildVariant>
-    <OutDir>$(MSBuildProjectDirectory)\..\build\msvs\$(Platform)\$(Configuration)\$(EbrBuildVariant)\</OutDir>
-    <IntDir>$(OutDir)obj\$(MSBuildProjectName)\</IntDir>
-    <CudaCompatibilityFlags Condition="'$(AllowUnsupportedCudaHostCompiler)'=='true'">-allow-unsupported-compiler -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH</CudaCompatibilityFlags>
-  </PropertyGroup>
-  <ItemDefinitionGroup>
-    <ClCompile>
-      <OpenMPSupport Condition="'$(WithOpenMP)'=='true'">true</OpenMPSupport>
-      <OpenMPSupport Condition="'$(WithOpenMP)'!='true'">false</OpenMPSupport>
-    </ClCompile>
-  </ItemDefinitionGroup>
-  <ItemDefinitionGroup Condition="'$(WithCuda)'=='true'">
-    <ClCompile>
-      <PreprocessorDefinitions>AERO_WITH_CUDA;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(CudaToolkitDir)\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-    </ClCompile>
-    <Link>
-      <AdditionalLibraryDirectories>$(CudaToolkitDir)\lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>cudart_static.lib;%(AdditionalDependencies)</AdditionalDependencies>
-    </Link>
-  </ItemDefinitionGroup>
-  <Target Name="CheckEbrCudaToolkit" BeforeTargets="ClCompile" Condition="'$(WithCuda)'=='true'">
-    <Error Condition="!Exists('$(CudaToolkitDir)\bin\nvcc.exe')" Text="CUDA toolkit not found; set CudaToolkitDir or build with WithCuda=false." />
-  </Target>
-  <PropertyGroup>
-    <EbrCudaCompileFlags Condition="'$(Configuration)'=='Debug'">-G -g -O0 -Xcompiler=/MTd</EbrCudaCompileFlags>
-    <EbrCudaCompileFlags Condition="'$(Configuration)'!='Debug'">-O2 -Xcompiler=/MT</EbrCudaCompileFlags>
-  </PropertyGroup>
-  <ItemGroup>
-    <None Include="..\source\reconstruction\reconstruction_cuda.cu" />
     <None Include="..\source\reconstruction\README.txt" />
+    <ClInclude Include="..\source\reconstruction\ebr.h" />
+    <ClCompile Include="..\source\reconstruction\mp5.cpp" />
+    <ClInclude Include="..\source\reconstruction\mp5.h" />
+    <ClInclude Include="..\source\reconstruction\mp6_hybrid.h" />
+    <ClInclude Include="..\source\reconstruction\mpweno5.h" />
+    <ClCompile Include="..\source\reconstruction\ray_geometry.cpp" />
+    <ClCompile Include="..\source\reconstruction\reconstruction.cpp" />
+    <ClInclude Include="..\source\reconstruction\reconstruction.h" />
     <None Include="..\source\reconstruction\reconstruction.mk" />
-    <Object Include="$(IntDir)ebr_cuda.obj" Condition="'$(WithCuda)'=='true'" />
+    <ClCompile Include="..\source\reconstruction\reconstruction_gpu.cpp" />
+    <ClInclude Include="..\source\reconstruction\scheme.h" />
+    <ClCompile Include="..\source\reconstruction\stencil_builder.cpp" />
+    <ClInclude Include="..\source\reconstruction\stencil_builder.h" />
+    <ClInclude Include="..\source\reconstruction\weno.h" />
   </ItemGroup>
-  <!-- Заголовки ядра учитываются при решении, нужно ли заново запускать nvcc. -->
-  <ItemGroup>
-    <GpuKernelInput Include="..\source\reconstruction\reconstruction_cuda.cu" />
-    <GpuKernelInput Include="..\source\reconstruction\ebr.h" />
-    <GpuKernelInput Include="..\source\reconstruction\weno.h" />
-    <GpuKernelInput Include="..\source\reconstruction\mp5.h" />
-    <GpuKernelInput Include="..\source\reconstruction\mpweno5.h" />
-    <GpuKernelInput Include="..\source\reconstruction\mp6_hybrid.h" />
-    <GpuKernelInput Include="..\source\reconstruction\reconstruction.h" />
-    <GpuKernelInput Include="..\source\cuda\device_scope.h" />
-    <GpuKernelInput Include="..\source\cuda\runtime.h" />
-    <GpuKernelInput Include="..\source\mesh\mesh.h" />
-    <GpuKernelInput Include="..\source\mesh\mesh_index.h" />
-    <GpuKernelInput Include="..\source\parallel\kernel_math.h" />
-    <GpuKernelInput Include="..\source\reconstruction\scheme.h" />
-  </ItemGroup>
-  <Target Name="CompileEbrCuda" BeforeTargets="Lib" Condition="'$(WithCuda)'=='true'" Inputs="@(GpuKernelInput);$(MSBuildProjectFullPath)" Outputs="$(IntDir)ebr_cuda.obj">
-    <Exec Command="call &quot;$(VCInstallDir)Auxiliary\Build\vcvars64.bat&quot; -vcvars_ver=$(VCToolsVersion) &gt;nul &amp;&amp; &quot;$(CudaToolkitDir)\bin\nvcc.exe&quot; -std=c++11 -arch=sm_$(CudaArchitecture) $(CudaCompatibilityFlags) $(EbrCudaCompileFlags) -Xcompiler=/utf-8 -c &quot;$(MSBuildProjectDirectory)\..\source\reconstruction\reconstruction_cuda.cu&quot; -o &quot;$(IntDir)ebr_cuda.obj&quot;" />
-  </Target>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

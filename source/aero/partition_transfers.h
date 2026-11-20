@@ -4,7 +4,7 @@
 #include "partition_report.h"
 #include "../parallel/processes.h"
 #include "../parallel/wall_timer.h"
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
 #include "partition_gpu.h"
 #endif
 
@@ -49,7 +49,7 @@ public:
             next += buffers_.receive[p].count;
         }
     }
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
     // Готовит индексы упаковки и распаковки на карте для каждого активного соседа.
     void prepare_gpu(PartitionGpu& gpu) {
         device_peers_.clear();
@@ -67,26 +67,22 @@ public:
         }
         return bytes;
     }
-    // Обменивает значения консервативных переменных на узлах границы подобласти.
-    void exchange_states(const Processes& world, unsigned width, double* state, PartitionGpu* gpu = nullptr,
-                         double* seconds = nullptr) {
-        transfer(world, width, state, nullptr, false, gpu, seconds);
-    }
-
-    // Передаёт поток от владельца ребра соседу, который обновляет другой конец ребра.
-    void exchange_fluxes(const Processes& world, unsigned width, EulerFluxResult* flux, PartitionGpu* gpu,
-                         double* seconds) {
-        transfer(world, width, nullptr, flux, true, gpu, seconds);
+    // У одного списка соседей могут быть разные типы записей: поток и два блока
+    // его производных. Нумерацию согласуем один раз, размеры буферов задаём раздельно.
+    PartitionTransfers(const PartitionTransfers& layout, unsigned stride)
+        : PartitionTransfers(static_cast<int>(layout.exports.size()), stride) {
+        exports = layout.exports;
+        imports = layout.imports;
     }
 
 private:
     // MPI всегда получает адрес в памяти CPU. Для CUDA закрепляем её и запрашиваем адрес на карте.
     double* allocate_storage(std::size_t total, bool cuda) {
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
         if (cuda) {
             const auto status = pinned_.allocate(total);
-            if (status != cudaSuccess)
-                throw std::runtime_error(std::string("MPI pinned buffer: ") + cudaGetErrorString(status));
+            if (status != aero::gpu::Status::Success)
+                throw std::runtime_error(std::string("MPI pinned buffer: ") + aero::gpu::message(status));
             return pinned_.host();
         }
 #else
@@ -96,32 +92,32 @@ private:
         return host_.data();
     }
 
+public:
     // Упаковывает записи, дожидается обмена MPI и раскладывает полученные значения.
-    void transfer(const Processes& world, unsigned width, double* state, EulerFluxResult* flux, bool edges,
+    void transfer(const Processes& world, partition_detail::RecordField field,
                   PartitionGpu* gpu = nullptr, double* seconds = nullptr) {
         WallTimer timer(seconds);
         const auto visit = [&](bool pack) {
             for (std::size_t j = 0; j < peers_.size(); ++j) {
                 const int p = peers_[j];
                 auto& records = pack ? buffers_.send[p] : buffers_.receive[p];
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
                 if (gpu) {
                     double* alias = pinned_.device() ? pinned_.device() + (records.data - pinned_.host()) : nullptr;
-                    gpu->exchange(device_peers_[j], records, alias, edges, pack);
+                    gpu->exchange(device_peers_[j], records, alias, field, pack);
                     continue;
                 }
 #endif
                 const auto& ids = pack ? exports[p] : imports[p];
                 for (std::size_t k = 0; k < ids.size(); ++k)
-                    partition_detail::transfer_record(ids[k], width, state, flux, records.data + k * stride_,
-                                                      edges, pack);
+                    field.copy_record(ids[k], k, pack ? nullptr : records.data, pack ? records.data : nullptr);
             }
         };
         // До отправки все процессы должны узнать о возможной ошибке копирования с GPU.
         if (gpu) {
             world.local([&] {
                 visit(true);
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
                 // MPI может читать буфер только после завершения копирования на CPU.
                 if (sends_)
                     gpu->synchronize();
@@ -134,7 +130,7 @@ private:
         if (gpu) {
             world.local([&] {
                 visit(false);
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
                 // У процесса без отправок нет другой точки ожидания перед повторным использованием буфера.
                 if (receives_ && (seconds || !sends_))
                     gpu->synchronize();
@@ -144,8 +140,9 @@ private:
             visit(false);
         }
     }
+private:
     std::vector<double> host_; // Обычная память для обменов CPU.
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
     PinnedBuffer<double> pinned_; // Закреплённое хранилище записей всех соседей.
     std::vector<PartitionGpu::Peer> device_peers_; // Индексы соседей в памяти GPU.
 #endif

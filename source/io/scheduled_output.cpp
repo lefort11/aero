@@ -183,14 +183,14 @@ void ScheduledOutput::write(std::uint64_t step, double time, const std::vector<d
         local_.write(zone, columns, step, time, state);
     });
 }
-void OutputSchedule::write_due(std::uint64_t step, double time, const Writer& writer) {
-    if (!due(step, time))
+void OutputSchedule::write_due(std::uint64_t step, double time, const Writer& writer, bool final_field) {
+    if (!final_field && !due(step, time))
         return;
     for (auto& zone : zones_)
-        if (zone.due(step, time)) {
+        if (final_field || zone.due(step, time)) {
             writer(zone.config, zone.columns);
             zone.last_step = step;
-            if (zone.config.every_time > 0)
+            if (!final_field && zone.config.every_time > 0)
                 ++zone.next_tick;
         }
 }

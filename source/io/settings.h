@@ -1,6 +1,7 @@
 #ifndef AERO_IO_SETTINGS_H
 #define AERO_IO_SETTINGS_H
 #include "output_settings.h"
+#include "../implicit/bdf1_step.h"
 
 #include <map>
 #include <string>
@@ -27,7 +28,13 @@ struct RunSettings {
         boundary_path;                    // Разрешённые пути к сетке, начальному полю и границам.
     std::string reconstruction;           // Схема построения следов слева и справа от грани.
     std::string reconstruction_variables; // В каких переменных восстанавливаются следы.
-    std::string time_scheme;              // Эйлер или SSPRK3.
+    std::string time_scheme;              // Эйлер, SSPRK3, BDF1, BDF2 или выход на стационар.
+    implicit::NewtonSettings implicit_settings; // Допуски и предел итераций из implicit.txt для неявных схем.
+    bool steady_absolute = false;         // Сравнивать норму напрямую или относительно начального поля.
+    double steady_tol = 1.e-6;            // Порог в единицах выбранного критерия.
+    unsigned steady_max_steps = 10000;    // Предел числа псевдошагов с начала этого запуска.
+    bool steady() const { return time_scheme == "steady"; }
+    bool uses_implicit_time() const { return steady() || time_scheme == "bdf1" || time_scheme == "bdf2"; }
     std::string euler_solver;             // Численный поток Roe или LF.
     bool mpweno_ad_corr; // Антидиссипативная поправка к весам MPWENO5 из scheme.txt.
     double mp6_hybrid; // Вес связанной центральной коррекции двух следов.

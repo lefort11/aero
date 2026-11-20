@@ -14,7 +14,7 @@ void validate_run_mode(const RunSettings& run, const Processes& world, bool arch
     if (world.size > 1 && !archive) {
         throw std::invalid_argument("Multiple processes require an AERODEC1 (.mdec) mesh");
     }
-#ifndef AERO_WITH_CUDA
+#ifndef AERO_WITH_KOKKOS_GPU
     if (world.size > 1 && !run.directories.geometry_only && run.use_cuda) {
         throw std::invalid_argument("Distributed CUDA calculation requires a build with MPI and CUDA");
     }
@@ -35,7 +35,7 @@ int run_application(int argc, char** argv, const Processes& world) {
         if (!world.rank) {
             std::cout
                 << "Usage: aero --input=<directory> --output=<directory> [--interactive] [--geometry-only] "
-                   "[--recover [0|1]] [main:key=value | gas:key=value | cuda:key=value ...]\n";
+                   "[--recover [0|1]] [main:key=value | gas:key=value | cuda:key=value | scheme:key=value | implicit:key=value ...]\n";
         }
         return 0;
     }
@@ -54,8 +54,10 @@ int run_application(int argc, char** argv, const Processes& world) {
     ReconstructionOptions options;
     options.scheme = reconstruction_scheme(run.reconstruction).scheme;
     options.mpweno_ad_corr = run.mpweno_ad_corr;
-    if (reconstruction_scheme(options.scheme).family == ReconstructionFamily::Mp)
-        options.mp5_alpha = mp5_alpha_from_cfl(run.cfl);
+    if (reconstruction_scheme(options.scheme).family == ReconstructionFamily::Mp) {
+        options.mp5_alpha = mp5_alpha_for_time_scheme(run.cfl, run.uses_implicit_time());
+        if (!world.rank) std::cout << "MP alpha = " << options.mp5_alpha << '\n';
+    }
     return calculate_case(run, options, world, archive);
 }
 }

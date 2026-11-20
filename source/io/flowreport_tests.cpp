@@ -8,8 +8,8 @@
 #ifdef _OPENMP
 #include <omp.h>
 #endif
-#ifdef AERO_WITH_CUDA
-#include "../cuda/runtime.h"
+#ifdef AERO_WITH_KOKKOS_GPU
+#include "../parallel/device_memory.h"
 #endif
 
 namespace {
@@ -49,9 +49,10 @@ void table_example() {
     std::istringstream in(out.str());
     std::string line;
     std::getline(in, line);
+    require(line.find("Local time = ") == 0, "date before step header");
+    std::getline(in, line);
     require(line == "Flow report    Step = 100    t = 0.875    CFL = 0.5    dt = 1.000000e-02",
             "step header");
-    std::getline(in, line);
     std::getline(in, line);
     require(line.find("Domain integral") != std::string::npos, "column names");
     const char* names[] = {"rho", "ux", "uy", "p", "E"};
@@ -70,7 +71,7 @@ void table_example() {
     FlowReport disabled(0, 1.4, 2, 2, volumes);
     disabled.capture(1, previous);
     disabled.write(1, 0.01, 0.5, 0.01, current, out);
-    require(!disabled.due(1) && out.str().find("Flow report", 1) == std::string::npos, "disabled reporter");
+    require(!disabled.due(1) && out.str().find("Local time", 1) == std::string::npos, "disabled reporter");
 }
 
 std::string uniform_3d() {
@@ -86,7 +87,7 @@ std::string uniform_3d() {
                 out.str().find("-2050.000000") != std::string::npos &&
                 out.str().find("= 0.000000e+00") != std::string::npos,
             "3D volume reduction");
-    return out.str();
+    return out.str().substr(out.str().find("Flow report")); // Исключаем время компьютера из сравнения.
 }
 
 // Проверяет отчёт после полных шагов интегратора для выбранной схемы и устройства.
@@ -101,10 +102,10 @@ void integration(ExplicitBackend backend, int device, ExplicitScheme scheme) {
                                    0, 0, step == 100 ? volumes[1] * 2 : 0};
         report.capture(step, solver);
         solver.step(scheme, (step - 1) * dt, dt, [&](double, const ExplicitField& field, double* r) {
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
             if (field.backend == ExplicitBackend::Cuda) {
-                require(cudaMemcpyAsync(r, residual, sizeof(residual), cudaMemcpyHostToDevice,
-                                        static_cast<cudaStream_t>(field.stream)) == cudaSuccess,
+                require(aero::gpu::copy_async(r, residual, sizeof(residual), aero::gpu::Copy::ToDevice,
+                                        static_cast<aero::gpu::Stream>(field.stream)) == aero::gpu::Status::Success,
                         "CUDA test residual");
                 return;
             }
@@ -117,8 +118,8 @@ void integration(ExplicitBackend backend, int device, ExplicitScheme scheme) {
     }
     const std::string text = out.str();
     const auto second = text.find("Flow report    Step = 200    t = 2    CFL");
-    require(text.find("Flow report    Step = 100    t = 1    CFL") == 0 &&
-                text.find("Flow report", 1) == second && second != std::string::npos &&
+    const auto first = text.find("Flow report    Step = 100    t = 1    CFL");
+    require(first < second && text.find("Flow report", first + 1) == second && second != std::string::npos &&
                 text.find("Flow report", second + 1) == std::string::npos,
             "report schedule");
     require(text.find("uy ") == std::string::npos && text.find("uz ") == std::string::npos, "1D rows");

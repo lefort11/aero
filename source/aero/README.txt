@@ -11,8 +11,7 @@ GNU Make использует оптимизацию -O3, определение
 объектов Release/O3.
 make clean удаляет объектные файлы, библиотеки проекта и исполняемые файлы
 текущей платформы из каталогов сборки и публикации. В MSYS2 эта цель
-также очищает варианты GPU. Для сборки из нативного mingw32-make через
-MSBuild используйте mingw32-make clean WITH_CUDA=1.
+также очищает варианты GPU.
 Сетки, поля и установленные библиотеки CGNS/HDF5 сохраняются.
 Тесты собираются и запускаются отдельной командой make test.
 Для сборки одного солвера есть make aero.
@@ -29,61 +28,18 @@ sha256sum. Исходные архивы CGNS и HDF5 входят в third_part
 
   make -j4 programs
   OMP_NUM_THREADS=2 make -j4 test
-  make -j4 programs WITH_CUDA=1 CUDA_HOME=/usr/local/cuda CUDA_ARCH=86
+  make -j4 programs KOKKOS_BACKEND=cuda CUDA_HOME=/usr/local/cuda CUDA_ARCH=86
 
 CUDA_ARCH задаёт архитектуру GPU для nvcc, например 86 для sm_86.
-При STATIC_LINK=1 Linux-сборка CPU полностью статическая. В CUDA-сборке
+При STATIC_LINK=1 Linux-сборка CPU без MPI полностью статическая. В CUDA-сборке
 cudart, libgomp и библиотеки C++ линкуются статически. Системные glibc,
 libm и загрузчик остаются динамическими для работы драйвера NVIDIA.
 Для сборки CPU достаточно первой команды. WITH_OPENMP=0 отключает OpenMP,
 WITH_CGNS=0 собирает конвертер с поддержкой Gmsh и another. Linux использует
 build/linux для объектов проекта и build/deps/linux для библиотек конвертера.
 
-В Windows откройте терминал MSYS2 UCRT64 или MINGW64 с x64 g++ и /usr/bin/make:
+В Windows используйте терминал MSYS2 MinGW64. Команда make programs KOKKOS_BACKEND=cuda собирает статический солвер для CPU и GPU. Для GPU требуются CUDA Toolkit 12, Clang, LLD и библиотеки CRT Visual Studio. CUDA_HOME задаёт каталог Toolkit, CUDA_ARCH — архитектуру GPU. Проекты msvs/aero.sln вызывают тот же Make. В MSBuild для выбора GPU передайте /p:KokkosBackend=cuda. Подробные команды приведены в README.md в корне проекта.
 
-  make -j8 programs WITH_CUDA=1
-  make -j8 test WITH_CUDA=1
-
-Хостовый C++ компилирует g++ в режиме C++11. Он же линкует программы
-со статическим OpenMP. Для этой сборки достаточно MSYS2 с GNU Make и
-MinGW-w64 g++, а также CUDA Toolkit с NVRTC, ptxas и fatbinary.
-При сборке NVRTC компилирует ядра C++11 в PTX. ptxas создаёт машинный
-код для CUDA_ARCH, а fatbinary упаковывает его вместе с PTX в aero.exe.
-Visual Studio, Build Tools и Windows SDK для этого варианта не требуются.
-При нескольких установках предпочтение отдаётся CUDA 12.x. Путь можно
-задать через CUDA_HOME, архитектуру — через CUDA_ARCH (по умолчанию 86).
-При расчёте aero обращается к системному драйверу NVIDIA через nvcuda.dll.
-При отсутствии доступной карты работает CPU.
-
-В Windows с Visual Studio откройте msvs/aero.sln и соберите проект aero, затем
-запустите из корня проекта
-
-  .\bin\aero.exe --input=.\templates --output=.\results
-
-Проекты compile_ptx и aero_cuda_driver доступны для отдельной сборки
-Debug/Release в решении. CudaToolkitDir по умолчанию берётся из CUDA_PATH.
-Для запуска compile_ptx вручную добавьте bin и bin/x64 выбранного Toolkit
-в PATH. В отладчике проекта эти пути уже заданы.
-Проект generate_tecplot_examples создаёт примеры сеток и полей в существующем
-каталоге, который передаётся ему единственным аргументом.
-
-В MSVC runtime C/C++ собирается с /MT (Debug: /MTd), CUDA подключается через
-cudart_static.lib. WithCuda=true и WithOpenMP=false дают Windows EXE с GPU
-без распространяемых библиотек runtime. Для вычислений на GPU нужен драйвер NVIDIA.
-Для сборки через MSBuild из нативного MinGW Make выполните
-
-  mingw32-make programs WITH_CUDA=1
-
-Это четыре Release-проекта x64 и их библиотеки. Путь к MSBuild можно передать
-через MSBUILD, параметры установленной пары nvcc/MSVC — через MSBUILD_CUDA_FLAGS.
-BIN задаёт каталог публикации. Рядом с программами сборка кладёт VCOMP140.DLL
-из комплекта Visual Studio. Это единственная распространяемая DLL Release-сборки
-со штатными статическими CGNS/HDF5. В Debug среда MSVC использует VCOMP140D.DLL.
-Статический OpenMP в Windows используется также в сборке MSYS2 с CUDA.
-
-Обе системы сборки публикуют программы и тесты в bin. Объектные файлы и
-библиотеки каждого варианта сборки лежат в build. При переключении между
-конфигурациями в bin попадает только что собранный вариант одноимённой программы.
 Для нового запуска с multi = 1 укажите новый каталог результатов.
 
 Подготовка
@@ -109,9 +65,7 @@ BIN задаёт каталог публикации. Рядом с програ
 Расчёт
 ------
 На CPU используются настроенные потоки OpenMP. Для одного процесса CUDA в cuda.txt укажите
-номер одного устройства, например devices = 0. Для сборки Visual Studio
-с CUDA установите свойство WithCuda=true и CudaToolkitDir по инструкциям
-source/reconstruction/README.txt. При запуске одного процесса без доступной CUDA программа сообщает
+номер одного устройства, например devices = 0. Для сборки GPU укажите KOKKOS_BACKEND=cuda. При запуске одного процесса без доступной CUDA программа сообщает
 о переходе на CPU. Одна область расчёта обрабатывается одной видеокартой.
 
 Программа строит медианные контрольные объёмы, периодические связи и шаблоны
@@ -260,7 +214,15 @@ EBR5 и WENO3, 24 для WENO5. Это начальная оценка врем�
 
   mpiexec -n 4 ./bin/aero --input=case --output=results
 
-Параметр time_scheme принимает euler (явный Эйлер) и ssprk3 (три стадии).
+Параметр time_scheme принимает euler (явный Эйлер), ssprk3 (три стадии), BDF1
+(неявный Эйлер), BDF2 и steady. В режиме steady псевдошаг BDF1 повторяется
+до выполнения выбранного в implicit.txt критерия по пространственной невязке.
+Первый шаг BDF2 выполняется по BDF1. Следующие шаги
+учитывают отношение соседних шагов по времени. Контрольная точка BDF2 сохраняет
+предыдущий слой и длину последнего шага. Обе неявные схемы работают на CPU и GPU, в том числе с MPI на сетке .mdec. Число CFL
+определяет запрошенный шаг, который может сокращаться до ближайшего срока вывода.
+Допуски и решатель задаются в implicit.txt. В отчётный шаг после строки с dt
+печатается достигнутая относительная невязка Ньютона по всем компонентам решения.
 Параметр reconstruction принимает first_order, ebr3, ebr5, weno3, weno5 и mp5.
 Для MPI с EBR3 и WENO3 подходит .mdec начиная с версии 2. Для EBR5 и WENO5
 нужна версия 3 или новее с дальним слоем halo. При запуске процесс читает из архива
@@ -476,13 +438,13 @@ resumed-<шаг>-<номер> внутри --output. Это сохраняет �
 
 Для Linux сборка и запуск из корня проекта выглядят так
 
-  make -j4 aero meshdec WITH_MPI=1 WITH_CUDA=1 STATIC_LINK=0 CUDA_ARCH=86
+  make -j4 aero meshdec WITH_MPI=1 KOKKOS_BACKEND=cuda STATIC_LINK=0 CUDA_ARCH=86
   ./bin/meshdec case/grid.mesh case/grid.mdec --target-ranks=2
   mpiexec -n 2 ./bin/aero --input=case --output=out-gpu
 
 Выберите CUDA_ARCH для установленных карт. В Visual Studio включите
-WithMPI=true и WithCuda=true. Для проверки двух видимых устройств
-на одном узле выполните make mpi-gpu-test WITH_MPI=1 WITH_CUDA=1.
+WithMPI=true и KokkosBackend=cuda. Для проверки двух видимых устройств
+на одном узле выполните make mpi-gpu-test WITH_MPI=1 KOKKOS_BACKEND=cuda.
 
 На каждом узле отсчёт локальных рангов начинается заново. Например,
 при двух процессах на каждом из двух узлов список 0,1 применяется на

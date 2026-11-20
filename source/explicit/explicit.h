@@ -2,11 +2,9 @@
 #define AERO_EXPLICIT_H
 
 #include "../parallel/kernel_math.h"
-#ifndef __CUDACC_RTC__
 #include <functional>
 #include <memory>
 #include <vector>
-#endif
 
 namespace aero {
 enum class ExplicitScheme { Euler, SSPRK3 };
@@ -25,7 +23,6 @@ struct ExplicitField {
 
 // Заполните каждую компоненту R суммой выходящих потоков с учётом площади.
 // Исключение отклоняет стадию. На CUDA операции ставятся в очередь field.stream.
-#ifndef __CUDACC_RTC__
 typedef std::function<void(double time, const ExplicitField& field, double* R)> ExplicitResidual;
 
 class ExplicitIntegrator {
@@ -54,6 +51,5 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
-#endif
 }
 #endif

@@ -1,24 +1,22 @@
 #ifndef AERO_WENO_H
 #define AERO_WENO_H
 #include "../parallel/kernel_math.h"
-#ifndef __CUDACC_RTC__
 #include <string.h>
-#endif
 
 // Скалярная формула WENO3/WENO5 общая для CPU и CUDA и пригодна для вызова внутри ядра.
 
 namespace aero {
 // Деление на три с округлением binary64. На GPU заранее известны обе части числа 1/3.
 AERO_HOST_DEVICE inline double weno_third(double x) {
-#ifdef __CUDA_ARCH__
+#ifndef KOKKOS_ACTIVE_EXECUTION_MEMORY_SPACE_HOST
     // Для нормальных x/3 расстояние до середины между соседними double не меньше 1/6 шага.
     // Ошибка младшей части значительно меньше этого расстояния. FMA даёт то же округление,
     // что и деление. Для очень малых x произведение с младшей частью могло бы потерять точность.
-    const unsigned exponent = (static_cast<unsigned>(__double2hiint(x)) >> 20) & 2047u;
+    const unsigned exponent = (static_cast<unsigned>(high_word(x)) >> 20) & 2047u;
     if (exponent >= 80 && exponent < 2047) {
         constexpr double high = 1.0 / 3.0;
         constexpr double low = high / 18014398509481984.0; // (1/3 − high), округлённое к double.
-        return __fma_rn(x, high, __dmul_rn(x, low));
+        return ::fma(x, high, x * low);
     }
 #endif
     return x / 3.0;
@@ -72,14 +70,14 @@ struct WenoIndicators {
 
 // Выражаем обратный знаменатель через наименьший в этой тройке (или паре).
 // Если минимум нулевой, вклад сохраняют только кандидаты с таким же нулевым знаменателем.
-AERO_HOST_DEVICE AERO_KERNEL_INLINE double relative_weno_weight(double minimum, double denominator) {
+KOKKOS_FORCEINLINE_FUNCTION double relative_weno_weight(double minimum, double denominator) {
     return minimum == 0 ? double(denominator == 0) : minimum / denominator;
 }
 
 // Возвращает ненормированные веса для двух или трёх кандидатов. Делитель у всех один.
 // После сокращения произведения знаменателей остаются только умножения и одно обращение суммы.
 template <unsigned order, bool safe_products>
-AERO_HOST_DEVICE AERO_KERNEL_INLINE void weno_weights(double a, double b, double c, double* weights) {
+KOKKOS_FORCEINLINE_FUNCTION void weno_weights(double a, double b, double c, double* weights) {
     double first = b, second = a, third = 0;
     const double minimum = order == 5 ? ::fmin(a, ::fmin(b, c)) : ::fmin(a, b);
     if (safe_products || minimum >= 1.e-18) {
@@ -104,7 +102,7 @@ AERO_HOST_DEVICE AERO_KERNEL_INLINE void weno_weights(double a, double b, double
 }
 
 template <bool safe_products>
-AERO_HOST_DEVICE AERO_KERNEL_INLINE double weno_three(double center, double near, double epsilon) {
+KOKKOS_FORCEINLINE_FUNCTION double weno_three(double center, double near, double epsilon) {
     double w[3];
     weno_weights<3, safe_products>(epsilon + center * center, epsilon + near * near, 0, w);
     const double inverse = 1 / (w[0] + w[1]);
@@ -116,7 +114,7 @@ AERO_HOST_DEVICE AERO_KERNEL_INLINE double weno_three(double center, double near
 // Смешивает три полинома формулы (9). Веса нормируются до умножения на наклоны,
 // чтобы малое размерное приращение не исчезло при умножении на малый общий множитель.
 template <bool safe_products>
-AERO_HOST_DEVICE AERO_KERNEL_INLINE double weno_five(double center, double near, double opposite, double far,
+KOKKOS_FORCEINLINE_FUNCTION double weno_five(double center, double near, double opposite, double far,
                                                       double a, double b, double c) {
     double w[3];
     weno_weights<5, safe_products>(a, b, c, w);
@@ -137,7 +135,7 @@ AERO_HOST_DEVICE AERO_KERNEL_INLINE double weno_five(double center, double near,
 }
 
 template <unsigned order, bool safe_products>
-AERO_HOST_DEVICE AERO_KERNEL_INLINE double weighted_weno_increment(const double* d, double epsilon) {
+KOKKOS_FORCEINLINE_FUNCTION double weighted_weno_increment(const double* d, double epsilon) {
     if (order == 3)
         return weno_three<safe_products>(d[0], d[1], epsilon);
     return weno_five<safe_products>(d[0], d[1], d[2], d[3], epsilon + WenoIndicators(d[0], d[2]).outer,
@@ -213,7 +211,7 @@ AERO_HOST_DEVICE inline void reconstruct_weno_increment2(const SideInput& input,
     reconstruct_slope_rows(input, components, output, output_stride, WenoFormula{});
 }
 
-#if !defined(AERO_RECONSTRUCTION_KERNEL_ONLY) && !defined(__CUDACC_RTC__)
+#if !defined(AERO_RECONSTRUCTION_KERNEL_ONLY)
 class Mesh;
 class ReconstructionStencil;
 struct ReconstructionOptions;

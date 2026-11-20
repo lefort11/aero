@@ -8,7 +8,7 @@ namespace residual_detail {
 // В пределах ребра базис Роу фиксирован, поэтому сначала складываем разности состояний
 // и только затем проецируем один готовый наклон.
 template <WenoSlopeRow row, unsigned order>
-AERO_HOST_DEVICE AERO_KERNEL_INLINE bool characteristic_slope(const WenoEdgeTile<order>& tile, unsigned lane,
+KOKKOS_FORCEINLINE_FUNCTION bool characteristic_slope(const WenoEdgeTile<order>& tile, unsigned lane,
                                                   const double* field, const euler_detail::PlaneWaveBasis& basis,
                                                   const double* normal, double gamma, double inverse_sound,
                                                   double waves[][4]) {
@@ -25,7 +25,7 @@ AERO_HOST_DEVICE AERO_KERNEL_INLINE bool characteristic_slope(const WenoEdgeTile
 // Разворачиваем ближние наклоны в порядке, принятом формулой WENO на выбранной стороне.
 // Нелинейные веса считаются только после перехода в характеристики.
 template <unsigned order>
-AERO_HOST_DEVICE AERO_KERNEL_INLINE double wave_increment(const double slopes[][4], unsigned component,
+KOKKOS_FORCEINLINE_FUNCTION double wave_increment(const double slopes[][4], unsigned component,
                                                bool right, double epsilon_scale) {
     const double values[] = {slopes[CentralSlope][component],
                              slopes[right ? NearRightSlope : NearLeftSlope][component],
@@ -37,7 +37,7 @@ AERO_HOST_DEVICE AERO_KERNEL_INLINE double wave_increment(const double slopes[][
 // В плоском полном шаблоне центральный и ближние наклоны уже общие для двух сторон.
 // У WENO5 и индикаторы этих наклонов можно посчитать за один проход.
 template <unsigned order>
-AERO_HOST_DEVICE AERO_KERNEL_INLINE void reconstruct_wave_pair(const double slopes[][4], unsigned c,
+KOKKOS_FORCEINLINE_FUNCTION void reconstruct_wave_pair(const double slopes[][4], unsigned c,
                                               double left_epsilon, double right_epsilon,
                                               double& left, double& right) {
     const double center = slopes[CentralSlope][c];
@@ -65,7 +65,7 @@ AERO_HOST_DEVICE AERO_KERNEL_INLINE void reconstruct_wave_pair(const double slop
 }
 
 // Обе стороны используют один базис Роу. Перевод приращения в состояние общий с разреженной реконструкцией.
-AERO_HOST_DEVICE AERO_KERNEL_INLINE bool recover_traces(const euler_detail::PlaneWaveBasis& basis, const double* left,
+KOKKOS_FORCEINLINE_FUNCTION bool recover_traces(const euler_detail::PlaneWaveBasis& basis, const double* left,
                                            const double* right, EdgeTraces& traces) {
     return trace_from_increment<4>(4, &basis, left, traces.left, false, traces.left) &&
            trace_from_increment<4>(4, &basis, right, traces.right, true, traces.right);
@@ -79,19 +79,19 @@ struct PlaneEdge {
     euler_detail::InterfaceGas gas;
 
     // Узловой газ уже посчитан при обновлении поля. Здесь выбираем его для двух концов ребра.
-    AERO_HOST_DEVICE AERO_KERNEL_INLINE bool read_nodes(const Geometry& g, const double* field, Index edge) {
+    KOKKOS_FORCEINLINE_FUNCTION bool read_nodes(const Geometry& g, const double* field, Index edge) {
         const auto& surface = g.surfaces[edge];
         left = field + 4 * surface.begin;
         right = field + 4 * surface.end;
         return edge_gas<true>(g, surface, left, right, gas);
     }
 
-    AERO_HOST_DEVICE AERO_KERNEL_INLINE bool prepare(const Geometry& g, const double* field, Index edge) {
+    KOKKOS_FORCEINLINE_FUNCTION bool prepare(const Geometry& g, const double* field, Index edge) {
         return read_nodes(g, field, edge) && basis.prepare(gas, g.options.gamma);
     }
 
     // После восстановления волн возвращаемся к консервативным переменным и вычисляем поток Роу.
-    AERO_HOST_DEVICE AERO_KERNEL_INLINE bool flux(const Geometry& g, Index edge, EdgeTraces& traces,
+    KOKKOS_FORCEINLINE_FUNCTION bool flux(const Geometry& g, Index edge, EdgeTraces& traces,
                                                   EulerFluxResult& result) const {
         return recover_traces(basis, left, right, traces) &&
                finish_edge_flux<true, true>(g, g.surfaces[edge], left, right, gas, traces, nullptr, result);
@@ -100,7 +100,7 @@ struct PlaneEdge {
 
 // Все наклоны считаются в одном базисе. Левый и правый след читают противоположные концы этой таблицы.
 template <unsigned scheme_order>
-AERO_HOST_DEVICE AERO_KERNEL_INLINE bool project_stencil(const WenoEdgeTile<scheme_order>& tile, unsigned lane,
+KOKKOS_FORCEINLINE_FUNCTION bool project_stencil(const WenoEdgeTile<scheme_order>& tile, unsigned lane,
                                            const double* field, const PlaneEdge& plane, double gamma,
                                            double slopes[][4]) {
     const auto& basis = plane.basis;
@@ -123,7 +123,7 @@ AERO_HOST_DEVICE AERO_KERNEL_INLINE bool project_stencil(const WenoEdgeTile<sche
 // На входе пять наклонов (три для WENO3) в базисе ребра. На выходе в traces
 // лежат ещё приращения волн. Преобразование в состояния выполняет PlaneEdge::flux.
 template <unsigned scheme_order, bool use_mp5, bool use_mpweno, int hybrid_mode>
-AERO_HOST_DEVICE AERO_KERNEL_INLINE void reconstruct_packed_traces(const Geometry& g, Index edge,
+KOKKOS_FORCEINLINE_FUNCTION void reconstruct_packed_traces(const Geometry& g, Index edge,
                                                                    const double slopes[][4], EdgeTraces& traces) {
     // Гибриду нужны сразу все волны для общего ограничения средней поправки.
     const bool hybrid = hybrid_mode == 1 || (hybrid_mode < 0 && g.options.mp6_hybrid > 0);
@@ -153,7 +153,7 @@ AERO_HOST_DEVICE AERO_KERNEL_INLINE void reconstruct_packed_traces(const Geometr
 
 // Вычисляет поток для полного двумерного шаблона. Геометрия ребра была подготовлена до начала интегрирования.
 template <unsigned scheme_order, bool use_mp5, bool use_mpweno, int hybrid_mode = -1>
-AERO_HOST_DEVICE AERO_KERNEL_INLINE bool packed_edge_flux(const Geometry& g, const double* field, Index edge,
+KOKKOS_FORCEINLINE_FUNCTION bool packed_edge_flux(const Geometry& g, const double* field, Index edge,
                                              const WenoEdgeTile<scheme_order>& tile, unsigned lane,
                                              EulerFluxResult& out) {
     PlaneEdge plane;

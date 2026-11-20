@@ -57,12 +57,12 @@ void check_partition_kernels() {
         require(state[v] == 10 + v - (v + 1), "dense node uses outgoing flux");
 
     double record[4] = {0, 0, 0, -1};
-    partition_detail::transfer_record(1, 3, state, nullptr, record, false, true);
-    partition_detail::transfer_record(0, 3, state, nullptr, record, false, false);
+    partition_detail::RecordField{3, state, nullptr}.copy_record(1, 0, nullptr, record);
+    partition_detail::RecordField{3, state, nullptr}.copy_record(0, 0, record, nullptr);
     require(std::equal(state, state + 3, state + 3) && record[3] == -1, "state halo record width");
     EulerFluxResult received{};
-    partition_detail::transfer_record(0, 3, nullptr, &flux, record, true, true);
-    partition_detail::transfer_record(0, 3, nullptr, &received, record, true, false);
+    partition_detail::RecordField{3, nullptr, &flux}.copy_record(0, 0, nullptr, record);
+    partition_detail::RecordField{3, nullptr, &received}.copy_record(0, 0, record, nullptr);
     require(std::equal(flux.flux, flux.flux + 3, received.flux) && received.max_wave_speed == 9,
             "flux halo includes speed");
 }
@@ -140,7 +140,7 @@ void remove_dir(const std::string& path) {
 #endif
 }
 std::string run_case(const std::string& program, const std::string& device, bool interactive,
-                     bool expect_fallback) {
+                     bool expect_fallback, bool implicit = false) {
     const auto stamp = std::chrono::high_resolution_clock::now().time_since_epoch().count();
     const std::string dir = "build/aero-test-" + std::to_string(stamp), out = dir + "/out",
                       log = dir + "/run.log";
@@ -166,7 +166,9 @@ std::string run_case(const std::string& program, const std::string& device, bool
     write(dir + "/output.txt",
           "[latest]\nfile=state.fields\nevery_steps=1\nvariables=rho,ux,p\n"
           "[clock]\nfile=history/p.fields\nevery_time=.004\nmulti=1\nvariables=p\nformat=lzma\n");
-    const std::string launch = command + " --input=" + dir + " --output=" + out;
+    if (implicit) write(dir + "/implicit.txt", read("templates/implicit.txt"));
+    const std::string launch = command + " --input=" + dir + " --output=" + out +
+        (implicit ? " main:time_scheme=BDF1" : "");
     const auto mesh = aero::Mesh::read("examples/tecplot/demo_1d.mesh");
     std::string rules;
     for (const auto& name : mesh.data().patch_names)
@@ -216,6 +218,19 @@ std::string run_case(const std::string& program, const std::string& device, bool
     const auto final = aero::FieldSnapshot::read(out + "/state.fields");
     final.check_mesh(mesh);
     require(final.time == 0.008 && final.step >= 2 && final.fields.size() == 3, "final step and fields");
+    // Отчёт содержит достигнутую невязку каждого принятого неявного шага.
+    const std::string marker = "Newton relative residual, step ";
+    if (implicit) {
+        for (std::uint64_t step = 1; step <= final.step; ++step) {
+            const auto label = marker + std::to_string(step) + ": ";
+            const auto pos = trace.find(label);
+            require(pos != std::string::npos, "missing Newton residual for an accepted step");
+            const double residual = std::stod(trace.substr(pos + label.size()));
+            require(residual >= 0. && residual <= 1.e-6, "reported Newton residual exceeds tolerance");
+        }
+    } else {
+        require(trace.find(marker) == std::string::npos, "Newton report on an explicit step");
+    }
     bool evolved = false;
     for (double u : final.fields[1].values)
         if (std::abs(u) > 1e-8)
@@ -240,7 +255,7 @@ std::string run_case(const std::string& program, const std::string& device, bool
     remove_dir(out + "/history");
     remove_dir(out);
     for (const char* name :
-         {"main.txt", "gas.txt", "bc.txt", "init.txt", "cuda.txt", "output.txt", "run.log"})
+         {"main.txt", "gas.txt", "bc.txt", "init.txt", "cuda.txt", "implicit.txt", "output.txt", "run.log"})
         std::remove((dir + "/" + name).c_str());
     remove_dir(dir);
     return expected;
@@ -256,8 +271,9 @@ int main(int argc, char** argv) {
         check_leaf_balance();
         const auto backend = run_case(argv[1], device, false, fallback);
         run_case(argv[1], device, true, fallback);
+        run_case(argv[1], device, false, fallback, true);
         std::cout << "Aero end-to-end tests passed (" << backend
-                  << ", Euler, SSPRK3, interactive BC, reports and fields).\n";
+                  << ", Euler, SSPRK3, BDF1, interactive BC, reports and fields).\n";
     } catch (const std::exception& e) {
         std::cerr << e.what() << '\n';
         return 1;

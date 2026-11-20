@@ -5,7 +5,7 @@
 #include <sstream>
 
 using namespace aero;
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
 void periodic_gpu(int, PeriodicView, ReconstructionStencilView, const double*, const double*);
 #endif
 namespace {
@@ -88,7 +88,7 @@ void line_test(bool require_gpu) {
         }
         for (Id n = 0; n < 6; ++n)
             near(residual[n], ref_flux[n] - ref_flux[(n + 5) % 6]);
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
         const int count = ReconstructionContext::cuda_device_count();
         require(!require_gpu || count > 0, "periodic test requires GPU");
         for (int dev = 0; dev < count; ++dev) {

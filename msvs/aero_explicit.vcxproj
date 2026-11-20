@@ -1,121 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003" DefaultTargets="Build" ToolsVersion="Current">
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003" DefaultTargets="Build">
   <ItemGroup Label="ProjectConfigurations">
-    <ProjectConfiguration Include="Debug|x64">
-      <Configuration>Debug</Configuration>
-      <Platform>x64</Platform>
-    </ProjectConfiguration>
-    <ProjectConfiguration Include="Release|x64">
-      <Configuration>Release</Configuration>
-      <Platform>x64</Platform>
-    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{68329720-CF29-47EB-A9E4-1B35097DF09B}</ProjectGuid>
-    <Keyword>Win32Proj</Keyword>
-    <RootNamespace>aero</RootNamespace>
-    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
-    <ImportDirectoryBuildProps>false</ImportDirectoryBuildProps>
-    <ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets>
+    <Keyword>MakeFileProj</Keyword>
+    <MakeGoal>explicit</MakeGoal>
   </PropertyGroup>
-  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
-    <ConfigurationType>StaticLibrary</ConfigurationType>
-    <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v145</PlatformToolset>
-    <CharacterSet>Unicode</CharacterSet>
-  </PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
-    <ConfigurationType>StaticLibrary</ConfigurationType>
-    <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v145</PlatformToolset>
-    <CharacterSet>Unicode</CharacterSet>
-  </PropertyGroup>
-  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
-  <PropertyGroup>
-    <OutDir>$(MSBuildProjectDirectory)\..\build\msvs\$(Platform)\$(Configuration)\</OutDir>
-    <IntDir>$(OutDir)obj\$(MSBuildProjectName)\</IntDir>
-    <TargetName>aero_explicit</TargetName>
-  </PropertyGroup>
-  <Import Project="module_compiler.props" />
-  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <ClCompile>
-      <Optimization>Disabled</Optimization>
-      <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
-      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
-      <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-    </ClCompile>
-  </ItemDefinitionGroup>
-  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <ClCompile>
-      <Optimization>MaxSpeed</Optimization>
-      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
-      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-    </ClCompile>
-  </ItemDefinitionGroup>
+  <Import Project="kokkos_make.props" />
   <ItemGroup>
-    <ClInclude Include="..\source\cuda\device_scope.h" />
-    <ClInclude Include="..\source\explicit\explicit.h" />
-    <ClCompile Include="..\source\explicit\explicit.cpp" />
-    <ClInclude Include="..\source\explicit\explicit_stage.h" />
-    <ClInclude Include="..\source\explicit\stage_sequence.h" />
-    <ClCompile Include="..\source\explicit\explicit_euler.cpp" />
-    <ClCompile Include="..\source\explicit\ssprk3.cpp" />
-  </ItemGroup>
-  <PropertyGroup>
-    <WithCuda Condition="'$(WithCuda)'==''">false</WithCuda>
-    <WithOpenMP Condition="'$(WithOpenMP)'==''">true</WithOpenMP>
-    <CudaToolkitDir Condition="'$(CudaToolkitDir)'==''">$(CUDA_PATH)</CudaToolkitDir>
-    <CudaArchitecture Condition="'$(CudaArchitecture)'==''">86</CudaArchitecture>
-    <ExplicitBuildVariant>cpu</ExplicitBuildVariant>
-    <ExplicitBuildVariant Condition="'$(WithCuda)'=='true'">cuda-sm$(CudaArchitecture)</ExplicitBuildVariant>
-    <ExplicitBuildVariant Condition="'$(WithOpenMP)'=='false'">$(ExplicitBuildVariant)-serial</ExplicitBuildVariant>
-    <OutDir>$(MSBuildProjectDirectory)\..\build\msvs\$(Platform)\$(Configuration)\$(ExplicitBuildVariant)\</OutDir>
-    <IntDir>$(OutDir)obj\$(MSBuildProjectName)\</IntDir>
-    <CudaCompatibilityFlags Condition="'$(AllowUnsupportedCudaHostCompiler)'=='true'">-allow-unsupported-compiler -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH</CudaCompatibilityFlags>
-  </PropertyGroup>
-  <ItemDefinitionGroup>
-    <ClCompile>
-      <OpenMPSupport Condition="'$(WithOpenMP)'=='true'">true</OpenMPSupport>
-      <OpenMPSupport Condition="'$(WithOpenMP)'!='true'">false</OpenMPSupport>
-    </ClCompile>
-  </ItemDefinitionGroup>
-  <ItemDefinitionGroup Condition="'$(WithCuda)'=='true'">
-    <ClCompile>
-      <PreprocessorDefinitions>AERO_WITH_CUDA;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(CudaToolkitDir)\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-    </ClCompile>
-    <Link>
-      <AdditionalLibraryDirectories>$(CudaToolkitDir)\lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>cudart_static.lib;%(AdditionalDependencies)</AdditionalDependencies>
-    </Link>
-  </ItemDefinitionGroup>
-  <Target Name="CheckExplicitCudaToolkit" BeforeTargets="ClCompile" Condition="'$(WithCuda)'=='true'">
-    <Error Condition="!Exists('$(CudaToolkitDir)\bin\nvcc.exe')" Text="CUDA toolkit not found; set CudaToolkitDir or build with WithCuda=false." />
-  </Target>
-  <PropertyGroup>
-    <ExplicitCudaCompileFlags Condition="'$(Configuration)'=='Debug'">-G -g -O0 -Xcompiler=/MTd</ExplicitCudaCompileFlags>
-    <ExplicitCudaCompileFlags Condition="'$(Configuration)'!='Debug'">-O2 -Xcompiler=/MT</ExplicitCudaCompileFlags>
-  </PropertyGroup>
-  <ItemGroup>
-    <None Include="..\source\explicit\explicit_cuda.cu" />
-    <ClInclude Include="..\source\explicit\explicit_cuda.cuh" />
     <None Include="..\source\explicit\README.txt" />
+    <ClCompile Include="..\source\explicit\explicit.cpp" />
+    <ClInclude Include="..\source\explicit\explicit.h" />
     <None Include="..\source\explicit\explicit.mk" />
-    <Object Include="$(IntDir)explicit_cuda.obj" Condition="'$(WithCuda)'=='true'" />
+    <ClCompile Include="..\source\explicit\explicit_euler.cpp" />
+    <ClCompile Include="..\source\explicit\explicit_gpu.cpp" />
+    <ClInclude Include="..\source\explicit\explicit_stage.h" />
+    <ClCompile Include="..\source\explicit\ssprk3.cpp" />
+    <ClInclude Include="..\source\explicit\stage_sequence.h" />
   </ItemGroup>
-  <!-- Заголовки ядра учитываются при решении, нужно ли заново запускать nvcc. -->
-  <ItemGroup>
-    <GpuKernelInput Include="..\source\explicit\explicit_cuda.cu" />
-    <GpuKernelInput Include="..\source\explicit\explicit_cuda.cuh" />
-    <GpuKernelInput Include="..\source\parallel\kernel_math.h" />
-    <GpuKernelInput Include="..\source\cuda\runtime.h" />
-    <GpuKernelInput Include="..\source\mesh\mesh_index.h" />
-    <GpuKernelInput Include="..\source\explicit\explicit_stage.h" />
-    <GpuKernelInput Include="..\source\explicit\explicit.h" />
-  </ItemGroup>
-  <Target Name="CompileExplicitCuda" BeforeTargets="Lib" Condition="'$(WithCuda)'=='true'" Inputs="@(GpuKernelInput);$(MSBuildProjectFullPath)" Outputs="$(IntDir)explicit_cuda.obj">
-    <Exec Command="call &quot;$(VCInstallDir)Auxiliary\Build\vcvars64.bat&quot; -vcvars_ver=$(VCToolsVersion) &gt;nul &amp;&amp; &quot;$(CudaToolkitDir)\bin\nvcc.exe&quot; -std=c++11 -arch=sm_$(CudaArchitecture) $(CudaCompatibilityFlags) $(ExplicitCudaCompileFlags) -Xcompiler=/utf-8 -c &quot;$(MSBuildProjectDirectory)\..\source\explicit\explicit_cuda.cu&quot; -o &quot;$(IntDir)explicit_cuda.obj&quot;" />
-  </Target>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

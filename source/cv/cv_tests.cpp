@@ -7,7 +7,7 @@
 #include <numeric>
 #include <algorithm>
 #include <string>
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
 int check_cv_devices(aero::CvView, bool);
 #endif
 namespace {
@@ -266,7 +266,7 @@ int main(int argc, char** argv) {
         cells.z[1] = .1;
         reject(cells, "cell 0");
         std::cout << "CPU median dual tests passed (1D, 2D, 3D).\n";
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
         const MedianDual cv{Mesh(mixed())};
         return check_cv_devices(cv.view(), required);
 #else

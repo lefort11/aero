@@ -107,23 +107,23 @@ struct ReconstructionContext::Impl {
     explicit Impl(ReconstructionStencil s)
         : stencil(std::move(s)), backend(ReconstructionBackend::Cpu), gpu(nullptr), device(-1) {}
     ~Impl() {
-#ifdef AERO_WITH_CUDA
-        aero_reconstruction_cuda_destroy(gpu);
+#ifdef AERO_WITH_KOKKOS_GPU
+        aero_reconstruction_device_destroy(gpu);
 #endif
     }
 };
 bool ReconstructionContext::cuda_compiled() {
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
     return true;
 #else
     return false;
 #endif
 }
 int ReconstructionContext::cuda_device_count() {
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
     int count = 0;
     char error[512] = {};
-    if (aero_reconstruction_cuda_count(&count, error, sizeof(error))) {
+    if (aero_reconstruction_device_count(&count, error, sizeof(error))) {
         throw ReconstructionError(error);
     }
     return count;
@@ -151,9 +151,9 @@ ReconstructionContext::ReconstructionContext(ReconstructionStencil stencil, Reco
     if (device >= count) {
         throw ReconstructionError("Requested CUDA device is unavailable (or CUDA module was not built)");
     }
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
     char error[512] = {};
-    if (aero_reconstruction_cuda_create(impl_->stencil.view(), device, &impl_->gpu, error, sizeof(error))) {
+    if (aero_reconstruction_device_create(impl_->stencil.view(), device, &impl_->gpu, error, sizeof(error))) {
         throw ReconstructionError(error);
     }
     impl_->backend = ReconstructionBackend::Cuda;
@@ -175,8 +175,8 @@ ReconstructionStencilView ReconstructionContext::device_view() const {
         throw ReconstructionError("Device view requires CUDA backend");
     }
     ReconstructionStencilView view = {};
-#ifdef AERO_WITH_CUDA
-    aero_reconstruction_cuda_view(impl_->gpu, &view);
+#ifdef AERO_WITH_KOKKOS_GPU
+    aero_reconstruction_device_view(impl_->gpu, &view);
 #endif
     return view;
 }

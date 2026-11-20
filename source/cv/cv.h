@@ -2,9 +2,7 @@
 #define AERO_CV_H
 
 #include "../mesh/mesh_index.h"
-#ifndef __CUDACC_RTC__
 #include <vector>
-#endif
 
 namespace aero {
 class Mesh;
@@ -27,7 +25,6 @@ struct CvView {
     const CvBoundary* boundary; // Элемент на каждую пару из внешней грани и примыкающего узла.
 };
 
-#ifndef __CUDACC_RTC__
 class MedianDual {
 public:
     // Строит медианные объёмы на неподвижной сетке. Центр равен среднему координат вершин.
@@ -45,6 +42,5 @@ private:
     // Внешняя площадка для каждой пары «грань–узел».
     std::vector<CvBoundary> boundary_;
 };
-#endif
 }
 #endif

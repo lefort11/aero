@@ -16,38 +16,42 @@ RES_TIME_GPU := $(TIMESTEP_GPU) $(EXPLICIT_GPU)
 else
 RES_TEST_FLAGS := -DAERO_RESIDUAL_NO_TIME_TEST
 endif
-ifeq ($(WITH_CUDA),1)
-RES_HDR += source/cuda/device_scope.h source/cuda/runtime.h source/timestep/cfl_block_min.cuh
+ifeq ($(kokkos_gpu),1)
+RES_HDR += source/parallel/device_scope.h source/parallel/device_memory.h source/parallel/device_arrays.h
 RES_GPU := $(BUILD)/residual_cuda.o
-$(RES_GPU): $(RES_DIR)/residual_cuda.cu $(RES_DIR)/residual_cuda.cuh $(RES_HDR) | $(BUILD)
-	$(compile_solver_cuda)
+$(RES_GPU): $(RES_DIR)/residual_gpu.cpp $(RES_HDR) | $(BUILD)
+	$(compiling)
+	$(compile_device_host)
 endif
 # Ошибки расчёта потока передаются через EulerStatus. Для sqrt в цикле CPU не нужен
 # побочный эффект записи в errno. Проверки плотности, давления и конечности сохраняются.
 $(RES_OBJ): $(RES_DIR)/residual.cpp $(RES_HDR) $(RES_DIR)/residual.mk | $(BUILD)
+	$(compiling)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -fno-math-errno $(EBR_FLAGS) -c $< -o $@
 $(RES_LIB): $(RES_OBJ) $(RES_GPU)
+	$(archiving)
 	$(AR) rcs $@ $^
 $(RES_TEST): $(RES_DIR)/residual_tests.cpp $(RES_HDR) $(RES_TIME_HEADERS) $(RES_LIB) $(RES_DEPS) $(RES_TIME_LIBS)
+	$(call action,Compiling and linking,$@)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(EBR_FLAGS) $(RES_TEST_FLAGS) $< $(RES_LIB) $(RES_TIME_LIBS) $(RES_DEPS) $(LDFLAGS) $(EBR_LIBS) $(LDLIBS) -o $@
 .PHONY: residual residual-test residual-debug-test residual-cuda-test
 all: residual
 residual: $(RES_LIB)
 test: residual-test
 residual-test: $(BIN)/$(notdir $(RES_TEST))
+	$(running_test)
 	"$(RES_TEST)"
 RES_DEBUG := $(BUILD)/residual_tests_debug_$(EBR_TAG)$(EXE)
 RES_DEBUG_SRC := $(RES_DIR)/residual_tests.cpp $(RES_DIR)/residual.cpp $(RES_TIME_SRC) $(PERIODIC_SOURCES) $(CV_DIR)/cv.cpp $(MESH_SOURCE)/mesh.cpp source/io/lzma_stream.cpp $(RECONSTRUCTION_CPP)
 $(RES_DEBUG): $(RES_DEBUG_SRC) $(RES_HDR) $(RES_TIME_HEADERS) $(IO_HEADERS) $(LZMA_OBJECTS) $(RES_GPU) $(RES_TIME_GPU) $(EBR_CUDA_OBJECT)
+	$(call action,Compiling and linking,$@)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(EBR_FLAGS) $(RES_TEST_FLAGS) -O0 -g -D_GLIBCXX_DEBUG $(filter %.cpp %.o,$^) $(LDFLAGS) $(EBR_LIBS) $(LDLIBS) -o $@
 debug-test: residual-debug-test
 residual-debug-test: $(BIN)/$(notdir $(RES_DEBUG))
+	$(running_test)
 	"$(RES_DEBUG)"
 residual-cuda-test:
-ifeq ($(USE_CMD),1)
-	"$(MSBUILD)" msvs/aero.sln /t:residual_tests /m:1 /nr:false /nologo /v:minimal /p:Platform=x64 /p:Configuration=Release /p:WithCuda=true /p:RequireCudaTests=true $(MSBUILD_CUDA_FLAGS)
-else
-	$(MAKE) WITH_CUDA=1 $(BIN)/residual_tests_cuda1_omp$(WITH_OPENMP)$(EXE)
+	$(MAKE) KOKKOS_BACKEND=cuda $(BIN)/residual_tests_cuda1_omp$(WITH_OPENMP)$(EXE)
+	$(running_test)
 	"$(BIN)/residual_tests_cuda1_omp$(WITH_OPENMP)$(EXE)" --require-cuda
-endif
 $(RES_TEST) $(RES_DEBUG): qa/test_checks.h

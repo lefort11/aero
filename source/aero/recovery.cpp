@@ -36,14 +36,16 @@ using indexed_io::put_real;
 using number_codec::read_real;
 using number_codec::read_word;
 using number_codec::store_word;
-unsigned record_size(unsigned width) {
-    return 24 + 16 * width;
+// Версия 2 добавляет контрольную сумму и значение предыдущего dt после заголовка.
+unsigned records_start(bool history) { return header_size + (history ? 16u : 0u); }
+unsigned record_size(unsigned width, bool history) {
+    return 24 + (history ? 24 : 16) * width;
 }
-std::streamoff offset(Id id, unsigned width) {
-    const auto stride = record_size(width);
-    require(id <= (static_cast<Id>(std::numeric_limits<std::streamoff>::max()) - header_size) / stride,
+std::streamoff offset(Id id, unsigned width, bool history) {
+    const auto stride = record_size(width,history);
+    require(id <= (static_cast<Id>(std::numeric_limits<std::streamoff>::max()) - records_start(history)) / stride,
             "file too large");
-    return static_cast<std::streamoff>(header_size + id * stride);
+    return static_cast<std::streamoff>(records_start(history) + id * stride);
 }
 void seal(char* bytes, unsigned size) {
     store_word(bytes + size - 8, io::crc32(bytes, size - 8));
@@ -63,8 +65,8 @@ std::size_t component_offset(unsigned component) {
 }
 
 void decode_node(const OwnedNode& n, const char* row, unsigned width, std::vector<double>& state,
-                 std::vector<double>& initial) {
-    if (!intact(row, record_size(width)) || read_word(row) != n.id)
+                 std::vector<double>& initial, implicit::BdfHistory& history) {
+    if (!intact(row, record_size(width,history.dt>0.)) || read_word(row) != n.id)
         throw std::runtime_error("recovery: damaged record at node " + std::to_string(n.id));
     if (read_word(row + id_bytes) != n.representative)
         throw std::runtime_error("recovery: incompatible periodic mapping at node " + std::to_string(n.id));
@@ -75,21 +77,23 @@ void decode_node(const OwnedNode& n, const char* row, unsigned width, std::vecto
     for (unsigned k = 0; k < width; ++k) {
         state[begin + k] = read_real(row + component_offset(k));
         initial[begin + k] = read_real(row + component_offset(width + k));
+        if (history.dt>0.) history.previous[begin+k] = read_real(row+component_offset(2*width+k));
     }
 }
-void encode_node(const OwnedNode& n, char* row, unsigned width, const double* state, const double* initial) {
+void encode_node(const OwnedNode& n, char* row, unsigned width, const double* state, const double* initial, const double* previous) {
     store_word(row, n.id);
     store_word(row + id_bytes, n.representative);
     for (unsigned k = 0; k < width; ++k) {
         put_real(row + component_offset(k), state[k]);
         put_real(row + component_offset(width + k), initial[k]);
+        if (previous) put_real(row + component_offset(2*width+k),previous[k]);
     }
-    seal(row, record_size(width));
+    seal(row, record_size(width,previous!=nullptr));
 }
 
-Packet header(Id count, unsigned width, double gamma, const std::string& hash, Id step, double time) {
+Packet header(Id count, unsigned width, double gamma, const std::string& hash, Id step, double time, bool history) {
     Packet bytes{};
-    std::memcpy(bytes.data(), "AERORCV1", 8);
+    std::memcpy(bytes.data(), history ? "AERORCV2" : "AERORCV1", 8);
     store_word(&bytes[header_dimension], width - 2);
     store_word(&bytes[header_nodes], count);
     put_real(&bytes[header_gamma], gamma);
@@ -99,10 +103,11 @@ Packet header(Id count, unsigned width, double gamma, const std::string& hash, I
     seal(bytes.data(), header_size);
     return bytes;
 }
-Packet read_header(std::ifstream& in, Id count, unsigned width, double gamma, const std::string& hash) {
+Packet read_header(std::ifstream& in, Id count, unsigned width, double gamma, const std::string& hash, double& saved_dt) {
     Packet bytes{};
     in.read(bytes.data(), header_size);
-    require(in && !std::memcmp(bytes.data(), "AERORCV1", 8) && intact(bytes.data(), header_size),
+    const bool history = !std::memcmp(bytes.data(),"AERORCV2",8);
+    require(in && (history || !std::memcmp(bytes.data(), "AERORCV1", 8)) && intact(bytes.data(), header_size),
             "incomplete or damaged header");
     require(read_word(&bytes[header_dimension]) == width - 2 && read_word(&bytes[header_nodes]) == count &&
                 read_real(&bytes[header_gamma]) == gamma &&
@@ -111,8 +116,16 @@ Packet read_header(std::ifstream& in, Id count, unsigned width, double gamma, co
     require(read_word(&bytes[header_step]) && std::isfinite(read_real(&bytes[header_time])) &&
                 read_real(&bytes[header_time]) > 0,
             "invalid step or time");
+    saved_dt = 0.;
+    if (history) {
+        char extra[16];
+        in.read(extra,sizeof(extra));
+        require(in && intact(extra,sizeof(extra)),"damaged BDF2 time step");
+        saved_dt=read_real(extra);
+        require(saved_dt>0. && std::isfinite(saved_dt),"invalid BDF2 time step");
+    }
     in.seekg(0, std::ios::end);
-    require(in.tellg() == offset(count, width), "incomplete or damaged file length");
+    require(in.tellg() == offset(count, width, history), "incomplete or damaged file length");
     return bytes;
 }
 bool exists(const std::string& path) {
@@ -212,13 +225,13 @@ Recovery::Recovery(const RunSettings& run, const Processes& world, Id count, uns
 std::string Recovery::path(int slot) const {
     return run_.directories.output + "/recovery-" + std::to_string(slot) + ".bin";
 }
-bool Recovery::due(Id accepted, double t) const {
-    return run_.recovery_every_steps && (accepted % run_.recovery_every_steps == 0 || t == run_.final_time);
+bool Recovery::due(Id accepted, double t, bool final_field) const {
+    return accepted > 0 && run_.recovery_every_steps && (final_field || accepted % run_.recovery_every_steps == 0 || (!run_.steady() && t == run_.final_time));
 }
 void Recovery::restore(std::vector<double>& state, std::vector<double>& initial) {
     const int requested = run_.directories.recovery_slot;
     Id steps[2] = {};
-    double times[2] = {};
+    double times[2] = {}, saved_dt[2] = {};
     world_.local([&] {
         if (world_.rank)
             return;
@@ -229,7 +242,7 @@ void Recovery::restore(std::vector<double>& state, std::vector<double>& initial)
                 continue;
             try {
                 std::ifstream in(path(s), std::ios::binary);
-                const auto h = read_header(in, count_, width_, run_.gamma, hash_);
+                const auto h = read_header(in, count_, width_, run_.gamma, hash_, saved_dt[s]);
                 steps[s] = read_word(&h[header_step]);
                 times[s] = read_real(&h[header_time]);
             } catch (const std::exception& e) {
@@ -238,24 +251,29 @@ void Recovery::restore(std::vector<double>& state, std::vector<double>& initial)
         }
     });
     world_.broadcast(steps, 2, 0);
+    world_.broadcast(saved_dt, 2, 0);
     const int first = steps[1] > steps[0] ? 1 : 0;
     for (int s : {first, 1 - first}) {
         if (!steps[s])
             continue;
         try {
-            const unsigned stride = record_size(width_);
+            history.dt=saved_dt[s];
+            world_.local([&] {
+                history.previous.resize(history.dt>0. ? state.size() : 0);
+            });
+            const unsigned stride = record_size(width_,history.dt>0.);
             const auto decode = [&](const OwnedNode& n, char* row, std::size_t) {
-                decode_node(n, row, width_, state, initial);
+                decode_node(n, row, width_, state, initial, history);
             };
-            indexed_io::transfer(world_, path(s), indexed_io::Access::Read, stride, nodes_, {header_size},
+            indexed_io::transfer(world_, path(s), indexed_io::Access::Read, stride, nodes_, {records_start(history.dt>0.)},
                                  decode);
             // Перед выдачей восстановленного состояния проверяем, что заголовок всё ещё указывает на выбранный завершённый шаг.
             world_.local([&] {
                 if (world_.rank)
                     return;
                 std::ifstream in(path(s), std::ios::binary);
-                const auto h = read_header(in, count_, width_, run_.gamma, hash_);
-                require(read_word(&h[header_step]) == steps[s] && read_real(&h[header_time]) == times[s],
+                const auto h = read_header(in, count_, width_, run_.gamma, hash_, saved_dt[s]);
+                require(saved_dt[s]==history.dt && read_word(&h[header_step]) == steps[s] && read_real(&h[header_time]) == times[s],
                         "checkpoint changed during read");
             });
         } catch (const std::exception& e) {
@@ -267,7 +285,7 @@ void Recovery::restore(std::vector<double>& state, std::vector<double>& initial)
         time = times[s];
         last_ = s;
         step = steps[s];
-        require(time <= run_.final_time, "final_time precedes the saved time");
+        require(run_.steady() || time <= run_.final_time, "final_time precedes the saved time");
         if (!world_.rank)
             std::cout << "Recovered step " << step << " at time " << time << " from " << path(s) << '\n';
         if (!run_.output_zones.empty()) {
@@ -287,6 +305,7 @@ void Recovery::restore(std::vector<double>& state, std::vector<double>& initial)
 }
 void Recovery::save(Id accepted, double t, const std::vector<double>& state,
                     const std::vector<double>& initial) {
+    const bool has_history = history.dt>0.;
     const int slot = last_ == 0 ? 1 : 0;
     const std::string file = path(slot);
     // У незавершённой записи нет сигнатуры. Сначала фиксируем это на диске, затем записываем новые строки.
@@ -296,18 +315,19 @@ void Recovery::save(Id accepted, double t, const std::vector<double>& state,
         std::ofstream out(file, std::ios::binary | std::ios::trunc);
         Packet blank{};
         out.write(blank.data(), header_size);
-        out.seekp(offset(count_, width_) - 1);
+        out.seekp(offset(count_, width_, has_history) - 1);
         out.put(0);
         out.close();
         require(bool(out), "cannot prepare " + file);
         sync_file(file);
     });
-    const unsigned stride = record_size(width_);
+    const unsigned stride = record_size(width_,has_history);
     const auto encode = [&](const OwnedNode& n, char* row, std::size_t) {
         const auto begin = n.slot * width_;
-        encode_node(n, row, width_, state.data() + begin, initial.data() + begin);
+        encode_node(n, row, width_, state.data() + begin, initial.data() + begin,
+                    has_history ? history.previous.data()+begin : nullptr);
     };
-    indexed_io::transfer(world_, file, indexed_io::Access::Write, stride, nodes_, {header_size}, encode);
+    indexed_io::transfer(world_, file, indexed_io::Access::Write, stride, nodes_, {records_start(has_history)}, encode);
     // MPI_File_sync уже сбросил параллельную запись. Перед фиксацией заголовка сбрасываем также обычный файловый поток.
     world_.local([&] {
         if (world_.rank)
@@ -315,8 +335,14 @@ void Recovery::save(Id accepted, double t, const std::vector<double>& state,
         if (world_.size == 1)
             sync_file(file);
         std::fstream out(file, std::ios::in | std::ios::out | std::ios::binary);
-        const auto bytes = header(count_, width_, run_.gamma, hash_, accepted, t);
+        const auto bytes = header(count_, width_, run_.gamma, hash_, accepted, t, has_history);
         out.write(bytes.data(), header_size);
+        if (has_history) {
+            char extra[16];
+            put_real(extra,history.dt);
+            seal(extra,sizeof(extra));
+            out.write(extra,sizeof(extra));
+        }
         out.close();
         require(bool(out), "cannot commit " + file);
         sync_file(file);

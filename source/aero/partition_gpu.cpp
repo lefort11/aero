@@ -1,4 +1,4 @@
-#include "../cuda/check.h"
+#include "../parallel/device_check.h"
 #include "partition_gpu.h"
 #include "partition_report.h"
 #include <algorithm>
@@ -10,8 +10,8 @@
 
 namespace aero {
 namespace {
-void cuda_check(cudaError_t status) {
-    cuda_detail::checked(status, "MPI CUDA: ");
+void cuda_check(aero::gpu::Status status) {
+    gpu::checked(status, "MPI CUDA: ");
 }
 }
 // Замеряем рабочее ядро потока на одинаковых гранях с узловыми состояниями на всех GPU.
@@ -42,17 +42,17 @@ double PartitionGpu::measure_flux_rate(ResidualOptions options, std::size_t coun
     if (!sample.reserve(fit))
         return 0;
     layout();
-    check(cudaMemsetAsync(sample.grid_.bad, 0xff, sizeof(*sample.grid_.bad), nullptr));
+    check(aero::gpu::fill_async(sample.grid_.bad, 0xff, sizeof(*sample.grid_.bad), nullptr));
     const auto launch = [&] { residual_detail::gpu_face_fluxes(batch, sample.grid_.bad, nullptr); };
     launch();
-    cuda_check(cudaStreamSynchronize(nullptr));
+    cuda_check(aero::gpu::wait(nullptr));
     std::array<double, 5> seconds;
     constexpr unsigned repeats = 8;
     for (double& elapsed : seconds) {
         const auto start = std::chrono::steady_clock::now();
         for (unsigned i = 0; i < repeats; ++i)
             launch();
-        cuda_check(cudaStreamSynchronize(nullptr));
+        cuda_check(aero::gpu::wait(nullptr));
         elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     }
     sample.check_kernel("calibration");
@@ -99,7 +99,7 @@ void select_partition_gpu(const Processes& world, const std::vector<int>& device
     std::string physical, description;
     world.local([&] {
         int count = 0;
-        cuda_check(cudaGetDeviceCount(&count));
+        cuda_check(aero::gpu::count(&count));
         // Планировщик может выдать каждому процессу отдельную карту с одним и тем же локальным номером 0.
         const int slot = count == 1 && devices.size() == 1 ? 0 : node.local_rank;
         if (static_cast<std::size_t>(slot) >= devices.size())
@@ -107,9 +107,9 @@ void select_partition_gpu(const Processes& world, const std::vector<int>& device
         const int device = devices[slot];
         if (device >= count)
             throw std::invalid_argument("Unavailable CUDA device " + std::to_string(device));
-        cuda_check(cudaSetDevice(device));
+        cuda_check(aero::gpu::select(device));
         char bus[32]{};
-        cuda_check(cudaDeviceGetPCIBusId(bus, sizeof(bus), device));
+        cuda_check(aero::gpu::bus_id(bus, sizeof(bus), device));
         physical = std::to_string(node.leader) + "/" + bus;
         description = "rank " + std::to_string(world.rank) + " local_rank " +
                       std::to_string(node.local_rank) + " device " + std::to_string(device) + " node/PCI " +
@@ -128,15 +128,15 @@ void select_partition_gpu(const Processes& world, const std::vector<int>& device
             std::cout << "MPI CUDA placement: " << line << '\n';
     });
 }
-void PartitionGpu::check(cudaError_t status) {
+void PartitionGpu::check(aero::gpu::Status status) {
     cuda_check(status);
 }
 void PartitionGpu::synchronize() {
-    check(cudaStreamSynchronize(nullptr));
+    check(aero::gpu::wait(nullptr));
 }
 void query_gpu_memory(GpuMemoryFit& fit, const std::vector<double>& limits, const Processes& world) {
     std::size_t available = 0, total = 0;
-    cuda_check(cudaMemGetInfo(&available, &total));
+    cuda_check(aero::gpu::memory_info(&available, &total));
     fit.free_bytes = available;
     fit.budget = available - available / 20;
     if (!limits.empty()) {
@@ -150,18 +150,15 @@ void query_gpu_memory(GpuMemoryFit& fit, const std::vector<double>& limits, cons
 }
 PartitionGpu::Storage::~Storage() {
     if (base)
-        cudaFree(base);
+        aero::gpu::release(base);
 }
 void PartitionGpu::layout(residual_detail::Geometry g, const PartitionStencil& stencil,
                           const std::vector<MeshIndex>& computed, const std::vector<MeshIndex>& owned,
                           const double* volumes, std::size_t state_nodes, bool compact_buffer,
                           bool whole_mesh) {
-#ifdef AERO_WITH_KOKKOS
     const bool store_face_batch = g.packed.tiles != nullptr;
-#endif
     if (g.packed.tiles) {
         const auto count = (g.edges + 31) / 32;
-#ifdef AERO_WITH_KOKKOS
         // Один буфер обслуживает все стадии. Большую подобласть проходим частями:
         // отложенные веса не требуют дополнительной памяти пропорционально всей сетке.
         if (g.packed.order == 5 && g.stencil.mp5.weno && g.options.mp6_hybrid == 0) {
@@ -169,7 +166,6 @@ void PartitionGpu::layout(residual_detail::Geometry g, const PartitionStencil& s
             const auto faces = std::min<MeshIndex>(computed.size(), MeshIndex(Tile::batch_limit));
             g.packed.mp_work = storage_.allocate<Tile>((faces + Tile::width - 1) / Tile::width);
         }
-#endif
         if (g.packed.order == 5)
             g.packed.tiles = storage_.allocate(count, static_cast<const residual_detail::WenoEdgeTile<5>*>(g.packed.tiles));
         else
@@ -205,9 +201,7 @@ void PartitionGpu::layout(residual_detail::Geometry g, const PartitionStencil& s
     grid_.state = storage_.allocate<double>(state_nodes * width);
     if (compact_buffer)
         grid_.original = storage_.allocate<double>(owned.size() * (g.dim + 2));
-    minimum_ = storage_.allocate<residual_detail::DeviceCflMinimum>(1);
-    grid_.bad = minimum_ ? &minimum_->bad : nullptr;
-#ifdef AERO_WITH_KOKKOS
+    grid_.bad = storage_.allocate<partition_detail::Index>(1);
     // Выделяем запись в том же порядке при оценке памяти и при заполнении. После
     // резервирования поля обновляются на месте, поэтому их адреса сохраняются между стадиями.
     if (store_face_batch) {
@@ -215,16 +209,15 @@ void PartitionGpu::layout(residual_detail::Geometry g, const PartitionStencil& s
             grid_.initial, grid_.flux, nullptr, nullptr, false};
         device_faces_ = storage_.allocate(1, &batch);
     }
-#endif
 }
-bool PartitionGpu::reserve(GpuMemoryFit& fit) {
-    fit.required = storage_.used;
+bool PartitionGpu::reserve(GpuMemoryFit& fit, MeshIndex implicit_bytes) {
+    fit.required = partition_bytes(storage_.used, 1, implicit_bytes);
     if (fit.required > fit.budget)
         return false;
     void* memory = nullptr;
-    const auto status = cudaMalloc(&memory, storage_.used);
-    if (status == cudaErrorMemoryAllocation) {
-        cudaGetLastError();
+    const auto status = aero::gpu::allocate(&memory, storage_.used);
+    if (status == aero::gpu::Status::OutOfMemory) {
+
         return false;
     }
     check(status);
@@ -240,24 +233,22 @@ void PartitionGpu::upload_state(const std::vector<double>& state, const std::vec
     if (grid_.geometry.packed.normals)
         residual_detail::gpu_prepare_face_normals(grid_.geometry);
     if (!state.empty()) {
-        check(cudaMemcpy(grid_.state, state.data(), state.size() * sizeof(double), cudaMemcpyHostToDevice));
-        check(cudaMemcpy(grid_.initial, initial.data(), initial.size() * sizeof(double),
-                         cudaMemcpyHostToDevice));
+        check(aero::gpu::copy(grid_.state, state.data(), state.size() * sizeof(double), aero::gpu::Copy::ToDevice));
+        check(aero::gpu::copy(grid_.initial, initial.data(), initial.size() * sizeof(double),
+                         aero::gpu::Copy::ToDevice));
     }
     // Ядро меняет индекс только при ошибке. На обычной стадии процессору достаточно
     // дождаться ядра и прочитать закреплённое слово, без отдельной передачи PCIe.
     if (!error_index_.host()) {
         const auto status = error_index_.allocate(1);
-        if (status == cudaErrorMemoryAllocation)
-            cudaGetLastError();
-        else
+        if (status != aero::gpu::Status::OutOfMemory)
             check(status);
     }
     if (error_index_.device()) {
         *error_index_.host() = ~partition_detail::Index(0);
         grid_.bad = error_index_.device();
     } else {
-        check(cudaMemsetAsync(grid_.bad, 0xff, sizeof(*grid_.bad), nullptr));
+        check(aero::gpu::fill_async(grid_.bad, 0xff, sizeof(*grid_.bad), nullptr));
     }
 }
 void PartitionGpu::check_kernel(const char* phase) {
@@ -266,10 +257,15 @@ void PartitionGpu::check_kernel(const char* phase) {
         synchronize();
         bad = *error_index_.host();
     } else {
-        check(cudaMemcpy(&bad, grid_.bad, sizeof(bad), cudaMemcpyDeviceToHost));
+        check(aero::gpu::copy(&bad, grid_.bad, sizeof(bad), aero::gpu::Copy::ToHost));
     }
-    if (bad != ~partition_detail::Index(0))
+    if (bad != ~partition_detail::Index(0)) {
+        // Пробное поле предиктора может быть отклонено. Следующая проверка
+        // должна видеть ошибки нового запуска, поэтому сбрасываем отметку после чтения.
+        if (error_index_.device()) *error_index_.host() = ~partition_detail::Index(0);
+        else check(aero::gpu::fill_async(grid_.bad, 0xff, sizeof(*grid_.bad), nullptr));
         throw std::domain_error(std::string("MPI CUDA ") + phase + " at local index " + std::to_string(bad));
+    }
 }
 void PartitionGpu::fluxes() {
     residual_detail::gpu_face_fluxes({grid_.geometry, grid_.computed, grid_.computed_count, grid_.state,
@@ -279,7 +275,7 @@ void PartitionGpu::fluxes() {
 }
 double PartitionGpu::cfl(double courant) {
     return residual_detail::gpu_flux_cfl(
-        {grid_.geometry, grid_.flux, grid_.volumes, grid_.owned, grid_.owned_count}, courant, minimum_,
+        {grid_.geometry, grid_.flux, grid_.volumes, grid_.owned, grid_.owned_count}, courant,
         nullptr);
 }
 void PartitionGpu::update(explicit_detail::Stage stage, double dt, bool save_original) {
@@ -291,13 +287,19 @@ void PartitionGpu::download_owned(std::vector<double>& compact) const {
     if (compact.empty())
         return;
     // Отчёт снимается перед первой или после последней стадии. В эти моменты буфер начала шага RK свободен.
-    partition_detail::transfer(grid_, grid_.owned, grid_.owned_count, grid_.original, false, true);
+    partition_detail::transfer({grid_.geometry.components(), grid_.state, nullptr}, grid_.owned,
+                               grid_.owned_count, nullptr, grid_.original);
     check(
-        cudaMemcpy(compact.data(), grid_.original, compact.size() * sizeof(double), cudaMemcpyDeviceToHost));
+        aero::gpu::copy(compact.data(), grid_.original, compact.size() * sizeof(double), aero::gpu::Copy::ToHost));
+}
+double* PartitionGpu::expand_owned(const double* compact) const {
+    partition_detail::transfer({grid_.geometry.components(), krylov_input_, nullptr}, grid_.owned,
+                               grid_.owned_count, compact, nullptr);
+    return krylov_input_;
 }
 void PartitionGpu::download(std::vector<double>& state) const {
     if (!state.empty())
-        check(cudaMemcpy(state.data(), grid_.state, state.size() * sizeof(double), cudaMemcpyDeviceToHost));
+        check(aero::gpu::copy(state.data(), grid_.state, state.size() * sizeof(double), aero::gpu::Copy::ToHost));
 }
 PartitionGpu::Peer PartitionGpu::prepare(const std::vector<MeshIndex>& out, const std::vector<MeshIndex>& in,
                                          unsigned stride) {
@@ -307,23 +309,23 @@ PartitionGpu::Peer PartitionGpu::prepare(const std::vector<MeshIndex>& out, cons
     peer.buffer = storage_.allocate<double>(std::max(out.size(), in.size()) * stride);
     return peer;
 }
-void PartitionGpu::exchange(const Peer& peer, DoubleExchange::Buffer records, double* mapped, bool edges,
+void PartitionGpu::exchange(const Peer& peer, DoubleExchange::Buffer records, double* mapped, partition_detail::RecordField field,
                             bool pack) {
     if (!records.count)
         return;
-    const auto count = records.count / (grid_.geometry.dim + 2 + unsigned(edges));
+    const auto count = records.count / field.stride();
     const auto bytes = records.count * sizeof(double);
     // Для короткого сообщения ядро упаковки может напрямую обратиться к закреплённой памяти.
     if (mapped && bytes <= 128) {
-        partition_detail::transfer(grid_, pack ? peer.out : peer.in, count, mapped, edges, pack);
+        partition_detail::transfer(field, pack ? peer.out : peer.in, count, pack ? nullptr : mapped, pack ? mapped : nullptr);
         return;
     }
     if (pack) {
-        partition_detail::transfer(grid_, peer.out, count, peer.buffer, edges, true);
-        check(cudaMemcpyAsync(records.data, peer.buffer, bytes, cudaMemcpyDeviceToHost, nullptr));
+        partition_detail::transfer(field, peer.out, count, nullptr, peer.buffer);
+        check(aero::gpu::copy_async(records.data, peer.buffer, bytes, aero::gpu::Copy::ToHost, nullptr));
     } else {
-        check(cudaMemcpyAsync(peer.buffer, records.data, bytes, cudaMemcpyHostToDevice, nullptr));
-        partition_detail::transfer(grid_, peer.in, count, peer.buffer, edges, false);
+        check(aero::gpu::copy_async(peer.buffer, records.data, bytes, aero::gpu::Copy::ToDevice, nullptr));
+        partition_detail::transfer(field, peer.in, count, peer.buffer, nullptr);
     }
 }
 }

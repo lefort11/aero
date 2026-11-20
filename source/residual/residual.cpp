@@ -5,8 +5,8 @@
 #include <cmath>
 #include <limits>
 #include <numeric>
-#ifdef AERO_WITH_CUDA
-#include "../cuda/device_scope.h"
+#ifdef AERO_WITH_KOKKOS_GPU
+#include "../parallel/device_arrays.h"
 #endif
 
 namespace aero {
@@ -93,38 +93,16 @@ void failure(Index bad, const Geometry& g) {
         throw std::domain_error("residual: invalid boundary flux at piece " + std::to_string(bad - g.edges));
     throw std::domain_error("residual: nonfinite sum at node " + std::to_string(bad - g.faces));
 }
-#ifdef AERO_WITH_CUDA
-void check(cudaError_t e) {
-    if (e != cudaSuccess)
-        throw std::runtime_error(cudaGetErrorString(e));
+#ifdef AERO_WITH_KOKKOS_GPU
+void check(aero::gpu::Status e) {
+    if (e != aero::gpu::Status::Success)
+        throw std::runtime_error(aero::gpu::message(e));
 }
-struct DeviceStorage {
-    int device = -1;
-    std::vector<void*> allocations;
-    template <class T> T* allocate(std::size_t n, const T* src = nullptr) {
-        if (!n)
-            return nullptr;
-        allocations.push_back(nullptr);
-        check(cudaMalloc(&allocations.back(), n * sizeof(T)));
-        auto* p = static_cast<T*>(allocations.back());
-        if (src)
-            check(cudaMemcpy(p, src, n * sizeof(T), cudaMemcpyHostToDevice));
-        return p;
-    }
-    ~DeviceStorage() {
-        if (allocations.empty())
-            return;
-        cuda_detail::DeviceScope scope(device);
-        if (scope.status == cudaSuccess)
-            for (auto p : allocations)
-                cudaFree(p);
-    }
-};
 #endif
 }
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
 void launch_residual(Geometry, const double*, const double*, EulerFluxResult*, double*, double*, double*,
-                     Index*, cudaStream_t);
+                     Index*, aero::gpu::Stream);
 #endif
 
 namespace {
@@ -207,6 +185,7 @@ ResidualOptions residual_options(const std::string& variables, const std::string
 
 struct SpatialResidual::Impl {
     int device;                          // Отрицательное значение выбирает CPU.
+    ReconstructionScheme scheme;         // Якобиан первого порядка требует той же схемы у невязки.
     ReconstructionContext context;       // Владеет шаблоном и его копией на устройстве.
     std::vector<Surface> surfaces;       // Сначала внутренние рёбра, затем физические площадки.
     BoundaryPatches patches;             // Метки и правила физических границ.
@@ -216,18 +195,18 @@ struct SpatialResidual::Impl {
     Geometry g{};                        // Представление массивов на выбранном устройстве.
     void assemble(const double* u, const double* u0, double* r, double* edge, double* boundary, void* stream,
                   double* flux_seconds);
-#ifdef AERO_WITH_CUDA
-    DeviceStorage storage;
+#ifdef AERO_WITH_KOKKOS_GPU
+    gpu::DeviceArrays storage;
     EulerFluxResult* device_flux = nullptr;
-    DeviceCflMinimum* device_minimum = nullptr;
+    Index* device_error = nullptr; // Первый узел или поверхность с ошибкой расчёта.
 #endif
     Impl(ReconstructionStencil stencil, int id)
-        : device(id),
+        : device(id), scheme(stencil.data().scheme),
           context(std::move(stencil), id < 0 ? ReconstructionBackend::Cpu : ReconstructionBackend::Cuda,
                   id < 0 ? 0 : id) {
         if (id < -1)
             throw std::invalid_argument("residual: invalid device");
-#ifndef AERO_WITH_CUDA
+#ifndef AERO_WITH_KOKKOS_GPU
         if (id >= 0)
             throw std::invalid_argument("residual: CUDA is not enabled in this build");
 #endif
@@ -293,8 +272,8 @@ struct SpatialResidual::Impl {
             buffer.resize(surfaces.size());
             return;
         }
-#ifdef AERO_WITH_CUDA
-        cuda_detail::DeviceScope scope(device);
+#ifdef AERO_WITH_KOKKOS_GPU
+        gpu::DeviceScope scope(device);
         check(scope.status);
         storage.device = device;
         g.surfaces = storage.allocate(surfaces.size(), surfaces.data());
@@ -303,9 +282,9 @@ struct SpatialResidual::Impl {
         g.patches = upload_boundary_patches(storage, g.patches);
         g.stencil = context.device_view();
         device_flux = storage.allocate<EulerFluxResult>(surfaces.size());
-        device_minimum = storage.allocate<DeviceCflMinimum>(1);
+        device_error = storage.allocate<Index>(1);
         // Сразу после возврата сборка может читать геометрию в неблокирующем потоке CUDA.
-        check(cudaStreamSynchronize(nullptr));
+        check(aero::gpu::wait(nullptr));
 #endif
     }
 };
@@ -335,6 +314,19 @@ SpatialResidual::SpatialResidual(unsigned d, PeriodicView grid, ReconstructionSt
 }
 SpatialResidual::~SpatialResidual() {}
 
+int SpatialResidual::jacobian_geometry(Geometry& host, Geometry& active) const {
+    if (p_->scheme != ReconstructionScheme::FirstOrder || p_->g.options.solver != ResidualSolver::LocalLF)
+        throw std::invalid_argument("LF Jacobian requires first-order reconstruction and LF flux");
+    active = p_->g;
+    host = active;
+    host.surfaces = p_->surfaces.data();
+    host.offsets = p_->offsets.data();
+    host.incidence = p_->incidence.data();
+    host.patches = p_->patches.view();
+    host.stencil = p_->context.host_view();
+    return p_->device;
+}
+
 void SpatialResidual::assemble(const double* u, const double* u0, double* r, double* edge, double* boundary,
                                void* stream) {
     assemble(u, u0, r, edge, boundary, stream, nullptr);
@@ -359,12 +351,11 @@ double SpatialResidual::assemble_cfl(const double* u, const double* u0, double* 
     WallTimer timer(cfl_seconds);
     const auto& g = p_->g;
     double dt;
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
     if (p_->device >= 0) {
-        cuda_detail::DeviceScope scope(p_->device);
+        gpu::DeviceScope scope(p_->device);
         check(scope.status);
-        dt = gpu_flux_cfl({g, p_->device_flux, volumes, nullptr, g.nodes}, courant, p_->device_minimum,
-                          stream);
+        dt = gpu_flux_cfl({g, p_->device_flux, volumes, nullptr, g.nodes}, courant, stream);
     } else
 #endif
         dt = cpu_flux_cfl({g, p_->buffer.data(), volumes, nullptr, g.nodes}, courant);
@@ -376,17 +367,16 @@ void SpatialResidual::Impl::assemble(const double* u, const double* u0, double* 
                                      double* boundary, void* stream, double* flux_seconds) {
     if (!u || !r)
         throw std::invalid_argument("residual: missing input or output");
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
     if (device >= 0) {
-        cuda_detail::DeviceScope scope(device);
+        gpu::DeviceScope scope(device);
         check(scope.status);
-        const auto queue = static_cast<cudaStream_t>(stream);
-        Index* device_error = &device_minimum->bad;
-        check(cudaMemsetAsync(device_error, 0xff, sizeof(Index), queue));
+        const auto queue = static_cast<aero::gpu::Stream>(stream);
+        check(aero::gpu::fill_async(device_error, 0xff, sizeof(Index), queue));
         launch_residual(g, u, u0, device_flux, r, edge, boundary, device_error, queue);
         Index bad;
-        check(cudaMemcpyAsync(&bad, device_error, sizeof(bad), cudaMemcpyDeviceToHost, queue));
-        check(cudaStreamSynchronize(queue));
+        check(aero::gpu::copy_async(&bad, device_error, sizeof(bad), aero::gpu::Copy::ToHost, queue));
+        check(aero::gpu::wait(queue));
         if (bad != ~Index(0))
             failure(bad, g);
         return;

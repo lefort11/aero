@@ -151,7 +151,7 @@ FlowSummary FlowReport::measure_values(std::uint64_t step, const double* u) {
     return total;
 }
 void write_flow_summary(const FlowSummary& total, std::uint64_t step, double time, double cfl, double dt,
-                        unsigned dimension, std::ostream& out) {
+                        unsigned dimension, std::ostream& out, const double* newton_relative) {
     if (!(dt > 0 && std::isfinite(dt) && cfl > 0 && std::isfinite(cfl) && total.volume > 0))
         throw std::invalid_argument("flowreport: expected positive finite CFL, dt and volume");
     const unsigned width = dimension + 2, fields = width + 1;
@@ -160,8 +160,6 @@ void write_flow_summary(const FlowSummary& total, std::uint64_t step, double tim
         throw std::overflow_error("flowreport: energy residual overflow");
     std::ostringstream table;
     table.imbue(std::locale::classic());
-    table << "Flow report    Step = " << step << "    t = " << std::setprecision(12) << time
-          << "    CFL = " << std::setprecision(6) << cfl << "    dt = " << std::scientific << dt << '\n';
     // Время компьютера в момент формирования отчёта, отдельно от физического времени t.
     const std::time_t now = std::time(nullptr);
     std::tm local{};
@@ -172,6 +170,10 @@ void write_flow_summary(const FlowSummary& total, std::uint64_t step, double tim
 #endif
         table << "Local time = " << std::put_time(&local, "%Y-%m-%d %H:%M:%S");
     table << '\n';
+    table << "Flow report    Step = " << step << "    t = " << std::setprecision(12) << time
+          << "    CFL = " << std::setprecision(6) << cfl << "    dt = " << std::scientific << dt << '\n';
+    if (newton_relative)
+        table << "Newton relative residual, step " << step << ": " << *newton_relative << '\n';
     table << std::left << std::setw(9) << "Variable" << std::right << std::setw(15) << "Minimum"
           << std::setw(15) << "Maximum" << std::setw(20) << "Domain integral" << '\n';
     const char* names[] = {"rho", "ux", "uy", "uz", "p", "E"};

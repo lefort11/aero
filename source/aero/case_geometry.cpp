@@ -1,8 +1,8 @@
 #include "case_geometry.h"
 #include "startup.h"
 #include "../explicit/explicit.h"
-#ifdef AERO_WITH_CUDA
-#include "../cuda/runtime.h"
+#ifdef AERO_WITH_KOKKOS_GPU
+#include "../parallel/device_memory.h"
 #endif
 #include <fstream>
 #include <iostream>
@@ -41,10 +41,10 @@ void select_single_device(RunSettings& run) {
     if (device >= device_count) {
         throw std::invalid_argument("Unavailable CUDA device " + std::to_string(device));
     }
-#ifdef AERO_WITH_CUDA
-    const auto status = cudaSetDevice(device);
-    if (status != cudaSuccess) {
-        throw std::runtime_error(cudaGetErrorString(status));
+#ifdef AERO_WITH_KOKKOS_GPU
+    const auto status = aero::gpu::select(device);
+    if (status != aero::gpu::Status::Success) {
+        throw std::runtime_error(aero::gpu::message(status));
     }
 #endif
 }

@@ -3,9 +3,7 @@
 #include "bc.h"
 #include "../cv/cv.h"
 #include "../reconstruction/reconstruction.h"
-#ifndef __CUDACC_RTC__
 #include <array>
-#endif
 
 namespace aero {
 // Каждая запись описывает расчётное ребро, ориентированное как исходный представитель.
@@ -23,7 +21,6 @@ struct PeriodicView {
     const CvBoundary*
         boundary; // Только физические площадки. Поле node указывает номер степени свободы после склейки.
 };
-#ifndef __CUDACC_RTC__
 namespace periodic_detail {
 double match_tolerance(const std::vector<PeriodicPair>& pairs, double requested = 0);
 bool compatible_areas(const std::array<double, 3>& a, const std::array<double, 3>& b);
@@ -52,6 +49,5 @@ private:
     std::vector<PeriodicEdge> edges_;
     std::vector<CvBoundary> boundary_;
 };
-#endif
 }
 #endif

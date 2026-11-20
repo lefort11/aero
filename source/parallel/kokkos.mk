@@ -1,4 +1,4 @@
-# Варианты с Kokkos и без него получают разные объектные файлы даже при одинаковом компиляторе.
+# В этом каталоге размещаются объектные файлы и локальная установка Kokkos.
 override BUILD := $(BUILD)/kokkos
 # Внешняя установка должна соответствовать компилятору, ABI и WITH_OPENMP текущего проекта.
 ifeq ($(origin KOKKOS_PREFIX),undefined)
@@ -13,28 +13,46 @@ kokkos_build := $(abspath $(BUILD))/kokkos-build$(if $(filter Windows_NT,$(OS)),
 kokkos_inputs := third_party/kokkos-3.2.01.zip third_party/kokkos-3.2.01-compat.patch source/parallel/prepare_kokkos.py
 kokkos_stamp := $(kokkos_source)/.prepared
 $(kokkos_stamp): $(kokkos_inputs)
+	$(call action,Preparing,Kokkos sources)
 	python3 source/parallel/prepare_kokkos.py "$(kokkos_source)"
 	touch "$@"
-override CPPFLAGS += -DAERO_WITH_KOKKOS -isystem "$(KOKKOS_PREFIX)/include"
+override CPPFLAGS += -isystem "$(KOKKOS_PREFIX)/include"
 override LDLIBS += "$(kokkos_library)"
 # Каталог для объектов Aero создаётся после установки заголовков библиотеки.
 $(BUILD): | $(kokkos_library)
 ifeq ($(kokkos_bundled),1)
 $(kokkos_library): $(kokkos_stamp)
+	$(call action,Configuring,Kokkos)
 	cmake -S "$(kokkos_source)" -B "$(kokkos_build)" -G "Unix Makefiles" $(if $(filter Windows_NT,$(OS)),-DKokkos_ENABLE_LIBDL=OFF -DCMAKE_DEPENDS_USE_COMPILER=OFF) -DCMAKE_CXX_COMPILER="$(CXX)" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=11 -DCMAKE_CXX_STANDARD_REQUIRED=ON -DCMAKE_CXX_EXTENSIONS=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DKokkos_ENABLE_OPENMP=$(if $(filter 1,$(WITH_OPENMP)),ON,OFF) -DKokkos_ENABLE_SERIAL=$(if $(filter 1,$(WITH_OPENMP)),OFF,ON) -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_INSTALL_PREFIX="$(KOKKOS_PREFIX)"
-	+$(MAKE) -C "$(kokkos_build)" install
+	$(call action,Building,Kokkos host library)
+	+$(MAKE) -C "$(kokkos_build)" install $(if $(filter 1,$(V)),VERBOSE=1)
 endif
 
-ifeq ($(WITH_CUDA),1)
+ifeq ($(kokkos_gpu),1)
 kokkos_gpu_dir := $(abspath $(BUILD))/kokkos-device
 kokkos_module := $(if $(filter Windows_NT,$(OS)),aero_kokkos_cuda.dll,libaero_kokkos_cuda.so)
-KOKKOS_GPU_CXX ?= $(if $(filter Windows_NT,$(OS)),clang++,$(NVCC))
+ifeq ($(OS),Windows_NT)
+# Сначала ищем инструменты в среде пользователя. В рабочем дереве также
+# может быть локально распакован комплект MinGW для сборки Kokkos.
+local_clang := $(abspath build/kokkos-port/toolchain/mingw64/bin)/clang++.exe
+KOKKOS_GPU_CXX ?= $(or $(shell command -v clang++),$(wildcard $(local_clang)),clang++)
+else
+KOKKOS_GPU_CXX ?= $(NVCC)
+endif
 ifeq ($(STATIC_LINK),1)
 # Объекты GPU входят в исполняемый файл. На Windows LLD читает архив CUDA в формате MSVC.
 kokkos_gpu_archive := libaero_kokkos_device.a
 kokkos_gpu_flags := --static --archiver "$(AR)"
 ifeq ($(OS),Windows_NT)
 override LDFLAGS += -fuse-ld=lld
+ifeq ($(shell command -v ld.lld),)
+local_lld := $(abspath build/kokkos-port/static-link/mingw64/bin)
+ifneq ($(wildcard $(local_lld)/ld.lld.exe),)
+# Самому ld.lld нужна libLLVM из того же комплекта Clang. Дополняем PATH
+# только для дочерних процессов Make, сохраняя приоритет системных утилит.
+export PATH := $(PATH):$(local_lld):$(dir $(local_clang))
+endif
+endif
 # CUDA вызывает строковое форматирование UCRT из состава Windows 10/11.
 # Сначала разрешаем обычные функции через тот CRT, с которым собран текущий MinGW.
 kokkos_system_crt := $(if $(findstring ucrt,$(shell $(CXX) -print-file-name=libstdc++.a)),ucrtbase,msvcrt)
@@ -47,9 +65,10 @@ kokkos_gpu_archive := $(if $(filter Windows_NT,$(OS)),libaero_kokkos_cuda.a,$(ko
 endif
 ifeq ($(origin KOKKOS_DEVICE_LIBRARY),undefined)
 KOKKOS_DEVICE_LIBRARY := $(kokkos_gpu_dir)/$(kokkos_gpu_archive)
-kokkos_device_sources := source/parallel/build_kokkos_gpu.py source/parallel/device_work.cu $(wildcard source/*/*.h)
+kokkos_device_sources := source/parallel/build_kokkos_gpu.py $(wildcard source/parallel/*.cu source/*/*.h) qa/device_cases.cu qa/device_cases.h
 $(KOKKOS_DEVICE_LIBRARY): $(kokkos_stamp) $(kokkos_device_sources)
-	python3 source/parallel/build_kokkos_gpu.py --work "$(kokkos_gpu_dir)/objects" --source "$(kokkos_source)" --cuda "$(CUDA_HOME)" --arch "$(CUDA_ARCH)" --compiler "$(KOKKOS_GPU_CXX)" --host-compiler "$(CXX)" --output "$@" $(kokkos_gpu_flags)
+	$(call action,Building,Kokkos GPU library)
+	python3 source/parallel/build_kokkos_gpu.py --work "$(kokkos_gpu_dir)/objects" --source "$(kokkos_source)" --cuda "$(CUDA_HOME)" --arch "$(CUDA_ARCH)" --compiler "$(KOKKOS_GPU_CXX)" --host-compiler "$(CXX)" --output "$@" $(kokkos_gpu_flags) $(if $(filter 1,$(V)),--verbose)
 endif
 $(BUILD): | $(KOKKOS_DEVICE_LIBRARY)
 ifeq ($(STATIC_LINK),0)
@@ -66,4 +85,3 @@ endif
 bin-runtime: kokkos-runtime
 endif
 endif
-

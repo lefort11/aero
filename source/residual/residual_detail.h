@@ -177,7 +177,7 @@ struct Reader {
 // Применяет одну строку геометрических весов сразу ко всем компонентам. Способ чтения
 // узлов и весов задаёт вызывающая сторона: одна формула обслуживает оба формата шаблона.
 template <unsigned fixed_width = 0, class Values, class Weight>
-AERO_HOST_DEVICE AERO_KERNEL_INLINE bool sum_slope(unsigned width, Index count, const Values& values, const Weight& weight,
+KOKKOS_FORCEINLINE_FUNCTION bool sum_slope(unsigned width, Index count, const Values& values, const Weight& weight,
                                        double* slope) {
     const unsigned components = fixed_width ? fixed_width : width;
     for (unsigned c = 0; c < components; ++c)
@@ -206,7 +206,7 @@ AERO_HOST_DEVICE AERO_KERNEL_INLINE bool sum_slope(unsigned width, Index count, 
 // Для неполного плоского WENO тип переменных уже известен при выборе обхода.
 // В разреженной строке всё равно используем её собственные индексы и локальный порядок.
 template <unsigned linear_width = 0, bool characteristic_2d = false>
-AERO_HOST_DEVICE AERO_KERNEL_INLINE bool transformed_row(const Reader& reader, Index owner, const double* own,
+KOKKOS_FORCEINLINE_FUNCTION bool transformed_row(const Reader& reader, Index owner, const double* own,
                                              const Index* offsets, const Index* nodes, const double* weights,
                                              Index row, double* out, unsigned stride) {
     const Index begin = offsets[row];
@@ -244,7 +244,7 @@ AERO_HOST_DEVICE AERO_KERNEL_INLINE bool transformed_row(const Reader& reader, I
 // Сохраняет для каждой компоненты строки одной стороны в порядке, принятом
 // в nonlinear_increment: центральная, ближняя, противоположная ближняя и дальняя.
 template <bool characteristic_2d = false>
-AERO_HOST_DEVICE AERO_KERNEL_INLINE bool read_side_slopes(const Reader& reader, Index row, const double* own,
+KOKKOS_FORCEINLINE_FUNCTION bool read_side_slopes(const Reader& reader, Index row, const double* own,
                                                            double* slopes) {
     const auto& st = reader.g.stencil;
     for (unsigned k = 0; k < weno_slope_count(st.weno_order[row]); ++k)
@@ -262,7 +262,7 @@ AERO_HOST_DEVICE inline void side_increments(const ReconstructionStencilView& st
 }
 
 template <bool characteristic_2d = false>
-AERO_HOST_DEVICE AERO_KERNEL_INLINE bool transformed_weno_increment(const Reader& reader, Index row, const double* own,
+KOKKOS_FORCEINLINE_FUNCTION bool transformed_weno_increment(const Reader& reader, Index row, const double* own,
                                                                     double* out) {
     const auto& st = reader.g.stencil;
     if (!st.weno_order[row])
@@ -299,7 +299,7 @@ AERO_HOST_DEVICE inline void blend_ebr_traces(EdgeTraces& traces, unsigned width
 // Приращение схемы вдвое больше сдвига от узла к середине ребра.
 // При работе с волнами сначала переводим только приращение обратно в консервативные переменные.
 template <unsigned fixed_width = 0, class Basis>
-AERO_HOST_DEVICE AERO_KERNEL_INLINE bool trace_from_increment(unsigned width, const Basis* basis, const double* own,
+KOKKOS_FORCEINLINE_FUNCTION bool trace_from_increment(unsigned width, const Basis* basis, const double* own,
                                                   double* increment, bool right, double* trace) {
     if (basis && euler_detail::expand_characteristic<fixed_width>(width, *basis, increment, increment)
                      != EulerStatus::Success)
@@ -375,7 +375,7 @@ AERO_HOST_DEVICE inline bool hybrid_edge_traces(const Reader& reader, Index edge
 
 // Граница с узловыми следами уже обработана в integrated_edge_flux. Здесь обе стороны используют шаблон.
 template <unsigned linear_width = 0, bool characteristic_2d = false>
-AERO_HOST_DEVICE AERO_KERNEL_INLINE bool reconstruct_edge_traces(const Reader& reader, Index edge, EdgeTraces& traces) {
+KOKKOS_FORCEINLINE_FUNCTION bool reconstruct_edge_traces(const Reader& reader, Index edge, EdgeTraces& traces) {
     const auto& stencil = reader.g.stencil;
     if (edge >= stencil.edge_count || !stencil.row_owner || !stencil.offsets)
         return false;
@@ -424,7 +424,7 @@ AERO_HOST_DEVICE inline double limit_ratio(double base, double value, const Resi
 
 // Вне абсолютных границ плотности или давления используем узловое состояние.
 // Внутри допустимого диапазона ограничиваем все примитивные переменные одним коэффициентом смешения.
-AERO_HOST_DEVICE AERO_KERNEL_INLINE bool limit_trace(unsigned d, const ResidualOptions& o, const double* node,
+KOKKOS_FORCEINLINE_FUNCTION bool limit_trace(unsigned d, const ResidualOptions& o, const double* node,
                                          double* trace, const double* area, double* reconstructed_flux,
                                          const EulerState* known_base = nullptr, EulerState* limited_gas = nullptr) {
     if (d < 1 || d > 3)
@@ -500,7 +500,7 @@ AERO_HOST_DEVICE inline bool integrate_flux(unsigned width, double measure, Eule
 
 // Решатель использует скорости и давления, которые уже вычислены при ограничении следов.
 template <bool roe_2d = false, bool states_only = false>
-AERO_HOST_DEVICE AERO_KERNEL_INLINE bool solve_edge_flux(const Geometry& g, const Surface& surface,
+KOKKOS_FORCEINLINE_FUNCTION bool solve_edge_flux(const Geometry& g, const Surface& surface,
                                               const double* left, const double* right,
                                               const euler_detail::InterfaceGas& gas, const EdgeTraces* physical,
                                               EulerFluxResult& out) {
@@ -550,7 +550,7 @@ AERO_HOST_DEVICE inline bool edge_gas(const Geometry& g, const Surface& surface,
 
 // Ограничиваем след каждой стороны относительно своего узла. В тот же момент получаем газ для потока.
 template <bool roe_2d = false, bool states_only = false>
-AERO_HOST_DEVICE AERO_KERNEL_INLINE bool finish_edge_flux(const Geometry& g, const Surface& surface, const double* begin,
+KOKKOS_FORCEINLINE_FUNCTION bool finish_edge_flux(const Geometry& g, const Surface& surface, const double* begin,
                                               const double* end, const euler_detail::InterfaceGas& base,
                                               EdgeTraces& state, EdgeTraces* physical, EulerFluxResult& out) {
     const unsigned dim = roe_2d ? 2 : g.dim;
@@ -569,7 +569,7 @@ AERO_HOST_DEVICE AERO_KERNEL_INLINE bool finish_edge_flux(const Geometry& g, con
 
 // Решает, нужен ли базис Роу для реконструкции или только проверка допустимости газа.
 template <bool roe_2d, bool nodal_only>
-AERO_HOST_DEVICE AERO_KERNEL_INLINE bool prepare_edge_basis(const Geometry& g, const Surface& surface,
+KOKKOS_FORCEINLINE_FUNCTION bool prepare_edge_basis(const Geometry& g, const Surface& surface,
                                                             const euler_detail::InterfaceGas& base,
                                                             EulerRoeBasis& basis) {
     // При узловых следах поток Роу сам проверяет базис. Для характеристического LF проверяем его здесь.
@@ -585,7 +585,7 @@ AERO_HOST_DEVICE AERO_KERNEL_INLINE bool prepare_edge_basis(const Geometry& g, c
 }
 
 template <bool roe_2d = false, bool nodal_only = false, unsigned linear_width = 0, bool characteristic_2d = false>
-AERO_HOST_DEVICE AERO_KERNEL_INLINE bool integrated_edge_flux(const Geometry& g, Index edge, const double* field,
+KOKKOS_FORCEINLINE_FUNCTION bool integrated_edge_flux(const Geometry& g, Index edge, const double* field,
                                                   EulerFluxResult& out) {
     const Surface& surface = g.surfaces[edge];
     const double* begin = g.node_row(field, surface.begin);

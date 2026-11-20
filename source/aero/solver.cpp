@@ -3,7 +3,7 @@
 #include "partition_state.h"
 #include "mpi_balance.h"
 #include "partition_operator.h"
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
 #include "partition_gpu.h"
 #endif
 #include "time_loop.h"
@@ -29,10 +29,10 @@ using Id = MeshIndex;
 
 // Собирает локальные измерения и печатает один отчёт за шаг на процессе 0.
 void report_step(const Processes& world, const FlowSummary& local, unsigned dimension, std::uint64_t step,
-                 double time, double cfl, double dt) {
+                 double time, double cfl, double dt, const double* newton_relative) {
     std::string message;
     if (world.size == 1) {
-        write_flow_summary(local, step, time, cfl, dt, dimension, std::cout);
+        write_flow_summary(local, step, time, cfl, dt, dimension, std::cout, newton_relative);
         return;
     }
     world.local([&] {
@@ -71,7 +71,7 @@ void report_step(const Processes& world, const FlowSummary& local, unsigned dime
             }
             total.merge(part, dimension + 3);
         }
-        write_flow_summary(total, step, time, cfl, dt, dimension, std::cout);
+        write_flow_summary(total, step, time, cfl, dt, dimension, std::cout, newton_relative);
     });
 }
 
@@ -80,8 +80,12 @@ class PartitionStepper {
 public:
     // Оператор и поля принадлежат расчёту и используются всеми стадиями.
     PartitionStepper(PartitionOperator& op, PartitionState& fields, const Processes& world,
-                     explicit_detail::Stages stages)
-        : op_(op), fields_(fields), world_(world), stages_(stages) {}
+                     const RunSettings& run)
+        : op_(op), fields_(fields), world_(world), run_(run),
+          stages_(run.uses_implicit_time() ? explicit_detail::Stages{} :
+                  explicit_detail::stages_for(explicit_detail::scheme_from_name(run.time_scheme))) {}
+
+    bool needs_compact_buffer() const { return stages_.count > 1 || run_.flowreport_every; }
 
     // Для отчёта каждый процесс учитывает только объёмы узлов, которыми владеет.
     void prepare_report(const RunSettings& run, unsigned dimension, const double* volumes) {
@@ -106,16 +110,56 @@ public:
 
     // Первые потоки нужны и для CFL, и для обновления решения на первой стадии.
     double prepare_first_stage(double cfl, SolverTimings& timing) {
-        assemble_fluxes(timing);
+        if (!accepted_fluxes_) assemble_fluxes(timing);
         WallTimer timer(timing.counter(SolverTimings::Cfl));
         return op_.cfl_step(cfl);
     }
 
     // Выполняет стадии выбранной схемы. После каждой стадии соседи получают обновлённые узлы.
     void advance(const TimeStep& step, SolverTimings& timing) {
+        if (!run_.uses_implicit_time()) {
+            advance_explicit(step, timing);
+            return;
+        }
+        if (step.reporting) world_.local([&] { capture_report(step); });
+        try {
+            newton_ = op_.advance_bdf(fields_.current, fields_.initial, step.dt,
+                                       run_.implicit_settings, timing);
+            // Критерий Ньютона проверен по потокам принятого поля. До следующего CFL поле сохраняется.
+            accepted_fluxes_ = true;
+        } catch (const std::exception& e) {
+            throw std::runtime_error(std::string(run_.implicit_settings.second_order ? "BDF2 step " : "BDF1 step ") + std::to_string(step.number) + ": " + e.what());
+        }
+        if (step.reporting) world_.local([&] { finish_report(step); });
+    }
+
+    // Даже процесс без собственных узлов участвует в сборе общей сводки.
+    void write_report(const TimeStep& step, unsigned dimension, double cfl) const {
+        report_step(world_, summary_, dimension, step.number, step.end, cfl, step.dt,
+                    run_.uses_implicit_time() ? &newton_.relative_residual : nullptr);
+    }
+
+private:
+    // Сохраняем энергию перед первой стадией и измеряем её изменение после последней.
+    // В MPI обе операции выполняются внутри уже существующей синхронизации стадии.
+    void capture_report(const TimeStep& step) {
+        if (!step.reporting || !report_) return;
+        op_.copy_owned(fields_.current, owned_state_);
+        report_->capture(step.number, owned_state_);
+    }
+    void finish_report(const TimeStep& step) {
+        if (!step.reporting || !report_) return;
+        op_.copy_owned(fields_.current, owned_state_);
+        summary_ = report_->measure(step.number, owned_state_);
+    }
+    void advance_explicit(const TimeStep& step, SolverTimings& timing) {
         const auto assemble = [&](double) { assemble_fluxes(timing); };
         const auto update = [&](explicit_detail::StepStage stage) {
-            world_.local([&] { update_stage(stage, step, timing); });
+            world_.local([&] {
+                if (stage.first()) capture_report(step);
+                update_stage(stage, step, timing);
+                if (stage.last()) finish_report(step);
+            });
         };
         const auto exchange = [&] {
             if (world_.size > 1) {
@@ -126,39 +170,23 @@ public:
                                         explicit_detail::FirstResidual::Prepared, assemble, update, exchange);
     }
 
-    // Даже процесс без собственных узлов участвует в сборе общей сводки.
-    void write_report(const TimeStep& step, unsigned dimension, double cfl) const {
-        report_step(world_, summary_, dimension, step.number, step.end, cfl, step.dt);
-    }
-
-private:
     // Пересчитывает потоки по текущим полям и согласует их на границах подобластей.
     void assemble_fluxes(SolverTimings& timing) {
         op_.assemble_fluxes(fields_.current, fields_.initial, timing);
     }
 
-    // Снимки до первой и после последней стадии дают изменение полей за целый шаг.
+    // Для SSPRK3 сохраняем U_n в начале шага и используем его на следующих стадиях.
     void update_stage(explicit_detail::StepStage stage, const TimeStep& step, SolverTimings& timing) {
-        const bool measure = step.reporting && report_;
-        if (stage.first() && measure) {
-            op_.copy_owned(fields_.current, owned_state_);
-            report_->capture(step.number, owned_state_);
-        }
-        {
-            WallTimer timer(timing.counter(SolverTimings::Update));
-            // При обновлении на месте старое U_n понадобится во второй и третьей стадиях SSPRK3.
-            op_.update_owned(stage.formula, owned_state_, step.dt, fields_.current,
-                             stage.save_start_for_later());
-        }
-        if (stage.last() && measure) {
-            op_.copy_owned(fields_.current, owned_state_);
-            summary_ = report_->measure(step.number, owned_state_);
-        }
+        WallTimer timer(timing.counter(SolverTimings::Update));
+        op_.update_owned(stage.formula, owned_state_, step.dt, fields_.current, stage.save_start_for_later());
     }
 
     PartitionOperator& op_;              // Потоки, обновление узлов и обмен с соседями.
     PartitionState& fields_;             // Исходное и текущее состояния подобласти.
     const Processes& world_;             // Процессы, участвующие в общем шаге.
+    const RunSettings& run_;             // Схема по времени, допуски и выбранная карта.
+    bool accepted_fluxes_ = false; // После чтения начального поля потоки ещё предстоит вычислить.
+    implicit::NewtonResult newton_{};    // Итог последнего принятого неявного шага.
     explicit_detail::Stages stages_;     // Коэффициенты и число стадий схемы по времени.
     std::unique_ptr<FlowReport> report_; // Измерения на узлах этого процесса.
     std::vector<double> owned_state_;    // Буфер для стадий и снимков собственных узлов.
@@ -219,7 +247,7 @@ prepare_partition_operator(const RunSettings& run, const ReconstructionOptions& 
     return op;
 }
 
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
 // Сначала все карты пробуют зарезервировать память. При отказе хотя бы одной карты
 // вызывающий код освободит пробные буферы и повторит разбиение сетки.
 bool prepare_gpu_memory(PartitionOperator& op, const MeshPartition& part, const RunSettings& run,
@@ -233,7 +261,7 @@ bool prepare_gpu_memory(PartitionOperator& op, const MeshPartition& part, const 
         }
         fit.first = part.first_leaf;
         fit.end = part.end_leaf;
-        op.reserve_gpu(compact, fit);
+        op.reserve_gpu(compact, fit, run.uses_implicit_time() ? &run.implicit_settings : nullptr);
     });
     if (single) {
         if (fit.failed) {
@@ -277,6 +305,8 @@ void integrate_partition(const RunSettings& run, const Processes& world, unsigne
                          PartitionOutput& output, Recovery* recovery) {
     StepOperations operations;
     operations.cfl_step = [&](SolverTimings& timing) { return stepper.prepare_first_stage(run.cfl, timing); };
+    if (run.steady())
+        operations.steady_residual = [&] { return op.steady_residual(fields.current, fields.initial); };
     operations.advance = [&](const TimeStep& step, SolverTimings& timing) { stepper.advance(step, timing); };
     operations.output_state = [&]() -> const std::vector<double>& {
         if (run.use_cuda) {
@@ -284,9 +314,13 @@ void integrate_partition(const RunSettings& run, const Processes& world, unsigne
         }
         return fields.current;
     };
+    if (run.implicit_settings.second_order)
+        operations.checkpoint_history = [&](implicit::BdfHistory& history) {
+            world.local([&] { op.implicit_step().export_history(history); });
+        };
     operations.report = [&](const TimeStep& step) { stepper.write_report(step, dimension, run.cfl); };
-    operations.write_fields = [&](const TimeStep& step, const std::vector<double>& snapshot) {
-        output.write(step.number, step.end, snapshot);
+    operations.write_fields = [&](const TimeStep& step, const std::vector<double>& snapshot, bool final_field) {
+        output.write(step.number, step.end, snapshot, final_field);
     };
     integrate_time(run, world, output.schedule, recovery, fields.initial, operations);
 }
@@ -295,7 +329,7 @@ void integrate_partition(const RunSettings& run, const Processes& world, unsigne
 // Возвращает -1, если для MPI с CUDA нужно заново распределить сетку по картам.
 int run_partition(RunSettings run, const ReconstructionOptions& reconstruction, const Processes& world,
                   const LeafLayout& layout, GpuMemoryFit* gpu, bool first_attempt, bool archive) {
-#ifndef AERO_WITH_CUDA
+#ifndef AERO_WITH_KOKKOS_GPU
     (void)gpu;
 #endif
     const bool reconstruct = reconstruction.scheme != ReconstructionScheme::FirstOrder;
@@ -316,22 +350,21 @@ int run_partition(RunSettings run, const ReconstructionOptions& reconstruction, 
     const bool periodic = geometry.periodic();
     auto& seam = geometry.seam;
     const auto frame = momentum_frame(mesh, world, &part);
-    const auto stages = explicit_detail::stages_for(explicit_detail::scheme_from_name(run.time_scheme));
     PartitionState fields;
     std::uint64_t stencil_peak = 0;
     auto op = prepare_partition_operator(run, reconstruction, world, part, geometry, frame, std::move(input),
                                          reconstruct);
-    PartitionStepper stepper(*op, fields, world, stages);
+    PartitionStepper stepper(*op, fields, world, run);
     if (!single) {
-        op->connect(run.use_cuda);
+        op->connect(run.use_cuda, run.uses_implicit_time());
     }
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
     GpuMemoryFit single_fit;
     if (single && run.use_cuda) {
         gpu = &single_fit;
     }
     if (gpu) {
-        const bool compact = stages.count > 1 || run.flowreport_every;
+        const bool compact = stepper.needs_compact_buffer();
         if (!prepare_gpu_memory(*op, part, run, world, compact, *gpu)) {
             return -1;
         }
@@ -373,7 +406,7 @@ int run_partition(RunSettings run, const ReconstructionOptions& reconstruction, 
         if (!run.directories.recover) {
             fields.start_from_initial(part, geometry.periodic_partition());
         }
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
         if (gpu) {
             op->upload_state(fields.current, fields.initial);
             // Замер цикла начинается после завершения начальной загрузки на карту.
@@ -381,6 +414,10 @@ int run_partition(RunSettings run, const ReconstructionOptions& reconstruction, 
                 PartitionGpu::synchronize();
         }
 #endif
+        if (run.implicit_settings.second_order && recovery && recovery->history.dt > 0.) {
+            op->implicit_step().import_history(recovery->history);
+        }
+        if (recovery) recovery->history = implicit::BdfHistory{};
         output.reset(
             new PartitionOutput(run, part, file_layout, world, base, seam.node_dof, op->state_nodes()));
     });
@@ -395,7 +432,7 @@ int run_partition(RunSettings run, const ReconstructionOptions& reconstruction, 
 
 int calculate_case(RunSettings run, const ReconstructionOptions& reconstruction, const Processes& world,
                    bool archive) {
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
     if (world.size > 1 && run.use_cuda) {
         select_partition_gpu(world, run.devices);
         GpuPlacement gpu;

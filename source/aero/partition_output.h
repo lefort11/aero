@@ -31,7 +31,7 @@ public:
                     MeshIndex state_nodes);
 
     // Записывает назначенные зоны из одного уже доступного на CPU состояния.
-    void write(std::uint64_t step, double time, const std::vector<double>& state);
+    void write(std::uint64_t step, double time, const std::vector<double>& state, bool final_field = false);
 
 private:
     const Processes& world_;            // Участники коллективной записи полей.

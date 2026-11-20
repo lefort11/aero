@@ -380,20 +380,11 @@ host_view() содержит адреса CPU; device_view() -- адреса GPU
 текущее устройство вызывающего при получении view. Не разрушайте контекст,
 пока использующие его CUDA-ядра не завершились.
 
-Пример ядра ровно для одной стороны (полный рабочий вариант: one_side_kernel
-в reconstruction_cuda_tests.cu):
-  __global__ void one_side(aero::ReconstructionStencilView s,
-      aero::ReconstructionIndex edge, aero::ReconstructionSide side,
-      const double* own, aero::ReconstructionIndex components,
-      aero::ReconstructionFieldView neighbours, double* increment2) {
-      aero::reconstruct_increment2(s, edge, side, own, components,
-                                  neighbours, increment2);
-  }
-  // Верхний уровень: one_side<<<1,1,0,stream>>>(...).
-own, neighbours.values, increment2 и все адреса в s здесь должны быть устройственными.
-Для большого расчета можно назначить поток CUDA на одну сторону и вызывать ту же
-функцию внутри собственного ядра обхода; запускать отдельное ядро на каждое ребро
-не требуется. std::map из CPU-примера на GPU не переносится: нужен device-callable accessor.
+Пример для одной стороны ребра приведён в one_side_kernel в qa/device_cases.cu.
+Функция вызывает reconstruct_increment2 внутри параллельного цикла Kokkos.
+Значения в узле, соседние значения, шаблон и выходной массив должны быть
+доступны исполнителю. В том же файле reconstruct_kernel обрабатывает сразу
+все стороны рёбер за один параллельный обход.
 В режиме AERO_RECONSTRUCTION_KERNEL_ONLY общие заголовки не подключают STL;
 это также сохраняет совместимость с используемой связкой nvcc/MSVC.
 
@@ -412,35 +403,11 @@ GNU Make (CPU; строгий -std=c++11 -pedantic-errors):
 
 Linux CUDA, с согласованными компиляторами host C++ и nvcc:
   make reconstruction-cuda-test CUDA_HOME=/usr/local/cuda CUDA_ARCH=86
-  make test WITH_CUDA=1
+  make test KOKKOS_BACKEND=cuda
 В Linux необходим доступ загрузчика к lib64 CUDA. Этот путь сборки добавлен,
 но в текущей Windows-сессии Linux не проверялся.
 
-В терминале MSYS2 тест CUDA собирается через g++ и NVRTC:
-  make reconstruction-cuda-test
-Для нативного mingw32-make доступна сборка через MSBuild:
-  mingw32-make reconstruction-cuda-test MSBUILD="полный путь к MSBuild.exe"
-
-MSVS: проекты aero_reconstruction и reconstruction_tests в msvs/aero.sln.
-По умолчанию CPU; OpenMP включен. CUDA включается свойством WithCuda=true.
-CudaToolkitDir по умолчанию CUDA_PATH, CudaArchitecture по умолчанию 86.
-Стандартный runtime CUDA копируется рядом с CUDA-сборкой для запуска вне PATH.
-Пример из Developer Command Prompt:
-  MSBuild msvs\aero.sln /t:reconstruction_tests /p:Configuration=Release /p:Platform=x64 /p:WithCuda=true /p:RunReconstructionTests=true /p:RequireCudaTests=true
-Для Debug заменить Configuration. Для последовательного CPU: WithOpenMP=false.
-Без RequireCudaTests тесты явно сообщают о пропуске GPU при его отсутствии;
-с RequireCudaTests=true отсутствие GPU считается ошибкой проверки.
-
-На проверенной машине CUDA 12.3 не поддерживает установленные MSVC штатно.
-Для экспериментальной проверки использован MSVC 14.44.35207 с явным обходом:
-  /p:VCToolsVersion=14.44.35207 /p:AllowUnsupportedCudaHostCompiler=true
-В Make эти параметры передаются через MSBUILD_CUDA_FLAGS="...".
-Это включает -allow-unsupported-compiler и _ALLOW_COMPILER_AND_STL_VERSION_MISMATCH.
-Обход по умолчанию выключен; предпочтительна официально совместимая пара
-toolkit/host-компилятор. Успех тестов не делает эту пару официально поддержанной.
-MSVC не имеет режима C++11, поэтому использует минимальный stdcpp14; код остается
-в подмножестве C++11, проверяемом GCC. nvcc на Windows предупреждает, что флаг
--std=c++11 не применяется к MSVC. Новые возможности C++14 в модуле не используются.
+В MSYS2 выполните make reconstruction-cuda-test для обязательной проверки GPU. Проекты aero_reconstruction и reconstruction_tests в msvs/aero.sln используют тот же GNU Make. В MSBuild для выбора GPU укажите /p:KokkosBackend=cuda.
 
 Тесты проверяют формулу EBR на нелинейных данных, реальные виртуальные точки
 в 2D/3D, константы и аффинные поля, неравномерность, ориентацию, невыпуклые
@@ -466,5 +433,5 @@ MSVC не имеет режима C++11, поэтому использует м�
 отдельный вектор своего узла, accessor только выбранного шаблона, обе стороны
 ребра, граничные понижения, запись только components значений, прямые вызовы
 EBR/WENO, некорректные аргументы без записи в выход, отсутствие чтений FirstOrder.
-На каждой GPU отдельное ядро <<<1,1>>> проверяет одну сторону и защитные значения
+На каждой GPU отдельное вызов Kokkos проверяет одну сторону и защитные значения
 вокруг выхода; значение своего узла в accessor специально заменено NaN.

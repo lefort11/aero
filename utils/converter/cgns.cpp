@@ -168,24 +168,28 @@ class CgnsZone {
             if (!have[axis])
                 throw MeshError("CGNS: Cartesian CoordinateX/Y/Z arrays required");
     }
+    // От первого узла идём вдоль строки. В 2D обходим нижнюю грань по контуру,
+    // а в 3D повторяем этот обход на слой выше в том же порядке.
+    detail::Nodes structured_cell_nodes(MeshIndex a, MeshIndex row, MeshIndex layer) const {
+        if (dimension == 1)
+            return {a, a + 1};
+        if (dimension == 2)
+            return {a, a + 1, a + row + 1, a + row};
+        return {a,         a + 1,         a + row + 1,         a + row,
+                a + layer, a + layer + 1, a + layer + row + 1, a + layer + row};
+    }
+
     // Восстанавливаем узлы отрезков, четырёхугольников или гексаэдров по шагам строки и слоя.
     void add_structured_cells(detail::Builder& builder) {
         const cgsize_t ni = size[0], nj = dimension >= 2 ? size[1] : 1, nk = dimension >= 3 ? size[2] : 1;
+        const MeshIndex row = static_cast<MeshIndex>(ni), layer = row * static_cast<MeshIndex>(nj);
+        const int cell_type = dimension == 1 ? 1 : (dimension == 2 ? 3 : 5);
         for (cgsize_t k = 1; k < (dimension >= 3 ? nk : 2); ++k)
             for (cgsize_t j = 1; j < (dimension >= 2 ? nj : 2); ++j)
                 for (cgsize_t i = 1; i < ni; ++i) {
                     const cgsize_t p[3] = {i, j, k};
-                    const MeshIndex a = structured_node(p, size, dimension), row = static_cast<MeshIndex>(ni),
-                                    layer = row * static_cast<MeshIndex>(nj);
-                    detail::Nodes nodes;
-                    if (dimension == 1)
-                        nodes = {a, a + 1};
-                    else if (dimension == 2)
-                        nodes = {a, a + 1, a + row + 1, a + row};
-                    else
-                        nodes = {a,         a + 1,         a + row + 1,         a + row,
-                                 a + layer, a + layer + 1, a + layer + row + 1, a + layer + row};
-                    builder.cell(detail::cell_faces(dimension == 1 ? 1 : (dimension == 2 ? 3 : 5), nodes));
+                    const MeshIndex a = structured_node(p, size, dimension);
+                    builder.cell(detail::cell_faces(cell_type, structured_cell_nodes(a, row, layer)));
                 }
     }
     // Считываем все секции до разрешения ссылок NFACE на многоугольники NGON.

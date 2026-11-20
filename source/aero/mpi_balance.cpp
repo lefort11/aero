@@ -1,4 +1,5 @@
 #include "mpi_balance.h"
+#include "../implicit/partition.h"
 #include "../reconstruction/scheme.h"
 #include "../explicit/stage_sequence.h"
 #include "partition_report.h"
@@ -15,11 +16,6 @@ namespace aero {
 namespace {
 using Id = MeshIndex;
 const long double mib = 1048576;
-Id add_product(Id base, Id count, Id bytes) {
-    if (count && bytes > (mdec::absent - base) / count)
-        throw MeshError("MPI partition: estimated mesh size overflow");
-    return base + count * bytes;
-}
 // Относительные скорости нормируются на самую быструю машину: выбор единицы не меняет разрезы.
 std::vector<long double> rank_speeds(const std::vector<double>& weights, std::size_t ranks) {
     if (!weights.empty() && weights.size() != 1 && weights.size() != ranks)
@@ -95,8 +91,19 @@ void plan_on_root(const RunSettings& run, const std::vector<Id>& resources, Leaf
     const auto all = archive.prefix(archive.leaves, fifth);
     const Id cells = archive.counts[mdec::Cell];
     const Id cell_bytes = cells ? all.raw / cells + (all.raw % cells != 0) : 0;
-    const auto stages = explicit_detail::stages_for(explicit_detail::scheme_from_name(run.time_scheme));
-    const Id state_bytes = (archive.dimension + 2) * sizeof(double) * (stages.count > 1 ? 3u : 2u);
+    // Для BDF1 учитываем два поля расчёта, расширенный вход A*x и девять рабочих векторов.
+    Id state_bytes = run.directories.geometry_only ? 0 : (archive.dimension + 2) * sizeof(double) *
+        (3 + implicit::NewtonFieldCount + implicit::KrylovFieldCount);
+    if (run.uses_implicit_time() && !run.directories.geometry_only) {
+        if (run.implicit_settings.jacobian_update_every) state_bytes += (archive.dimension+2)*sizeof(double);
+        if (run.implicit_settings.second_order) state_bytes += (archive.dimension+2)*sizeof(double);
+        if (run.implicit_settings.csgs)
+            state_bytes += (archive.dimension+2)*sizeof(double) + 3*sizeof(MeshIndex);
+    }
+    if (!run.uses_implicit_time()) {
+        const auto stages = explicit_detail::stages_for(explicit_detail::scheme_from_name(run.time_scheme));
+        state_bytes = (archive.dimension + 2) * sizeof(double) * (stages.count > 1 ? 3u : 2u);
+    }
     // Храним недавно прочитанные границы листьев. Размер кэша зависит от числа процессов,
     // поэтому планирование не требует загрузки всего каталога архива в память.
     std::map<Id, LeafCost> cache;
@@ -105,8 +112,8 @@ void plan_on_root(const RunSettings& run, const std::vector<Id>& resources, Leaf
         if (found != cache.end())
             return found->second;
         const auto p = archive.prefix(end, fifth);
-        const LeafCost cost = {add_product(p.raw, p.nodes, 32),
-                               add_product(add_product(p.raw, p.nodes, state_bytes), p.halo, cell_bytes)};
+        const LeafCost cost = {partition_bytes(p.raw, p.nodes, 32),
+                               partition_bytes(partition_bytes(p.raw, p.nodes, state_bytes), p.halo, cell_bytes)};
         if (cache.size() >= 128 + 4 * ranks)
             cache.clear();
         cache.emplace(end, cost);

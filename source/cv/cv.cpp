@@ -92,7 +92,10 @@ void split_segment(const Geometry& g, MeshCell cell, const std::vector<MeshIndex
     const V edge = g.delta(b, a);
     const double length = norm(edge);
     g.require(length > 0 && std::isfinite(length), "invalid line segment");
-    const V area = edge * (1 / length);
+    // У осевого отрезка ненулевая компонента равна ±length. Деление даёт
+    // точно ±1 даже для неодинаковых длин. Так постоянное давление не создаёт
+    // ложный отток при проверке стационарности на неравномерной сетке.
+    const V area = {edge.x / length, edge.y / length, edge.z / length};
     parts.push_back({a, b, e, length / 2, area});
     for (MeshIndex f : cell.face_ids()) {
         if (boundary_start[f] != no_boundary)

@@ -2,9 +2,7 @@
 #define AERO_EULERSOLVER_EULER_H
 
 #include "../parallel/kernel_math.h"
-#ifndef __CUDACC_RTC__
 #include <cmath>
-#endif
 
 namespace aero {
 enum class EulerStatus {
@@ -49,16 +47,20 @@ struct EulerRoeBasis {
 
 namespace euler_detail {
 AERO_HOST_DEVICE inline bool finite(double x) {
-#ifdef __CUDA_ARCH__
+#ifndef KOKKOS_ACTIVE_EXECUTION_MEMORY_SPACE_HOST
     // У бесконечности и NaN все биты порядка равны единице. Проверка целых битов
     // освобождает блоки FP64 для вычисления самих потоков и сохраняет субнормальные числа.
-    return (static_cast<unsigned>(__double2hiint(x)) & 0x7ff00000u) != 0x7ff00000u;
+    return (static_cast<unsigned>(high_word(x)) & 0x7ff00000u) != 0x7ff00000u;
 #else
     return std::isfinite(x);
 #endif
 }
 AERO_HOST_DEVICE inline double absolute(double x) {
     return x < 0 ? -x : x;
+}
+// Предел скорости распространения для потока ЛФ и его линеаризации.
+AERO_HOST_DEVICE inline double signal_speed(double normal_velocity, const EulerState& gas) {
+    return absolute(normal_velocity) + gas.sound_speed;
 }
 // Размер вектора известен при компиляции. На GPU обе координаты плоской задачи
 // остаются в регистрах даже внутри составного ядра реконструкции.
@@ -115,7 +117,7 @@ AERO_HOST_DEVICE inline EulerStatus euler_unit_direction(unsigned dimension, con
 }
 
 // Переводит вектор [ρ, ρu, E] в физические величины. Результат записывается после всех проверок.
-AERO_HOST_DEVICE AERO_KERNEL_INLINE EulerStatus euler_state(unsigned dimension, const double* u, double gamma,
+KOKKOS_FORCEINLINE_FUNCTION EulerStatus euler_state(unsigned dimension, const double* u, double gamma,
                                                 EulerState* result) {
     if (dimension < 1 || dimension > 3)
         return EulerStatus::InvalidDimension;
@@ -166,7 +168,7 @@ AERO_HOST_DEVICE AERO_KERNEL_INLINE EulerStatus euler_state(unsigned dimension, 
 
 namespace euler_detail {
 // Вычисляет один физический поток по готовым состоянию газа и единичной нормали.
-AERO_HOST_DEVICE AERO_KERNEL_INLINE EulerStatus project_flux(unsigned dimension, const double* u, const EulerState& state,
+KOKKOS_FORCEINLINE_FUNCTION EulerStatus project_flux(unsigned dimension, const double* u, const EulerState& state,
                                                  const double* n, double* flux, double* wave_speed) {
     const double un = euler_detail::dot(dimension, state.velocity, n);
     // Массу переносит нормальный импульс. В потоки импульса и энергии входит также работа давления.
@@ -175,7 +177,7 @@ AERO_HOST_DEVICE AERO_KERNEL_INLINE EulerStatus project_flux(unsigned dimension,
     for (unsigned k = 0; k < dimension; ++k)
         f[k + 1] = u[k + 1] * un + state.pressure * n[k];
     f[dimension + 1] = u[dimension + 1] * un + state.pressure * un;
-    const double speed = euler_detail::absolute(un) + state.sound_speed;
+    const double speed = signal_speed(un, state);
     if (!euler_detail::finite(speed))
         return EulerStatus::NonFinite;
     for (unsigned k = 0; k < dimension + 2; ++k)
@@ -266,9 +268,8 @@ AERO_HOST_DEVICE inline EulerStatus interface_speed(unsigned dimension, const do
 
 // Звуковая и переносная скорости на каждой стороне уже известны ограничителю и решателю.
 AERO_HOST_DEVICE inline EulerStatus interface_wave_speed(unsigned dimension, const InterfaceGas& gas, double& max_speed) {
-    const double speed_left = absolute(dot(dimension, gas.left.velocity, gas.normal)) + gas.left.sound_speed;
-    const double speed_right =
-        absolute(dot(dimension, gas.right.velocity, gas.normal)) + gas.right.sound_speed;
+    const double speed_left = signal_speed(dot(dimension, gas.left.velocity, gas.normal), gas.left);
+    const double speed_right = signal_speed(dot(dimension, gas.right.velocity, gas.normal), gas.right);
     if (!finite(speed_left) || !finite(speed_right))
         return EulerStatus::NonFinite;
     max_speed = speed_left > speed_right ? speed_left : speed_right;
@@ -347,7 +348,7 @@ struct RoeAverage {
     }
 };
 
-AERO_HOST_DEVICE AERO_KERNEL_INLINE EulerStatus average_roe_state(unsigned dimension, const EulerState& left,
+KOKKOS_FORCEINLINE_FUNCTION EulerStatus average_roe_state(unsigned dimension, const EulerState& left,
                                                        const EulerState& right, const double* n,
                                                        double gamma, RoeAverage& gas) {
     // Веса Роу пропорциональны квадратным корням плотностей соседних состояний.
@@ -509,7 +510,7 @@ AERO_HOST_DEVICE inline EulerStatus euler_roe_basis(unsigned dimension, const do
                                                result, normal);
 }
 } // namespace aero
-#if !defined(AERO_EULERSOLVER_KERNEL_ONLY) && !defined(__CUDACC_RTC__)
+#if !defined(AERO_EULERSOLVER_KERNEL_ONLY)
 #include <vector>
 #include <stdexcept>
 namespace aero {

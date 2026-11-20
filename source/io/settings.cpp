@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cerrno>
+#include <cctype>
 #include <initializer_list>
 #include <locale>
 #include <map>
@@ -75,6 +76,9 @@ public:
     template <class T> T optional_count(const std::string& key) {
         if (!entries_.count(key))
             return 0;
+        return count<T>(key);
+    }
+    template <class T> T count(const std::string& key) {
         const Entry e = take(key);
         std::istringstream stream(e.value);
         stream.imbue(std::locale::classic());
@@ -99,6 +103,12 @@ std::string choice(const Entry& e, std::initializer_list<const char*> allowed) {
     if (std::find(allowed.begin(), allowed.end(), e.value) == allowed.end())
         throw std::invalid_argument(e.where + ": unknown value " + e.value);
     return e.value;
+}
+
+// Для сокращений BDF1, LF и BJ разрешаем также строчные буквы.
+Entry lowercase(Entry e) {
+    for (char& c : e.value) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return e;
 }
 
 double number(const Entry& e, bool zero_allowed) {
@@ -209,7 +219,7 @@ RunDirectories parse_run_arguments(int argc, const char* const argv[]) {
             std::string file = key.substr(0, colon);
             if (file.size() >= 4 && file.substr(file.size() - 4) == ".txt")
                 file.resize(file.size() - 4);
-            if ((file != "main" && file != "gas" && file != "cuda" && file != "scheme") || colon + 1 == key.size() || eq + 1 == arg.size())
+            if ((file != "main" && file != "gas" && file != "cuda" && file != "scheme" && file != "implicit") || colon + 1 == key.size() || eq + 1 == arg.size())
                 throw std::invalid_argument("invalid parameter override: " + arg);
             dirs.overrides[file][key.substr(colon + 1)] = arg.substr(eq + 1);
             continue;
@@ -239,8 +249,8 @@ RunSettings read_run_settings(const RunDirectories& directories) {
     Entries main(directories, "main");
     const auto mesh = main.take("mesh");
     run.mesh_path = resolve(directories.input, settings_detail::label(mesh.value, mesh.where));
-    const auto entry = main.take("reconstruction");
-    const auto scheme = reconstruction_scheme(entry.value, entry.where);
+    const auto reconstruction = main.take("reconstruction");
+    const auto scheme = reconstruction_scheme(reconstruction.value, reconstruction.where);
     run.reconstruction = scheme.name;
     Entries scheme_settings(directories, "scheme", true);
     run.mpweno_ad_corr = !scheme_settings.contains("mpweno_ad_corr") ||
@@ -251,14 +261,44 @@ RunSettings read_run_settings(const RunDirectories& directories) {
     scheme_settings.finish();
     run.reconstruction_variables =
         choice(main.take("reconstruction_variables"), {"conservative", "characteristic", "flux"});
-    run.time_scheme = choice(main.take("time_scheme"), {"euler", "ssprk3"});
+    run.time_scheme = choice(lowercase(main.take("time_scheme")), {"euler", "ssprk3", "bdf1", "bdf2", "steady"});
+    if (run.uses_implicit_time()) {
+        Entries settings(directories, "implicit");
+        choice(lowercase(settings.take("solver")), {"bicgstab"});
+        auto& controls = run.implicit_settings;
+        controls.second_order = run.time_scheme == "bdf2";
+        controls.roe = choice(lowercase(settings.take("jacobian_flux")), {"lf","roe"}) == "roe";
+        controls.csgs = choice(lowercase(settings.take("preconditioner")), {"bj","csgs"}) == "csgs";
+        const auto relative = [&](const char* key) {
+            const auto entry = settings.take(key);
+            const double value = number(entry, false);
+            if (value >= 1.) throw std::invalid_argument(entry.where + ": expected 0 < tolerance < 1");
+            return value;
+        };
+        controls.simplified_jacobian = settings.contains("simplified_jacobian") &&
+            choice(lowercase(settings.take("simplified_jacobian")), {"on","off"}) == "on";
+        controls.jacobian_update_every = settings.optional_count<unsigned>("jacobian_update_every");
+        if (settings.contains("steady_criterion"))
+            run.steady_absolute = choice(lowercase(settings.take("steady_criterion")), {"relative", "absolute"}) == "absolute";
+        if (settings.contains("steady_tol"))
+            run.steady_tol = run.steady_absolute ? number(settings.take("steady_tol"), false) : relative("steady_tol");
+        if (settings.contains("steady_max_steps")) {
+            run.steady_max_steps = settings.count<unsigned>("steady_max_steps");
+            if (!run.steady_max_steps) throw std::invalid_argument("implicit.txt: steady_max_steps must be positive");
+        }
+        controls.linear_relative = relative("solver_tol");
+        controls.newton_relative = relative("newton_tol");
+        controls.max_iterations = settings.count<unsigned>("newton_max_iter");
+        if (!controls.max_iterations) throw std::invalid_argument("implicit.txt: newton_max_iter must be positive");
+        settings.finish();
+    }
     run.upw_coeff = main.contains("upw_coeff") ? number(main.take("upw_coeff"), true) : 1;
     if (run.upw_coeff > 1)
         throw std::invalid_argument("main.txt: upw_coeff must be in [0, 1]");
     run.cfl = number(main.take("cfl"), false);
     run.use_cuda = choice(main.take("backend"), {"cpu", "cuda"}) == "cuda";
     run.euler_solver = choice(main.take("euler_solver"), {"roe", "lf"});
-    run.final_time = number(main.take("final_time"), true);
+    run.final_time = run.steady() && !main.contains("final_time") ? 0. : number(main.take("final_time"), true);
     run.trace_ratio_min = main.contains("trace_ratio_min") ? number(main.take("trace_ratio_min"), true) : 0;
     run.trace_ratio_max =
         main.contains("trace_ratio_max") ? number(main.take("trace_ratio_max"), false) : 1e16;

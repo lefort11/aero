@@ -135,14 +135,14 @@ reconstruct_increment2(ReconstructionStencilView stencil, ReconstructionIndex ed
 
 // Объект владеет геометрией на CUDA. Обход рёбер и запуск ядер выполняет вызывающий код.
 extern "C" {
-int aero_reconstruction_cuda_count(int* count, char* error, unsigned capacity);
-int aero_reconstruction_cuda_create(aero::ReconstructionStencilView view, int device, void** state,
+int aero_reconstruction_device_count(int* count, char* error, unsigned capacity);
+int aero_reconstruction_device_create(aero::ReconstructionStencilView view, int device, void** state,
                                     char* error, unsigned capacity);
-void aero_reconstruction_cuda_destroy(void* state);
-void aero_reconstruction_cuda_view(void* state, aero::ReconstructionStencilView* view);
+void aero_reconstruction_device_destroy(void* state);
+void aero_reconstruction_device_view(void* state, aero::ReconstructionStencilView* view);
 }
 
-#if !defined(AERO_RECONSTRUCTION_KERNEL_ONLY) && !defined(__CUDACC_RTC__)
+#if !defined(AERO_RECONSTRUCTION_KERNEL_ONLY)
 #include "scheme.h"
 #include "../mesh/mesh.h"
 #include <memory>
@@ -156,7 +156,7 @@ struct ReconstructionOptions {
     // Параметры геометрии относятся к EBR и WENO. Для первого порядка внешние точки не требуются.
     double relative_tolerance;
     bool mpweno_ad_corr = true; // Добавлять chi_boost к нелинейным весам MPWENO5.
-    double mp5_alpha = 4; // Для самостоятельного API; солвер вычисляет по CFL.
+    double mp5_alpha = 4; // По умолчанию 4. Для явной схемы солвер учитывает CFL.
     // Параметр ε для квадратов разделённых разностей WENO в единицах сетки.
     double weno_epsilon;
     // В строгом режиме понижение порядка относительно запрошенной схемы считается ошибкой.

@@ -10,7 +10,7 @@
 #include <stdexcept>
 
 using namespace aero;
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
 CflStep gpu_inputs(int device, const CflTimestep&, double, WaveSpeeds);
 CflStep gpu_accepted(const CflTimestep&, const ExplicitField&);
 void gpu_residual(const ExplicitField&, double*);
@@ -31,7 +31,7 @@ template <class F> void rejects(F f) {
 CflStep run(int device, const CflTimestep& plan, double cfl, const std::vector<double>& edges,
             const std::vector<double>& boundary = {}) {
     WaveSpeeds s = {edges.data(), edges.size(), boundary.data(), boundary.size()};
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
     if (device >= 0)
         return gpu_inputs(device, plan, cfl, s);
 #else
@@ -96,7 +96,7 @@ void cases(int device) {
     for (int step = 0; step < 2; ++step) {
         CflStep actual = {};
         solver.inspect([&](const ExplicitField& f) {
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
             if (device >= 0) {
                 actual = gpu_accepted(self, f);
                 return;
@@ -113,7 +113,7 @@ void cases(int device) {
         expect(actual, 1 / std::sqrt(1.4 * pressure), 0);
         if (!step)
             solver.step(ExplicitScheme::Euler, 0, 1, [&](double, const ExplicitField& f, double* r) {
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
                 if (device >= 0) {
                     gpu_residual(f, r);
                     return;

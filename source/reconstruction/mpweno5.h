@@ -44,13 +44,13 @@ struct Indicators {
     double first, middle, last;
 
     template <bool regular> AERO_HOST_DEVICE double maximum() const {
-#ifdef __CUDA_ARCH__
+#ifndef KOKKOS_ACTIVE_EXECUTION_MEMORY_SPACE_HOST
         if (regular) {
             // Эти три индикатора проверены перед обработкой очереди. Для неотрицательных
             // конечных чисел наибольшему double соответствует наибольшее двоичное слово.
-            const mp5::OrderKey a = __double_as_longlong(first), b = __double_as_longlong(middle);
-            const mp5::OrderKey c = __double_as_longlong(last), ab = a > b ? a : b;
-            return __longlong_as_double(ab > c ? ab : c);
+            const mp5::OrderKey a = double_bits(first), b = double_bits(middle);
+            const mp5::OrderKey c = double_bits(last), ab = a > b ? a : b;
+            return from_double_bits(ab > c ? ab : c);
         }
 #endif
         return ::fmax(first, ::fmax(middle, last));
@@ -59,26 +59,26 @@ struct Indicators {
     // Для неотрицательного индикатора граница 10^4 имеет нулевое младшее слово.
     // Сравнение старшего слова точно выбирает способ нормировки.
     AERO_HOST_DEVICE bool regular() const {
-#ifdef __CUDA_ARCH__
-        const unsigned limit = __double2hiint(product_limit);
-        return static_cast<unsigned>(__double2hiint(first)) < limit &&
-               static_cast<unsigned>(__double2hiint(middle)) < limit &&
-               static_cast<unsigned>(__double2hiint(last)) < limit;
+#ifndef KOKKOS_ACTIVE_EXECUTION_MEMORY_SPACE_HOST
+        const unsigned limit = high_word(product_limit);
+        return static_cast<unsigned>(high_word(first)) < limit &&
+               static_cast<unsigned>(high_word(middle)) < limit &&
+               static_cast<unsigned>(high_word(last)) < limit;
 #else
         return ::fmax(first, ::fmax(middle, last)) < product_limit;
 #endif
     }
 
     template <bool packed = false> AERO_HOST_DEVICE bool nonlinear() const {
-#ifdef __CUDA_ARCH__
+#ifndef KOKKOS_ACTIVE_EXECUTION_MEMORY_SPACE_HOST
         if (packed) {
-            const mp5::OrderKey a = __double_as_longlong(first), b = __double_as_longlong(middle);
-            const mp5::OrderKey c = __double_as_longlong(last);
+            const mp5::OrderKey a = double_bits(first), b = double_bits(middle);
+            const mp5::OrderKey c = double_bits(last);
             // |β₁−β₃| ≥ min(β₁,β₂,β₃) достаточно выполнить хотя бы для одного β.
             // Для положительных конечных значений сравниваем точные двоичные представления.
             // Если общая маска заходит в область особых значений, действует обычный датчик.
             if ((a | b | c) < 0x7ff0000000000000ull) {
-                const mp5::OrderKey difference = __double_as_longlong(::fabs(first - last));
+                const mp5::OrderKey difference = double_bits(::fabs(first - last));
                 return difference >= a || difference >= b || difference >= c;
             }
         }
@@ -87,9 +87,9 @@ struct Indicators {
     }
     // На постоянном поле датчик формально выбирает WENO (0 >= 0), но сам след равен нулю.
     template <bool packed = false> AERO_HOST_DEVICE bool all_zero() const {
-#ifdef __CUDA_ARCH__
+#ifndef KOKKOS_ACTIVE_EXECUTION_MEMORY_SPACE_HOST
         if (packed) {
-            const mp5::OrderKey bits = __double_as_longlong(first) | __double_as_longlong(middle) | __double_as_longlong(last);
+            const mp5::OrderKey bits = double_bits(first) | double_bits(middle) | double_bits(last);
             return (bits & ~mp5::sign_bit) == 0;
         }
 #endif
@@ -112,7 +112,7 @@ struct Polynomials {
 // Общая нелинейная формула для обычного вызова и для группы работ на GPU.
 // Датчик уже выбрал WENO, и хотя бы один из индикаторов отличен от нуля.
 template <WeightRange range = WeightRange::Automatic>
-AERO_HOST_DEVICE AERO_KERNEL_INLINE double weighted_value(Indicators indicators, Polynomials polynomial,
+KOKKOS_FORCEINLINE_FUNCTION double weighted_value(Indicators indicators, Polynomials polynomial,
                                                             bool correction) {
     constexpr bool packed = range != WeightRange::Automatic;
     constexpr bool regular = range == WeightRange::ScaledProducts;
@@ -155,7 +155,7 @@ AERO_HOST_DEVICE AERO_KERNEL_INLINE double weighted_value(Indicators indicators,
     // При β < 10^4 нижнюю границу суммы задаёт eps·2^(56·7)·(eps·2^56)^6.
     // Верхняя граница произведений меньше 2^960. Сумма и 1/сумму помещаются в нормальный double.
     return (w1 * polynomial.first + w2 * polynomial.middle + w3 * polynomial.last)
-         * inverse_value(w1 + w2 + w3 + regularizer, packed && regular);
+         * inverse_value(w1 + w2 + w3 + regularizer);
 }
 
 // Данные одной стороны после проекции в характеристику. И CPU, и GPU принимают

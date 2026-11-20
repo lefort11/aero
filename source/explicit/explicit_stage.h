@@ -68,7 +68,7 @@ struct FieldStageUpdate {
     }
 };
 
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
 void launch_update(FieldStageUpdate update, size_t entries, int* invalid, void* stream);
 #endif
 }

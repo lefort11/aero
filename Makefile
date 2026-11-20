@@ -1,9 +1,20 @@
 # Сборка GNU Make для C++11. Для варианта CPU достаточно компилятора C++.
 # Основные проверки запускаются целями test, debug-test и cuda-check.
 CXX = g++
-WITH_CUDA ?= 0
+# Исполнитель Kokkos задаётся один раз для солвера, библиотек и тестов.
+KOKKOS_BACKEND ?= cpu
+ifeq ($(KOKKOS_BACKEND),cuda)
+kokkos_gpu := 1
+else ifeq ($(KOKKOS_BACKEND),cpu)
+kokkos_gpu := 0
+else
+$(error KOKKOS_BACKEND must be cpu or cuda)
+endif
+ifneq ($(filter-out undefined,$(origin WITH_CUDA) $(origin WITH_KOKKOS)),)
+$(error Choose KOKKOS_BACKEND=cpu or KOKKOS_BACKEND=cuda)
+endif
 CUDA_ARCH ?= 86
-ifeq ($(OS)/$(WITH_CUDA),Windows_NT/1)
+ifeq ($(OS)/$(kokkos_gpu),Windows_NT/1)
 ifneq ($(filter %cygwin %msys,$(MAKE_HOST)),)
 MINGW_CUDA := 1
 # Для совместимости с C++11 при наличии нескольких версий выбираем CUDA 12.
@@ -17,17 +28,15 @@ CPPFLAGS ?=
 CXXFLAGS ?= -std=c++11 -pedantic-errors -O2 -Wall -Wextra -Wpedantic -Wconversion -Wshadow
 LDFLAGS ?=
 LDLIBS ?=
-NVCCFLAGS ?= -std=c++11
 WITH_OPENMP ?= 1
 WITH_MPI ?= 1
-WITH_KOKKOS ?= 0
 build_optimization := -O2
 STATIC_LINK ?= 1
 CUDA_LIBDIR ?= $(if $(wildcard $(CUDA_HOME)/lib64),$(CUDA_HOME)/lib64,$(CUDA_HOME)/lib)
 ifeq ($(STATIC_LINK),1)
 ifeq ($(OS),Windows_NT)
 override LDFLAGS += -static
-else ifneq ($(filter 1,$(WITH_CUDA) $(WITH_MPI)),)
+else ifneq ($(filter 1,$(kokkos_gpu) $(WITH_MPI)),)
 # MPI и драйвер NVIDIA использует системную glibc при загрузке в процесс.
 override LDFLAGS += -static-libgcc -static-libstdc++
 else
@@ -42,7 +51,7 @@ endif
 ifeq ($(WITH_OPENMP),1)
 override CXXFLAGS += -fopenmp
 ifneq ($(OS),Windows_NT)
-ifeq ($(WITH_CUDA)/$(STATIC_LINK),1/1)
+ifeq ($(kokkos_gpu)/$(STATIC_LINK),1/1)
 override LDLIBS += -Wl,-Bstatic -lgomp -Wl,-Bdynamic
 endif
 endif
@@ -54,17 +63,9 @@ endif
 ifeq ($(OS),Windows_NT)
 ifneq ($(filter %cygwin %msys,$(MAKE_HOST)),)
 SHELL := /bin/sh
-# Ключи MSBuild должны дойти до Windows без преобразования MSYS2 в пути.
-msbuild_switches := /t:;/p:;/m:;/nr:;/nologo;/v:
-ifneq ($(MSYS2_ARG_CONV_EXCL),*)
-export MSYS2_ARG_CONV_EXCL := $(if $(MSYS2_ARG_CONV_EXCL),$(MSYS2_ARG_CONV_EXCL);)$(msbuild_switches)
-endif
-msbuild_bin = $(shell cygpath -am "$(BIN)")
+windows_bin = $(shell cygpath -am "$(BIN)")
 else
-SHELL := cmd.exe
-.SHELLFLAGS := /C
-USE_CMD := 1
-msbuild_bin = $(abspath $(BIN))
+$(error Use GNU Make in the MSYS2 MinGW64 shell for Kokkos)
 endif
 EXE := .exe
 BUILD := build
@@ -75,42 +76,26 @@ mingw_toolchain_id := $(shell { $(CXX) -print-file-name=libstdc++.a && $(CXX) -d
 BUILD := build/mingw-cpu-$(mingw_toolchain_id)
 endif
 ifeq ($(MINGW_CUDA),1)
-# Вычисляем отдельный каталог сборки для каждого набора библиотек NVRTC.
+# Разделяем объектные файлы разных установок CUDA Toolkit.
 cuda_toolkit_id := $(shell printf '%s' "$(CUDA_HOME)" | cksum | cut -d' ' -f1)
 BUILD := build/mingw-cuda-sm$(CUDA_ARCH)-$(cuda_toolkit_id)-$(mingw_toolchain_id)
 endif
 else
 EXE :=
 BUILD := build/linux
-ifeq ($(WITH_CUDA),1)
+ifeq ($(kokkos_gpu),1)
 BUILD := $(BUILD)/cuda-sm$(CUDA_ARCH)
 endif
 override LDLIBS += -pthread
 endif
 
 BIN := bin
-ifeq ($(WITH_KOKKOS),1)
-# Изолированные программы позволяют измерять исходный и перенесённый варианты на одной машине.
-BIN := bin/kokkos
-ifeq ($(USE_CMD),1)
-$(error Use the MSYS2 MinGW64 shell for the C++11 Kokkos build on Windows)
-endif
-endif
 ifeq ($(MAKECMDGOALS),clean)
 include utils/clean.mk
 else
 ifneq ($(filter clean,$(MAKECMDGOALS)),)
 $(error Run make clean separately from a build)
 endif
-ifeq ($(OS)/$(WITH_CUDA)/$(USE_CMD)/$(MAKECMDGOALS),Windows_NT/1/1/programs)
-# На Windows nvcc использует ABI MSVC. Здесь собираются программы и их библиотеки.
-# Тестовые проекты запускаются отдельными целями.
-MSBUILD ?= MSBuild.exe
-CUDA_ARCH ?= 86
-.PHONY: programs
-programs:
-	"$(MSBUILD)" msvs/aero.sln "/t:aero;mesh_converter;fields_to_tecplot;meshdec" /m:1 /nr:false /nologo /v:minimal /p:Platform=x64 /p:Configuration=Release /p:WithCuda=true /p:CudaArchitecture=$(CUDA_ARCH) /p:WithOpenMP=$(if $(filter 1,$(WITH_OPENMP)),true,false) $(if $(WITH_CGNS),/p:WithCGNS=$(if $(filter 1,$(WITH_CGNS)),true,false)) /p:WithMPI=$(if $(filter 1,$(WITH_MPI)),true,false) "/p:AeroBin=$(msbuild_bin)" $(MSBUILD_CUDA_FLAGS)
-else
 .DEFAULT_GOAL := all
 ifeq ($(STATIC_LINK),1)
 BUILD := $(BUILD)/static
@@ -118,27 +103,26 @@ endif
 ifeq ($(WITH_OPENMP),0)
 BUILD := $(BUILD)/serial
 endif
-ifneq ($(filter programs,$(MAKECMDGOALS)),)
+BUILD_TYPE ?= $(if $(filter programs,$(MAKECMDGOALS)),Release,Default)
+ifeq ($(BUILD_TYPE),Release)
 build_optimization := -O3
 override BUILD := $(BUILD)/Release/O3
 override CPPFLAGS += -DNDEBUG
 override CXXFLAGS := $(filter-out -O%,$(CXXFLAGS)) $(build_optimization)
-override NVCCFLAGS := $(filter-out -O%,$(NVCCFLAGS)) $(build_optimization) -DNDEBUG
+else ifeq ($(BUILD_TYPE),Debug)
+build_optimization := -O0
+override BUILD := $(BUILD)/Debug
+override CXXFLAGS := $(filter-out -O%,$(CXXFLAGS)) $(build_optimization) -g
+else ifneq ($(BUILD_TYPE),Default)
+$(error BUILD_TYPE must be Default, Debug or Release)
 endif
-ifeq ($(WITH_KOKKOS),1)
 include source/parallel/kokkos.mk
-endif
 MESH_SOURCE := source/mesh
 MESH_HEADERS := $(MESH_SOURCE)/mesh.h $(MESH_SOURCE)/mesh_index.h source/parallel/kernel_math.h
-ifeq ($(MINGW_CUDA),1)
-include source/cuda/mingw.mk
-else
-compile_cuda = $(NVCC) $(NVCCFLAGS) -arch=sm_$(CUDA_ARCH) -c $< -o $@
-endif
-compile_solver_cuda = $(compile_cuda)
-ifeq ($(WITH_KOKKOS)$(WITH_CUDA),11)
-# Файлы интерфейса принимают представления солвера. GPU-обходы компилируются один раз в модуле Kokkos.
-compile_solver_cuda = $(CXX) $(CPPFLAGS) $(CXXFLAGS) -DAERO_WITH_CUDA -DAERO_WITH_KOKKOS_GPU -isystem "$(CUDA_HOME)/include" -x c++ -c "$<" -o "$@"
+ifeq ($(kokkos_gpu),1)
+# Обычный C++ компилирует вызывающую сторону. Только модуль Kokkos
+# собирается компилятором устройства; статическая сборка включает его в EXE.
+compile_device_host = $(CXX) $(CPPFLAGS) $(CXXFLAGS) -DAERO_WITH_KOKKOS_GPU -c "$<" -o "$@"
 override LDLIBS += "$(KOKKOS_DEVICE_LIBRARY)" $(kokkos_static_runtime)
 endif
 TEST := $(BUILD)/mesh_tests$(EXE)
@@ -152,76 +136,58 @@ programs: converter tecplot
 
 .PHONY: publish-programs bin-runtime
 $(BIN):
-ifeq ($(USE_CMD),1)
-	mkdir "$(BIN)"
-else
 	mkdir -p "$(BIN)"
-endif
 bin-runtime: | $(BIN)
 ifeq ($(OS)-$(STATIC_LINK),Windows_NT-0)
-ifeq ($(USE_CMD),1)
-	@msvs\copy_mingw_runtime.cmd "$(BIN)"
-else
-	@MSYS2_ARG_CONV_EXCL='*' cmd.exe /d /c 'msvs\copy_mingw_runtime.cmd' "$(msbuild_bin)"
-endif
+	@MSYS2_ARG_CONV_EXCL='*' cmd.exe /d /c 'msvs\copy_mingw_runtime.cmd' "$(windows_bin)"
 endif
 
-ifeq ($(USE_CMD),1)
-publish_exe = copy /Y "$(subst /,\,$<)" "$(subst /,\,$@)" >nul
-else
 publish_exe = cp -f "$<" "$@"
-endif
 $(BIN)/%: $(BUILD)/% publish-programs | bin-runtime
+	$(publishing)
 	$(publish_exe)
 
 $(BUILD):
-ifeq ($(USE_CMD),1)
-	if not exist "$(BUILD)" mkdir "$(BUILD)"
-else
 	mkdir -p "$(BUILD)"
-endif
 
 $(BUILD)/mesh_tests.o $(DEBUG_TEST): qa/test_checks.h
 
 include source/io/io.mk
 
 $(BUILD)/mesh.o: $(MESH_SOURCE)/mesh.cpp $(MESH_SOURCE)/mesh_reader.h $(MESH_HEADERS) $(IO_HEADERS) | $(BUILD)
+	$(compiling)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $(MESH_SOURCE)/mesh.cpp -o $@
 
 $(BUILD)/mesh_tests.o: $(MESH_SOURCE)/mesh_tests.cpp $(MESH_HEADERS) source/io/lzma_stream.h | $(BUILD)
+	$(compiling)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $(MESH_SOURCE)/mesh_tests.cpp -o $@
 
 $(TEST): $(BUILD)/mesh.o $(BUILD)/mesh_tests.o $(IO_LIBRARY)
+	$(call action,Linking,$@)
 	$(CXX) $(LDFLAGS) $^ $(LDLIBS) -o $@
 
-test: $(BIN)/$(notdir $(TEST))
-ifeq ($(USE_CMD),1)
-	.\$(subst /,\,$(TEST))
-else
+.PHONY: mesh mesh-test mesh-debug-test
+mesh: $(BUILD)/mesh.o
+test: mesh-test
+mesh-test: $(BIN)/$(notdir $(TEST))
+	$(running_test)
 	./$(TEST)
-endif
 
 $(DEBUG_TEST): $(MESH_SOURCE)/mesh.cpp $(MESH_SOURCE)/mesh_reader.h $(MESH_HEADERS) $(MESH_SOURCE)/mesh_tests.cpp source/io/lzma_stream.cpp $(IO_HEADERS) $(LZMA_OBJECTS) | $(BUILD)
+	$(call action,Compiling and linking,$@)
 	$(CXX) $(CPPFLAGS) -std=c++11 -pedantic-errors -O0 -g -Wall -Wextra -Wpedantic -Wconversion -Wshadow -D_GLIBCXX_DEBUG -D_GLIBCXX_ASSERTIONS $(MESH_SOURCE)/mesh.cpp $(MESH_SOURCE)/mesh_tests.cpp source/io/lzma_stream.cpp $(LZMA_OBJECTS) $(LDFLAGS) $(LDLIBS) -o $@
 
-debug-test: $(BIN)/$(notdir $(DEBUG_TEST))
-ifeq ($(USE_CMD),1)
-	.\$(subst /,\,$(DEBUG_TEST))
-else
+debug-test: mesh-debug-test
+mesh-debug-test: $(BIN)/$(notdir $(DEBUG_TEST))
+	$(running_test)
 	./$(DEBUG_TEST)
-endif
 
-# Ядро компилирует методы доступа к сетке в режиме CUDA без запуска на устройстве.
-# Через NVCCFLAGS можно указать компилятор хоста, подходящий для установленного CUDA.
-cuda-check: | $(BUILD)
-ifeq ($(MINGW_CUDA),1)
-cuda-check: $(BUILD)/mesh_cuda_probe.ptx
-$(BUILD)/mesh_cuda_probe.ptx: $(MESH_SOURCE)/mesh_probe.cuh $(MESH_HEADERS) $(ptx_compiler) | $(BUILD)
-	PATH="$(CUDA_HOME)/bin/x64:$(CUDA_HOME)/bin:$$PATH" "$(ptx_compiler)" "$<" "$(CUDA_ARCH)" "$@"
-else ifeq ($(OS)/$(USE_CMD),Windows_NT/)
-	$(MAKE) WITH_CUDA=1 cuda-check
+# Компиляция модуля проверяет доступ к данным через Kokkos на выбранном устройстве.
+ifeq ($(kokkos_gpu),1)
+cuda-check: $(KOKKOS_DEVICE_LIBRARY)
 else
-	$(NVCC) $(CPPFLAGS) $(NVCCFLAGS) -x cu -c $(MESH_SOURCE)/mesh_tests.cpp -o $(BUILD)/mesh_cuda_probe.obj
+cuda-check:
+	$(MAKE) KOKKOS_BACKEND=cuda cuda-check
 endif
 
 include utils/converter/converter.mk
@@ -247,6 +213,7 @@ endif
 ifneq ($(and $(BC_LIB),$(CV_LIB),$(EBR_LIBRARY),$(EULER_LIBRARY)),)
 -include source/residual/residual.mk
 endif
+include source/implicit/implicit.mk
 ifneq ($(and $(INITIAL_LIB),$(BC_LIB),$(CV_LIB)),)
 include source/io/settings_tests.mk
 endif
@@ -257,21 +224,14 @@ endif
 # Цели отладки компилируют общие параллельные циклы непосредственно из исходников.
 PARALLEL_HEADER := source/parallel/parallel_for.h
 $(BUILD)/mesh.o $(BUILD)/cv.o $(BUILD)/periodic.o $(BUILD)/initial.o $(BUILD)/io_fields.o $(RECONSTRUCTION_OBJECT) $(WENO_OBJECT) $(BUILD)/converter_topology_$(WITH_CGNS).o: $(PARALLEL_HEADER)
-ifneq ($(filter 1,$(WITH_CUDA)),)
-cuda_objects := $(AERO_GPU) $(EBR_CUDA_OBJECT) $(RECONSTRUCTION_CUDA_TEST_OBJECT) $(EULER_CUDA_TEST_OBJECT) $(BC_GPU) $(CV_GPU) $(RES_GPU) $(EXPLICIT_GPU) $(EXPLICIT_TEST_GPU) $(TIMESTEP_GPU) $(TIMESTEP_TEST_GPU)
-$(cuda_objects): source/cuda/check.h source/cuda/runtime.h source/parallel/kernel_math.h source/mesh/mesh_index.h
-ifeq ($(WITH_KOKKOS),1)
-$(AERO_GPU) $(TIMESTEP_GPU) $(EXPLICIT_GPU) $(RES_GPU): source/parallel/device_work.h
-ifeq ($(STATIC_LINK),1)
-# У статического теста код ядра находится в EXE. Обновление архива требует повторной линковки.
-$(RES_TEST) $(RES_DEBUG) $(TIMESTEP_TEST) $(TIMESTEP_DEBUG) $(EXPLICIT_TEST) $(EXPLICIT_DEBUG) $(EBR_TEST) $(EBR_DEBUG_TEST) $(EULER_TEST) $(EULER_DEBUG_TEST): $(KOKKOS_DEVICE_LIBRARY)
+ifeq ($(kokkos_gpu),1)
+gpu_objects := $(AERO_GPU) $(EBR_CUDA_OBJECT) $(RECONSTRUCTION_CUDA_TEST_OBJECT) $(EULER_CUDA_TEST_OBJECT) $(BC_GPU) $(CV_GPU) $(RES_GPU) $(EXPLICIT_GPU) $(EXPLICIT_TEST_GPU) $(TIMESTEP_GPU) $(TIMESTEP_TEST_GPU)
+$(gpu_objects): source/parallel/device_api.h source/parallel/device_memory.h source/parallel/device_check.h source/parallel/device_work.h
+$(RECONSTRUCTION_CUDA_TEST_OBJECT) $(EULER_CUDA_TEST_OBJECT) $(BC_GPU) $(CV_GPU) $(EXPLICIT_TEST_GPU) $(TIMESTEP_TEST_GPU): qa/device_cases.h qa/device_test_buffer.h
+$(AERO_PROGRAM) $(IMPLICIT_TEST) $(RES_TEST) $(RES_DEBUG) $(TIMESTEP_TEST) $(TIMESTEP_DEBUG) $(EXPLICIT_TEST) $(EXPLICIT_DEBUG) $(EBR_TEST) $(EBR_DEBUG_TEST) $(EULER_TEST) $(EULER_DEBUG_TEST) $(BC_TEST) $(CV_TEST) $(REPORT_TEST): $(KOKKOS_DEVICE_LIBRARY)
 endif
 endif
-$(AERO_PROGRAM) $(RES_OBJ) $(EXPLICIT_OBJ) $(EBR_TEST) $(RES_TEST) $(REPORT_TEST): source/cuda/check.h source/cuda/runtime.h
-$(CV_GPU) $(BC_GPU) $(TIMESTEP_TEST_GPU) $(EBR_TEST) $(EBR_DEBUG_TEST) $(RES_TEST) $(RES_DEBUG): qa/cuda_test_buffer.h
-ifeq ($(MINGW_CUDA),1)
-$(cuda_objects): source/cuda/mingw.mk $(ptx_compiler) $(CUDA_RUNTIME_LINK)
-endif
-endif
-endif
-endif
+
+# Печатаем параметры после подключения модулей. К этому моменту известны
+# фактические пути к библиотекам и добавленные модулями флаги.
+include utils/build_output.mk

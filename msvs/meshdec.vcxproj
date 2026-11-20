@@ -1,95 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003" DefaultTargets="Build" ToolsVersion="Current">
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003" DefaultTargets="Build">
   <ItemGroup Label="ProjectConfigurations">
-    <ProjectConfiguration Include="Debug|x64">
-      <Configuration>Debug</Configuration>
-      <Platform>x64</Platform>
-    </ProjectConfiguration>
-    <ProjectConfiguration Include="Release|x64">
-      <Configuration>Release</Configuration>
-      <Platform>x64</Platform>
-    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{13542AF0-4369-4441-91CA-49CE7FF7A426}</ProjectGuid>
-    <Keyword>Win32Proj</Keyword>
-    <RootNamespace>meshdec</RootNamespace>
-    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
-    <ImportDirectoryBuildProps>false</ImportDirectoryBuildProps>
-    <ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets>
+    <Keyword>MakeFileProj</Keyword>
+    <MakeGoal>meshdec</MakeGoal>
+    <ProgramName>meshdec</ProgramName>
   </PropertyGroup>
-  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
-    <ConfigurationType>Application</ConfigurationType>
-    <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v145</PlatformToolset>
-    <CharacterSet>Unicode</CharacterSet>
-  </PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
-    <ConfigurationType>Application</ConfigurationType>
-    <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v145</PlatformToolset>
-    <CharacterSet>Unicode</CharacterSet>
-  </PropertyGroup>
-  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
-  <PropertyGroup>
-    <WithMPI Condition="'$(WithMPI)'==''">true</WithMPI>
-    <OutDir>$(MSBuildProjectDirectory)\..\build\msvs\$(Platform)\$(Configuration)\</OutDir>
-    <OutDir Condition="'$(WithMPI)'=='true'">$(OutDir)meshdec-mpi\</OutDir>
-    <IntDir>$(OutDir)obj\$(MSBuildProjectName)\mpi$(WithMPI)\</IntDir>
-    <TargetName>meshdec</TargetName>
-    <LocalDebuggerCommand>$(TargetPath)</LocalDebuggerCommand>
-    <LocalDebuggerWorkingDirectory>$(MSBuildProjectDirectory)\..</LocalDebuggerWorkingDirectory>
-    <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
-  </PropertyGroup>
-  <Import Project="module_compiler.props" />
-  <ItemDefinitionGroup>
-    <Link>
-      <SubSystem>Console</SubSystem>
-      <GenerateDebugInformation>true</GenerateDebugInformation>
-    </Link>
-  </ItemDefinitionGroup>
-  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <ClCompile>
-      <Optimization>Disabled</Optimization>
-      <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
-      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
-      <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-    </ClCompile>
-  </ItemDefinitionGroup>
-  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <ClCompile>
-      <Optimization>MaxSpeed</Optimization>
-      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
-      <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-    </ClCompile>
-  </ItemDefinitionGroup>
+  <Import Project="kokkos_make.props" />
   <ItemGroup>
-    <ClInclude Include="..\utils\meshdec\meshdec.h" />
-    <ClInclude Include="..\utils\meshdec\storage.h" />
-    <ClCompile Include="..\utils\meshdec\storage.cpp" />
-    <ClCompile Include="..\utils\meshdec\ingest.cpp" />
-    <ClCompile Include="..\utils\meshdec\order.cpp" />
-    <ClCompile Include="..\utils\meshdec\halo.cpp" />
     <ClCompile Include="..\utils\meshdec\archive.cpp" />
+    <ClCompile Include="..\utils\meshdec\halo.cpp" />
+    <ClCompile Include="..\utils\meshdec\ingest.cpp" />
     <ClCompile Include="..\utils\meshdec\main.cpp" />
+    <ClInclude Include="..\utils\meshdec\meshdec.h" />
+    <ClCompile Include="..\utils\meshdec\order.cpp" />
+    <ClCompile Include="..\utils\meshdec\storage.cpp" />
+    <ClInclude Include="..\utils\meshdec\storage.h" />
   </ItemGroup>
-  <ItemGroup>
-    <ProjectReference Include="aero_io.vcxproj">
-      <Project>{C9C96040-05C8-498C-8E4D-D6C4B07A468E}</Project>
-    </ProjectReference>
-  </ItemGroup>
-  <ItemDefinitionGroup Condition="'$(WithMPI)'=='true'">
-    <ClCompile>
-      <AdditionalIncludeDirectories>$(MSMPI_INC);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>AERO_MESHDEC_MPI;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-    </ClCompile>
-    <Link>
-      <AdditionalLibraryDirectories>$(MSMPI_LIB64);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>msmpi.lib;%(AdditionalDependencies)</AdditionalDependencies>
-    </Link>
-  </ItemDefinitionGroup>
-  <Import Project="openmp.props" />
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
-  <Import Project="publish_program.targets" />
 </Project>

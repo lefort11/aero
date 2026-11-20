@@ -90,6 +90,4 @@ device = -1 выбирает CPU. Для GPU передайте номер ус�
 сборки используют разные экземпляры.
 
 Проверка: make residual-test, make residual-debug-test, make residual-cuda-test.
-В Visual Studio используйте residual_tests, WithCuda=true и RequireCudaTests=true
-для обязательного прогона на GPU. Параметры установленной связки nvcc и MSVC
-описаны в ../reconstruction/README.txt.
+Проект residual_tests в msvs/aero.sln вызывает GNU Make. Для GPU укажите /p:KokkosBackend=cuda. Команда make residual-cuda-test требует хотя бы одну доступную видеокарту.

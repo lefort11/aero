@@ -1,107 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003" DefaultTargets="Build" ToolsVersion="Current">
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003" DefaultTargets="Build">
   <ItemGroup Label="ProjectConfigurations">
-    <ProjectConfiguration Include="Debug|x64">
-      <Configuration>Debug</Configuration>
-      <Platform>x64</Platform>
-    </ProjectConfiguration>
-    <ProjectConfiguration Include="Release|x64">
-      <Configuration>Release</Configuration>
-      <Platform>x64</Platform>
-    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{FFE2AB34-5318-4CF2-AD31-F368E232C38C}</ProjectGuid>
-    <Keyword>Win32Proj</Keyword>
-    <RootNamespace>aero</RootNamespace>
-    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
-    <ImportDirectoryBuildProps>false</ImportDirectoryBuildProps>
-    <ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets>
+    <Keyword>MakeFileProj</Keyword>
+    <MakeGoal>residual-test</MakeGoal>
+    <MakeGoal Condition="'$(Configuration)'=='Debug'">residual-debug-test</MakeGoal>
   </PropertyGroup>
-  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
-  <PropertyGroup Label="Configuration">
-    <ConfigurationType>Application</ConfigurationType>
-    <PlatformToolset>v145</PlatformToolset>
-    <CharacterSet>Unicode</CharacterSet>
-    <UseDebugLibraries Condition="'$(Configuration)'=='Debug'">true</UseDebugLibraries>
-    <UseDebugLibraries Condition="'$(Configuration)'!='Debug'">false</UseDebugLibraries>
-  </PropertyGroup>
-  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
-  <PropertyGroup>
-    <WithCuda Condition="'$(WithCuda)'==''">false</WithCuda>
-    <WithOpenMP Condition="'$(WithOpenMP)'==''">true</WithOpenMP>
-    <CudaToolkitDir Condition="'$(CudaToolkitDir)'==''">$(CUDA_PATH)</CudaToolkitDir>
-    <CudaArchitecture Condition="'$(CudaArchitecture)'==''">86</CudaArchitecture>
-    <ResidualVariant>cpu</ResidualVariant>
-    <ResidualVariant Condition="'$(WithCuda)'=='true'">cuda-sm$(CudaArchitecture)</ResidualVariant>
-    <ResidualVariant Condition="'$(WithOpenMP)'=='false'">$(ResidualVariant)-serial</ResidualVariant>
-    <OutDir>$(MSBuildProjectDirectory)\..\build\msvs\$(Platform)\$(Configuration)\$(ResidualVariant)\</OutDir>
-    <IntDir>$(OutDir)obj\$(MSBuildProjectName)\</IntDir>
-    <TargetName>residual_tests</TargetName>
-  </PropertyGroup>
-  <Import Project="module_compiler.props" />
-  <ItemDefinitionGroup>
-    <ClCompile>
-      <OpenMPSupport Condition="'$(WithOpenMP)'=='true'">true</OpenMPSupport>
-    </ClCompile>
-    <Link>
-      <SubSystem>Console</SubSystem>
-      <GenerateDebugInformation>true</GenerateDebugInformation>
-    </Link>
-  </ItemDefinitionGroup>
-  <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
-    <ClCompile>
-      <Optimization>Disabled</Optimization>
-      <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
-      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
-      <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-    </ClCompile>
-  </ItemDefinitionGroup>
-  <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
-    <ClCompile>
-      <Optimization>MaxSpeed</Optimization>
-      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
-      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-    </ClCompile>
-  </ItemDefinitionGroup>
+  <Import Project="kokkos_make.props" />
   <ItemGroup>
-    <ClInclude Include="..\source\residual\residual.h" />
-    <ClCompile Include="..\source\residual\residual_tests.cpp" />
     <None Include="..\source\residual\README.txt" />
+    <ClInclude Include="..\source\residual\residual.h" />
     <None Include="..\source\residual\residual.mk" />
+    <ClCompile Include="..\source\residual\residual_tests.cpp" />
   </ItemGroup>
-  <ItemGroup>
-    <ProjectReference Include="aero_timestep.vcxproj">
-      <Project>{BC53F2DF-5B44-45D9-AEB8-D56CFF1AE923}</Project>
-    </ProjectReference>
-    <ProjectReference Include="aero_explicit.vcxproj">
-      <Project>{68329720-CF29-47EB-A9E4-1B35097DF09B}</Project>
-    </ProjectReference>
-    <ProjectReference Include="aero_bc.vcxproj">
-      <Project>{94C60178-3788-46F4-A507-6B17DC5BE1F8}</Project>
-    </ProjectReference>
-    <ProjectReference Include="aero_residual.vcxproj">
-      <Project>{D264A833-5A0E-4208-ADFA-3A2D75713309}</Project>
-    </ProjectReference>
-  </ItemGroup>
-  <PropertyGroup>
-    <RunResidualTests Condition="'$(RunResidualTests)'==''">true</RunResidualTests>
-    <ResidualTestArguments Condition="'$(RequireCudaTests)'=='true'">--require-cuda</ResidualTestArguments>
-    <LocalDebuggerWorkingDirectory>$(MSBuildProjectDirectory)\..</LocalDebuggerWorkingDirectory>
-  </PropertyGroup>
-  <ItemDefinitionGroup Condition="'$(WithCuda)'=='true'">
-    <ClCompile>
-      <AdditionalIncludeDirectories>$(CudaToolkitDir)\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>AERO_WITH_CUDA;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-    </ClCompile>
-    <Link>
-      <AdditionalLibraryDirectories>$(CudaToolkitDir)\lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>cudart_static.lib;%(AdditionalDependencies)</AdditionalDependencies>
-    </Link>
-  </ItemDefinitionGroup>
-  <Target Name="RunResidualTests" AfterTargets="Build" Condition="'$(RunResidualTests)'=='true' and '$(DesignTimeBuild)'!='true'">
-    <Exec Command="&quot;$(TargetPath)&quot; $(ResidualTestArguments)" WorkingDirectory="$(MSBuildProjectDirectory)\.." />
-  </Target>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
-  <Import Project="publish_program.targets" />
 </Project>

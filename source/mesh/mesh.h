@@ -3,7 +3,6 @@
 #include "../parallel/kernel_math.h"
 
 #include "mesh_index.h"
-#ifndef __CUDACC_RTC__
 #include <cstddef>
 #include <iosfwd>
 #include <stdexcept>
@@ -11,11 +10,9 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
-#endif
 
 namespace aero {
 
-#ifndef __CUDACC_RTC__
 enum class MeshFormat { Text, Binary, Lzma };
 
 class MeshError : public std::runtime_error {
@@ -52,7 +49,6 @@ struct MeshData {
     MeshData() : dimension(3), length_scale_to_meters(1.0) {}
 };
 
-#endif
 struct MeshIndexSpan {
     const MeshIndex* data;
     MeshIndex size;
@@ -133,10 +129,8 @@ struct MeshView {
     }
 };
 
-#ifndef __CUDACC_RTC__
 static_assert(std::is_trivially_copyable<MeshView>::value, "MeshView must be trivially copyable");
 static_assert(std::is_standard_layout<MeshView>::value, "MeshView must have standard layout");
-#endif
 
 // Дескрипторы дают доступ только для чтения. Они копируют представление, а массивы остаются у владельца.
 // Можно брать дескриптор из временного mesh.view(), пока существует память сетки или устройства.
@@ -219,7 +213,6 @@ AERO_HOST_DEVICE inline MeshCell MeshView::cell(MeshIndex id) const noexcept {
     return MeshCell(*this, id);
 }
 
-#ifndef __CUDACC_RTC__
 static_assert(std::is_trivially_copyable<MeshCell>::value, "Entity handles must be trivially copyable");
 
 struct MeshReadLimits {
@@ -283,7 +276,6 @@ private:
     MeshCsr cell_nodes_, cell_edges_;
 };
 
-#endif
 } // namespace aero
 
 #endif

@@ -17,10 +17,11 @@ public:
     // Записывает данные владельцев в другой слот и завершает запись проверенным заголовком.
     void save(std::uint64_t step, double time, const std::vector<double>& state,
               const std::vector<double>& initial);
-    bool due(std::uint64_t step, double time) const;
+    bool due(std::uint64_t step, double time, bool final_field = false) const;
     const std::string& fields_directory() const { return fields_; }
     std::uint64_t step = 0;
     double time = 0;
+    implicit::BdfHistory history; // Предыдущий слой и фактический шаг, если они есть в файле BDF2.
 
 private:
     struct Lock;

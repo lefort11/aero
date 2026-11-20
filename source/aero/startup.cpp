@@ -10,6 +10,8 @@
 #include <sys/stat.h>
 #ifdef _WIN32
 #include <direct.h>
+#include <fcntl.h>
+#include <io.h>
 #endif
 #ifdef _OPENMP
 #include <omp.h>
@@ -70,14 +72,24 @@ void show_settings(const RunSettings& r) {
               << "\nreconstruction_variables = " << r.reconstruction_variables
               << "\neuler_solver = " << r.euler_solver << "\ntime_scheme = " << r.time_scheme
               << "\nupw_coeff = " << r.upw_coeff << "\ntrace_ratio_min = " << r.trace_ratio_min << "\ntrace_ratio_max = " << r.trace_ratio_max
-              << "\ngamma = " << r.gamma << "\ncfl = " << r.cfl << "\nfinal_time = " << r.final_time
-              << "\nomp_threads = " << r.omp_threads << " (runtime maximum ";
+              << "\ngamma = " << r.gamma << "\ncfl = " << r.cfl;
+    if (!r.steady()) std::cout << "\nfinal_time = " << r.final_time;
+    std::cout << "\nomp_threads = " << r.omp_threads << " (runtime maximum ";
 #ifdef _OPENMP
     std::cout << omp_get_max_threads();
 #else
     std::cout << 1;
 #endif
     std::cout << ")\nflowreport_every = " << r.flowreport_every << '\n';
+    if (r.steady())
+        std::cout << "steady_criterion = " << (r.steady_absolute ? "absolute" : "relative") << "\nsteady_tol = " << r.steady_tol << "\nsteady_max_steps = " << r.steady_max_steps << '\n';
+    if (r.uses_implicit_time())
+        std::cout <<  "solver = BiCGSTAB\njacobian_flux = " << (r.implicit_settings.roe ? "Roe" : "LF")
+                  << "\npreconditioner = " << (r.implicit_settings.csgs ? "CSGS" : "BJ") << "\nsolver_tol = "
+                  << r.implicit_settings.linear_relative << "\nnewton_tol = " << r.implicit_settings.newton_relative
+                  << "\nsimplified_jacobian = " << (r.implicit_settings.simplified_jacobian ? "on" : "off")
+                  << "\njacobian_update_every = " << r.implicit_settings.jacobian_update_every
+                  << "\nnewton_max_iter = " << r.implicit_settings.max_iterations << '\n';
     if (r.reconstruction == "mp5" || r.reconstruction == "MPWENO5")
         std::cout << "mp6_hybrid = " << r.mp6_hybrid << '\n';
     if (r.reconstruction == "MPWENO5")
@@ -120,8 +132,19 @@ bool prepare_boundary_file(const RunSettings& run, const std::vector<std::string
     std::FILE* file = nullptr;
     int error = 0;
     if (!std::ifstream(path.c_str())) {
-#ifdef _MSC_VER
-        error = fopen_s(&file, path.c_str(), "wx");
+#ifdef _WIN32
+        // В старой библиотеке времени выполнения MinGW режим fopen("wx") недоступен.
+        // Флаг исключительного создания защищает уже существующий bc.txt и в этой сборке.
+        const int fd = _open(path.c_str(), _O_WRONLY | _O_CREAT | _O_EXCL | _O_TEXT, _S_IREAD | _S_IWRITE);
+        if (fd >= 0) {
+            file = _fdopen(fd, "w");
+            if (!file) {
+                error = errno;
+                _close(fd);
+            }
+        } else {
+            error = errno;
+        }
 #else
         file = std::fopen(path.c_str(), "wx");
         if (!file)

@@ -82,7 +82,7 @@ struct CflTimestep::Impl {
         for (std::size_t b = 0; b < pieces; ++b)
             entries[cursor[boundary[b].node]++] = {edges + b, magnitude(boundary[b].area)};
         if (device >= 0) {
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
             gpu = cfl_detail::upload(view(), device);
 #else
             throw std::invalid_argument("CUDA is not enabled in timestep build");
@@ -90,7 +90,7 @@ struct CflTimestep::Impl {
         }
     }
     ~Impl() {
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
         if (gpu)
             cfl_detail::release(gpu);
 #endif
@@ -126,7 +126,7 @@ CflStep CflTimestep::compute(double cfl, WaveSpeeds speeds, void* stream) const 
         (speeds.boundary_count && !speeds.boundary))
         throw std::invalid_argument("invalid CFL or wave-speed arrays");
     CflStep result = cfl_detail::unconstrained();
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
     if (p.gpu)
         result = cfl_detail::reduce(p.gpu, speeds, cfl, stream);
     else

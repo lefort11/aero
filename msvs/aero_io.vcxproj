@@ -1,87 +1,43 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003" DefaultTargets="Build" ToolsVersion="Current">
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003" DefaultTargets="Build">
   <ItemGroup Label="ProjectConfigurations">
-    <ProjectConfiguration Include="Debug|x64">
-      <Configuration>Debug</Configuration>
-      <Platform>x64</Platform>
-    </ProjectConfiguration>
-    <ProjectConfiguration Include="Release|x64">
-      <Configuration>Release</Configuration>
-      <Platform>x64</Platform>
-    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{C9C96040-05C8-498C-8E4D-D6C4B07A468E}</ProjectGuid>
-    <Keyword>Win32Proj</Keyword>
-    <RootNamespace>aero</RootNamespace>
-    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
-    <ImportDirectoryBuildProps>false</ImportDirectoryBuildProps>
-    <ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets>
+    <Keyword>MakeFileProj</Keyword>
+    <MakeGoal>io</MakeGoal>
   </PropertyGroup>
-  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
-    <ConfigurationType>StaticLibrary</ConfigurationType>
-    <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v145</PlatformToolset>
-    <CharacterSet>Unicode</CharacterSet>
-  </PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
-    <ConfigurationType>StaticLibrary</ConfigurationType>
-    <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v145</PlatformToolset>
-    <CharacterSet>Unicode</CharacterSet>
-  </PropertyGroup>
-  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
-  <PropertyGroup>
-    <OutDir>$(MSBuildProjectDirectory)\..\build\msvs\$(Platform)\$(Configuration)\</OutDir>
-    <IntDir>$(OutDir)obj\$(MSBuildProjectName)\</IntDir>
-    <TargetName>aero_io</TargetName>
-  </PropertyGroup>
-  <Import Project="module_compiler.props" />
-  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <ClCompile>
-      <Optimization>Disabled</Optimization>
-      <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
-      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
-      <PreprocessorDefinitions>Z7_ST;_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-    </ClCompile>
-  </ItemDefinitionGroup>
-  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <ClCompile>
-      <Optimization>MaxSpeed</Optimization>
-      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
-      <PreprocessorDefinitions>Z7_ST;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-    </ClCompile>
-  </ItemDefinitionGroup>
+  <Import Project="kokkos_make.props" />
   <ItemGroup>
-    <ClInclude Include="..\source\io\fields.h" />
-    <ClInclude Include="..\source\io\number_codec.h" />
-    <ClInclude Include="..\source\io\utf8_label.h" />
-    <ClInclude Include="..\source\io\sha256.h" />
-    <ClCompile Include="..\source\io\fields.cpp" />
-    <ClCompile Include="..\source\io\fields_mesh.cpp" />
-    <ClCompile Include="..\source\io\sha256.cpp" />
-    <ClInclude Include="..\source\io\lzma_stream.h" />
-    <ClInclude Include="..\source\io\expression.h" />
-    <ClInclude Include="..\source\io\settings.h" />
-    <ClInclude Include="..\source\io\output_settings.h" />
-    <ClInclude Include="..\source\io\scheduled_output.h" />
-    <ClCompile Include="..\source\io\output_settings.cpp" />
-    <ClCompile Include="..\source\io\scheduled_output.cpp" Condition="Exists('$(MSBuildProjectDirectory)\..\source\eulersolver\euler.h')" />
-    <ClInclude Include="..\source\io\flowreport.h" />
-    <ClCompile Include="..\source\io\flowreport.cpp" Condition="Exists('$(MSBuildProjectDirectory)\..\source\eulersolver\euler.h')" />
-    <ClCompile Include="..\source\io\flowreport_explicit.cpp" Condition="Exists('$(MSBuildProjectDirectory)\..\source\eulersolver\euler.h') and Exists('$(MSBuildProjectDirectory)\..\source\explicit\explicit.h')" />
-    <ClInclude Include="..\source\io\settings_text.h" />
-    <ClInclude Include="..\source\io\settings_boundary.h" />
-    <ClCompile Include="..\source\io\settings.cpp" />
-    <ClCompile Include="..\source\io\settings_boundary.cpp" Condition="Exists('$(MSBuildProjectDirectory)\..\source\bc\bc.h')" />
     <ClCompile Include="..\source\io\expression.cpp" />
+    <ClInclude Include="..\source\io\expression.h" />
+    <ClCompile Include="..\source\io\fields.cpp" />
+    <ClInclude Include="..\source\io\fields.h" />
+    <ClCompile Include="..\source\io\fields_mesh.cpp" />
+    <ClCompile Include="..\source\io\flowreport.cpp" />
+    <ClInclude Include="..\source\io\flowreport.h" />
+    <ClCompile Include="..\source\io\flowreport_explicit.cpp" />
     <ClCompile Include="..\source\io\lzma_stream.cpp" />
+    <ClInclude Include="..\source\io\lzma_stream.h" />
+    <ClInclude Include="..\source\io\number_codec.h" />
+    <ClCompile Include="..\source\io\output_settings.cpp" />
+    <ClInclude Include="..\source\io\output_settings.h" />
+    <ClCompile Include="..\source\io\scheduled_output.cpp" />
+    <ClInclude Include="..\source\io\scheduled_output.h" />
+    <ClCompile Include="..\source\io\settings.cpp" />
+    <ClInclude Include="..\source\io\settings.h" />
+    <ClCompile Include="..\source\io\settings_boundary.cpp" />
+    <ClInclude Include="..\source\io\settings_boundary.h" />
+    <ClInclude Include="..\source\io\settings_text.h" />
+    <ClCompile Include="..\source\io\sha256.cpp" />
+    <ClInclude Include="..\source\io\sha256.h" />
+    <ClInclude Include="..\source\io\utf8_label.h" />
+    <ClCompile Include="..\third_party\lzma\CpuArch.c" />
+    <ClCompile Include="..\third_party\lzma\LzFind.c" />
     <ClCompile Include="..\third_party\lzma\LzmaDec.c" />
     <ClCompile Include="..\third_party\lzma\LzmaEnc.c" />
-    <ClCompile Include="..\third_party\lzma\LzFind.c" />
-    <ClCompile Include="..\third_party\lzma\CpuArch.c" />
   </ItemGroup>
-  <Import Project="openmp.props" />
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

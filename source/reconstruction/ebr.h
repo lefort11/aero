@@ -13,7 +13,7 @@ AERO_HOST_DEVICE inline void reconstruct_ebr_increment2(const SideInput& input, 
     for (unsigned long long c = 0; c < components; ++c)
         output[c * output_stride] = input.linear(c);
 }
-#if !defined(AERO_RECONSTRUCTION_KERNEL_ONLY) && !defined(__CUDACC_RTC__)
+#if !defined(AERO_RECONSTRUCTION_KERNEL_ONLY)
 class Mesh;
 class ReconstructionStencil;
 struct ReconstructionOptions;

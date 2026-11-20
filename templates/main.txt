@@ -6,17 +6,18 @@
 # Для нескольких процессов подготовьте .mdec утилитой meshdec.
 mesh           = "../examples/tecplot/demo_2d.mesh"
 # reconstruction — first_order, ebr3, ebr5, weno3, weno5, mp5 или MPWENO5. Для MPWENO5 см. scheme.txt.
-# У MP5 alpha = min(4, max(0, 1/cfl - 1)) для Эйлера и SSPRK3.
+# У MP5 и MPWENO5 alpha = min(4, max(0, 1/cfl - 1)) для Эйлера и SSPRK3.
+# При BDF1, BDF2 и steady обе схемы используют alpha = 4 при любом CFL.
 # Если дальняя точка недоступна, используется WENO3; без ближней точки — среднее на ребре.
 reconstruction = ebr3
 # reconstruction_variables — conservative (консервативные переменные),
 # characteristic (характеристические переменные) или flux (потоки).
 reconstruction_variables = conservative
-# time_scheme — euler (одна стадия) или ssprk3 (три стадии).
+# time_scheme — euler, ssprk3, BDF1 (неявный Эйлер), BDF2 или steady (установление). Для неявного расчёта заполните implicit.txt.
 time_scheme    = ssprk3
 # euler_solver — roe или lf (локальный поток Лакса — Фридрихса).
 euler_solver   = roe
-# cfl — конечное число > 0. final_time — конечное расчётное время >= 0.
+# cfl — конечное число > 0. final_time — конечное расчётное время >= 0. В режиме steady этот параметр можно опустить.
 cfl            = 0.5
 final_time     = 2.0
 # backend — cpu или cuda. Для cuda выберите устройства в cuda.txt.

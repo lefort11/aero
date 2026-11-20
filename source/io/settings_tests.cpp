@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #ifdef _OPENMP
 #include <omp.h>
@@ -56,7 +57,7 @@ struct CaseFiles {
     }
     ~CaseFiles() {
         for (const char* name :
-             {"main.txt", "bc.txt", "init.txt", "cuda.txt", "gas.txt", "scheme.txt", "test.fields", "output.txt",
+             {"main.txt", "bc.txt", "init.txt", "cuda.txt", "gas.txt", "scheme.txt", "implicit.txt", "test.fields", "output.txt",
               "latest.fields", "p_000001.fields", "p_000002.fields", "p_000003.fields"})
             std::remove((dir + "/" + name).c_str());
 #ifdef _WIN32
@@ -279,6 +280,49 @@ void main_and_cuda(const CaseFiles& files) {
     const std::string common =
         "time_scheme=euler\ncfl=2e-1\neuler_solver=lf\nfinal_time=0\nreconstruction_variables=flux\n";
     const std::string base = head + common + "reconstruction=weno5\n";
+    const std::string implicit_main = head + common.substr(common.find('\n') + 1)
+                                      + "time_scheme=BDF1\nbackend=cpu\nreconstruction=first_order\n";
+    files.write("main.txt", implicit_main);
+    rejects([&] { files.load(); }, "implicit.txt");
+    std::ifstream controls("templates/implicit.txt");
+    std::ostringstream content;
+    content << controls.rdbuf();
+    files.write("implicit.txt", content.str());
+    const char* args[] = {"aero", "implicit.txt:newton_tol=2e-7", "implicit:newton_max_iter=9"};
+    auto directories = parse_run_arguments(3, args);
+    directories.input = files.dir;
+    const auto bdf = read_run_settings(directories);
+    require(!bdf.implicit_settings.simplified_jacobian, "full LF derivative is the default");
+    directories.overrides["implicit"]["simplified_jacobian"] = "on";
+    require(read_run_settings(directories).implicit_settings.simplified_jacobian, "simplified LF derivative");
+    require(bdf.uses_implicit_time() && bdf.implicit_settings.newton_relative == 2e-7 &&
+            bdf.implicit_settings.max_iterations == 9 && bdf.implicit_settings.linear_relative == 1e-8,
+            "BDF1 settings and overrides");
+    directories.overrides["main"]["time_scheme"]="BDF2";
+    directories.overrides["implicit"]["jacobian_flux"]="Roe";
+    directories.overrides["implicit"]["preconditioner"]="CSGS";
+    const auto second=read_run_settings(directories).implicit_settings;
+    require(second.second_order && second.roe && second.csgs && second.simplified_jacobian,"BDF2 controls");
+    directories.overrides["main"]["time_scheme"] = "steady";
+    directories.overrides["implicit"]["jacobian_update_every"] = "3";
+    auto steady = read_run_settings(directories);
+    require(steady.steady() && steady.uses_implicit_time() && !steady.implicit_settings.second_order &&
+            !steady.steady_absolute && steady.steady_tol == 1.e-6 && steady.steady_max_steps == 10000 &&
+            steady.implicit_settings.jacobian_update_every == 3, "steady default controls");
+    directories.overrides["implicit"]["steady_criterion"] = "absolute";
+    directories.overrides["implicit"]["steady_tol"] = "10";
+    require(read_run_settings(directories).steady_tol == 10., "absolute steady tolerance has physical units");
+    directories.overrides["implicit"].erase("steady_criterion");
+    directories.overrides["implicit"].erase("steady_tol");
+    for (const auto& bad : std::vector<std::pair<std::string, std::string>>{
+         {"steady_criterion","unknown"}, {"steady_tol","1"}, {"steady_max_steps","0"},
+         {"jacobian_update_every","-2"}, {"simplified_jacobian","maybe"}, {"solver","gmres"}, {"jacobian_flux","unknown"}, {"preconditioner","unknown"},
+         {"solver_tol","0"}, {"newton_tol","1"}, {"newton_max_iter","0"}, {"newton_max_iter","2.5"}}) {
+        directories.overrides["implicit"][bad.first] = bad.second;
+        rejects([&] { read_run_settings(directories); }, bad.first);
+        directories.overrides["implicit"].erase(bad.first);
+    }
+    files.write("implicit.txt", "invalid file ignored for explicit schemes");
     for (const char* scheme : {"first_order", "ebr3", "ebr5", "weno3", "weno5", "mp5", "MPWENO5"}) {
         files.write("main.txt", head + common + "backend=cpu\nreconstruction=" + scheme);
         const auto run = files.load();

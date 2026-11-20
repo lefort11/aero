@@ -48,7 +48,7 @@ AERO_HOST_DEVICE inline EulerStatus lax_friedrichs_fluxes(unsigned dimension, co
 
 } // namespace aero
 
-#if !defined(AERO_EULERSOLVER_KERNEL_ONLY) && !defined(__CUDACC_RTC__)
+#if !defined(AERO_EULERSOLVER_KERNEL_ONLY)
 namespace aero {
 // Обёртки для векторов проверяют размеры и сообщают причину ошибки через исключение.
 EulerFluxResult lax_friedrichs_conservative(const std::vector<double>& left, const std::vector<double>& right,

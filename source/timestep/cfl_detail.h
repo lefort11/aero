@@ -2,7 +2,7 @@
 #define AERO_CFL_DETAIL_H
 #include "../parallel/kernel_math.h"
 #include "timestep.h"
-#if defined(AERO_WITH_KOKKOS) && !defined(__CUDACC__)
+#ifndef KOKKOS_ENABLE_CUDA
 #include "../parallel/kokkos_host.h"
 #endif
 
@@ -90,10 +90,9 @@ template <class ReadNode> struct MinimumStep {
         best.node = chosen.node;
     }
 };
-#ifndef __CUDACC__
+#ifndef KOKKOS_ENABLE_CUDA
 template <class ReadNode> CflStep host_min(size_t nodes, const ReadNode& read_node) {
     CflStep result = unconstrained();
-#ifdef AERO_WITH_KOKKOS
     // На малой сетке время запуска команды дороже обхода. Правило выбора шага общее.
     const MinimumStep<ReadNode> reduce{read_node};
     if (nodes < 4096) {
@@ -103,25 +102,6 @@ template <class ReadNode> CflStep host_min(size_t nodes, const ReadNode& read_no
         host_parallel::ensure_runtime();
         Kokkos::parallel_reduce("Aero: CFL minimum", host_parallel::Range(0, nodes), reduce, result);
     }
-#else
-    const auto count = static_cast<ptrdiff_t>(nodes);
-#ifdef _OPENMP
-#pragma omp parallel if (count >= 4096)
-#endif
-    {
-        // Каждый поток находит собственный минимум и только один раз участвует в общем сравнении.
-        CflStep best = unconstrained();
-#ifdef _OPENMP
-#pragma omp for nowait
-#endif
-        for (ptrdiff_t n = 0; n < count; ++n)
-            best = minimum(best, read_node(static_cast<size_t>(n)));
-#ifdef _OPENMP
-#pragma omp critical(aero_cfl_minimum)
-#endif
-        result = minimum(result, best);
-    }
-#endif
     return result;
 }
 #endif

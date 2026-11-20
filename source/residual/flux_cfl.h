@@ -31,11 +31,8 @@ struct FluxCfl {
         return cfl_detail::local(geometry.offsets, volume, courant, i, FaceSpeeds{geometry, flux});
     }
 };
-struct DeviceCflMinimum {
-    Index bad, bits;
-};
 double cpu_flux_cfl(const FluxCfl&, double courant, const MeshIndex* global_ids = nullptr);
-double gpu_flux_cfl(const FluxCfl&, double courant, DeviceCflMinimum*, void* stream);
+double gpu_flux_cfl(const FluxCfl&, double courant, void* stream);
 }
 }
 #endif

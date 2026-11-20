@@ -2,6 +2,8 @@
 #define AERO_RESIDUAL_H
 
 namespace aero {
+namespace implicit { class SpatialJacobian; }
+namespace residual_detail { struct Geometry; }
 enum class ResidualVariables { Conservative, Characteristic, Flux };
 enum class ResidualSolver { Roe, LocalLF };
 struct ResidualOptions {
@@ -17,7 +19,7 @@ struct ResidualOptions {
 };
 }
 
-#if !defined(AERO_RESIDUAL_KERNEL_ONLY) && !defined(__CUDACC_RTC__)
+#if !defined(AERO_RESIDUAL_KERNEL_ONLY)
 #include "../bc/periodic.h"
 #include <memory>
 
@@ -60,8 +62,11 @@ public:
                       double* flux_seconds = nullptr);
 
 private:
+    friend class implicit::SpatialJacobian;
+    // Для якобиана используем уже спроецированные площади и ту же таблицу границ.
+    int jacobian_geometry(residual_detail::Geometry& host, residual_detail::Geometry& active) const;
     struct Impl;
-    std::unique_ptr<Impl> p_;
+    std::shared_ptr<Impl> p_; // Геометрия остаётся живой, пока ей пользуется матрица.
 };
 }
 #endif

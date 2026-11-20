@@ -169,7 +169,7 @@ int main(int argc, char** argv) {
         std::cout << cases.size() << " CPU boundary flux cases and parser tests passed.\n";
         const bool required = argc == 2 && std::string(argv[1]) == "--require-cuda";
         test_periodic(required);
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
         return aero::check_bc_devices(cases.data(), cases.size(), patches.free_rules.data(),
                                       patches.free_rules.size(), required);
 #else

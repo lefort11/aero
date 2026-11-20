@@ -9,9 +9,9 @@
 #include <limits>
 #include <map>
 #include <numeric>
-#ifdef AERO_WITH_CUDA
-#include "../../qa/cuda_test_buffer.h"
-#include "../cuda/runtime.h"
+#ifdef AERO_WITH_KOKKOS_GPU
+#include "../../qa/device_test_buffer.h"
+#include "../parallel/device_memory.h"
 #endif
 
 namespace {
@@ -89,15 +89,15 @@ double evaluate_test_side(ReconstructionStencilView s, ReconstructionIndex row, 
         throw ReconstructionError("Invalid test side");
     return output[static_cast<std::size_t>(component)];
 }
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
 extern "C" {
-int test_reconstruction_cuda_create(ReconstructionStencilView, int, void**, char*, unsigned);
-void test_reconstruction_cuda_destroy(void*);
-int test_reconstruction_cuda_host(void*, const double*, ReconstructionIndex, double*, double*, char*,
+int test_reconstruction_device_create(ReconstructionStencilView, int, void**, char*, unsigned);
+void test_reconstruction_device_destroy(void*);
+int test_reconstruction_device_host(void*, const double*, ReconstructionIndex, double*, double*, char*,
                                   unsigned);
-int test_reconstruction_cuda_device(void*, const double*, ReconstructionIndex, double*, double*, void*, char*,
+int test_reconstruction_device_device(void*, const double*, ReconstructionIndex, double*, double*, void*, char*,
                                     unsigned);
-int test_reconstruction_cuda_one(ReconstructionStencilView, ReconstructionIndex, unsigned, const double*,
+int test_reconstruction_device_one(ReconstructionStencilView, ReconstructionIndex, unsigned, const double*,
                                  ReconstructionIndex, const double*, double*, void*);
 }
 #endif
@@ -109,17 +109,17 @@ public:
     explicit TestReconstructor(ReconstructionStencil stencil,
                                ReconstructionBackend backend = ReconstructionBackend::Auto, int device = 0)
         : context_(std::move(stencil), backend, device), gpu_(nullptr) {
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
         if (context_.backend() == ReconstructionBackend::Cuda) {
             char error[512] = {};
-            if (test_reconstruction_cuda_create(context_.device_view(), device, &gpu_, error, sizeof(error)))
+            if (test_reconstruction_device_create(context_.device_view(), device, &gpu_, error, sizeof(error)))
                 throw ReconstructionError(error);
         }
 #endif
     }
     ~TestReconstructor() {
-#ifdef AERO_WITH_CUDA
-        test_reconstruction_cuda_destroy(gpu_);
+#ifdef AERO_WITH_KOKKOS_GPU
+        test_reconstruction_device_destroy(gpu_);
 #endif
     }
     static bool cuda_compiled() { return ReconstructionContext::cuda_compiled(); }
@@ -133,9 +133,9 @@ public:
         TestResult result;
         result.left_increment2.resize(checked_test_size(s.edge_count, components));
         result.right_increment2.resize(result.left_increment2.size());
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
         char error[512] = {};
-        if (test_reconstruction_cuda_host(gpu_, values.data(), components, result.left_increment2.data(),
+        if (test_reconstruction_device_host(gpu_, values.data(), components, result.left_increment2.data(),
                                           result.right_increment2.data(), error, sizeof(error)))
             throw ReconstructionError(error);
 #endif
@@ -150,9 +150,9 @@ public:
         checked_test_size(2 * s.edge_count, components);
         if (s.edge_count && (!values || !left || !right))
             throw ReconstructionError("Null test device field");
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
         char error[512] = {};
-        if (test_reconstruction_cuda_device(gpu_, values, components, left, right, stream, error,
+        if (test_reconstruction_device_device(gpu_, values, components, left, right, stream, error,
                                             sizeof(error)))
             throw ReconstructionError(error);
 #else
@@ -422,10 +422,10 @@ struct RowReader {
     }
 };
 
-#ifdef AERO_WITH_CUDA
-using aero::cuda_detail::checked;
+#ifdef AERO_WITH_KOKKOS_GPU
+using aero::gpu::checked;
 void single_side_device_test(int device) {
-    checked(cudaSetDevice(device));
+    checked(aero::gpu::select(device));
     const Mesh m = line({0, 0.3, 1, 2, 4, 7});
     for (ReconstructionScheme scheme : std::vector<ReconstructionScheme>{
              ReconstructionScheme::FirstOrder, ReconstructionScheme::Ebr3, ReconstructionScheme::Ebr5,
@@ -449,17 +449,17 @@ void single_side_device_test(int device) {
             aero_test::DeviceBuffer<double> own_gpu(own.size()), neighbours_gpu(neighbours.size()),
                 output_gpu(guarded.size());
             checked(
-                cudaMemcpy(own_gpu.data, own.data(), own.size() * sizeof(double), cudaMemcpyHostToDevice));
-            checked(cudaMemcpy(neighbours_gpu.data, neighbours.data(), neighbours.size() * sizeof(double),
-                               cudaMemcpyHostToDevice));
-            checked(cudaMemcpy(output_gpu.data, guarded.data(), guarded.size() * sizeof(double),
-                               cudaMemcpyHostToDevice));
-            checked(static_cast<cudaError_t>(
-                test_reconstruction_cuda_one(context.device_view(), edge, side, own_gpu.data, 3,
+                aero::gpu::copy(own_gpu.data, own.data(), own.size() * sizeof(double), aero::gpu::Copy::ToDevice));
+            checked(aero::gpu::copy(neighbours_gpu.data, neighbours.data(), neighbours.size() * sizeof(double),
+                               aero::gpu::Copy::ToDevice));
+            checked(aero::gpu::copy(output_gpu.data, guarded.data(), guarded.size() * sizeof(double),
+                               aero::gpu::Copy::ToDevice));
+            checked(static_cast<aero::gpu::Status>(
+                test_reconstruction_device_one(context.device_view(), edge, side, own_gpu.data, 3,
                                              neighbours_gpu.data, output_gpu.data + 1, nullptr)));
-            checked(cudaDeviceSynchronize());
-            checked(cudaMemcpy(guarded.data(), output_gpu.data, guarded.size() * sizeof(double),
-                               cudaMemcpyDeviceToHost));
+            checked(aero::gpu::wait_all());
+            checked(aero::gpu::copy(guarded.data(), output_gpu.data, guarded.size() * sizeof(double),
+                               aero::gpu::Copy::ToHost));
             require(guarded.front() == 12345 && guarded.back() == 12345,
                     "CUDA wrote outside one side vector");
             for (std::size_t c = 0; c < 3; ++c)
@@ -468,7 +468,7 @@ void single_side_device_test(int device) {
     }
 }
 void device_test(int device, ReconstructionScheme scheme = ReconstructionScheme::Ebr3, bool correction = true) {
-    checked(cudaSetDevice(device));
+    checked(aero::gpu::select(device));
     // Пятиузловым схемам нужны два слоя соседей. В середине этой сетки
     // сравниваем с CPU полный шаблон, а по краям того же поля — укороченный.
     const bool two_layers = reconstruction_scheme(scheme).layers == 2;
@@ -484,25 +484,25 @@ void device_test(int device, ReconstructionScheme scheme = ReconstructionScheme:
     const TestResult expected = reconstruct_all_sides(s, v, 5);
     aero_test::DeviceBuffer<double> input(v.size()), left(expected.left_increment2.size()),
         right(expected.right_increment2.size());
-    cudaStream_t stream = nullptr;
-    checked(cudaStreamCreate(&stream));
+    aero::gpu::Stream stream = nullptr;
+    checked(aero::gpu::create_stream(&stream));
     try {
-        checked(cudaMemcpy(input.data, v.data(), v.size() * sizeof(double), cudaMemcpyHostToDevice));
+        checked(aero::gpu::copy(input.data, v.data(), v.size() * sizeof(double), aero::gpu::Copy::ToDevice));
         gpu.reconstruct_device(input.data, 5, left.data, right.data, stream);
-        checked(cudaStreamSynchronize(stream));
+        checked(aero::gpu::wait(stream));
         TestResult actual = expected;
-        checked(cudaMemcpy(actual.left_increment2.data(), left.data,
-                           actual.left_increment2.size() * sizeof(double), cudaMemcpyDeviceToHost));
-        checked(cudaMemcpy(actual.right_increment2.data(), right.data,
-                           actual.right_increment2.size() * sizeof(double), cudaMemcpyDeviceToHost));
+        checked(aero::gpu::copy(actual.left_increment2.data(), left.data,
+                           actual.left_increment2.size() * sizeof(double), aero::gpu::Copy::ToHost));
+        checked(aero::gpu::copy(actual.right_increment2.data(), right.data,
+                           actual.right_increment2.size() * sizeof(double), aero::gpu::Copy::ToHost));
         same(actual, expected);
         if (scheme == ReconstructionScheme::FirstOrder)
             endpoints(mesh, v, 5, actual);
     } catch (...) {
-        cudaStreamDestroy(stream);
+        aero::gpu::destroy_stream(stream);
         throw;
     }
-    checked(cudaStreamDestroy(stream));
+    checked(aero::gpu::destroy_stream(stream));
 }
 #endif
 }
@@ -1488,6 +1488,11 @@ int main(int argc, char** argv) {
         near(mp5_alpha_from_cfl(.125), 4);
         near(mp5_alpha_from_cfl(.5), 1);
         near(mp5_alpha_from_cfl(1.25), 0);
+        // Большой CFL уменьшает alpha только на явном шаге. При неявном
+        // интегрировании он меняет длину шага, а ограничитель всегда получает 4.
+        for (double cfl : {.125, .5, 1.25, 100.})
+            near(mp5_alpha_for_time_scheme(cfl, true), 4.);
+        near(mp5_alpha_for_time_scheme(.5, false), 1.);
         near(mp5::increment(0, 0, 1, 0, 4), 0);
         near(mp5::increment(0, 0, 0, 0, 1), 0);
         // Прямой эталон использует четыре аргумента minmod и явное пересечение интервалов.
@@ -1601,7 +1606,7 @@ int main(int argc, char** argv) {
         if (require_cuda && devices == 0)
             throw ReconstructionError("GPU verification requested but no CUDA device is available");
         for (int device = 0; device < devices; ++device) {
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
             add("CUDA " + std::to_string(device) + " one side, explicit owner and guarded output",
                 [device] { single_side_device_test(device); });
             add("CUDA " + std::to_string(device) + " MP5 full and shortened stencils",
@@ -1661,7 +1666,7 @@ int main(int argc, char** argv) {
                                                 ReconstructionBackend::Cuda, device);
                         require(empty.reconstruct({}, 1).left_increment2.empty(), "Empty WENO CUDA output");
                     });
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
                 add("CUDA " + std::to_string(device) + " " + name + " device arrays and stream",
                     [device, scheme] { device_test(device, scheme); });
 #endif
@@ -1736,7 +1741,7 @@ int main(int argc, char** argv) {
                 TestReconstructor empty(ReconstructionStencil(), ReconstructionBackend::Cuda, device);
                 require(empty.reconstruct({}, 1).left_increment2.empty(), "Empty GPU output");
             });
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
             add("CUDA " + std::to_string(device) + " device arrays and nondefault stream",
                 [device] { device_test(device); });
             add("CUDA " + std::to_string(device) + " FirstOrder device arrays and stream",

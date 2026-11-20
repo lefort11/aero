@@ -6,6 +6,7 @@
 namespace aero {
 class OutputSchedule;
 class Recovery;
+namespace implicit { struct BdfHistory; }
 struct RunSettings;
 
 // Параметры одного шага, общие для всех стадий интегрирования.
@@ -21,14 +22,19 @@ struct TimeStep {
 struct StepOperations {
     // Вычисляет ограничение CFL и оставляет потоки готовыми для первой стадии.
     std::function<double(SolverTimings&)> cfl_step;
+    // Использует готовые физические потоки для проверки выхода на стационар.
+    std::function<double()> steady_residual;
     // Выполняет все стадии шага и обмен значениями в граничных узлах подобластей.
     std::function<void(const TimeStep&, SolverTimings&)> advance;
     // Даёт текущее состояние в памяти CPU для вывода полей и контрольной точки.
     std::function<const std::vector<double>&()> output_state;
+    // Выгружает предыдущий принятый слой только при записи контрольной точки BDF2.
+    std::function<void(implicit::BdfHistory&)> checkpoint_history;
     // Печатает сводку, собранную при выполнении шага.
     std::function<void(const TimeStep&)> report;
     // Записывает из одного снимка все зоны, которым подошёл срок вывода.
-    std::function<void(const TimeStep&, const std::vector<double>&)> write_fields;
+    // Последний аргумент запрашивает запись всех заданных зон при выходе на стационар.
+    std::function<void(const TimeStep&, const std::vector<double>&, bool)> write_fields;
 };
 
 // Ведёт расчёт до конечного времени от начального состояния или контрольной точки.

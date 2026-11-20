@@ -10,9 +10,9 @@
 #include <string>
 #include <utility>
 
-#ifdef AERO_WITH_CUDA
-extern "C" int euler_test_cuda_count(int*, char*, unsigned);
-extern "C" int euler_test_cuda_flux(int, unsigned, unsigned, const double*, const double*, const double*,
+#ifdef AERO_WITH_KOKKOS_GPU
+extern "C" int euler_test_device_count(int*, char*, unsigned);
+extern "C" int euler_test_device_flux(int, unsigned, unsigned, const double*, const double*, const double*,
                                     const double*, const double*, double, aero::EulerFluxResult*, int*, char*,
                                     unsigned);
 #endif
@@ -203,14 +203,14 @@ void roe_eigenvector_test(unsigned d) {
     }
 }
 
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
 void gpu_case(int device, unsigned mode, unsigned d, const Values& left, const Values& right,
               const Values& aux_left, const Values& aux_right, const Values& n, double gamma,
               EulerStatus expected_status, const EulerFluxResult* expected) {
     EulerFluxResult r = sentinel();
     int status = -1;
     char error[512] = {};
-    const int failed = euler_test_cuda_flux(
+    const int failed = euler_test_device_flux(
         device, mode, d, left.data(), right.data(), aux_left.empty() ? nullptr : aux_left.data(),
         aux_right.empty() ? nullptr : aux_right.data(), n.data(), gamma, &r, &status, error, sizeof(error));
     require(!failed, error);
@@ -543,9 +543,9 @@ int main(int argc, char** argv) {
     });
     try {
         int devices = 0;
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
         char error[512] = {};
-        require(!euler_test_cuda_count(&devices, error, sizeof(error)), error);
+        require(!euler_test_device_count(&devices, error, sizeof(error)), error);
         for (int device = 0; device < devices; ++device) {
             add("CUDA " + std::to_string(device) + " all dimensions and input forms", [device] {
                 for (unsigned d = 1; d <= 3; ++d)

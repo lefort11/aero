@@ -14,7 +14,7 @@ void near(double value, double expected) {
             "incorrect stage, update or conserved integral");
 }
 void evaluate(TestProblem problem, double time, const ExplicitField& field, double* residual) {
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
     if (field.backend == ExplicitBackend::Cuda) {
         device_test_residual(problem, time, field, residual);
         return;
@@ -95,7 +95,7 @@ void prepared_step(ExplicitBackend backend, int device, ExplicitScheme scheme) {
     require(calls == (scheme == ExplicitScheme::Euler ? 0u : 2u), "incorrect number of later stages");
     require(solver.state() == baseline.state(), "precomputed first residual changed the step");
 }
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
 void nested_devices() {
     const int caller = current_test_device(), other = caller == 0 ? 1 : 0;
     const double one = 1;
@@ -189,7 +189,7 @@ int main(int argc, char** argv) {
         exercise(aero::ExplicitBackend::Cpu, 0);
         std::cout << "CPU explicit tests passed.\n";
         const int count = aero::ExplicitIntegrator::cuda_device_count();
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
         if (count >= 2)
             nested_devices();
 #endif

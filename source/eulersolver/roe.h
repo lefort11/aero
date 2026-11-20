@@ -9,7 +9,7 @@ struct RoeFlux {
     // На полном двумерном шаблоне размерность уже известна. Компилятор может
     // развернуть циклы по четырём компонентам и оставить состояние в регистрах.
     template <unsigned fixed_dimension = 0>
-    AERO_HOST_DEVICE static AERO_KERNEL_INLINE EulerStatus combine(const euler_detail::FaceStates& face,
+    KOKKOS_FORCEINLINE_FUNCTION static EulerStatus combine(const euler_detail::FaceStates& face,
                                                 const euler_detail::InterfaceGas& gas, const double* fl,
                                                 const double* fr, double speed, EulerFluxResult* result) {
         const unsigned dimension = fixed_dimension ? fixed_dimension : face.dimension;
@@ -81,7 +81,7 @@ AERO_HOST_DEVICE inline EulerStatus roe_fluxes(unsigned dimension, const double*
     return euler_detail::flux_from_reconstructed_fluxes<roe_detail::RoeFlux>(
         {dimension, left, right, direction, gamma, 1}, fl, fr, result);
 }
-#if !defined(AERO_EULERSOLVER_KERNEL_ONLY) && !defined(__CUDACC_RTC__)
+#if !defined(AERO_EULERSOLVER_KERNEL_ONLY)
 EulerFluxResult roe_conservative(const std::vector<double>& left, const std::vector<double>& right,
                                  const std::vector<double>& direction, double gamma);
 EulerFluxResult roe_fluxes(const std::vector<double>& fl, const std::vector<double>& fr,

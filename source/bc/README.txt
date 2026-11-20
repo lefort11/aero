@@ -145,11 +145,9 @@ area — ориентированный суммарный вектор, origina
   make bc-debug-test
   make bc-cuda-test
 
-MSVS: проекты aero_bc и bc_tests в msvs/aero.sln. Для CUDA задайте WithCuda=true,
-для обязательного запуска тестов на GPU — RequireCudaTests=true. Настройка
-совместимости nvcc и MSVC описана в ../eulersolver/README.txt.
+Проект bc_tests в msvs/aero.sln вызывает GNU Make. Для GPU укажите /p:KokkosBackend=cuda. Команда make bc-cuda-test требует хотя бы одну доступную видеокарту.
 
-bc_tests.cpp и bc_cuda_tests.cu проверяют физические потоки на CPU и GPU.
+bc_tests.cpp и bc_gpu_tests.cpp проверяют физические потоки на CPU и GPU.
 periodic_tests.cpp сравнивает реконструкции и невязку переноса на периодической
 линии с явно продолженной сеткой, проверяет совмещение углов в 2D/3D и
 диагностику несогласованных меток. CUDA-тест сверяет приращения на обеих

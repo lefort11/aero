@@ -77,6 +77,8 @@ public:
     Messages gather_text(std::string message) const;
     // Согласует одно наименьшее значение на всех процессах, например допустимый шаг CFL.
     double minimum(double value) const;
+    // Глобальная норма либо скалярное произведение распределённых векторов BiCGSTAB.
+    double reduce_double(double value, bool maximum) const;
     std::uint64_t first_id(std::uint64_t value) const;
     std::uint64_t sum(std::uint64_t value) const;
     void broadcast(std::string& value, int root) const;

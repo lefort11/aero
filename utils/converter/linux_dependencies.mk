@@ -16,19 +16,23 @@ $(HDF5_STAMP): $(HDF5_ARCHIVE) utils/converter/linux_dependencies.mk
 	printf '%s  %s\n' e78b518da9ff8bcec3a095a3ddbb9c906dfc99024593cf3d16db200d97a10b09 "$<" | sha256sum -c -
 	mkdir -p "$(DEPS_DIR)"
 	cd "$(DEPS_DIR)" && $(CMAKE) -E tar xf "$(abspath $<)"
+	$(call action,Configuring,HDF5)
 	$(CMAKE) -S "$(DEPS_DIR)/hdf5-hdf5_1.14.6" -B "$(DEPS_DIR)/hdf5-build" $(DEPS_CONFIG) \
 	    -DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF -DHDF5_BUILD_TOOLS=OFF -DHDF5_BUILD_EXAMPLES=OFF \
 	    -DHDF5_BUILD_HL_LIB=OFF -DHDF5_ENABLE_Z_LIB_SUPPORT=OFF -DHDF5_ENABLE_SZIP_SUPPORT=OFF -DHDF5_ENABLE_NONSTANDARD_FEATURE_FLOAT16=OFF
-	$(MAKE) -C "$(DEPS_DIR)/hdf5-build" install
+	$(call action,Building,HDF5)
+	$(MAKE) -C "$(DEPS_DIR)/hdf5-build" install $(if $(filter 1,$(V)),VERBOSE=1)
 	touch "$@"
 
 $(CGNS_BUILD_DEPS): $(CGNS_ARCHIVE) $(HDF5_STAMP) utils/converter/linux_dependencies.mk
 	printf '%s  %s\n' 72ad499936089102c1d77e3cdd78a623d61d1c6ad94c4df3b23f36db9ddfad6a "$<" | sha256sum -c -
 	cd "$(DEPS_DIR)" && $(CMAKE) -E tar xf "$(abspath $<)"
+	$(call action,Configuring,CGNS)
 	$(CMAKE) -S "$(DEPS_DIR)/CGNS-4.4.0" -B "$(DEPS_DIR)/cgns-build" $(DEPS_CONFIG) \
 	    -DCMAKE_PREFIX_PATH="$(CGNS_PREFIX)" -DCGNS_BUILD_SHARED=OFF -DCGNS_BUILD_CGNSTOOLS=OFF \
 	    -DCGNS_ENABLE_FORTRAN=OFF -DCGNS_ENABLE_HDF5=ON -DCGNS_ENABLE_TESTS=OFF
-	$(MAKE) -C "$(DEPS_DIR)/cgns-build" install
+	$(call action,Building,CGNS)
+	$(MAKE) -C "$(DEPS_DIR)/cgns-build" install $(if $(filter 1,$(V)),VERBOSE=1)
 	touch "$@"
 endif
 endif

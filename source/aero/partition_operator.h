@@ -5,6 +5,7 @@
 #include "solver_timings.h"
 #include "../residual/residual_detail.h"
 #include "../explicit/explicit_stage.h"
+#include "../implicit/bdf1_step.h"
 
 namespace aero {
 // Пространственный оператор одной подобласти. Сетка и её владельцы живут дольше оператора.
@@ -25,12 +26,12 @@ public:
                        const std::vector<PeriodicPair>& pairs, PartitionInput* input,
                        const StencilRequests& requests, const ReconstructionOptions& options);
     // Согласует с соседями порядок узлов и рёбер и выделяет буферы для повторных обменов.
-    void connect(bool cuda);
-#ifdef AERO_WITH_CUDA
+    void connect(bool cuda, bool implicit_time);
+#ifdef AERO_WITH_KOKKOS_GPU
     // Размещает данные сетки и индексы обмена в общей области памяти GPU.
     void layout_gpu(bool compact_buffer);
     // Оценивает объём по той же раскладке и резервирует память карты.
-    void reserve_gpu(bool compact_buffer, GpuMemoryFit& fit);
+    void reserve_gpu(bool compact_buffer, GpuMemoryFit& fit, const implicit::NewtonSettings* settings);
     // Передаёт начальное и текущее состояния на GPU перед первым шагом.
     void upload_state(const std::vector<double>& state, const std::vector<double>& initial);
 #endif
@@ -43,10 +44,19 @@ public:
     // Заполняет узлы соседей в памяти CPU при подготовке и восстановлении расчёта.
     void halo_host(std::vector<double>& u);
     // Вычисляет потоки на принадлежащих процессу поверхностях и получает остальные от соседей.
-    void assemble_fluxes(const std::vector<double>& u, const std::vector<double>& initial,
-                         SolverTimings& timing);
+    bool assemble_fluxes(const std::vector<double>& u, const std::vector<double>& initial,
+                         SolverTimings& timing, bool trial = false);
     // Находит допустимый шаг по собственным узлам и берёт минимум по всем процессам.
     double cfl_step(double cfl);
+    // Геометрия и обмены, которыми будет пользоваться матрица на этом процессе.
+    implicit::LinearGrid linear_grid();
+    implicit::BdfStep& implicit_step(); // Один решатель для интегрирования и контрольных точек.
+    // Решает уравнение BDF, используя потоки, подготовленные для CFL.
+    // Норма пространственной невязки по текущим потокам всех процессов.
+    double steady_residual(std::vector<double>& state, const std::vector<double>& initial);
+    implicit::NewtonResult advance_bdf(std::vector<double>& state, const std::vector<double>& initial,
+                                        double dt, const implicit::NewtonSettings& settings,
+                                        SolverTimings& timing);
     // Обновляет собственные узлы на одной стадии интегратора.
     void update_owned(explicit_detail::Stage stage, std::vector<double>& start, double dt,
                       std::vector<double>& state, bool save_original);
@@ -62,9 +72,21 @@ private:
                                StencilRequests* requests);
     // Возвращает активное устройство или nullptr для обмена в памяти CPU.
     PartitionGpu* device() const;
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
     std::unique_ptr<PartitionGpu> gpu_; // Раскладка, рабочая память и ядра текущей карты.
 #endif
+    // Подготавливает представление распределённой системы. Формулы и итерации общие для всех режимов.
+    struct ImplicitFields {
+        double* state;
+        const double* initial;
+        const double* volumes;
+        const EulerFluxResult* flux;
+    };
+    ImplicitFields implicit_fields(std::vector<double>& state, const std::vector<double>& initial);
+    implicit::Partition linear_partition();
+    const double* extend_linear_vector(const double* compact);
+    std::unique_ptr<PartitionTransfers> derivative_exchange_; // Два блока LF на каждое общее ребро.
+    std::vector<double> linear_input_; // Вход A*x в локальной нумерации для CPU, включая соседние узлы.
     PartitionTransfers nodes_; // Значения узлов, общие для соседних подобластей.
     PartitionTransfers edges_; // Результаты расчёта потоков на рёбрах между подобластями.
     unsigned width_;           // Число консервативных переменных в одном узле.
@@ -88,6 +110,7 @@ private:
     std::vector<residual_detail::Index> offsets_;          // Начало списка поверхностей каждого узла.
     std::vector<residual_detail::OrientedFace> incidence_; // Связи узлов с прилегающими поверхностями.
     residual_detail::Geometry grid_{}; // Представление этих массивов для вычислительных ядер.
+    std::unique_ptr<implicit::BdfStep> bdf_; // Матрица и рабочие поля между неявными шагами.
 };
 }
 #endif

@@ -4,6 +4,11 @@
 
 namespace aero {
 struct RunSettings;
+inline MeshIndex partition_bytes(MeshIndex base, MeshIndex count, MeshIndex bytes) {
+    if (count && bytes > (mdec::absent - base) / count)
+        throw MeshError("MPI partition: estimated mesh size overflow");
+    return base + count * bytes;
+}
 // Бюджет карты, диапазон листьев и результат пробного выделения памяти для него.
 struct GpuMemoryFit {
     MeshIndex free_bytes = 0, budget = 0, first = 0, end = 0, required = 0;

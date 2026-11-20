@@ -115,10 +115,7 @@ field.volumes и R указывают на память field.device; сборщ
   make explicit-cuda-test
 
 CPU-сборка использует C++11. WITH_OPENMP=0 отключает OpenMP.
-Проекты MSVS: aero_explicit и explicit_tests. Для тестов с обязательным запуском
-на GPU: Configuration=Release, Platform=x64, WithCuda=true, RequireCudaTests=true.
-Для установленной связки CUDA 12.3 и MSVC 14.44 используются параметры
-VCToolsVersion=14.44.35207 и AllowUnsupportedCudaHostCompiler=true.
+Проект explicit_tests в msvs/aero.sln вызывает GNU Make. Для GPU укажите /p:KokkosBackend=cuda. Команда make explicit-cuda-test требует хотя бы одну доступную видеокарту.
 
 Тест порядка использует U'=U+t, U(0)=1 с точным решением 2 exp(t)-t-1.
 Тест переноса на неравномерной периодической линии проверяет каждую компоненту

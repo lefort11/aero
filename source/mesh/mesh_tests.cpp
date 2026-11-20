@@ -19,9 +19,6 @@
 #include <utility>
 #include <vector>
 
-#if defined(__CUDACC__)
-#include "mesh_probe.cuh"
-#endif
 
 namespace {
 using namespace aero;

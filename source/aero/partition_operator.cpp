@@ -1,6 +1,9 @@
 #include "partition_operator.h"
 #include "partition_kernels.h"
 #include "../parallel/parallel_for.h"
+#ifdef AERO_WITH_KOKKOS_GPU
+#include "../parallel/device_check.h"
+#endif
 #include "../residual/flux_cfl.h"
 #include <algorithm>
 #include <cmath>
@@ -261,7 +264,7 @@ Id PartitionOperator::prepare_stencil(const MeshPartition& part, const PeriodicP
     return world_.sum(stencil_.incomplete);
 }
 
-void PartitionOperator::connect(bool cuda) {
+void PartitionOperator::connect(bool cuda, bool implicit_time) {
     Processes::Messages node_requests, edge_keys;
     world_.local([&] {
         node_requests.resize(world_.size);
@@ -308,26 +311,65 @@ void PartitionOperator::connect(bool cuda) {
         }
         nodes_.allocate(cuda);
         edges_.allocate(cuda);
+        if (implicit_time) {
+            derivative_exchange_.reset(new PartitionTransfers(edges_, 2 * width_ * width_));
+            derivative_exchange_->allocate(cuda);
+            if (!cuda) linear_input_.resize(state_nodes() * width_);
+        }
     });
 }
 
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
 void PartitionOperator::layout_gpu(bool compact_buffer) {
     gpu_->layout(grid_, stencil_, compute_, owned, volumes_, state_nodes(), compact_buffer, world_.size == 1);
     nodes_.prepare_gpu(*gpu_);
     edges_.prepare_gpu(*gpu_);
+    if (derivative_exchange_) {
+        derivative_exchange_->prepare_gpu(*gpu_);
+        gpu_->layout_linear_input(state_nodes() * width_);
+    }
 }
 
-void PartitionOperator::reserve_gpu(bool compact_buffer, GpuMemoryFit& fit) {
+// Верхняя граница дополнительной памяти BDF1. У кратных рёбер CSR может объединить
+// несколько вхождений в один блок. Оценка относится только к собственным строкам.
+static MeshIndex implicit_storage_bytes(const residual_detail::Geometry& g, const std::vector<MeshIndex>& owned,
+                                        const implicit::NewtonSettings& settings) {
+    const MeshIndex width = g.components(), block = width * width * sizeof(double);
+    MeshIndex columns = owned.size(); // Одна диагональ на узел, один внедиагональный блок на соседа.
+    for (auto node : owned)
+        for (auto k = g.offsets[node]; k < g.offsets[node + 1]; ++k)
+            if (g.incidence[k].face() < g.edges) columns = partition_bytes(columns, 1, 1);
+    MeshIndex bytes = partition_bytes(0, columns, block + sizeof(MeshIndex)); // Блоки CSR и столбцы.
+    bytes = partition_bytes(bytes, owned.size() + 1, sizeof(MeshIndex));       // Смещения строк.
+    bytes = partition_bytes(bytes, g.offsets[g.nodes], sizeof(MeshIndex));    // Вхождение грани в строку.
+    bytes = partition_bytes(bytes, g.faces, block); // На ребре два блока производных, на границе один.
+    bytes = partition_bytes(bytes, g.edges, block);
+    bytes = partition_bytes(bytes, owned.size(), block + width * sizeof(unsigned char)); // LU и перестановки BJ.
+    // История BDF2 и промежуточное поле CSGS выделяются по запросу.
+    const auto capacity = std::max<MeshIndex>(1,owned.size()*width);
+    if (settings.jacobian_update_every) bytes = partition_bytes(bytes, owned.size(), width*sizeof(double));
+    if (settings.second_order) bytes=partition_bytes(bytes,capacity,sizeof(double));
+    if (settings.csgs) {
+        bytes=partition_bytes(bytes,capacity,sizeof(double));
+        bytes=partition_bytes(bytes,owned.size(),2*sizeof(MeshIndex)); // Порядок и обратный порядок.
+        bytes=partition_bytes(bytes,g.nodes,sizeof(MeshIndex));       // Полный узел -> собственная строка.
+    }
+    if (owned.empty()) return partition_bytes(bytes, 2, sizeof(double)); // Рабочие адреса двух пустых буферов.
+    return partition_bytes(bytes, owned.size(), (implicit::NewtonFieldCount + implicit::KrylovFieldCount) *
+                                                width * sizeof(double));
+}
+
+void PartitionOperator::reserve_gpu(bool compact_buffer, GpuMemoryFit& fit, const implicit::NewtonSettings* settings) {
+    const auto extra = settings ? implicit_storage_bytes(grid_, owned, *settings) : 0;
     gpu_.reset(new PartitionGpu);
     layout_gpu(compact_buffer);
-    fit.failed = !gpu_->reserve(fit);
+    fit.failed = !gpu_->reserve(fit, extra);
     // На тесной карте расчёт может поместиться с исходными разреженными строками, без дополнительных буферов.
     if (fit.failed && grid_.packed.state_nodes) {
         grid_.packed = {};
         gpu_.reset(new PartitionGpu);
         layout_gpu(compact_buffer);
-        fit.failed = !gpu_->reserve(fit);
+        fit.failed = !gpu_->reserve(fit, extra);
     }
 }
 
@@ -337,7 +379,7 @@ void PartitionOperator::upload_state(const std::vector<double>& state, const std
 #endif
 
 void PartitionOperator::copy_owned(const std::vector<double>& state, std::vector<double>& compact) const {
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
     if (gpu_) {
         gpu_->download_owned(compact);
         return;
@@ -349,7 +391,7 @@ void PartitionOperator::copy_owned(const std::vector<double>& state, std::vector
 }
 
 void PartitionOperator::download(std::vector<double>& state) const {
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
     if (gpu_) {
         gpu_->download(state);
     }
@@ -359,18 +401,23 @@ void PartitionOperator::download(std::vector<double>& state) const {
 }
 
 void PartitionOperator::halo(std::vector<double>& u, double* seconds) {
-    nodes_.exchange_states(world_, width_, u.data(), device(), seconds);
+    double* field = u.data();
+#ifdef AERO_WITH_KOKKOS_GPU
+    if (gpu_) field = gpu_->active_grid().state;
+#endif
+    nodes_.transfer(world_, {width_, field, nullptr}, device(), seconds);
 }
 
 void PartitionOperator::halo_host(std::vector<double>& u) {
-    nodes_.exchange_states(world_, width_, u.data());
+    nodes_.transfer(world_, {width_, u.data(), nullptr});
 }
 
-void PartitionOperator::assemble_fluxes(const std::vector<double>& u, const std::vector<double>& initial,
-                                        SolverTimings& timing) {
-    world_.local([&] {
+bool PartitionOperator::assemble_fluxes(const std::vector<double>& u, const std::vector<double>& initial,
+                                        SolverTimings& timing, bool trial) {
+    bool physical = true;
+    const auto compute = [&] {
         WallTimer timer(timing.counter(SolverTimings::Flux));
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
         if (gpu_) {
             gpu_->fluxes();
             return;
@@ -381,20 +428,32 @@ void PartitionOperator::assemble_fluxes(const std::vector<double>& u, const std:
         residual_detail::cpu_face_fluxes(
             {grid_, faces, compute_.size(), u.data(), initial.data(), flux_.data(), nullptr, nullptr, gas_current_},
             ids_.data());
+    };
+    world_.local([&] {
+        try { compute(); }
+        catch (const std::domain_error&) {
+            if (!trial) throw;
+            physical = false;
+        }
     });
-    if (world_.size == 1) {
-        return;
-    }
+    if (world_.size == 1) return physical;
+    // До обмена потоками все процессы должны принять одно решение об откате.
+    if (trial && world_.sum(physical ? 0 : 1)) return false;
     // На стыке сосед получает тот же интегральный поток. Знак задаст его узловой список при сборке.
-    edges_.exchange_fluxes(world_, width_, flux_.data(), device(),
+    EulerFluxResult* flux = flux_.data();
+#ifdef AERO_WITH_KOKKOS_GPU
+    if (gpu_) flux = gpu_->active_grid().flux;
+#endif
+    edges_.transfer(world_, {width_, nullptr, flux}, device(),
                            timing.counter(SolverTimings::FluxExchange));
+    return true;
 }
 
 double PartitionOperator::cfl_step(double cfl) {
     // Пустая подобласть не ограничивает шаг. Минимум по процессам выбирает конечное значение.
     double local = std::numeric_limits<double>::infinity();
     world_.local([&] {
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
         if (gpu_) {
             local = gpu_->cfl(cfl);
             return;
@@ -411,9 +470,97 @@ double PartitionOperator::cfl_step(double cfl) {
     return dt;
 }
 
+// Раскладываем только собственные компоненты x, затем используем обычный обмен узлами.
+ // На GPU и рабочее поле, и индексы упаковки остаются в памяти выбранной карты.
+const double* PartitionOperator::extend_linear_vector(const double* compact) {
+    double* field = linear_input_.data();
+    world_.local([&] {
+#ifdef AERO_WITH_KOKKOS_GPU
+        if (gpu_) {
+            field = gpu_->expand_owned(compact);
+            return;
+        }
+#endif
+        const partition_detail::RecordField values{width_, field, nullptr};
+        parallel_for(owned.size(), [&](MeshIndex k) { values.copy_record(owned[k], k, compact, nullptr); });
+    });
+    nodes_.transfer(world_, {width_, field, nullptr}, device());
+    return field;
+}
+
+implicit::Partition PartitionOperator::linear_partition() {
+    implicit::Partition part;
+    if (world_.size == 1) return part;
+    part.rows = owned.size();
+    part.faces = compute_.size();
+    part.host_owned = part.owned = owned.data();
+    part.computed = compute_.data();
+#ifdef AERO_WITH_KOKKOS_GPU
+    if (gpu_) {
+        part.owned = gpu_->active_grid().owned;
+        part.computed = gpu_->active_grid().computed;
+    }
+#endif
+    part.checked = [this](const std::function<void()>& work) { world_.local(work); };
+    part.reduce = [this](double value, bool maximum) { return world_.reduce_double(value, maximum); };
+    part.extend_vector = [this](const double* x) { return extend_linear_vector(x); };
+    part.share_state = [this](double* u) { nodes_.transfer(world_, {width_, u, nullptr}, device()); };
+    part.share_blocks = [this](double* blocks) {
+        derivative_exchange_->transfer(world_, {2 * width_ * width_, blocks, nullptr}, device());
+    };
+    return part;
+}
+
+implicit::LinearGrid PartitionOperator::linear_grid() {
+    int id = -1;
+    const auto* active = &grid_;
+#ifdef AERO_WITH_KOKKOS_GPU
+    if (gpu_) {
+        gpu::checked(gpu::current(&id));
+        active = &gpu_->active_grid().geometry;
+    }
+#endif
+    return {grid_, *active, id, linear_partition()};
+}
+
+implicit::BdfStep& PartitionOperator::implicit_step() {
+    if (!bdf_) {
+        const auto grid = linear_grid();
+        bdf_.reset(new implicit::BdfStep(grid.host, grid.active, grid.device, grid.partition));
+    }
+    return *bdf_;
+}
+
+PartitionOperator::ImplicitFields PartitionOperator::implicit_fields(
+        std::vector<double>& state, const std::vector<double>& initial) {
+    if (!bdf_) world_.local([&] { implicit_step(); });
+#ifdef AERO_WITH_KOKKOS_GPU
+    if (gpu_) {
+        const auto& fields = gpu_->active_grid();
+        return {fields.state, fields.initial, fields.volumes, fields.flux};
+    }
+#endif
+    return {state.data(), initial.data(), volumes_, flux_.data()};
+}
+
+double PartitionOperator::steady_residual(std::vector<double>& state, const std::vector<double>& initial) {
+    const auto fields = implicit_fields(state, initial);
+    return bdf_->spatial_rate_norm(fields.volumes, fields.flux);
+}
+
+implicit::NewtonResult PartitionOperator::advance_bdf(std::vector<double>& state, const std::vector<double>& initial,
+        double dt, const implicit::NewtonSettings& settings, SolverTimings& timing) {
+    const auto fields = implicit_fields(state, initial);
+    // При каждой поправке используем тот же поток и ту же реконструкцию из main.txt.
+    // В матрицу поправки входят производные выбранного потока первого порядка.
+    const auto refresh = [&] { assemble_fluxes(state, initial, timing); };
+    const auto trial = [&] { return assemble_fluxes(state, initial, timing, true); };
+    return bdf_->advance(fields.state, fields.initial, fields.volumes, fields.flux, dt, settings, refresh, trial);
+}
+
 void PartitionOperator::update_owned(explicit_detail::Stage stage, std::vector<double>& start, double dt,
                                      std::vector<double>& state, bool save_original) {
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
     if (gpu_) {
         gpu_->update(stage, dt, save_original);
         return;
@@ -433,7 +580,7 @@ void PartitionOperator::update_owned(explicit_detail::Stage stage, std::vector<d
 }
 
 PartitionGpu* PartitionOperator::device() const {
-#ifdef AERO_WITH_CUDA
+#ifdef AERO_WITH_KOKKOS_GPU
     return gpu_.get();
 #else
     return nullptr;

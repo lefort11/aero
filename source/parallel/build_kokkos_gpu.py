@@ -5,10 +5,35 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
+import sys
+from threading import Lock
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def command_runner(verbose):
+    """Печатает этап перед запуском, а диагностику каждого компилятора выводит целиком."""
+    output_lock = Lock()
+
+    def run(action, filename, command):
+        with output_lock:
+            print(f"{action:12} {filename}", flush=True)
+            if verbose:
+                quote = subprocess.list2cmdline if os.name == "nt" else shlex.join
+                print(quote(command), flush=True)
+        # При параллельной компиляции предупреждения разных файлов могут перемешаться.
+        # Буферизуем только диагностику одного процесса и сохраняем его код возврата.
+        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        if result.stdout:
+            with output_lock:
+                sys.stderr.buffer.write(result.stdout)
+                sys.stderr.buffer.flush()
+        result.check_returncode()
+
+    return run
 
 def windows_static_libraries(destination):
     """Находит библиотеки CRT, с которыми NVIDIA собрала cudart_static.lib для Windows."""
@@ -50,6 +75,12 @@ def windows_cuda_headers(cuda, work):
 def build(args):
     """Компилирует библиотеку и обходы отдельно от OpenMP-части, чтобы CPU-расчёт обходился без GPU."""
     windows = os.name == "nt"
+    # Проверяем инструменты до запуска параллельных задач, чтобы сразу назвать
+    # недостающий компилятор без стека исключений от каждого рабочего потока.
+    for tool in [args.compiler, args.host_compiler] + ([args.archiver] if args.static else []):
+        if not shutil.which(tool):
+            raise SystemExit(f"Build tool not found: {tool}. Check PATH and KOKKOS_GPU_CXX.")
+    run = command_runner(args.verbose)
     work, source, cuda = (p.resolve() for p in (args.work, args.source, args.cuda))
     work.mkdir(parents=True, exist_ok=True)
     # Обе половины модуля используют одно описание типов Kokkos и одну версию стандарта.
@@ -81,8 +112,11 @@ def build(args):
                "--extended-lambda", "--expt-relaxed-constexpr", "-Xcompiler=-fPIC,-fvisibility=hidden"]
     host = [args.host_compiler, "-std=c++11", "-O3", "-I" + str(cuda / "include")]
     core = source / "core/src"
-    bridge = ROOT / "source/parallel/device_work.cu"
-    units = sorted(core.glob("impl/*.cpp")) + sorted(core.glob("Cuda/*.cpp")) + [bridge]
+    # Функции тестов лежат в отдельном объекте архива: статический солвер
+    # берёт лишь исполнителя и операции с памятью.
+    device_units = [ROOT / "source/parallel/device_work.cu", ROOT / "source/parallel/device_memory.cu",
+                    ROOT / "qa/device_cases.cu"]
+    units = sorted(core.glob("impl/*.cpp")) + sorted(core.glob("Cuda/*.cpp")) + device_units
 
     def compile_unit(unit):
         """Ошибку параллельной сборки сопровождаем выводом именно того файла, на котором она произошла."""
@@ -92,10 +126,7 @@ def build(args):
         elif windows and unit.parent.name == "impl":
             command = gpu + ["--cuda-host-only"]
         obj = work / (unit.stem + ".o")
-        result = subprocess.run(command + includes + ["-c", str(unit), "-o", str(obj)],
-                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        if result.returncode:
-            raise RuntimeError(result.stdout.decode(errors="replace"))
+        run("Compiling", unit.name, command + includes + ["-c", str(unit), "-o", str(obj)])
         return str(obj)
 
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
@@ -109,20 +140,20 @@ def build(args):
         temporary = target.with_suffix(".new.a")
         if temporary.exists():
             temporary.unlink()
-        subprocess.run([args.archiver, "rcs", str(temporary), *objects], check=True)
+        run("Archiving", target.name, [args.archiver, "rcs", str(temporary), *objects])
         temporary.replace(target)
     elif windows:
         output = target.parent / "aero_kokkos_cuda.dll"
-        subprocess.run([args.host_compiler, "-shared", "-static",
+        run("Linking", output.name, [args.host_compiler, "-shared", "-static",
                         "-Wl,--exclude-all-symbols", "-Wl,--out-implib," + str(target), *objects,
-                        str(cuda / "lib/x64/cudart.lib"), "-o", str(output)], check=True)
+                        str(cuda / "lib/x64/cudart.lib"), "-o", str(output)])
         # Windows ищет этот модуль рядом с программой, в том числе при запуске тестов без настроенного PATH.
         for runtime in (cuda / "bin").glob("cudart64_*.dll"):
             shutil.copy2(runtime, target.parent / runtime.name)
     else:
         # Скрываем внутренние символы GPU-версии Kokkos от независимо собранной библиотеки CPU.
-        subprocess.run([args.host_compiler, "-shared", "-Wl,-Bsymbolic", "-Wl,-soname," + target.name, *objects,
-                        "-L" + str(cuda / "lib64"), "-lcudart", "-ldl", "-pthread", "-o", str(target)], check=True)
+        run("Linking", target.name, [args.host_compiler, "-shared", "-Wl,-Bsymbolic", "-Wl,-soname," + target.name, *objects,
+                        "-L" + str(cuda / "lib64"), "-lcudart", "-ldl", "-pthread", "-o", str(target)])
 
 
 if __name__ == "__main__":
@@ -133,6 +164,7 @@ if __name__ == "__main__":
     parser.add_argument("--compiler", required=True)
     parser.add_argument("--host-compiler", required=True)
     parser.add_argument("--static", action="store_true")
+    parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--archiver", default="ar")
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 1)
     build(parser.parse_args())

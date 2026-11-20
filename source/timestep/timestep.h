@@ -1,9 +1,7 @@
 #ifndef AERO_TIMESTEP_H
 #define AERO_TIMESTEP_H
 #include "../parallel/kernel_math.h"
-#ifndef __CUDACC_RTC__
 #include <memory>
-#endif
 
 namespace aero {
 struct MeshView;
@@ -25,7 +23,6 @@ struct CflStep {
 
 // Подготовка один раз получает геометрию с CPU. device = −1 выбирает CPU, другой номер указывает GPU.
 // При вызове compute скорости должны находиться на выбранном исполнителе.
-#ifndef __CUDACC_RTC__
 class CflTimestep {
 public:
     CflTimestep(const MeshView&, const CvView&, int device = -1);
@@ -41,6 +38,5 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
-#endif
 }
 #endif

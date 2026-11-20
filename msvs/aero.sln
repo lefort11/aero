@@ -58,10 +58,6 @@ Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "initial_tests", "initial_te
 EndProject
 Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "io_settings_tests", "io_settings_tests.vcxproj", "{CD4F9D27-17D5-4525-89F9-E92949A51A87}"
 EndProject
-Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "compile_ptx", "compile_ptx.vcxproj", "{A8A0DF1F-E573-4AE2-B696-8DE578DDD79F}"
-EndProject
-Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "aero_cuda_driver", "aero_cuda_driver.vcxproj", "{CD09A43F-4FE8-435D-9C87-218E7AF3F812}"
-EndProject
 Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "generate_tecplot_examples", "generate_tecplot_examples.vcxproj", "{F8ED1426-5D7E-456D-90B9-031FC0BCD91B}"
 EndProject
 Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "meshdec", "meshdec.vcxproj", "{13542AF0-4369-4441-91CA-49CE7FF7A426}"
@@ -82,10 +78,6 @@ Global
 		{13542AF0-4369-4441-91CA-49CE7FF7A426}.Debug|x64.Build.0 = Debug|x64
 		{13542AF0-4369-4441-91CA-49CE7FF7A426}.Release|x64.ActiveCfg = Release|x64
 		{13542AF0-4369-4441-91CA-49CE7FF7A426}.Release|x64.Build.0 = Release|x64
-		{A8A0DF1F-E573-4AE2-B696-8DE578DDD79F}.Debug|x64.ActiveCfg = Debug|x64
-		{A8A0DF1F-E573-4AE2-B696-8DE578DDD79F}.Release|x64.ActiveCfg = Release|x64
-		{CD09A43F-4FE8-435D-9C87-218E7AF3F812}.Debug|x64.ActiveCfg = Debug|x64
-		{CD09A43F-4FE8-435D-9C87-218E7AF3F812}.Release|x64.ActiveCfg = Release|x64
 		{F8ED1426-5D7E-456D-90B9-031FC0BCD91B}.Debug|x64.ActiveCfg = Debug|x64
 		{F8ED1426-5D7E-456D-90B9-031FC0BCD91B}.Debug|x64.Build.0 = Debug|x64
 		{F8ED1426-5D7E-456D-90B9-031FC0BCD91B}.Release|x64.ActiveCfg = Release|x64

@@ -173,23 +173,33 @@ AERO_HOST_DEVICE inline BoundaryStatus check_boundary_state(unsigned d, const Eu
 }
 
 // Выбирает одно правило free для текущей площадки при каждом вычислении потока.
+enum class FreeRegime { SuperIn, In, Out, SuperOut };
+AERO_HOST_DEVICE inline FreeRegime free_regime(double un, double sound) {
+    if (un >= sound)
+        return FreeRegime::SuperOut;
+    if (un <= -sound)
+        return FreeRegime::SuperIn;
+    return un < 0 ? FreeRegime::In : FreeRegime::Out;
+}
+
 AERO_HOST_DEVICE inline BoundaryStatus free_boundary_state(unsigned d, const FreeBoundaryRules& config,
                                                            const EulerState& inside, const double* normal,
                                                            double un, double gamma, const double* initial,
                                                            EulerState& boundary) {
     boundary = inside;
     // Нормаль направлена наружу. При u_n >= c все волны уходят, внутреннее состояние уже готово.
-    if (un >= inside.sound_speed)
+    const FreeRegime regime = free_regime(un, inside.sound_speed);
+    if (regime == FreeRegime::SuperOut)
         return BoundaryStatus::Success;
 
-    const bool supersonic_inflow = un <= -inside.sound_speed;
+    const bool supersonic_inflow = regime == FreeRegime::SuperIn;
     BoundaryStatus status;
     if (supersonic_inflow) {
         // При u_n <= -c все волны приходят извне. Используем отдельное полное состояние входа.
         status = apply_supersonic_inflow(d, config.superin, initial, gamma, boundary);
     } else {
         // При |u_n| < c знак скорости выбирает дозвуковое правило. Нуль относится к выходу.
-        const auto& rule = un < 0 ? config.inflow : config.outflow;
+        const auto& rule = regime == FreeRegime::In ? config.inflow : config.outflow;
         if (rule.source == BoundarySource::Current)
             return BoundaryStatus::Success;
         status = apply_subsonic_rule(d, rule, inside, normal, un, gamma, initial, boundary);
@@ -258,7 +268,7 @@ boundary_flux(unsigned d, BoundaryConfig patch, const FreeBoundaryRules* free_ru
     return BoundaryStatus::Success;
 }
 }
-#if !defined(AERO_BC_KERNEL_ONLY) && !defined(__CUDACC_RTC__)
+#if !defined(AERO_BC_KERNEL_ONLY)
 #include <iosfwd>
 #include <vector>
 #include <string>

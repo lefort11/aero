@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>Makefile</ConfigurationType>
+    <PlatformToolset>v145</PlatformToolset>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <!-- Проекты IDE и терминал вызывают одни и те же правила сборки Kokkos. -->
+  <PropertyGroup>
+    <KokkosBackend Condition="'$(KokkosBackend)'==''">$(KOKKOS_BACKEND)</KokkosBackend>
+    <KokkosBackend Condition="'$(KokkosBackend)'==''">cpu</KokkosBackend>
+    <CudaArchitecture Condition="'$(CudaArchitecture)'==''">86</CudaArchitecture>
+    <WithMPI Condition="'$(WithMPI)'==''">true</WithMPI>
+    <WithOpenMP Condition="'$(WithOpenMP)'==''">true</WithOpenMP>
+    <StaticLink Condition="'$(StaticLink)'==''">true</StaticLink>
+    <AeroBin Condition="'$(AeroBin)'==''">$(MSBuildProjectDirectory)\..\bin</AeroBin>
+    <MakeDriver>powershell.exe -NoProfile -File &quot;$(MSBuildProjectDirectory)\make.ps1&quot; -Goal &quot;$(MakeGoal)&quot; -Config $(Configuration) -Backend $(KokkosBackend) -Arch $(CudaArchitecture) -Mpi $(WithMPI) -OpenMp $(WithOpenMP) -Static $(StaticLink) -Bin &quot;$(AeroBin)&quot;</MakeDriver>
+    <NMakeBuildCommandLine>$(MakeDriver)</NMakeBuildCommandLine>
+    <NMakeReBuildCommandLine>$(MakeDriver) -Rebuild</NMakeReBuildCommandLine>
+    <NMakeCleanCommandLine>$(MakeDriver) -Clean</NMakeCleanCommandLine>
+    <NMakeOutput Condition="'$(ProgramName)'!=''">$(AeroBin)\$(ProgramName).exe</NMakeOutput>
+    <NMakeIncludeSearchPath>$(KOKKOS_PREFIX)\include;$(MSBuildProjectDirectory)\..\source;$(NMakeIncludeSearchPath)</NMakeIncludeSearchPath>
+    <LocalDebuggerWorkingDirectory>$(MSBuildProjectDirectory)\..</LocalDebuggerWorkingDirectory>
+  </PropertyGroup>
+</Project>
