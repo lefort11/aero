@@ -23,7 +23,7 @@ struct PeriodicView {
 };
 namespace periodic_detail {
 double match_tolerance(const std::vector<PeriodicPair>& pairs, double requested = 0);
-bool compatible_areas(const std::array<double, 3>& a, const std::array<double, 3>& b);
+bool compatible_areas(const Coordinate& a, const Coordinate& b);
 }
 // Временная сетка сдвинутых ячеек нужна для подготовки шаблона. field связывает каждую вершину образа
 // с расчётным узлом; это относится и к исходным вершинам в начале массива.

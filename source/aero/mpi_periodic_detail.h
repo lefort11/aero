@@ -11,7 +11,6 @@ namespace aero {
 namespace periodic_mpi {
 using Id = MeshIndex;
 using Key = std::pair<Id, Id>; // Для узла пара (n,n), для ребра — упорядоченные исходные номера концов.
-using Point = std::array<double, 3>;
 struct Ref {
     Key key;
     int rank;
@@ -27,23 +26,11 @@ inline Ref edge(Ref a, Ref b) {
         std::swap(a, b);
     return {{a.key.first, b.key.first}, a.rank};
 }
-inline Point position(MeshView m, Id i) {
-    return {{m.x[i], m.y[i], m.z[i]}};
-}
-inline Point point(CvVector a) {
+inline Coordinate point(CvVector a) {
     return {{a.x, a.y, a.z}};
 }
-inline CvVector vector(Point a) {
+inline CvVector vector(Coordinate a) {
     return {a[0], a[1], a[2]};
-}
-inline Point add(Point a, Point b) {
-    return {{a[0] + b[0], a[1] + b[1], a[2] + b[2]}};
-}
-inline Point sub(Point a, Point b) {
-    return {{a[0] - b[0], a[1] - b[1], a[2] - b[2]}};
-}
-inline double norm(Point a) {
-    return std::hypot(std::hypot(a[0], a[1]), a[2]);
 }
 
 inline void put(std::string& s, Id n) {
@@ -62,7 +49,7 @@ inline void put_real(std::string& s, double x) {
     std::memcpy(&n, &x, sizeof(n));
     put(s, n);
 }
-inline void put(std::string& s, Point v) {
+inline void put(std::string& s, Coordinate v) {
     for (double x : v)
         put_real(s, x);
 }
@@ -82,7 +69,7 @@ struct Reader {
         std::memcpy(&x, &n, sizeof(x));
         return x;
     }
-    Point point() { return {{real(), real(), real()}}; }
+    Coordinate point() { return {{real(), real(), real()}}; }
 };
 // При подготовке используем 64-битный формат архива с младшим байтом первым.
 // Согласуем ошибки между процессами до начала следующего обмена.

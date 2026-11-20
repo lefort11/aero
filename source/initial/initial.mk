@@ -1,6 +1,6 @@
 # Начальные поля читаются из снимка или вычисляются по формулам. Проверки используют также периодические узлы.
 INITIAL_DIR := source/initial
-INITIAL_HEADERS := $(INITIAL_DIR)/initial.h source/io/expression.h $(FIELD_HEADERS) $(MESH_HEADERS) source/bc/periodic.h source/eulersolver/euler.h
+INITIAL_HEADERS := $(INITIAL_DIR)/initial.h source/io/expression.h $(FIELD_HEADERS) $(MESH_HEADERS) source/bc/periodic.h source/eulersolver/euler.h source/eulersolver/linear_euler.h
 INITIAL_LIB := $(BUILD)/libaero_initial.a
 INITIAL_TEST := $(BUILD)/initial_tests$(EXE)
 INITIAL_DEBUG := $(BUILD)/initial_tests_debug$(EXE)

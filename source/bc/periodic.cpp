@@ -11,25 +11,8 @@
 namespace aero {
 namespace {
 using Id = MeshIndex;
-using Point = std::array<double, 3>;
 using Ids = std::vector<Id>;
-Point position(MeshView m, Id n) {
-    return {{m.x[n], m.y[n], m.z[n]}};
-}
-Point plus(Point a, Point b) {
-    for (unsigned i = 0; i < 3; ++i)
-        a[i] += b[i];
-    return a;
-}
-Point minus(Point a, Point b) {
-    for (unsigned i = 0; i < 3; ++i)
-        a[i] -= b[i];
-    return a;
-}
-double length(Point p) {
-    return std::hypot(std::hypot(p[0], p[1]), p[2]);
-}
-Point vector_of(CvVector v) {
+Coordinate vector_of(CvVector v) {
     return {{v.x, v.y, v.z}};
 }
 // Для каждой группы периодических копий представителем служит узел или ребро с наименьшим номером.
@@ -64,24 +47,24 @@ void add_face(Patch& patch, MeshFace f) {
     for (Id j = 0; j < f.edge_count(); ++j)
         patch.edges[std::minmax(nodes[j], nodes[(j + 1) % nodes.size])] = f.edge_id(j);
 }
-std::map<Id, Id> match_nodes(MeshView m, const Patch& a, const Patch& b, Point shift, double tol,
+std::map<Id, Id> match_nodes(MeshView m, const Patch& a, const Patch& b, Coordinate shift, double tol,
                              const std::string& label) {
     if (a.nodes.empty() || a.nodes.size() != b.nodes.size() || a.faces.size() != b.faces.size())
         throw MeshError(label + "different patch sizes or empty patch");
     // Широкая координатная ось лучше всего разделяет узлы в одномерном поисковом индексе.
-    Point low = position(m, *b.nodes.begin()), high = low;
+    Coordinate low = m.coordinate(*b.nodes.begin()), high = low;
     for (Id n : b.nodes) {
-        const Point p = position(m, n);
+        const Coordinate p = m.coordinate(n);
         for (unsigned i = 0; i < 3; ++i) {
             low[i] = std::min(low[i], p[i]);
             high[i] = std::max(high[i], p[i]);
         }
     }
-    Point span = minus(high, low);
+    Coordinate span = high - low;
     size_t axis = static_cast<size_t>(std::max_element(span.begin(), span.end()) - span.begin());
     std::multimap<double, Id> bins;
     for (Id n : b.nodes)
-        bins.emplace(position(m, n)[axis], n);
+        bins.emplace(m.coordinate(n)[axis], n);
     std::map<Id, Id> matches;
     std::set<Id> used;
     const Ids sources(a.nodes.begin(), a.nodes.end());
@@ -89,11 +72,11 @@ std::map<Id, Id> match_nodes(MeshView m, const Patch& a, const Patch& b, Point s
     parallel_for(sources.size(), [&](size_t k) {
         const Id n = sources[k];
         bool found = false;
-        const Point wanted = plus(position(m, n), shift);
+        const Coordinate wanted = m.coordinate(n) + shift;
         // Сначала отбираем кандидатов по одной оси, затем проверяем полное расстояние.
         for (auto i = bins.lower_bound(wanted[axis] - tol); i != bins.end() && i->first <= wanted[axis] + tol;
              ++i) {
-            if (length(minus(position(m, i->second), wanted)) > tol)
+            if (coordinate_length(m.coordinate(i->second) - wanted) > tol)
                 continue;
             if (found)
                 throw MeshError(label + "ambiguous match at node " + std::to_string(n));
@@ -114,7 +97,7 @@ std::map<Id, Id> match_nodes(MeshView m, const Patch& a, const Patch& b, Point s
 
 // Переводит соответствие координат двух границ в группы общих узлов и рёбер.
 void join_patch_topology(const Patch& a, const Patch& b, const std::map<Id, Id>& match,
-                         const std::map<std::pair<Id, Id>, Point>& areas, const std::string& label,
+                         const std::map<std::pair<Id, Id>, Coordinate>& areas, const std::string& label,
                          Groups& nodes, Groups& edges) {
     for (const auto& n : match)
         nodes.join(n.first, n.second);
@@ -129,7 +112,7 @@ void join_patch_topology(const Patch& a, const Patch& b, const std::map<Id, Id>&
             throw MeshError(label + "unmatched face " + std::to_string(face.second));
         // Внешние площадки на двух сторонах шва должны взаимно погашаться в каждом узле.
         for (Id n : face.first) {
-            const Point u = areas.at({face.second, n}), v = areas.at({found->second, match.at(n)});
+            const Coordinate u = areas.at({face.second, n}), v = areas.at({found->second, match.at(n)});
             if (!periodic_detail::compatible_areas(u, v))
                 throw MeshError(label + "incompatible area at face " + std::to_string(face.second));
         }
@@ -148,7 +131,7 @@ double periodic_detail::match_tolerance(const std::vector<PeriodicPair>& pairs, 
         throw MeshError("invalid periodic pairs or tolerance");
     double shortest = std::numeric_limits<double>::max();
     for (const auto& p : pairs) {
-        const double L = length({{p.translation[0], p.translation[1], p.translation[2]}});
+        const double L = coordinate_length(p.translation);
         if (!(L > 0) || !std::isfinite(L))
             throw MeshError("invalid periodic translation");
         shortest = std::min(shortest, L);
@@ -159,8 +142,8 @@ double periodic_detail::match_tolerance(const std::vector<PeriodicPair>& pairs, 
         throw MeshError("unresolved periodic translation");
     return tol;
 }
-bool periodic_detail::compatible_areas(const Point& a, const Point& b) {
-    return length(plus(a, b)) <= 1e-8 * std::max(length(a), length(b));
+bool periodic_detail::compatible_areas(const Coordinate& a, const Coordinate& b) {
+    return coordinate_length(a + b) <= 1e-8 * std::max(coordinate_length(a), coordinate_length(b));
 }
 PeriodicDomain::PeriodicDomain(const Mesh& mesh, const std::vector<PeriodicPair>& pairs, double tol)
     : mesh_(mesh), tolerance_(periodic_detail::match_tolerance(pairs, tol)) {
@@ -179,7 +162,7 @@ PeriodicDomain::PeriodicDomain(const Mesh& mesh, const std::vector<PeriodicPair>
             add_face(patches[name], m.face(m.boundary_faces[k]));
     }
     Groups nodes(m.node_count), edges(m.edge_count);
-    std::map<std::pair<Id, Id>, Point> areas;
+    std::map<std::pair<Id, Id>, Coordinate> areas;
     for (Id k = 0; k < cv.boundary_count; ++k) {
         const CvBoundary& s = cv.boundary[k];
         if (paired.count(mesh.data().patch_names[s.patch]))
@@ -189,7 +172,7 @@ PeriodicDomain::PeriodicDomain(const Mesh& mesh, const std::vector<PeriodicPair>
         const Patch &a = patches[p.patch], &b = patches[p.pair];
         const std::string label = "periodic " + p.patch + " -> " + p.pair + ": ";
         auto match =
-            match_nodes(m, a, b, {{p.translation[0], p.translation[1], p.translation[2]}}, tolerance_, label);
+            match_nodes(m, a, b, p.translation, tolerance_, label);
         join_patch_topology(a, b, match, areas, label, nodes, edges);
     }
     // Номер представителя минимален, поэтому при обходе копии его расчётный индекс уже известен.
@@ -212,9 +195,9 @@ PeriodicDomain::PeriodicDomain(const Mesh& mesh, const std::vector<PeriodicPair>
         }
         PeriodicEdge& entry = edges_[edge_index[root]];
         // Направление сохраняется и у ребра, оба конца которого периодичность свела к одному узлу.
-        const Point d = minus(position(m, m.edge_end[e]), position(m, m.edge_begin[e]));
-        const Point ref = minus(position(m, m.edge_end[root]), position(m, m.edge_begin[root]));
-        const int sign = length(minus(d, ref)) <= length(plus(d, ref)) ? 1 : -1;
+        const Coordinate d = m.coordinate(m.edge_end[e]) - m.coordinate(m.edge_begin[e]);
+        const Coordinate ref = m.coordinate(m.edge_end[root]) - m.coordinate(m.edge_begin[root]);
+        const int sign = coordinate_length(d - ref) <= coordinate_length(d + ref) ? 1 : -1;
         entry.area.x += sign * cv.edge_areas[e].x;
         entry.area.y += sign * cv.edge_areas[e].y;
         entry.area.z += sign * cv.edge_areas[e].z;

@@ -44,7 +44,7 @@ def verify(case, aero, meshdec, launcher):
     options = settings(main)
     names = ["rho", "ux", "p", "E"]
     count = len(nodes(case / "grid.mesh", 1))
-    options.update(reconstruction="weno5", time_scheme="ssprk3", final_time=0.008, flowreport_every=1)
+    options.update(reconstruction="weno5", time_scheme="ssprk3", final_time=0.008, report_every=1)
     (case / "output.txt").write_text(
         "[history]\nfile = state.fields\nevery_steps = 1\nmulti = 1\n"
         "format = text\nvariables = " + ", ".join(names) + "\n"

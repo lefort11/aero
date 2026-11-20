@@ -204,7 +204,7 @@ void check_periodic_initial(const double* ref, const double* q, unsigned width, 
 }
 std::vector<double> read_initial(const Mesh& mesh, double gamma, std::istream& input,
                                  const std::string& directory, const PeriodicView* seam,
-                                 const FieldNodeSelection* selection) {
+                                 const FieldNodeSelection* selection, const LinearBackground& background, std::vector<std::string>* warnings) {
     if (!(gamma > 1 && std::isfinite(gamma)))
         throw std::invalid_argument("initial: invalid gamma");
     const auto m = mesh.view();
@@ -232,7 +232,9 @@ std::vector<double> read_initial(const Mesh& mesh, double gamma, std::istream& i
         conservative = select_initial_columns(settings, snapshot, names, d, columns);
     } else
         throw std::invalid_argument("initial: unknown initial_type " + type);
-    require_consumed(settings);
+    if (warnings) {
+        for (const auto& item : settings) warnings->push_back("init.txt:" + std::to_string(item.second.line) + ": unknown parameter " + item.first);
+    } else require_consumed(settings);
     const MeshIndex count = seam ? seam->node_count : m.node_count;
     if (seam && (seam->original_node_count != m.node_count || !seam->node_dof || count > m.node_count))
         throw std::invalid_argument("initial: incompatible periodic view");
@@ -256,6 +258,14 @@ std::vector<double> read_initial(const Mesh& mesh, double gamma, std::istream& i
                         throw std::domain_error(names[k] + ": " + e.what());
                     }
                 }
+            }
+            if (background.active()) {
+                // Формулы и скалярные поля содержат пульсации. Составное поле
+                // (rho', (rho*u)', E') переводим в рабочие переменные один раз.
+                if (conservative) background.to_primitive(d,q,gamma);
+                for (unsigned k=0; k<width; ++k)
+                    if (!std::isfinite(q[k])) throw std::domain_error("nonfinite perturbation");
+                return;
             }
             if (!conservative)
                 primitive_to_conservative(q, d, gamma);
@@ -295,11 +305,12 @@ std::vector<double> read_initial(const Mesh& mesh, double gamma, std::istream& i
     return result;
 }
 std::vector<double> read_initial_file(const Mesh& mesh, double gamma, const std::string& path,
-                                      const PeriodicView* seam) {
+                                      const PeriodicView* seam, const LinearBackground& background) {
     std::ifstream in(path.c_str());
     if (!in)
         throw std::runtime_error("cannot open initial settings: " + path);
     const auto slash = path.find_last_of("/\\");
-    return read_initial(mesh, gamma, in, slash == std::string::npos ? "." : path.substr(0, slash + 1), seam);
+    return read_initial(mesh, gamma, in, slash == std::string::npos ? "." : path.substr(0, slash + 1), seam,
+                        nullptr, background);
 }
 }

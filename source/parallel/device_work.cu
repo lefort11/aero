@@ -195,7 +195,9 @@ void other_faces(const Execution& exec, FaceBatch batch, Index* bad) {
 // Полные шаблоны WENO и MP уложены по 32 ребра. Выбираем ядро один раз на пакет.
 void compute_packed_fluxes(const Execution& exec, FaceBatch batch, Index* bad, const FaceBatch* device_faces) {
     const auto& packed = batch.geometry.packed;
-    if (device_faces && packed.mp_work)
+    // После включения гибрида используем ядро с ограничением MP6 даже при наличии рабочего буфера MPWENO5.
+    const bool split_mpweno = device_faces && packed.mp_work && batch.geometry.options.mp6_hybrid == 0.;
+    if (split_mpweno)
         process_mpweno_edges(exec, batch, bad, device_faces);
     else if (packed.order == 5 && batch.geometry.stencil.mp5.weno)
         mp_edges<true>(exec, batch, bad, device_faces);
@@ -209,7 +211,7 @@ void compute_packed_fluxes(const Execution& exec, FaceBatch batch, Index* bad, c
     // После полных шаблонов обходим три непересекающихся диапазона списка remaining.
     const Index boundary = packed.sparse_edges + packed.nodal_edges;
     // Укороченные стороны уже получили поток в третьем проходе MPWENO5.
-    const Index handled_mixed = device_faces && packed.mp_work ? packed.mixed_edges : 0;
+    const Index handled_mixed = split_mpweno ? packed.mixed_edges : 0;
     remaining_group<RemainingFace::Sparse>(exec, batch, device_faces, 0, packed.sparse_edges - handled_mixed, bad);
     remaining_group<RemainingFace::Nodal>(exec, batch, device_faces, packed.sparse_edges, packed.nodal_edges, bad);
     remaining_group<RemainingFace::Boundary>(exec, batch, device_faces, boundary, packed.count - boundary, bad);
@@ -218,6 +220,13 @@ void compute_packed_fluxes(const Execution& exec, FaceBatch batch, Index* bad, c
 // Для первого порядка, EBR и сеток без упаковки используем обычный список площадок.
 void compute_unpacked_fluxes(const Execution& exec, FaceBatch batch, Index* bad) {
     // Первый порядок читает два узла без обращения к строкам шаблона.
+    if (batch.geometry.options.background.active()) {
+        for_indices(exec, "Aero: linear Euler fluxes", batch.count, KOKKOS_LAMBDA(Index k) {
+            const auto face = batch.face(k);
+            if (!batch.compute_linear(face)) Kokkos::atomic_fetch_min(bad,face);
+        });
+        return;
+    }
     if (batch.nodal_roe_2d())
         other_faces<true, true>(exec, batch, bad);
     // У EBR3 и EBR5 различны только заранее рассчитанные веса. В 2D в узле четыре компоненты.
@@ -241,6 +250,12 @@ void minimum_step(const Execution& exec, Index count, Read read, CflStep& answer
 
 // Размер строки одинаков на всей сетке. При фиксированной ширине компилятор хранит
 // компоненты невязки в регистрах во время обхода смежных рёбер узла.
+KOKKOS_INLINE_FUNCTION void record_failed_node(const partition_detail::Grid& g, Index node) {
+    // Место в списке резервирует только отказавший узел. Ёмкость равна числу владельцев.
+    const Index slot = Kokkos::atomic_fetch_add(g.failed_count, Index(1));
+    g.failed_nodes[slot] = node;
+}
+
 template <unsigned width>
 void update_nodes(const Execution& exec, partition_detail::Grid g, explicit_detail::Stage stage,
                   double dt, bool save) {
@@ -248,6 +263,13 @@ void update_nodes(const Execution& exec, partition_detail::Grid g, explicit_deta
         if (!partition_detail::update_node<width>(g.geometry, g.flux, g.volumes, g.owned, g.state,
                                                   g.original, k, stage, dt, save))
             Kokkos::atomic_fetch_min(g.bad, Index(g.owned ? g.owned[k] : k));
+        else if (g.failed_count) {
+            const Index node = g.owned ? g.owned[k] : k;
+            // На цельной сетке update_node уже получил давление и пометил недопустимый газ.
+            const bool ok = !g.owned && g.geometry.packed.gas ? g.geometry.packed.gas[node].density > 0.
+                : partition_detail::admissible_node(g.geometry, g.state, node);
+            if (!ok) record_failed_node(g, node);
+        }
     });
 }
 }
@@ -457,6 +479,16 @@ const char* aero_device_stage(explicit_detail::FieldStageUpdate update, size_t c
         for_indices(exec, "Aero: explicit stage", count, KOKKOS_LAMBDA(Index k) {
             if (!update.apply(k))
                 Kokkos::atomic_exchange(bad, 1);
+        });
+    });
+}
+// На итерации Ньютона новое состояние формирует другое ядро. Проверяем его после обмена.
+const char* aero_device_failed_nodes(const partition_detail::Grid& input) {
+    const auto g = input;
+    return on_device(nullptr, [&](const Execution& exec) {
+        for_indices(exec, "Aero: validate Newton state", g.owned_count, KOKKOS_LAMBDA(Index k) {
+            const Index node = g.owned ? g.owned[k] : k;
+            if (!partition_detail::admissible_node(g.geometry, g.state, node)) record_failed_node(g, node);
         });
     });
 }

@@ -58,14 +58,21 @@ def nodes(mesh, dim):
     return list(zip(*coords))
 
 
-def reference(coords, formula, dim, time, gamma):
+def reference(coords, formula, dim, time, gamma, linear_background=None):
     """Строит эталонные поля в заданный момент и веса узлов для средней ошибки."""
     names = ["rho", *("u" + a for a in "xyz"[:dim]), "p", "E"]
     exact = {key: [] for key in names}
     weights = []
     for xyz in coords:
         state = formula(*xyz, time, gamma)
-        energy = state[-1] / (gamma - 1) + 0.5 * state[0] * sum(u * u for u in state[1:-1])
+        energy = state[-1] / (gamma - 1)
+        if linear_background is None:
+            energy += 0.5 * state[0] * sum(u * u for u in state[1:-1])
+        else:
+            # Первая вариация кинетической энергии относительно заданного фона.
+            for axis, velocity in zip("xyz", state[1:-1]):
+                u0 = float(linear_background.get("u" + axis + "0", 0))
+                energy += float(linear_background["rho0"]) * u0 * velocity + 0.5 * state[0] * u0**2
         for key, value in zip(names, (*state, energy)):
             exact[key].append(value)
         # Относительные контрольные объёмы узлов на равномерной декартовой сетке.
@@ -185,7 +192,9 @@ def execute(command):
 
 def prepare_variant(work, folder, main, mesh, variant, options):
     """Собирает отдельную постановку для одной комбинации схем, сохраняя общий источник сетки."""
-    for file in ("init.txt", "bc.txt", "output.txt", "gas.txt"):
+    files = ["init.txt", "bc.txt", "output.txt", "gas.txt"]
+    files.extend(name for name in ("linear.txt", "exact.txt") if (folder / name).is_file())
+    for file in files:
         shutil.copyfile(folder / file, work / file)
     run = dict(main, **dict(zip(SCHEME_KEYS, variant)))
     run["mesh"] = f'"{mesh.as_posix()}"'
@@ -212,7 +221,8 @@ def run_case(name, options, solver, exporter, progress, total):
     time = float(main["final_time"])
     gamma = float(settings(folder / "gas.txt")["gamma"])
     coords = nodes(mesh, dim)
-    exact, weights = reference(coords, formula, dim, time, gamma)
+    background = settings(folder / "linear.txt") if main.get("Equations") == "Linear" else None
+    exact, weights = reference(coords, formula, dim, time, gamma, background)
     tolerances = load_tolerances(folder / "tolerances.json", exact)
     outdir = options.output / name
     outdir.mkdir(parents=True, exist_ok=True)

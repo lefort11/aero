@@ -105,6 +105,7 @@ private:
             emit(Z);
             return;
         }
+        if (id == "t") { emit(T); return; }
         if (id == "pi") {
             emit(Number, std::acos(-1.0));
             return;
@@ -113,23 +114,54 @@ private:
             conditional(depth);
             return;
         }
-        Op op;
-        if (id == "sin")
-            op = Sin;
-        else if (id == "cos")
-            op = Cos;
-        else if (id == "sqrt")
-            op = Sqrt;
-        else if (id == "exp")
-            op = Exp;
-        else if (id == "abs")
-            op = Abs;
-        else
-            fail("unknown identifier " + id);
-        require('(');
-        parse(1, depth + 1);
-        require(')');
-        emit(op);
+        if (id == "e") { emit(Number, std::exp(1.)); return; }
+        // Таблица задаёт имя и число аргументов для обоих входных файлов.
+        struct Function { const char* name; Op op; unsigned arguments; };
+        static const Function functions[] = {
+            {"sin", Sin, 1},
+            {"cos", Cos, 1},
+            {"tan", Tan, 1},
+            {"asin", Asin, 1},
+            {"acos", Acos, 1},
+            {"atan", Atan, 1},
+            {"sinh", Sinh, 1},
+            {"cosh", Cosh, 1},
+            {"tanh", Tanh, 1},
+            {"exp", Exp, 1},
+            {"expm1", Expm1, 1},
+            {"log", Log, 1},
+            {"log10", Log10, 1},
+            {"log2", Log2, 1},
+            {"log1p", Log1p, 1},
+            {"sqrt", Sqrt, 1},
+            {"cbrt", Cbrt, 1},
+            {"abs", Abs, 1},
+            {"floor", Floor, 1},
+            {"ceil", Ceil, 1},
+            {"round", Round, 1},
+            {"erf", Erf, 1},
+            {"erfc", Erfc, 1},
+            {"pow", Pow, 2},
+            {"atan2", Atan2, 2},
+            {"hypot", Hypot, 2},
+            {"min", Min, 2},
+            {"max", Max, 2},
+            {"fmod", Fmod, 2},
+            {"ln", Log, 1}
+        };
+        for (const auto& f : functions) {
+            if (id != f.name) continue;
+            require('(');
+            parse(1, depth + 1);
+            if (f.arguments == 2) {
+                require(',');
+                parse(1, depth + 1);
+            }
+            require(')');
+            emit(f.op);
+            return;
+        }
+        fail("unknown identifier " + id);
     }
     // Разбирает подвыражение до первого оператора с приоритетом ниже min_prec.
     void parse(unsigned min_prec, unsigned depth) {
@@ -137,11 +169,12 @@ private:
             fail("formula nesting exceeds 64");
         spaces();
         const char c = peek();
-        if (c == '-' || c == '+') {
+        if (c == '-' || c == '+' || c == '!') {
             ++pos;
-            parse(4, depth + 1);
+            parse(6, depth + 1);
             if (c == '-')
                 emit(Neg);
+            if (c == '!') emit(Not);
         } else if (c == '(') {
             ++pos;
             parse(1, depth + 1);
@@ -158,9 +191,9 @@ private:
             unsigned precedence;
             Op op;
         };
-        static const Operator ops[] = {{"<=", 1, Le}, {">=", 1, Ge}, {"==", 1, Eq}, {"!=", 1, Ne},
-                                       {"<", 1, Lt},  {">", 1, Gt},  {"+", 2, Add}, {"-", 2, Sub},
-                                       {"*", 3, Mul}, {"/", 3, Div}, {"^", 5, Pow}};
+        static const Operator ops[] = {{"||",1,Or}, {"&&",2,And}, {"<=",3,Le}, {">=",3,Ge},
+            {"==",3,Eq}, {"!=",3,Ne}, {"<",3,Lt}, {">",3,Gt}, {"+",4,Add}, {"-",4,Sub},
+            {"**",7,Pow}, {"*",5,Mul}, {"/",5,Div}, {"%",5,Fmod}, {"^",7,Pow}};
         for (;;) {
             spaces();
             std::size_t k = 0;
@@ -171,6 +204,20 @@ private:
             if (k == sizeof(ops) / sizeof(ops[0]) || ops[k].precedence < min_prec)
                 return;
             pos += std::char_traits<char>::length(ops[k].token);
+            // При известном результате условия пропускаем правую часть.
+            if (ops[k].op == And || ops[k].op == Or) {
+                const bool either = ops[k].op == Or;
+                if (either) emit(Not);
+                const auto skip = emit(JumpFalse);
+                parse(ops[k].precedence + 1, depth + 1);
+                emit(Not);
+                emit(Not);
+                const auto end = emit(Jump);
+                out[skip].target = out.size();
+                emit(Number, either ? 1. : 0.);
+                out[end].target = out.size();
+                continue;
+            }
             // Степени группируются справа (a^(b^c)), остальные операции одного уровня — слева.
             parse(ops[k].precedence + (ops[k].op == Pow ? 0u : 1u), depth + 1);
             emit(ops[k].op);
@@ -183,7 +230,7 @@ Expression::Expression(const std::string& formula) {
 }
 
 // Исполняет подготовленную последовательность операций над локальным стеком значений.
-double Expression::evaluate(double x, double y, double z) const {
+double Expression::evaluate(double x, double y, double z, double t) const {
     // Каждый ожидающий правый операнд занимает один уровень рекурсивного разбора.
     double stack[65];
     std::size_t size = 0;
@@ -203,6 +250,9 @@ double Expression::evaluate(double x, double y, double z) const {
         case Z:
             v = z;
             break;
+        case T:
+            v = t;
+            break;
         case JumpFalse:
             if (!stack[--size])
                 pc = i.target;
@@ -213,21 +263,30 @@ double Expression::evaluate(double x, double y, double z) const {
         case Neg:
             v = -stack[--size];
             break;
-        case Sin:
-            v = std::sin(stack[--size]);
-            break;
-        case Cos:
-            v = std::cos(stack[--size]);
-            break;
-        case Sqrt:
-            v = std::sqrt(stack[--size]);
-            break;
-        case Exp:
-            v = std::exp(stack[--size]);
-            break;
-        case Abs:
-            v = std::fabs(stack[--size]);
-            break;
+        case Not: v = !stack[--size]; break;
+        case Sin: v = std::sin(stack[--size]); break;
+        case Cos: v = std::cos(stack[--size]); break;
+        case Tan: v = std::tan(stack[--size]); break;
+        case Asin: v = std::asin(stack[--size]); break;
+        case Acos: v = std::acos(stack[--size]); break;
+        case Atan: v = std::atan(stack[--size]); break;
+        case Sinh: v = std::sinh(stack[--size]); break;
+        case Cosh: v = std::cosh(stack[--size]); break;
+        case Tanh: v = std::tanh(stack[--size]); break;
+        case Exp: v = std::exp(stack[--size]); break;
+        case Expm1: v = std::expm1(stack[--size]); break;
+        case Log: v = std::log(stack[--size]); break;
+        case Log10: v = std::log10(stack[--size]); break;
+        case Log2: v = std::log2(stack[--size]); break;
+        case Log1p: v = std::log1p(stack[--size]); break;
+        case Sqrt: v = std::sqrt(stack[--size]); break;
+        case Cbrt: v = std::cbrt(stack[--size]); break;
+        case Abs: v = std::abs(stack[--size]); break;
+        case Floor: v = std::floor(stack[--size]); break;
+        case Ceil: v = std::ceil(stack[--size]); break;
+        case Round: v = std::round(stack[--size]); break;
+        case Erf: v = std::erf(stack[--size]); break;
+        case Erfc: v = std::erfc(stack[--size]); break;
         default: {
             // Правый аргумент положили в стек последним. Порядок важен для вычитания и деления.
             const double b = stack[--size], a = stack[--size];
@@ -249,6 +308,11 @@ double Expression::evaluate(double x, double y, double z) const {
             case Pow:
                 v = std::pow(a, b);
                 break;
+            case Atan2: v = std::atan2(a, b); break;
+            case Hypot: v = std::hypot(a, b); break;
+            case Min: v = std::fmin(a, b); break;
+            case Max: v = std::fmax(a, b); break;
+            case Fmod: v = std::fmod(a, b); break;
             case Lt:
                 v = a < b;
                 break;

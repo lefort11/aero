@@ -12,7 +12,7 @@ endif
 clean_variants := $(foreach root,$(clean_roots),$(root) $(root)/serial $(root)/static $(root)/static/serial)
 clean_dirs := $(clean_variants) $(addsuffix /Debug,$(clean_variants)) $(addsuffix /Release,$(clean_variants)) $(addsuffix /Release/O3,$(clean_variants))
 clean_dirs += $(addsuffix /kokkos,$(clean_dirs))
-clean_modules := aero bc converter cv eulersolver explicit implicit initial io_fields io_flowreport io_settings mesh meshdec reconstruction residual tecplot timestep
+clean_modules := aero bc converter cv eulersolver explicit implicit initial io_fields io_report io_settings mesh meshdec reconstruction residual tecplot timestep
 clean_tags := cuda0 cuda1 $(foreach gpu,0 1,$(foreach omp,0 1,cuda$(gpu)_omp$(omp)))
 clean_suffixes := $(addprefix _,$(clean_tags) cuda)
 clean_tests := $(foreach mod,$(clean_modules),$(foreach base,$(mod)_tests $(mod)_tests_debug,$(base) $(addprefix $(base),$(clean_suffixes))))

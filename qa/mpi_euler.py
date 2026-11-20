@@ -58,11 +58,11 @@ def close(a, b):
 
 def check_report(reference, actual):
     """Сверяет строки отчёта об интегрировании с результатом на целой сетке."""
-    rows = re.compile(r"(?m)^(?:Flow report|Energy residual|rho\s|u[xyz]\s|p\s|E\s|Completed).*")
+    rows = re.compile(r"(?m)^(?:Report|Energy residual|rho\s|u[xyz]\s|p\s|E\s|Completed).*")
     ref, result = [
         rows.findall(log.partition("Starting time integration")[2]) for log in (reference, actual)
     ]
-    if not ref or not ref[0].startswith("Flow report") or len(ref) != len(result):
+    if not ref or not ref[0].startswith("Report") or len(ref) != len(result):
         raise AssertionError("Missing global report or different number of steps")
     for a, b in zip(ref, result):
         if a == b:
@@ -276,7 +276,7 @@ def verify(
         euler_solver=flux,
         time_scheme=scheme,
         final_time=str(final),
-        flowreport_every=20 if title == "sod" else 1,
+        report_every=20 if title == "sod" else 1,
         omp_threads=2 if dim > 1 else 1,
     )
     (case / "main.txt").write_text("".join(f"{key} = {v}\n" for key, v in options.items()))
@@ -382,11 +382,11 @@ def verify(
         print(f"OK BDF2 startup from version 1, max field difference={error:.3g}")
     if cut and not reverse and scheme == "ssprk3" and reconstruction == "first_order":
         config = case / "main.txt"
-        config.write_text(config.read_text().replace("flowreport_every = 1", "flowreport_every = 0"))
+        config.write_text(config.read_text().replace("report_every = 1", "report_every = 0"))
         quiet = case / "no-reports"
         actual = launch(aero, case, quiet, launcher, 4)
-        if "Flow report" in actual:
-            raise AssertionError("Unexpected flow report")
+        if "Report" in actual:
+            raise AssertionError("Unexpected report")
         check_output(reference, quiet, 4, len(coords), dim, names)
 
         # При этом CFL первая стадия Эйлера на одной стороне разреза даёт нефизическое состояние.

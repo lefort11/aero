@@ -28,11 +28,40 @@ struct SpatialBlocks {
     AERO_HOST_DEVICE double* face_block(MeshIndex f) const {
         return face_values + (f < grid.edges ? 2*f : grid.edges + f) * stride();
     }
+    // Матрица постоянного линейного потока задана своим действием на единичные
+    // векторы. Здесь нет вычитания близких потоков или подбора приращения.
+    AERO_HOST_DEVICE bool linear_blocks(MeshIndex f, double* out) const {
+        const auto& s = grid.surfaces[f];
+        const unsigned width = grid.components();
+        double normal[3] = {};
+        if (euler_unit_direction(grid.dim,s.area,normal) != EulerStatus::Success) return false;
+        const LinearFace face(grid.options.background,grid.dim,normal);
+        const bool boundary = f >= grid.edges;
+        for (unsigned k=0; k<width; ++k) {
+            double unit[5] = {}, zero[5] = {}, physical[5];
+            unit[k] = 1.;
+            EulerFluxResult flux;
+            if (boundary) {
+                if (!linear_boundary_flux(face,grid.patches.by_patch[s.patch],grid.patches.free_rules,
+                                          unit,nullptr,true,flux)) return false;
+            } else {
+                face.physical(unit,physical);
+                if (!face.numerical(roe,grid.options.upw_coeff,unit,zero,physical,zero,flux)) return false;
+            }
+            for (unsigned r=0; r<width; ++r) out[r*width+k] = s.measure*flux.flux[r];
+            if (!boundary) {
+                if (!face.numerical(roe,grid.options.upw_coeff,zero,unit,zero,physical,flux)) return false;
+                for (unsigned r=0; r<width; ++r) out[stride()+r*width+k] = s.measure*flux.flux[r];
+            }
+        }
+        return true;
+    }
     // Каждая площадка единожды вычисляет свои производные и пишет только в свою память.
     AERO_HOST_DEVICE bool differentiate(MeshIndex f, const double* u, const double* initial) const {
         const auto& s = grid.surfaces[f];
         const double* left = grid.node_row(u, s.begin);
         double* out = face_block(f);
+        if (grid.options.background.active()) return linear_blocks(f,out);
         if (f >= grid.edges)
             return boundary_detail::block(grid.dim, grid.patches.by_patch[s.patch], grid.patches.free_rules,
                     left, initial ? grid.node_row(initial, s.begin) : nullptr, s.area, grid.options.gamma, out);

@@ -7,6 +7,7 @@
 #include "../explicit/explicit.h"
 #endif
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <iostream>
 #ifdef _OPENMP
@@ -118,8 +119,18 @@ void trace_limiter_test() {
     double low[] = {.5, .5, 0, 4.25};
     require(residual_detail::limit_trace(2, options, node, low, normal, nullptr), "low density trace");
     compare(Values(low, low + 4), {1, 1, 0, 4.5});
-    for (const auto& nonphysical : {Values{2, 4, 0, 1}, Values{-1, 1, 0, 5}}) {
-        Values trace = nonphysical;
+    for (double lower : {0.0, 0.5}) {
+        auto bounds = residual_options("conservative", "roe", 2, lower, 1.5);
+        double trace[] = {2, 4, 0, 1}; // p = -3
+        EulerState gas;
+        require(residual_detail::limit_trace(2, bounds, node, trace, normal, nullptr, nullptr, &gas),
+                "recover negative pressure");
+        const double target = 4 * (lower > 0 ? lower : 0.01);
+        near(gas.pressure, target);
+        near(gas.velocity[0], 1 + (4 - target) / 7);
+    }
+    {
+        Values trace = {-1, 1, 0, 5};
         require(residual_detail::limit_trace(2, options, node, trace.data(), normal, flux),
                 "zero-order fallback");
         compare(trace, {2, 2, 0, 5});
@@ -128,6 +139,31 @@ void trace_limiter_test() {
     double nan_trace[] = {2, 2, NAN, 5};
     require(!residual_detail::limit_trace(2, options, node, nan_trace, normal, nullptr),
             "nonfinite trace accepted");
+}
+// Расчёт с меткой должен давать тот же поток, что и явная подстановка
+// узлового состояния с выбранной стороны. По отдельности проверяем оба конца.
+void first_order_side_flux() {
+    using namespace residual_detail;
+    Geometry g{};
+    g.dim = 2;
+    g.options = residual_options("characteristic", "roe", 1.4);
+    Surface face = {0, 1, 0, {1., 0., 0.}, 1., 0};
+    const double u[] = {1., .2, .04, 3., 1.1, .15, -.05, 3.1};
+    euler_detail::InterfaceGas base;
+    require(edge_gas(g, face, u, u+4, base), "valid nodal gas");
+    const EdgeTraces high = {{.97, .23, .03, 2.8}, {1.2, .11, -.04, 3.05}};
+    for (unsigned char mask : std::array<unsigned char, 3>{{2, 4, 6}}) {
+        EdgeTraces expected = high, actual = high;
+        if (mask & 2) std::copy_n(u, 4, expected.left);
+        if (mask & 4) std::copy_n(u+4, 4, expected.right);
+        EulerFluxResult reference{}, result{};
+        face.use_nodal_traces = 0;
+        require(finish_edge_flux<true,true>(g, face, u, u+4, base, expected, nullptr, reference), "reference flux");
+        face.use_nodal_traces = mask;
+        require(finish_edge_flux<true,true>(g, face, u, u+4, base, actual, nullptr, result), "marked flux");
+        for (unsigned k = 0; k < 4; ++k) near(result.flux[k], reference.flux[k]);
+        near(result.max_wave_speed, reference.max_wave_speed);
+    }
 }
 void basis_test() {
     const double a[] = {1, .21, .32, .43, 4}, b[] = {1.5, .2, .3, .4, 5}, dir[] = {-.4, .8, .32};
@@ -547,6 +583,7 @@ int main(int argc, char** argv) {
     try {
         signed_surface_balance();
         basis_test();
+        first_order_side_flux();
         trace_limiter_test();
         oblique_mp_limit();
         const int devices = ReconstructionContext::cuda_device_count();

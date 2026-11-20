@@ -59,6 +59,8 @@ bool prepare_case_geometry(RunSettings& run, const MeshPartition& partition, con
     world.local([&] {
         // За физическими границами в архиве идут внутренние границы между процессами.
         const auto& names = partition.mesh.data().patch_names;
+        if (run.background.active() && run.background_velocities != mesh.dimension)
+            throw std::invalid_argument("linear.txt: specify one background velocity component for each mesh dimension");
         physical.dimension = mesh.dimension;
         physical.patch_names.assign(names.begin(), names.begin() + partition.physical_patches);
         if (world.rank == 0 && first_attempt) {
@@ -80,7 +82,7 @@ bool prepare_case_geometry(RunSettings& run, const MeshPartition& partition, con
         select_single_device(run);
     }
     world.local([&] {
-        geometry.boundaries = read_case_boundaries(run.boundary_path, physical);
+        geometry.boundaries = read_case_boundaries(run.boundary_path, physical, run.background.active(), &run.input_warnings);
         if (single && run.directories.interactive) {
             std::cout << "Accepted boundary settings\n" << settings_text(run.boundary_path);
         }

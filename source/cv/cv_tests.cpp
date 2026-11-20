@@ -251,6 +251,11 @@ int main(int argc, char** argv) {
         verify(pentagon, 10 * std::sin(2 * std::acos(-1.) / 5));
         verify(adjacent_tetrahedra(), 1. / 3, {1. / 12, 1. / 12, 1. / 12, 1. / 24, 1. / 24});
         verify(mixed(), 5. / 3);
+        // Поднимаем один угол единичного гекса. Средняя высота верхней
+        // грани растёт на 1/8, настолько же увеличивается объём под ней.
+        MeshData warped = mixed();
+        warped.z[10] += .5;
+        verify(warped, 5. / 3 + .125);
         verify(polygonal_prism(9), 4.5 * std::sin(2 * std::acos(-1.) / 9));
         MeshData concave = polygon(5);
         concave.x = {0, 2, 2, 1, 0};

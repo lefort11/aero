@@ -1,7 +1,7 @@
 # Модуль потоков Эйлера собирается независимо от сетки, реконструкции и ввода-вывода.
 EULERSOLVER_SOURCE := source/eulersolver
 EULER_TAG := cuda$(kokkos_gpu)_omp$(WITH_OPENMP)
-EULER_HEADERS := $(EULERSOLVER_SOURCE)/euler.h $(EULERSOLVER_SOURCE)/characteristic.h $(EULERSOLVER_SOURCE)/lax_friedrichs.h $(EULERSOLVER_SOURCE)/roe.h
+EULER_HEADERS := $(EULERSOLVER_SOURCE)/linear_euler.h $(EULERSOLVER_SOURCE)/euler.h $(EULERSOLVER_SOURCE)/characteristic.h $(EULERSOLVER_SOURCE)/lax_friedrichs.h $(EULERSOLVER_SOURCE)/roe.h
 EULER_HEADERS += source/parallel/kernel_math.h
 EULER_SOURCES := $(addprefix $(EULERSOLVER_SOURCE)/,euler.cpp characteristic.cpp lax_friedrichs.cpp roe.cpp)
 EULER_OBJECTS := $(patsubst $(EULERSOLVER_SOURCE)/%.cpp,$(BUILD)/eulersolver_%_$(EULER_TAG).o,$(EULER_SOURCES))
@@ -38,10 +38,10 @@ $(EULER_DEBUG_TEST): $(EULERSOLVER_SOURCE)/eulersolver_tests.cpp $(EULER_SOURCES
 eulersolver: $(EULER_LIBRARY)
 eulersolver-test: $(BIN)/$(notdir $(EULER_TEST))
 	$(running_test)
-	./$(EULER_TEST)
+	"$<"
 eulersolver-debug-test: $(BIN)/$(notdir $(EULER_DEBUG_TEST))
 	$(running_test)
-	./$(EULER_DEBUG_TEST)
+	"$<"
 eulersolver-cuda-test:
 	$(MAKE) KOKKOS_BACKEND=cuda $(BIN)/eulersolver_tests_cuda1_omp$(WITH_OPENMP)$(EXE)
 	$(running_test)

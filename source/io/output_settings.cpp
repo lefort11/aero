@@ -20,7 +20,7 @@ template <class T> T positive(const std::string& text, const std::string& where)
     return value;
 }
 // Заполняет один параметр текущей зоны. Совместимость всех параметров проверяется после чтения.
-void entry(OutputZone& z, const std::string& key, const std::string& value, const std::string& where) {
+void entry(OutputZone& z, const std::string& key, const std::string& value, const std::string& where, std::vector<std::string>* warnings) {
     if (key == "file")
         z.file = label(value, where);
     else if (key == "every_steps") {
@@ -48,6 +48,8 @@ void entry(OutputZone& z, const std::string& key, const std::string& value, cons
                 break;
             start = comma + 1;
         }
+    } else if (warnings && !key.empty() && key != "format" && key != "multi" && key != "layout") {
+        warnings->push_back(where + ": unknown parameter " + key);
     } else
         throw std::invalid_argument(where + ": unknown setting or invalid value: " + key + " = " + value);
 }
@@ -147,7 +149,7 @@ void validate_output_zones(const std::vector<OutputZone>& zones) {
         keys.push_back(key);
     }
 }
-std::vector<OutputZone> read_output_zones(const std::string& path) {
+std::vector<OutputZone> read_output_zones(const std::string& path, std::vector<std::string>* warnings) {
     errno = 0;
     std::ifstream input(path.c_str());
     if (!input) {
@@ -178,7 +180,7 @@ std::vector<OutputZone> read_output_zones(const std::string& path) {
         const auto key = settings_detail::trim(line.substr(0, eq));
         if (!keys.insert(key).second)
             throw std::invalid_argument(where + ": duplicate " + key);
-        entry(zones.back(), key, settings_detail::trim(line.substr(eq + 1)), where);
+        entry(zones.back(), key, settings_detail::trim(line.substr(eq + 1)), where, warnings);
     }
     if (input.bad() || !input.eof())
         throw std::runtime_error("error reading output settings: " + path);

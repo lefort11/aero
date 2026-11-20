@@ -1,6 +1,7 @@
 #ifndef AERO_IO_SCHEDULED_OUTPUT_H
 #define AERO_IO_SCHEDULED_OUTPUT_H
 #include "output_settings.h"
+#include "flow_values.h"
 #include <functional>
 
 namespace aero {
@@ -18,8 +19,6 @@ private:
     std::string path_, temporary_;
 };
 
-std::array<double, 6> output_values(unsigned dimension, const double* state, double gamma,
-                                    std::uint64_t node);
 Field output_field(const std::string& name);
 
 // Все зоны используют общую последовательность принятых шагов и моментов записи.
@@ -48,7 +47,7 @@ class LocalFieldOutput {
 public:
     LocalFieldOutput() = default;
     LocalFieldOutput(const std::string& directory, const Mesh& mesh, double gamma,
-                     std::vector<std::uint64_t> node_dof, std::size_t state_nodes);
+                     std::vector<std::uint64_t> node_dof, std::size_t state_nodes, const LinearBackground& background = {});
     void write(const OutputZone& zone, const std::vector<unsigned>& columns, std::uint64_t step, double time,
                const std::vector<double>& state) const;
 
@@ -58,6 +57,7 @@ private:
     std::vector<std::uint64_t> node_dof_;
     std::size_t nodes_ = 0;
     double gamma_ = 0;
+    LinearBackground background_;
 };
 
 class ScheduledOutput : public OutputSchedule {

@@ -7,15 +7,15 @@
   <PropertyGroup Label="Globals">
     <ProjectGuid>{EBBC145E-FC25-4204-9DA1-004C1F1D134C}</ProjectGuid>
     <Keyword>MakeFileProj</Keyword>
-    <MakeGoal>io-flowreport-test</MakeGoal>
-    <MakeGoal Condition="'$(Configuration)'=='Debug'">io-flowreport-debug-test</MakeGoal>
+    <MakeGoal>io-report-test</MakeGoal>
+    <MakeGoal Condition="'$(Configuration)'=='Debug'">io-report-debug-test</MakeGoal>
   </PropertyGroup>
   <Import Project="kokkos_make.props" />
   <ItemGroup>
     <None Include="..\source\io\README.txt" />
-    <ClInclude Include="..\source\io\flowreport.h" />
-    <ClCompile Include="..\source\io\flowreport_tests.cpp" />
-    <None Include="..\source\io\flowreport_tests.mk" />
+    <ClInclude Include="..\source\io\report.h" />
+    <ClCompile Include="..\source\io\report_tests.cpp" />
+    <None Include="..\source\io\report_tests.mk" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

@@ -48,11 +48,15 @@ class PartitionGpu {
     } storage_;
     partition_detail::Grid grid_{};
     // Та же геометрия и адреса полей нужны Kokkos на каждой стадии. Запись живёт в storage_.
-    const residual_detail::FaceBatch* device_faces_ = nullptr;
+    residual_detail::FaceBatch* device_faces_ = nullptr;
+    double* accepted_state_ = nullptr; // Резервная копия слоя остаётся на карте.
     double* krylov_input_ = nullptr; // Полный локальный вектор с копиями соседних узлов для A*x.
     bool gas_current_ = false; // Для цельной сетки обновление узлов готовит газ одновременно с полем.
     PinnedBuffer<partition_detail::Index> error_index_; // Индекс сбоя, доступный CPU после окончания стадии.
     static void check(aero::gpu::Status status);
+    residual_detail::FaceBatch face_batch() const; // Адреса полей и текущие настройки потока.
+    void update_face_batch(); // Обновляет параметры, которые читают упакованные ядра.
+    void reset_failed_count(); // Счётчик доступен на CPU после синхронизации стадии.
     void check_kernel(const char* phase);
     static double measure_flux_rate(ResidualOptions options, std::size_t faces, MeshIndex budget);
 
@@ -72,7 +76,12 @@ public:
     static void synchronize();
     PartitionGpu(const PartitionGpu&) = delete;
     PartitionGpu& operator=(const PartitionGpu&) = delete;
-    void fluxes();
+    void failed_nodes(std::vector<MeshIndex>& failed, bool implicit);
+    void copy_backup(std::size_t count, bool restore);
+    void set_flux_options(const ResidualOptions& options);
+    void set_alpha(double alpha);
+    void update_surfaces(const std::vector<residual_detail::Surface>& surfaces);
+    void fluxes(bool first_order_start);
     double cfl(double courant);
     void update(explicit_detail::Stage stage, double dt, bool save_original);
     // Собирает только собственные узлы раздела для отчёта или многостадийного шага.

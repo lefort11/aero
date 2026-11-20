@@ -8,7 +8,7 @@ namespace aero {
 void write_global_fields(const Processes& world, const std::string& directory, const OutputZone& zone,
                          const std::vector<unsigned>& columns, const FieldNodeSelection& mesh,
                          const std::vector<OwnedNode>& nodes, double gamma, std::uint64_t step, double time,
-                         const std::vector<double>& state) {
+                         const std::vector<double>& state, const LinearBackground& background) {
     std::unique_ptr<StagedFieldFile> staged;
     std::vector<std::uint64_t> offsets;
     std::string temporary;
@@ -37,7 +37,7 @@ void write_global_fields(const Processes& world, const std::string& directory, c
     const unsigned width = mesh.dimension + 2;
     const auto encode = [&](const OwnedNode& n, char* dst, std::size_t pitch) {
         // Один раз восстанавливаем физические величины узла, затем раскладываем запрошенные столбцы.
-        const auto values = output_values(mesh.dimension, state.data() + n.slot * width, gamma, n.id);
+        const auto values = output_values(mesh.dimension, state.data() + n.slot * width, gamma, n.id, background);
         for (std::size_t k = 0; k < columns.size(); ++k)
             indexed_io::put_real(dst + k * pitch, values[columns[k]]);
     };

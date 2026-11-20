@@ -88,7 +88,7 @@ struct BdfStep::Storage {
     // Новая последовательность сборок начинается после изменения настроек или
     // по истечении заданного числа принятых шагов. Потоки для невязки всегда свежие.
     void begin_matrix_step(const NewtonSettings& settings) {
-        cached = cached && accepted_since_build < settings.jacobian_update_every &&
+        cached = cached && (grid.options.background.active() || accepted_since_build < settings.jacobian_update_every) &&
                  settings.roe == cached_settings.roe &&
                  settings.simplified_jacobian == cached_settings.simplified_jacobian &&
                  settings.csgs == cached_settings.csgs;
@@ -98,7 +98,7 @@ struct BdfStep::Storage {
     unsigned prepare_matrix(const double* state, const double* initial, const double* volumes,
                             double effective_dt, const NewtonSettings& settings, unsigned iteration) {
         if (!cached) {
-            const bool reuse = settings.jacobian_update_every > 0;
+            const bool reuse = grid.options.background.active() || settings.jacobian_update_every > 0;
             linear.assemble(state, initial, volumes, effective_dt, settings, reuse);
             cached = reuse;
             cached_settings = settings;
@@ -253,7 +253,7 @@ NewtonResult BdfStep::advance(double* state, const double* initial, const double
                 // История продвигается только после успешного шага, включая равновесное поле.
                 if (settings.second_order) std::swap(s.previous, s.start);
                 s.previous_dt = settings.second_order ? dt : 0.;
-                if (s.cached) ++s.accepted_since_build;
+                if (s.cached && !s.grid.options.background.active()) ++s.accepted_since_build;
                 return {iteration, relative, assemblies};
             }
             if (iteration == settings.max_iterations) {

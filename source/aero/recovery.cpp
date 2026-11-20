@@ -1,4 +1,7 @@
 #include "recovery.h"
+#include "../io/sha256.h"
+#include <iomanip>
+#include <locale>
 #include "startup.h"
 #include "../io/number_codec.h"
 #include "../io/lzma_stream.h"
@@ -91,9 +94,9 @@ void encode_node(const OwnedNode& n, char* row, unsigned width, const double* st
     seal(row, record_size(width,previous!=nullptr));
 }
 
-Packet header(Id count, unsigned width, double gamma, const std::string& hash, Id step, double time, bool history) {
+Packet header(Id count, unsigned width, double gamma, const std::string& hash, Id step, double time, bool history, bool adaptive) {
     Packet bytes{};
-    std::memcpy(bytes.data(), history ? "AERORCV2" : "AERORCV1", 8);
+    std::memcpy(bytes.data(), adaptive ? (history ? "AERORCV4" : "AERORCV3") : (history ? "AERORCV2" : "AERORCV1"), 8);
     store_word(&bytes[header_dimension], width - 2);
     store_word(&bytes[header_nodes], count);
     put_real(&bytes[header_gamma], gamma);
@@ -103,16 +106,17 @@ Packet header(Id count, unsigned width, double gamma, const std::string& hash, I
     seal(bytes.data(), header_size);
     return bytes;
 }
-Packet read_header(std::ifstream& in, Id count, unsigned width, double gamma, const std::string& hash, double& saved_dt) {
+Packet read_header(std::ifstream& in, Id count, unsigned width, double gamma, const std::string& hash, double& saved_dt, std::string& stabilization) {
     Packet bytes{};
     in.read(bytes.data(), header_size);
-    const bool history = !std::memcmp(bytes.data(),"AERORCV2",8);
-    require(in && (history || !std::memcmp(bytes.data(), "AERORCV1", 8)) && intact(bytes.data(), header_size),
+    const bool adaptive = !std::memcmp(bytes.data(),"AERORCV3",8) || !std::memcmp(bytes.data(),"AERORCV4",8);
+    const bool history = !std::memcmp(bytes.data(),"AERORCV2",8) || !std::memcmp(bytes.data(),"AERORCV4",8);
+    require(in && (adaptive || history || !std::memcmp(bytes.data(), "AERORCV1", 8)) && intact(bytes.data(), header_size),
             "incomplete or damaged header");
     require(read_word(&bytes[header_dimension]) == width - 2 && read_word(&bytes[header_nodes]) == count &&
                 read_real(&bytes[header_gamma]) == gamma &&
                 !std::memcmp(&bytes[header_hash], hash.data(), 64),
-            "incompatible mesh or gas");
+            "incompatible mesh or gas (including the linear background)");
     require(read_word(&bytes[header_step]) && std::isfinite(read_real(&bytes[header_time])) &&
                 read_real(&bytes[header_time]) > 0,
             "invalid step or time");
@@ -125,7 +129,21 @@ Packet read_header(std::ifstream& in, Id count, unsigned width, double gamma, co
         require(saved_dt>0. && std::isfinite(saved_dt),"invalid BDF2 time step");
     }
     in.seekg(0, std::ios::end);
-    require(in.tellg() == offset(count, width, history), "incomplete or damaged file length");
+    const auto records_end = offset(count, width, history);
+    const std::streamoff tail = in.tellg() - records_end;
+    stabilization.clear();
+    if (adaptive) {
+        // Секция защищена собственной CRC. Первые версии контрольных точек
+        // заканчивались сразу за последним узлом и читаются как прежде.
+        require(tail > 8 && tail <= INT_MAX, "invalid stabilization section size");
+        in.seekg(records_end);
+        stabilization.resize(static_cast<std::size_t>(tail - 8));
+        in.read(&stabilization[0], tail - 8);
+        char crc[8];
+        in.read(crc, 8);
+        require(in && read_word(crc) == io::crc32(stabilization.data(), stabilization.size()),
+                "damaged stabilization section");
+    } else require(tail == 0, "incomplete or damaged file length");
     return bytes;
 }
 bool exists(const std::string& path) {
@@ -221,6 +239,16 @@ Recovery::Recovery(const RunSettings& run, const Processes& world, Id count, uns
     if (hash_.empty())
         hash_ = archive_hash(run.mesh_path, world);
     require(hash_.size() == 64, "invalid mesh fingerprint");
+    if (run.background.active()) {
+        // Контрольная точка хранит пульсации и привязана к их фону. Обычные
+        // контрольные точки Эйлера сохраняют исходный идентификатор сетки.
+        io_detail::Sha256Buffer buffer;
+        std::ostream key(&buffer);
+        key.imbue(std::locale::classic());
+        key << hash_ << " Linear " << std::setprecision(17) << run.background.rho << ' ' << run.background.p;
+        for (double v : run.background.velocity) key << ' ' << v;
+        hash_ = buffer.hex_digest();
+    }
 }
 std::string Recovery::path(int slot) const {
     return run_.directories.output + "/recovery-" + std::to_string(slot) + ".bin";
@@ -230,6 +258,7 @@ bool Recovery::due(Id accepted, double t, bool final_field) const {
 }
 void Recovery::restore(std::vector<double>& state, std::vector<double>& initial) {
     const int requested = run_.directories.recovery_slot;
+    std::string adaptive[2];
     Id steps[2] = {};
     double times[2] = {}, saved_dt[2] = {};
     world_.local([&] {
@@ -242,7 +271,7 @@ void Recovery::restore(std::vector<double>& state, std::vector<double>& initial)
                 continue;
             try {
                 std::ifstream in(path(s), std::ios::binary);
-                const auto h = read_header(in, count_, width_, run_.gamma, hash_, saved_dt[s]);
+                const auto h = read_header(in, count_, width_, run_.gamma, hash_, saved_dt[s], adaptive[s]);
                 steps[s] = read_word(&h[header_step]);
                 times[s] = read_real(&h[header_time]);
             } catch (const std::exception& e) {
@@ -272,7 +301,7 @@ void Recovery::restore(std::vector<double>& state, std::vector<double>& initial)
                 if (world_.rank)
                     return;
                 std::ifstream in(path(s), std::ios::binary);
-                const auto h = read_header(in, count_, width_, run_.gamma, hash_, saved_dt[s]);
+                const auto h = read_header(in, count_, width_, run_.gamma, hash_, saved_dt[s], adaptive[s]);
                 require(saved_dt[s]==history.dt && read_word(&h[header_step]) == steps[s] && read_real(&h[header_time]) == times[s],
                         "checkpoint changed during read");
             });
@@ -281,6 +310,8 @@ void Recovery::restore(std::vector<double>& state, std::vector<double>& initial)
                 std::cerr << path(s) << ": " << e.what() << '\n';
             continue;
         }
+        stabilization_state.swap(adaptive[s]);
+        world_.broadcast(stabilization_state, 0);
         world_.broadcast(&times[s], 1, 0);
         time = times[s];
         last_ = s;
@@ -335,13 +366,21 @@ void Recovery::save(Id accepted, double t, const std::vector<double>& state,
         if (world_.size == 1)
             sync_file(file);
         std::fstream out(file, std::ios::in | std::ios::out | std::ios::binary);
-        const auto bytes = header(count_, width_, run_.gamma, hash_, accepted, t, has_history);
+        const auto bytes = header(count_, width_, run_.gamma, hash_, accepted, t, has_history, !stabilization_state.empty());
         out.write(bytes.data(), header_size);
         if (has_history) {
             char extra[16];
             put_real(extra,history.dt);
             seal(extra,sizeof(extra));
             out.write(extra,sizeof(extra));
+        }
+        if (!stabilization_state.empty()) {
+            require(stabilization_state.size() < INT_MAX - 8u, "stabilization section too large");
+            out.seekp(offset(count_, width_, has_history));
+            out.write(stabilization_state.data(), static_cast<std::streamsize>(stabilization_state.size()));
+            char crc[8];
+            store_word(crc, io::crc32(stabilization_state.data(), stabilization_state.size()));
+            out.write(crc, 8);
         }
         out.close();
         require(bool(out), "cannot commit " + file);

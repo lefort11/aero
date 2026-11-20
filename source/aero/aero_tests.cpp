@@ -154,7 +154,7 @@ std::string run_case(const std::string& program, const std::string& device, bool
     const std::string backend = device.empty() ? "cpu" : "cuda";
     write(dir + "/main.txt",
           "mesh=../../examples/tecplot/demo_1d.mesh\nreconstruction=first_order\n"
-          "cfl=.35\nomp_threads=2\nflowreport_every=1\nfinal_time=.008\nbackend=" +
+          "cfl=.35\nomp_threads=2\nreport_every=1\nfinal_time=.008\nbackend=" +
               backend +
               (interactive
                    ? "\ntime_scheme=ssprk3\neuler_solver=roe\nreconstruction_variables=characteristic\n"
@@ -210,7 +210,7 @@ std::string run_case(const std::string& program, const std::string& device, bool
     std::string expected = device.empty() || expect_fallback ? "CPU" : "CUDA device " + device;
     for (const auto& key : std::vector<std::string>{"Active backend = " + expected, "Boundary label",
                                                     "Building reconstruction stencils... done",
-                                                    "Flow report    Step = 1", "Final time = 0.008"})
+                                                    "Report    Step = 1", "Final time = 0.008"})
         require(trace.find(key) != std::string::npos, "missing " + key + " in " + log);
     require(read(dir + "/bc.txt") == rules, "existing boundary settings must be preserved");
     for (const auto& name : mesh.data().patch_names)

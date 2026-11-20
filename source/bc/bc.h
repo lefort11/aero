@@ -269,6 +269,7 @@ boundary_flux(unsigned d, BoundaryConfig patch, const FreeBoundaryRules* free_ru
 }
 }
 #if !defined(AERO_BC_KERNEL_ONLY)
+#include "../mesh/coordinate.h"
 #include <iosfwd>
 #include <vector>
 #include <string>
@@ -298,7 +299,7 @@ BoundaryPatchView upload_boundary_patches(DeviceStorage& storage, BoundaryPatchV
 }
 struct PeriodicPair {
     std::string patch, pair;
-    double translation[3]; // Сдвиг от patch к pair в исходных единицах координат сетки.
+    Coordinate translation; // Сдвиг от patch к pair в исходных единицах координат сетки.
 };
 // Читает условия одного участка. При ошибке в его описании выбрасывает std::invalid_argument.
 // bc_type wall
@@ -308,7 +309,7 @@ struct PeriodicPair {
 // outflow base_p|base_u|base_rho [initial|число]
 BoundaryConfig read_boundary(std::istream& input, unsigned dimension, BoundaryPatches& patches);
 BoundaryConfig read_boundary(std::istream& input, unsigned dimension, BoundaryPatches& patches,
-                             PeriodicPair& periodic);
+                             PeriodicPair& periodic, bool linear = false);
 }
 #endif
 #endif

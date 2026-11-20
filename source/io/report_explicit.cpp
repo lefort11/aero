@@ -1,4 +1,4 @@
-#include "flowreport.h"
+#include "report.h"
 #include "../explicit/explicit.h"
 #include <stdexcept>
 
@@ -9,7 +9,7 @@ void read_accepted(const ExplicitIntegrator& solver, std::size_t nodes, unsigned
     // Для CPU читаем принятое поле непосредственно, пока действует представление интегратора.
     solver.inspect([&](const ExplicitField& field) {
         if (field.nodes != nodes || field.components != width)
-            throw std::invalid_argument("flowreport: integrator and grid have different layouts");
+            throw std::invalid_argument("report: integrator and grid have different layouts");
         if (field.backend == ExplicitBackend::Cpu)
             read(field.values);
     });
@@ -20,12 +20,12 @@ void read_accepted(const ExplicitIntegrator& solver, std::size_t nodes, unsigned
     }
 }
 }
-void FlowReport::capture(std::uint64_t step, const ExplicitIntegrator& solver) {
+void Report::capture(std::uint64_t step, const ExplicitIntegrator& solver) {
     if (due(step))
         read_accepted(solver, volumes_.size(), dimension_ + 2,
                       [&](const double* u) { capture_values(step, u); });
 }
-void FlowReport::write(std::uint64_t step, double time, double cfl, double dt,
+void Report::write(std::uint64_t step, double time, double cfl, double dt,
                        const ExplicitIntegrator& solver, std::ostream& out) {
     if (due(step))
         read_accepted(solver, volumes_.size(), dimension_ + 2,

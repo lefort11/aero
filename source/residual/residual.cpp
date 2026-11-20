@@ -41,6 +41,20 @@ double length(CvVector a) {
     return std::hypot(std::hypot(a.x, a.y), a.z);
 }
 }
+void residual_detail::validate_linear_walls(const Geometry& g) {
+    const auto& background = g.options.background;
+    if (!background.active()) return;
+    double speed_scale = background.sound;
+    for (unsigned j = 0; j < g.dim; ++j) speed_scale += std::fabs(background.velocity[j]);
+    const double tolerance = 64 * std::numeric_limits<double>::epsilon() * speed_scale;
+    for (Index f = g.edges; f < g.faces; ++f) {
+        const auto& wall = g.surfaces[f];
+        if (g.patches.by_patch[wall.patch].type() != BoundaryType::Wall) continue;
+        const double un = euler_detail::dot(g.dim, background.velocity, wall.area) / wall.measure;
+        if (std::fabs(un) > tolerance)
+            throw std::invalid_argument("linear.txt: background velocity must be tangent to a stationary wall");
+    }
+}
 void residual_detail::project_surface(Surface& s, CvVector world, unsigned d, const ResidualFrame& frame) {
     s.measure = length(world);
     if (!(s.measure > 0 && std::isfinite(s.measure)))
@@ -137,6 +151,22 @@ bool cpu_flux_for_face(const FaceBatch& batch, Index face) {
         return cpu_face_with_stencil<5>(batch, face);
     return cpu_face_with_stencil<3>(batch, face);
 }
+// Тип уравнений известен до начала параллельного обхода. Условие в цикле
+// компилятор сворачивает для каждого из двух вариантов этой функции.
+template <bool linear> void compute_cpu_faces(const FaceBatch& batch, const MeshIndex* global_nodes) {
+    parallel_for(
+        batch.count,
+        [&](Index k) {
+            const Index f = batch.face(k);
+            if (linear ? batch.compute_linear(f) : cpu_flux_for_face(batch, f))
+                return;
+            if (global_nodes)
+                throw std::domain_error("Invalid flux at global node " +
+                                        std::to_string(global_nodes[batch.geometry.surfaces[f].begin]));
+            failure(f, batch.geometry);
+        },
+        256);
+}
 }
 
 void residual_detail::cpu_face_fluxes(const FaceBatch& batch, const MeshIndex* global_nodes) {
@@ -145,18 +175,10 @@ void residual_detail::cpu_face_fluxes(const FaceBatch& batch, const MeshIndex* g
         parallel_for(packed.state_nodes, [&](Index i) {
             decode_nodal_gas(batch.geometry.dim, batch.state, batch.geometry.options.gamma, i, packed.gas);
         });
-    parallel_for(
-        batch.count,
-        [&](Index k) {
-            const Index f = batch.face(k);
-            if (cpu_flux_for_face(batch, f))
-                return;
-            if (global_nodes)
-                throw std::domain_error("Invalid flux at global node " +
-                                        std::to_string(global_nodes[batch.geometry.surfaces[f].begin]));
-            failure(f, batch.geometry);
-        },
-        256);
+    if (batch.geometry.options.background.active())
+        compute_cpu_faces<true>(batch, global_nodes);
+    else
+        compute_cpu_faces<false>(batch, global_nodes);
 }
 
 ResidualOptions residual_options(const std::string& variables, const std::string& solver, double gamma,
@@ -268,6 +290,7 @@ struct SpatialResidual::Impl {
              patches.view(),
              stencil,
              options, {}};
+        validate_linear_walls(g);
         if (device < 0) {
             buffer.resize(surfaces.size());
             return;

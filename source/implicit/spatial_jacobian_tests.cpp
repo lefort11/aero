@@ -31,7 +31,7 @@ Vector states(unsigned d, MeshIndex nodes, double speed) {
 // Сравниваем J*v с центральной разностью ДВУХ полных сборок SpatialResidual.
 // Начальные данные при возмущении текущего поля остаются фиксированными.
 void check_product(SpatialResidual& op, unsigned d, MeshIndex nodes, double speed, int device,
-                   bool periodic = false) {
+                   bool periodic = false, bool linear = false) {
     const Vector u = states(d,nodes,speed);
     Vector initial = u, direction(u.size()), plus = u, minus = u;
     const double h = 2.e-6;
@@ -82,6 +82,7 @@ void check_product(SpatialResidual& op, unsigned d, MeshIndex nodes, double spee
     }
     // Повторная сборка должна заменить все блоки. После ошибки нельзя
     // использовать частично обновлённую матрицу, а следующий расчёт должен восстановиться.
+    if (linear) return; // Знак пульсации свободен, а матрица не зависит от её величины.
     Vector invalid = u;
     invalid[0] = -1.;
     state.set(invalid);
@@ -115,6 +116,16 @@ void test_spatial_jacobian(int device) {
             patches.by_patch.assign(mesh.data().patch_names.size(), config);
             SpatialResidual op(mesh.view(),dual.view(),prepare_reconstruction(mesh,reconstruction),patches,options,device);
             check_product(op,d,mesh.view().node_count,speed,device);
+            // На свободных границах режим определяется фоновым потоком. У стенки
+            // берём покоящийся фон, так что проверка охватывает и наклонные стенки в 2D/3D.
+            auto linear_options = options;
+            linear_options.background.rho = 2.;
+            linear_options.background.p = 2./options.gamma;
+            linear_options.background.sound = 1.;
+            linear_options.background.velocity[0] = rules ? speed : 0.;
+            SpatialResidual linear_op(mesh.view(),dual.view(),prepare_reconstruction(mesh,reconstruction),
+                                      patches,linear_options,device);
+            check_product(linear_op,d,mesh.view().node_count,speed,device,false,true);
         };
         run(nullptr,.35);
         FreeBoundaryRules rules{};

@@ -199,14 +199,18 @@ void PartitionGpu::layout(residual_detail::Geometry g, const PartitionStencil& s
         throw std::length_error("GPU state too large");
     grid_.initial = storage_.allocate<double>(state_nodes * width);
     grid_.state = storage_.allocate<double>(state_nodes * width);
+    if (g.options.retry_nonphysical) {
+        accepted_state_ = storage_.allocate<double>(state_nodes * width);
+        grid_.failed_count = storage_.allocate<partition_detail::Index>(1);
+        grid_.failed_nodes = storage_.allocate<partition_detail::Index>(owned.size());
+    }
     if (compact_buffer)
         grid_.original = storage_.allocate<double>(owned.size() * (g.dim + 2));
     grid_.bad = storage_.allocate<partition_detail::Index>(1);
     // Выделяем запись в том же порядке при оценке памяти и при заполнении. После
     // резервирования поля обновляются на месте, поэтому их адреса сохраняются между стадиями.
     if (store_face_batch) {
-        const residual_detail::FaceBatch batch = {g, grid_.computed, grid_.computed_count, grid_.state,
-            grid_.initial, grid_.flux, nullptr, nullptr, false};
+        const auto batch = face_batch();
         device_faces_ = storage_.allocate(1, &batch);
     }
 }
@@ -240,13 +244,16 @@ void PartitionGpu::upload_state(const std::vector<double>& state, const std::vec
     // Ядро меняет индекс только при ошибке. На обычной стадии процессору достаточно
     // дождаться ядра и прочитать закреплённое слово, без отдельной передачи PCIe.
     if (!error_index_.host()) {
-        const auto status = error_index_.allocate(1);
+        const auto status = error_index_.allocate(grid_.failed_count ? 2 : 1);
         if (status != aero::gpu::Status::OutOfMemory)
             check(status);
     }
     if (error_index_.device()) {
         *error_index_.host() = ~partition_detail::Index(0);
         grid_.bad = error_index_.device();
+        // Второе слово того же закреплённого буфера хранит число отказов.
+        // После обязательного ожидания стадии его уже можно читать на CPU.
+        if (grid_.failed_count) grid_.failed_count = error_index_.device() + 1;
     } else {
         check(aero::gpu::fill_async(grid_.bad, 0xff, sizeof(*grid_.bad), nullptr));
     }
@@ -267,10 +274,35 @@ void PartitionGpu::check_kernel(const char* phase) {
         throw std::domain_error(std::string("MPI CUDA ") + phase + " at local index " + std::to_string(bad));
     }
 }
-void PartitionGpu::fluxes() {
-    residual_detail::gpu_face_fluxes({grid_.geometry, grid_.computed, grid_.computed_count, grid_.state,
-                                      grid_.initial, grid_.flux, nullptr, nullptr, gas_current_},
-                                     grid_.bad, nullptr, device_faces_);
+void PartitionGpu::update_surfaces(const std::vector<residual_detail::Surface>& surfaces) {
+    if (!surfaces.empty()) check(gpu::copy(const_cast<residual_detail::Surface*>(grid_.geometry.surfaces),
+        surfaces.data(), surfaces.size()*sizeof(surfaces[0]), gpu::Copy::ToDevice));
+}
+residual_detail::FaceBatch PartitionGpu::face_batch() const {
+    return {grid_.geometry, grid_.computed, grid_.computed_count, grid_.state,
+            grid_.initial, grid_.flux, nullptr, nullptr, gas_current_};
+}
+void PartitionGpu::set_alpha(double alpha) {
+    auto& mp = grid_.geometry.stencil.mp5;
+    if ((!mp.enabled && !mp.weno) || mp.alpha == alpha) return;
+    mp.alpha = alpha;
+    update_face_batch();
+}
+void PartitionGpu::set_flux_options(const ResidualOptions& options) {
+    grid_.geometry.options = options;
+    update_face_batch();
+}
+void PartitionGpu::update_face_batch() {
+    // Упакованные ядра MP читают настройки из постоянной записи на карте.
+    if (device_faces_) {
+        const auto batch = face_batch();
+        check(gpu::copy(device_faces_, &batch, sizeof(batch), gpu::Copy::ToDevice));
+    }
+}
+void PartitionGpu::fluxes(bool first_order_start) {
+    auto batch = face_batch();
+    if (first_order_start) batch.use_first_order();
+    residual_detail::gpu_face_fluxes(batch, grid_.bad, nullptr, first_order_start ? nullptr : device_faces_);
     check_kernel("flux");
 }
 double PartitionGpu::cfl(double courant) {
@@ -279,10 +311,34 @@ double PartitionGpu::cfl(double courant) {
         nullptr);
 }
 void PartitionGpu::update(explicit_detail::Stage stage, double dt, bool save_original) {
+    if (grid_.failed_count) reset_failed_count();
     partition_detail::update(grid_, stage, dt, save_original);
-    check_kernel("update");
+    check_kernel("invalid stage state");
     gas_current_ = !grid_.owned;
 }
+void PartitionGpu::copy_backup(std::size_t count, bool restore) {
+    // Индексы соседей входят в снимок: после отката можно сразу пересчитать потоки.
+    if (count) check(gpu::copy_async(restore ? grid_.state : accepted_state_,
+        restore ? accepted_state_ : grid_.state, count*sizeof(double), gpu::Copy::OnDevice, nullptr));
+    if (restore) gas_current_ = false;
+}
+void PartitionGpu::reset_failed_count() {
+    if (error_index_.device()) error_index_.host()[1] = 0;
+    else check(gpu::fill_async(grid_.failed_count, 0, sizeof(*grid_.failed_count), nullptr));
+}
+void PartitionGpu::failed_nodes(std::vector<MeshIndex>& failed, bool implicit) {
+    if (implicit) {
+        reset_failed_count();
+        partition_detail::check_newton_nodes(grid_);
+        if (error_index_.device()) synchronize();
+    }
+    partition_detail::Index count;
+    if (error_index_.device()) count = error_index_.host()[1];
+    else check(gpu::copy(&count, grid_.failed_count, sizeof(count), gpu::Copy::ToHost));
+    failed.resize(count);
+    if (count) check(gpu::copy(failed.data(), grid_.failed_nodes, count*sizeof(failed[0]), gpu::Copy::ToHost));
+}
+
 void PartitionGpu::download_owned(std::vector<double>& compact) const {
     if (compact.empty())
         return;

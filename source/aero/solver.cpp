@@ -1,4 +1,6 @@
 #include "solver.h"
+#include "run_control.h"
+#include "exact_error.h"
 #include "case_geometry.h"
 #include "partition_state.h"
 #include "mpi_balance.h"
@@ -14,7 +16,7 @@
 #include "partition_report.h"
 #include "startup.h"
 #include "../explicit/stage_sequence.h"
-#include "../io/flowreport.h"
+#include "../io/report.h"
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -22,10 +24,17 @@
 #include <memory>
 #include <numeric>
 #include <sstream>
+#include <set>
 
 namespace aero {
 namespace {
 using Id = MeshIndex;
+
+// Диагностика относится ко всей постановке. На MPI каждое сообщение печатает только ведущий процесс.
+void print_input_warnings(const RunSettings& run, const Processes& world, std::ostream& out) {
+    if (world.rank) return;
+    for (const auto& warning : run.input_warnings) out << "WARNING: " << warning << '\n';
+}
 
 // Собирает локальные измерения и печатает один отчёт за шаг на процессе 0.
 void report_step(const Processes& world, const FlowSummary& local, unsigned dimension, std::uint64_t step,
@@ -67,7 +76,7 @@ void report_step(const Processes& world, const FlowSummary& local, unsigned dime
                 s >> part.field[k].low >> part.field[k].high >> part.field[k].integral;
             }
             if (!s) {
-                throw std::runtime_error("Invalid MPI flow report");
+                throw std::runtime_error("Invalid MPI report");
             }
             total.merge(part, dimension + 3);
         }
@@ -76,20 +85,25 @@ void report_step(const Processes& world, const FlowSummary& local, unsigned dime
 }
 
 // Выполняет шаг на своей подобласти. Буфер начальных значений стадий живёт весь расчёт.
+struct RejectedGasState {};
+
 class PartitionStepper {
 public:
     // Оператор и поля принадлежат расчёту и используются всеми стадиями.
     PartitionStepper(PartitionOperator& op, PartitionState& fields, const Processes& world,
-                     const RunSettings& run)
-        : op_(op), fields_(fields), world_(world), run_(run),
+                     RunSettings& run)
+        : op_(op), fields_(fields), world_(world), run_(run), courant_(run.stabilization, run.cfl),
           stages_(run.uses_implicit_time() ? explicit_detail::Stages{} :
-                  explicit_detail::stages_for(explicit_detail::scheme_from_name(run.time_scheme))) {}
+                  explicit_detail::stages_for(explicit_detail::scheme_from_name(run.time_scheme))) {
+        if (!run.background.active() && (run.t_fo > 0. || run.reconstruction == "first_order"))
+            total_cells_ = world.sum(op.owned.size());
+    }
 
-    bool needs_compact_buffer() const { return stages_.count > 1 || run_.flowreport_every; }
+    bool needs_compact_buffer() const { return stages_.count > 1 || run_.report_every; }
 
     // Для отчёта каждый процесс учитывает только объёмы узлов, которыми владеет.
     void prepare_report(const RunSettings& run, unsigned dimension, const double* volumes) {
-        if (!run.flowreport_every || op_.owned.empty()) {
+        if (!run.report_every || op_.owned.empty()) {
             return;
         }
         std::vector<double> owned_volumes;
@@ -97,8 +111,8 @@ public:
         for (Id node : op_.owned) {
             owned_volumes.push_back(volumes[node]);
         }
-        report_.reset(new FlowReport(run.flowreport_every, run.gamma, dimension, owned_volumes.size(),
-                                     owned_volumes.data()));
+        report_.reset(new Report(run.report_every, run.gamma, dimension, owned_volumes.size(),
+                                     owned_volumes.data(), run.background));
     }
 
     // На GPU многостадийная схема хранит промежуточные поля на карте. На CPU нужен рабочий буфер.
@@ -109,13 +123,159 @@ public:
     }
 
     // Первые потоки нужны и для CFL, и для обновления решения на первой стадии.
-    double prepare_first_stage(double cfl, SolverTimings& timing) {
+    double prepare_first_stage(bool first_order_start, SolverTimings& timing) {
+        if (op_.first_order_start != first_order_start) {
+            op_.first_order_start = first_order_start;
+            // У BDF потоки прошлого шага могли сохраниться для следующего CFL.
+            // После смены порядка их надо вычислить заново на том же поле.
+            accepted_fluxes_ = false;
+            if (!first_order_start && !world_.rank)
+                std::cout << "Reconstruction = " << run_.reconstruction << " from t_fo = " << run_.t_fo << '\n';
+        }
         if (!accepted_fluxes_) assemble_fluxes(timing);
         WallTimer timer(timing.counter(SolverTimings::Cfl));
-        return op_.cfl_step(cfl);
+        return op_.cfl_step(courant());
     }
 
     // Выполняет стадии выбранной схемы. После каждой стадии соседи получают обновлённые узлы.
+    double courant() const { return courant_.value(); }
+
+    // Снимаем локальные метки также на обменных узлах MPI и в таблице граней на GPU.
+    void reset_marks() {
+        if (!have_marks_) return;
+        std::fill(marks_.begin(), marks_.end(), 0.);
+        op_.set_low_order(marks_);
+        marks_.clear();
+        master_low_.clear();
+        have_marks_ = false;
+        accepted_fluxes_ = false;
+    }
+
+    bool control(Id step) {
+        RunControl command(run_, courant());
+        if (!command.read(run_.directories.output, world_)) return false;
+        if (command.reset) reset_marks();
+        if (command.change_cfl) {
+            run_.stabilization = command.limits;
+            courant_.configure(command.limits, command.cfl);
+            op_.set_courant(courant(), run_.uses_implicit_time());
+            runtime_settings_ = true;
+        }
+        if (run_.upw_coeff != command.upwind || run_.mp6_hybrid != command.hybrid) {
+            run_.upw_coeff = command.upwind;
+            run_.mp6_hybrid = command.hybrid;
+            world_.local([&] { op_.set_flux_weights(command.upwind, command.hybrid); });
+            runtime_settings_ = true;
+        }
+        if (command.change_cfl && run_.stabilization.mode == "low" && courant() >= .99 * command.limits.maximum)
+            reset_marks();
+        accepted_fluxes_ = false;
+        if (!world_.rank) std::cout << "Control applied after step " << step << ", CFL = " << courant()
+            << ", upw_coeff = " << command.upwind << ", mp6_hybrid = " << command.hybrid
+            << ", cfl_min = " << command.limits.minimum << ", cfl_max = " << command.limits.maximum
+            << ", num_steps = " << command.limits.interval << ", coeff = " << command.limits.factor
+            << ", first-order cells = " << first_order_cells() << std::endl;
+        return command.stop;
+    }
+
+    void accepted() {
+        if (!courant_.accept()) return;
+        op_.set_courant(courant(), run_.uses_implicit_time());
+        accepted_fluxes_ = false;
+        if (run_.stabilization.mode == "low" && have_marks_ &&
+            courant() >= .99 * run_.stabilization.maximum) {
+            reset_marks();
+            if (!world_.rank) std::cout << "Restored reconstruction, first-order cells = " << first_order_cells() << '\n';
+        }
+    }
+
+    // Сохраняем все узлы, включая обменные. При отказе на поздней стадии
+    // SSPRK3 или итерации Ньютона возвращаемся именно к началу шага.
+    bool attempt(const TimeStep& step, SolverTimings& timing) {
+        if (!run_.stabilization.active()) {
+            advance(step, timing);
+            return true;
+        }
+        world_.local([&] { op_.copy_backup(fields_.current, backup_, false); });
+        try {
+            advance(step, timing);
+            return true;
+        } catch (const RejectedGasState&) {
+            world_.local([&] { op_.copy_backup(fields_.current, backup_, true); });
+            if (run_.stabilization.local_order()) {
+                op_.set_low_order(marks_);
+                have_marks_ = true;
+            }
+            print_counts(step, failed_count_);
+            courant_.reject();
+            op_.set_courant(courant(), run_.uses_implicit_time());
+            accepted_fluxes_ = false;
+            if (!world_.rank) std::cout << "Retry step " << step.number << ", CFL = " << courant() << '\n';
+            return false;
+        }
+    }
+
+    // Храним глобальные номера. После перезапуска разбиение MPI может измениться.
+    std::string checkpoint() const {
+        if (world_.rank || (!run_.stabilization.active() && !runtime_settings_)) return {};
+        std::ostringstream out;
+        out.imbue(std::locale::classic());
+        out << std::setprecision(17) << "ready " << runtime_settings_ << ' ';
+        if (runtime_settings_) {
+            const auto& limits = run_.stabilization;
+            out << run_.upw_coeff << ' ' << run_.mp6_hybrid << ' ' << limits.minimum << ' '
+                << limits.maximum << ' ' << limits.factor << ' ' << limits.interval << ' ';
+        }
+        out << run_.stabilization.mode << ' ' << std::setprecision(17) << courant() << ' ' << courant_.successes();
+        for (const auto* group : {&master_low_, &report_failed_}) {
+            out << ' ' << group->size();
+            for (Id node : *group) out << ' ' << node;
+        }
+        return out.str();
+    }
+
+    void resume(const std::string& data) {
+        if (data.empty()) return; // Старый снимок содержит только газодинамические поля.
+        std::istringstream in(data);
+        in.imbue(std::locale::classic());
+        std::string mode;
+        double value;
+        Id count;
+        in >> mode;
+        const bool ready = mode == "ready";
+        if (ready) {
+            in >> runtime_settings_;
+            if (runtime_settings_) {
+                auto& limits = run_.stabilization;
+                in >> run_.upw_coeff >> run_.mp6_hybrid >> limits.minimum >> limits.maximum >> limits.factor >> limits.interval;
+                world_.local([&] { op_.set_flux_weights(run_.upw_coeff, run_.mp6_hybrid); });
+            }
+            in >> mode;
+        }
+        if (!(in >> value >> count) || mode != run_.stabilization.mode)
+            throw std::runtime_error("Incompatible checkpoint stabilization mode");
+        courant_.configure(run_.stabilization, value);
+        courant_.restore(value, count);
+        op_.set_courant(value, run_.uses_implicit_time());
+        for (auto* group : {&master_low_, &report_failed_}) {
+            if (!(in >> count)) throw std::runtime_error("Invalid checkpoint cell count");
+            for (Id i = 0, node; i < count; ++i) {
+                if (!(in >> node)) throw std::runtime_error("Invalid checkpoint cell ID");
+                group->insert(node);
+            }
+        }
+        have_marks_ = !master_low_.empty();
+        if (have_marks_) {
+            marks_.assign(fields_.current.size(), 0.);
+            const Id width = fields_.current.size() / std::max<Id>(1, op_.state_nodes());
+            for (Id node : op_.owned)
+                if (master_low_.count(op_.global_node(node))) marks_[width*node] = 1.;
+            op_.set_low_order(marks_);
+        }
+        if (world_.rank) { master_low_.clear(); report_failed_.clear(); }
+        if (!ready) accepted(); // В прежнем формате повышение CFL выполнялось после записи.
+    }
+
     void advance(const TimeStep& step, SolverTimings& timing) {
         if (!run_.uses_implicit_time()) {
             advance_explicit(step, timing);
@@ -124,7 +284,8 @@ public:
         if (step.reporting) world_.local([&] { capture_report(step); });
         try {
             newton_ = op_.advance_bdf(fields_.current, fields_.initial, step.dt,
-                                       run_.implicit_settings, timing);
+                                       run_.implicit_settings, timing, run_.stabilization.active() ?
+                                       std::function<void()>([&] { validate_stage(); }) : std::function<void()>());
             // Критерий Ньютона проверен по потокам принятого поля. До следующего CFL поле сохраняется.
             accepted_fluxes_ = true;
         } catch (const std::exception& e) {
@@ -134,9 +295,17 @@ public:
     }
 
     // Даже процесс без собственных узлов участвует в сборе общей сводки.
-    void write_report(const TimeStep& step, unsigned dimension, double cfl) const {
+    void write_report(const TimeStep& step, unsigned dimension, double cfl) {
+        print_input_warnings(run_, world_, std::cout);
         report_step(world_, summary_, dimension, step.number, step.end, cfl, step.dt,
                     run_.uses_implicit_time() ? &newton_.relative_residual : nullptr);
+        if (!run_.background.active()) {
+            // Между отчётами один контрольный объём мог отказать несколько раз.
+            // Считаем его один раз, на процессе-владельце.
+            const Id failed = report_failed_.size();
+            print_counts(step, failed);
+            report_failed_.clear();
+        }
     }
 
 private:
@@ -152,14 +321,63 @@ private:
         op_.copy_owned(fields_.current, owned_state_);
         summary_ = report_->measure(step.number, owned_state_);
     }
+    // Проверяем собственные контрольные объёмы. Одного отказа на любом
+    // процессе достаточно для повтора шага на всей распределённой сетке.
+    Id first_order_cells() const {
+        return (op_.first_order_start || run_.reconstruction == "first_order") ? total_cells_ : master_low_.size();
+    }
+    void print_counts(const TimeStep& step, Id failed) const {
+        if (!world_.rank)
+            std::cout << "Step " << step.number << ", failed cells = " << failed
+                      << ", first-order cells = " << first_order_cells() << '\n';
+    }
+    void validate_stage() {
+        std::vector<Id> failed;
+        const unsigned width = static_cast<unsigned>(fields_.current.size() / std::max<Id>(1, op_.state_nodes()));
+        world_.local([&] {
+            op_.failed_nodes(fields_.current, failed, run_.uses_implicit_time());
+            for (Id& node : failed) {
+                if (run_.stabilization.local_order()) {
+                    if (marks_.empty()) marks_.resize(fields_.current.size());
+                    marks_[node * width] = 1.;
+                }
+                node = op_.global_node(node);
+            }
+        });
+        failed_count_ = world_.size == 1 ? failed.size() : world_.sum(failed.size());
+        if (failed_count_) {
+            // Владельцы передают только глобальные номера отказавших узлов.
+            // По ним master знает и число, и состав проблемных объёмов всей сетки.
+            std::ostringstream ids;
+            for (Id node : failed) ids << node << ' ';
+            const auto records = world_.gather_text(ids.str());
+            if (!world_.rank) {
+                for (const auto& record : records) {
+                    std::istringstream in(record);
+                    Id node;
+                    while (in >> node) {
+                        if (run_.report_every) report_failed_.insert(node);
+                        if (run_.stabilization.local_order()) master_low_.insert(node);
+                    }
+                }
+            }
+            if (run_.stabilization.local_order() && marks_.empty()) marks_.resize(fields_.current.size());
+            throw RejectedGasState{};
+        }
+    }
+
     void advance_explicit(const TimeStep& step, SolverTimings& timing) {
         const auto assemble = [&](double) { assemble_fluxes(timing); };
         const auto update = [&](explicit_detail::StepStage stage) {
             world_.local([&] {
                 if (stage.first()) capture_report(step);
                 update_stage(stage, step, timing);
-                if (stage.last()) finish_report(step);
+                if (!run_.stabilization.active() && stage.last()) finish_report(step);
             });
+            if (run_.stabilization.active()) {
+                validate_stage();
+                if (stage.last() && step.reporting) world_.local([&] { finish_report(step); });
+            }
         };
         const auto exchange = [&] {
             if (world_.size > 1) {
@@ -184,11 +402,18 @@ private:
     PartitionOperator& op_;              // Потоки, обновление узлов и обмен с соседями.
     PartitionState& fields_;             // Исходное и текущее состояния подобласти.
     const Processes& world_;             // Процессы, участвующие в общем шаге.
-    const RunSettings& run_;             // Схема по времени, допуски и выбранная карта.
+    bool runtime_settings_ = false; // Записываем ручные настройки вместе с полем для --recover.
+    RunSettings& run_;             // Схема по времени, допуски и выбранная карта.
+    std::set<Id> master_low_; // Глобальные номера узлов с пониженным порядком на процессе 0.
+    std::set<Id> report_failed_; // Уникальные отказавшие узлы с предыдущего Report.
+    Id failed_count_ = 0, total_cells_ = 0;
+    bool have_marks_ = false; // Одинаков на всех процессах, включая пустые подобласти.
+    AdaptiveCourant courant_;
+    std::vector<double> backup_, marks_; // Принятый слой и постоянные до сброса метки узлов.
     bool accepted_fluxes_ = false; // После чтения начального поля потоки ещё предстоит вычислить.
     implicit::NewtonResult newton_{};    // Итог последнего принятого неявного шага.
     explicit_detail::Stages stages_;     // Коэффициенты и число стадий схемы по времени.
-    std::unique_ptr<FlowReport> report_; // Измерения на узлах этого процесса.
+    std::unique_ptr<Report> report_; // Измерения на узлах этого процесса.
     std::vector<double> owned_state_;    // Буфер для стадий и снимков собственных узлов.
     FlowSummary summary_;                // Локальное измерение последнего отчётного шага.
 };
@@ -228,6 +453,8 @@ prepare_partition_operator(const RunSettings& run, const ReconstructionOptions& 
                                               run.trace_ratio_min, run.trace_ratio_max);
         physics.upw_coeff = run.upw_coeff;
         physics.mp6_hybrid = run.mp6_hybrid;
+        physics.retry_nonphysical = run.stabilization.active();
+        physics.background = run.background;
         op.reset(new PartitionOperator(part, geometry.dual->view(), seam, boundaries.patches, physics, frame,
                                        world, needs_stencil ? &requests : nullptr, run.use_cuda));
     });
@@ -302,27 +529,38 @@ void report_active_backend(const RunSettings& run, const Processes& world) {
 // Поля остаются на выбранном исполнителе. Копию с GPU загружаем на CPU, когда её запросил вывод.
 void integrate_partition(const RunSettings& run, const Processes& world, unsigned dimension,
                          PartitionStepper& stepper, PartitionOperator& op, PartitionState& fields,
-                         PartitionOutput& output, Recovery* recovery) {
+                         PartitionOutput& output, std::unique_ptr<Recovery>& recovery, ExactError* error,
+                         const std::function<Recovery*()>& ensure_recovery) {
     StepOperations operations;
-    operations.cfl_step = [&](SolverTimings& timing) { return stepper.prepare_first_stage(run.cfl, timing); };
+    operations.control = [&](Id step) { return stepper.control(step); };
+    operations.stop_recovery = ensure_recovery;
+    operations.cfl_step = [&](bool first_order_start, SolverTimings& timing) {
+        return stepper.prepare_first_stage(first_order_start, timing);
+    };
     if (run.steady())
         operations.steady_residual = [&] { return op.steady_residual(fields.current, fields.initial); };
-    operations.advance = [&](const TimeStep& step, SolverTimings& timing) { stepper.advance(step, timing); };
+    operations.advance = [&](const TimeStep& step, SolverTimings& timing) { return stepper.attempt(step, timing); };
+    if (run.stabilization.active()) operations.accepted = [&] { stepper.accepted(); };
     operations.output_state = [&]() -> const std::vector<double>& {
         if (run.use_cuda) {
             world.local([&] { op.download(fields.current); });
         }
         return fields.current;
     };
-    if (run.implicit_settings.second_order)
-        operations.checkpoint_history = [&](implicit::BdfHistory& history) {
-            world.local([&] { op.implicit_step().export_history(history); });
+    operations.checkpoint_history = [&](implicit::BdfHistory& history) {
+            world.local([&] {
+                if (run.implicit_settings.second_order) op.implicit_step().export_history(history);
+                recovery->stabilization_state = stepper.checkpoint();
+            });
         };
-    operations.report = [&](const TimeStep& step) { stepper.write_report(step, dimension, run.cfl); };
+    if (error) operations.exact_error = [&](const TimeStep& step, const std::vector<double>& state) {
+        error->write(step.number, step.end, state);
+    };
+    operations.report = [&](const TimeStep& step) { stepper.write_report(step, dimension, stepper.courant()); };
     operations.write_fields = [&](const TimeStep& step, const std::vector<double>& snapshot, bool final_field) {
         output.write(step.number, step.end, snapshot, final_field);
     };
-    integrate_time(run, world, output.schedule, recovery, fields.initial, operations);
+    integrate_time(run, world, output.schedule, recovery.get(), fields.initial, operations);
 }
 
 // Готовит одну подобласть и ведёт расчёт до конечного времени.
@@ -373,11 +611,14 @@ int run_partition(RunSettings run, const ReconstructionOptions& reconstruction, 
     const PartitionFileLayout file_layout(run, part, geometry.periodic_partition(), world);
     // Контрольная точка и общий файл полей используют одну таблицу исходных номеров.
     std::unique_ptr<Recovery> recovery;
-    if (run.recovery_every_steps || run.directories.recover) {
+    const auto ensure_recovery = [&]() -> Recovery* {
+        if (recovery) return recovery.get();
         const auto hash = archive ? part.mesh_sha256 : FieldSnapshot::mesh_fingerprint(part.mesh);
         recovery.reset(
             new Recovery(run, world, part.global_counts[0], mesh.dimension, hash, file_layout.rows));
-    }
+        return recovery.get();
+    };
+    if (run.recovery_every_steps || run.directories.recover) ensure_recovery();
     world.local([&] {
         if (!single) {
             stencil_peak = process_peak_kib();
@@ -401,6 +642,7 @@ int run_partition(RunSettings run, const ReconstructionOptions& reconstruction, 
     }
 
     const auto& base = recovery ? recovery->fields_directory() : run.directories.output;
+    std::unique_ptr<ExactError> error;
     std::unique_ptr<PartitionOutput> output;
     world.local([&] {
         if (!run.directories.recover) {
@@ -418,14 +660,22 @@ int run_partition(RunSettings run, const ReconstructionOptions& reconstruction, 
             op->implicit_step().import_history(recovery->history);
         }
         if (recovery) recovery->history = implicit::BdfHistory{};
+        if (run.exact_solution)
+            error.reset(new ExactError(run, world, part, geometry.periodic_partition(),
+                                       periodic ? seam.volumes.data() : cv.volumes, base));
         output.reset(
             new PartitionOutput(run, part, file_layout, world, base, seam.node_dof, op->state_nodes()));
     });
     if (!single) {
         write_partition_report(world, op->work(part.end_leaf - part.first_leaf), stencil_peak, std::cout);
     }
+    if (recovery && run.directories.recover) {
+        op->first_order_start = run.first_order_start(recovery->time);
+        stepper.resume(recovery->stabilization_state);
+    }
+    print_input_warnings(run, world, std::cerr);
     report_active_backend(run, world);
-    integrate_partition(run, world, mesh.dimension, stepper, *op, fields, *output, recovery.get());
+    integrate_partition(run, world, mesh.dimension, stepper, *op, fields, *output, recovery, error.get(), ensure_recovery);
     return 0;
 }
 }

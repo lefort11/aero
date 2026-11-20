@@ -118,7 +118,7 @@ $(error BUILD_TYPE must be Default, Debug or Release)
 endif
 include source/parallel/kokkos.mk
 MESH_SOURCE := source/mesh
-MESH_HEADERS := $(MESH_SOURCE)/mesh.h $(MESH_SOURCE)/mesh_index.h source/parallel/kernel_math.h
+MESH_HEADERS := $(MESH_SOURCE)/coordinate.h $(MESH_SOURCE)/mesh.h $(MESH_SOURCE)/mesh_index.h source/parallel/kernel_math.h
 ifeq ($(kokkos_gpu),1)
 # Обычный C++ компилирует вызывающую сторону. Только модуль Kokkos
 # собирается компилятором устройства; статическая сборка включает его в EXE.
@@ -205,8 +205,8 @@ include source/eulersolver/eulersolver.mk
 -include source/cv/cv.mk
 -include source/bc/bc.mk
 -include source/explicit/explicit.mk
-ifneq ($(and $(EXPLICIT_LIBRARY),$(FLOWREPORT_OBJECTS)),)
-include source/io/flowreport_tests.mk
+ifneq ($(and $(EXPLICIT_LIBRARY),$(REPORT_OBJECTS)),)
+include source/io/report_tests.mk
 endif
 -include source/timestep/timestep.mk
 -include source/initial/initial.mk

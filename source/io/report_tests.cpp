@@ -1,4 +1,4 @@
-#include "flowreport.h"
+#include "report.h"
 #include "../../qa/test_checks.h"
 #include "../explicit/explicit.h"
 #include <algorithm>
@@ -31,7 +31,7 @@ void table_example() {
     previous[3] = 4.49;
     previous[7] = 10.02;
     std::ostringstream out;
-    FlowReport report(100, 1.4, 2, 2, volumes);
+    Report report(100, 1.4, 2, 2, volumes);
     for (unsigned step = 0; step < 100; ++step) {
         report.capture(step, std::vector<double>());
         report.write(step, 0, 0, 0, std::vector<double>(), out);
@@ -51,7 +51,7 @@ void table_example() {
     std::getline(in, line);
     require(line.find("Local time = ") == 0, "date before step header");
     std::getline(in, line);
-    require(line == "Flow report    Step = 100    t = 0.875    CFL = 0.5    dt = 1.000000e-02",
+    require(line == "Report    Step = 100    t = 0.875    CFL = 0.5    dt = 1.000000e-02",
             "step header");
     std::getline(in, line);
     require(line.find("Domain integral") != std::string::npos, "column names");
@@ -68,7 +68,7 @@ void table_example() {
     require(out.str().find("Energy residual (volume-weighted RMS of dE/dt) = 1.802776e+00") !=
                 std::string::npos,
             "energy RMS");
-    FlowReport disabled(0, 1.4, 2, 2, volumes);
+    Report disabled(0, 1.4, 2, 2, volumes);
     disabled.capture(1, previous);
     disabled.write(1, 0.01, 0.5, 0.01, current, out);
     require(!disabled.due(1) && out.str().find("Local time", 1) == std::string::npos, "disabled reporter");
@@ -79,7 +79,7 @@ std::string uniform_3d() {
     std::vector<double> volumes(nodes, 1.0), field;
     for (unsigned i = 0; i < nodes; ++i)
         field.insert(field.end(), {1, 0, 0, -2, 5});
-    FlowReport report(1, 1.4, 3, nodes, volumes.data());
+    Report report(1, 1.4, 3, nodes, volumes.data());
     std::ostringstream out;
     report.capture(1, field);
     report.write(1, 0.25, 1, 0.25, field, out);
@@ -87,14 +87,14 @@ std::string uniform_3d() {
                 out.str().find("-2050.000000") != std::string::npos &&
                 out.str().find("= 0.000000e+00") != std::string::npos,
             "3D volume reduction");
-    return out.str().substr(out.str().find("Flow report")); // Исключаем время компьютера из сравнения.
+    return out.str().substr(out.str().find("Report")); // Исключаем время компьютера из сравнения.
 }
 
 // Проверяет отчёт после полных шагов интегратора для выбранной схемы и устройства.
 void integration(ExplicitBackend backend, int device, ExplicitScheme scheme) {
     const double volumes[] = {0.25, 0.75}, initial[] = {1, 0, 4, 1, 0, 10};
     ExplicitIntegrator solver(2, 3, volumes, initial, backend, device);
-    FlowReport report(100, 1.4, 1, 2, volumes);
+    Report report(100, 1.4, 1, 2, volumes);
     std::ostringstream out;
     const double dt = 0.01;
     for (unsigned step = 1; step <= 200; ++step) {
@@ -117,10 +117,10 @@ void integration(ExplicitBackend backend, int device, ExplicitScheme scheme) {
         report.write(step, step * dt, 0.5, dt, solver, out);
     }
     const std::string text = out.str();
-    const auto second = text.find("Flow report    Step = 200    t = 2    CFL");
-    const auto first = text.find("Flow report    Step = 100    t = 1    CFL");
-    require(first < second && text.find("Flow report", first + 1) == second && second != std::string::npos &&
-                text.find("Flow report", second + 1) == std::string::npos,
+    const auto second = text.find("Report    Step = 200    t = 2    CFL");
+    const auto first = text.find("Report    Step = 100    t = 1    CFL");
+    require(first < second && text.find("Report", first + 1) == second && second != std::string::npos &&
+                text.find("Report", second + 1) == std::string::npos,
             "report schedule");
     require(text.find("uy ") == std::string::npos && text.find("uz ") == std::string::npos, "1D rows");
     require(text.find("= 1.802776e+00") < second && text.find("= 1.000000e+00", second) != std::string::npos,
@@ -147,7 +147,7 @@ int main(int argc, char** argv) {
             integration(ExplicitBackend::Cuda, device, ExplicitScheme::Euler);
             integration(ExplicitBackend::Cuda, device, ExplicitScheme::SSPRK3);
         }
-        std::cout << "Flow report tests passed (CPU and " << devices << " CUDA devices).\n";
+        std::cout << "Report tests passed (CPU and " << devices << " CUDA devices).\n";
         return 0;
     } catch (const std::exception& e) {
         std::cerr << e.what() << '\n';

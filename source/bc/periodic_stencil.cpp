@@ -8,7 +8,6 @@ namespace aero {
 namespace {
 using Id = MeshIndex;
 using Ids = std::vector<Id>;
-using Point = std::array<double, 3>;
 
 // Для шаблонов строим временное покрытие из двух слоёв. Вершину задаёт пара из расчётного номера и образа.
 // Сохраняем исходные узлы в начале массива, чтобы ориентация оставшихся рёбер совпала с исходной.
@@ -41,8 +40,8 @@ struct Cover {
                 incident[n].push_back(c);
         }
     }
-    Id image(Id n, Point shift) {
-        const Point target = {{m.x[n] + shift[0], m.y[n] + shift[1], m.z[n] + shift[2]}};
+    Id image(Id n, Coordinate shift) {
+        const Coordinate target = m.coordinate(n) + shift;
         auto& candidates = images[dof[n]];
         for (Id i : candidates)
             if (std::hypot(std::hypot(data.x[i] - target[0], data.y[i] - target[1]), data.z[i] - target[2]) <=
@@ -56,7 +55,7 @@ struct Cover {
         field.push_back(dof[n]);
         return id;
     }
-    void add_cell(Id c, Point shift) {
+    void add_cell(Id c, Coordinate shift) {
         MeshCell cell = m.cell(c);
         if (!cells.emplace(c, image(cell.node_id(0), shift)).second)
             return;
@@ -98,7 +97,7 @@ struct Cover {
                 for (Id n : members[field[i]]) {
                     if (i == n)
                         continue;
-                    Point shift = {{data.x[i] - m.x[n], data.y[i] - m.y[n], data.z[i] - m.z[n]}};
+                    Coordinate shift = {{data.x[i] - m.x[n], data.y[i] - m.y[n], data.z[i] - m.z[n]}};
                     for (Id c : incident[n])
                         add_cell(c, shift);
                 }

@@ -8,27 +8,32 @@
 namespace aero {
 namespace residual_detail {
 struct FaceSpeeds {
-    const Geometry& geometry;
-    const EulerFluxResult* flux;
+    const OrientedFace* incidence; // Из записи списка узла получаем номер площадки.
+    const Surface* surfaces;       // Модуль площади умножает скорость в сумме CFL.
+    const EulerFluxResult* flux;   // Скорости, уже вычисленные при сборке потока.
     AERO_HOST_DEVICE cfl_detail::FaceSpeed operator()(Index j) const {
-        const auto face = geometry.incidence[j].face();
-        return {flux[face].max_wave_speed, geometry.surfaces[face].measure};
+        const auto face = incidence[j].face();
+        return {flux[face].max_wave_speed, surfaces[face].measure};
     }
 };
 // Без списка узлов обходим всю сетку. При разбиении процесс передаёт список собственных узлов.
 struct FluxCfl {
-    Geometry geometry;
-    const EulerFluxResult* flux;
+    const Index* offsets; // Диапазоны смежных площадок для каждого узла.
+    FaceSpeeds speeds;    // Передаём в редукцию Kokkos только нужные ей массивы.
     const double* volumes;
     const MeshIndex* owned;
     Index count;
+    FluxCfl(const Geometry& grid, const EulerFluxResult* flux, const double* node_volumes,
+            const MeshIndex* owned_nodes, Index rows)
+        : offsets(grid.offsets), speeds{grid.incidence, grid.surfaces, flux}, volumes(node_volumes),
+          owned(owned_nodes), count(rows) {}
     AERO_HOST_DEVICE CflStep local(Index k, double courant) const {
         const Index i = owned ? owned[k] : k;
         const double volume = volumes[i];
         if (!owned &&
-            (!(volume > 0 && volume <= max_finite_double) || geometry.offsets[i] == geometry.offsets[i + 1]))
+            (!(volume > 0 && volume <= max_finite_double) || offsets[i] == offsets[i + 1]))
             return {-1, i};
-        return cfl_detail::local(geometry.offsets, volume, courant, i, FaceSpeeds{geometry, flux});
+        return cfl_detail::local(offsets, volume, courant, i, speeds);
     }
 };
 double cpu_flux_cfl(const FluxCfl&, double courant, const MeshIndex* global_ids = nullptr);

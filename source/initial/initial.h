@@ -1,6 +1,7 @@
 #ifndef AERO_INITIAL_H
 #define AERO_INITIAL_H
 #include "../mesh/mesh_index.h"
+#include "../eulersolver/linear_euler.h"
 #include <iosfwd>
 #include <string>
 #include <vector>
@@ -13,15 +14,17 @@ struct FieldNodeSelection;
 void check_periodic_initial(const double* reference, const double* copy, unsigned width, MeshIndex owner,
                             MeshIndex node);
 
-// Возвращает для каждого расчётного узла подряд плотность, компоненты импульса и полную энергию.
+// Возвращает состояние каждого узла. Для Euler это плотность, импульс и энергия,
+// для Linear — пульсации плотности, скорости и давления.
 // Относительные пути из настроек отсчитываются от directory. Периодическое отображение
 // позволяет склеить копии узлов и проверить согласованность их начальных состояний.
 std::vector<double> read_initial(const Mesh& mesh, double gamma, std::istream& settings,
                                  const std::string& directory = ".", const PeriodicView* periodic = nullptr,
-                                 const FieldNodeSelection* selection = nullptr);
+                                 const FieldNodeSelection* selection = nullptr,
+                                 const LinearBackground& background = {}, std::vector<std::string>* warnings = nullptr);
 
 // Разрешает пути к полям относительно каталога файла начальных условий.
 std::vector<double> read_initial_file(const Mesh& mesh, double gamma, const std::string& settings_path,
-                                      const PeriodicView* periodic = nullptr);
+                                      const PeriodicView* periodic = nullptr, const LinearBackground& background = {});
 }
 #endif

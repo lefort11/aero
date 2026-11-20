@@ -542,6 +542,11 @@ void register_lower_dimensions() {
         Mesh mesh(line_mesh());
         const MeshView v = mesh.view();
         require(v.dimension == 1 && v.cell_count == 3 && v.face_count == 4 && v.edge_count == 3, "1D counts");
+        auto point = v.coordinate(1);
+        require(point[0] == v.x[1] && point[1] == v.y[1] && point[2] == v.z[1], "coordinate axes");
+        for (double& component : point) component += 1.;
+        require(point[0] == v.x[1] + 1. && point[1] == v.y[1] + 1. && point[2] == v.z[1] + 1.,
+                "coordinate iteration visits every axis once");
         require(v.x[1] - v.x[0] == 0.25 && v.x[2] - v.x[1] == 1.75 && v.x[3] - v.x[2] == 4,
                 "Nonuniform spacing");
         require(mesh.edge_begin() == std::vector<MeshIndex>({0, 1, 2}) &&

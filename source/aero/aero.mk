@@ -1,12 +1,13 @@
 # Сборка солвера объединяет геометрию, невязку и интегратор. Цели mpi-*-test запускают сквозные расчёты.
-AERO_SOURCES := source/aero/main.cpp source/aero/startup.cpp source/aero/solver_timings.cpp source/aero/time_loop.cpp
-AERO_SOURCES += source/aero/recovery.cpp source/aero/indexed_io.cpp source/aero/mpi_fields.cpp source/aero/solver.cpp source/aero/momentum_frame.cpp
+AERO_SOURCES := source/aero/exact_error.cpp source/aero/main.cpp source/aero/startup.cpp source/aero/solver_timings.cpp source/aero/time_loop.cpp
+AERO_SOURCES += source/aero/run_control.cpp source/aero/recovery.cpp source/aero/indexed_io.cpp source/aero/mpi_fields.cpp source/aero/solver.cpp source/aero/momentum_frame.cpp
 AERO_SOURCES += source/aero/mpi_periodic.cpp source/aero/mpi_periodic_match.cpp
 AERO_SOURCES += source/aero/partition_state.cpp source/aero/partition_output.cpp source/aero/partition_operator.cpp
 AERO_SOURCES += source/aero/mpi_stencil.cpp source/aero/partition_report.cpp source/aero/mpi_balance.cpp source/mesh/leaf_balance.cpp
 AERO_SOURCES += source/aero/geometry.cpp source/aero/case_geometry.cpp source/mesh/mdec.cpp source/mesh/partition.cpp source/parallel/processes.cpp
-AERO_HEADERS := $(MESH_SOURCE)/archive_format.h $(NUMBER_CODEC) source/aero/solver_timings.h source/aero/startup.h source/io/settings.h source/io/settings_text.h source/io/settings_boundary.h source/io/flowreport.h $(OUTPUT_HEADERS) $(INITIAL_HEADERS) $(RES_HDR) $(TIMESTEP_HEADERS) $(EXPLICIT_HEADERS)
+AERO_HEADERS := source/aero/run_control.h source/aero/exact_error.h source/io/expression.h $(MESH_SOURCE)/archive_format.h $(NUMBER_CODEC) source/aero/solver_timings.h source/aero/startup.h source/io/settings.h source/io/settings_text.h source/io/settings_boundary.h source/io/report.h $(OUTPUT_HEADERS) $(INITIAL_HEADERS) $(RES_HDR) $(TIMESTEP_HEADERS) $(EXPLICIT_HEADERS)
 AERO_LIBS := $(IMPLICIT_LIBRARY) $(RES_LIB) $(INITIAL_LIB) $(TIMESTEP_LIBRARY) $(EXPLICIT_LIBRARY) $(IO_LIBRARY) $(RES_DEPS)
+AERO_HEADERS += source/io/flow_values.h
 AERO_HEADERS += source/implicit/implicit_settings.h source/implicit/bdf1_step.h source/implicit/partition.h
 AERO_HEADERS += source/aero/geometry.h source/aero/case_geometry.h source/mesh/mdec.h source/mesh/partition.h source/mesh/mesh_reader.h source/parallel/processes.h
 AERO_HEADERS += source/aero/recovery.h source/aero/indexed_io.h source/aero/mpi_fields.h source/aero/solver.h source/timestep/cfl_detail.h source/explicit/explicit_stage.h source/residual/residual_detail.h
@@ -74,13 +75,16 @@ mpi-gpu-test:
 	$(MAKE) KOKKOS_BACKEND=cuda WITH_MPI=1 $@
 endif
 MPI_RECONSTRUCTION_TESTS := mpi-ebr3-test mpi-ebr5-test mpi-weno3-test mpi-weno5-test mpi-mp5-test mpi-mpweno5-test
-.PHONY: mpi-timing-test mpi-fields-test mpi-recovery-test mpi-geometry-test mpi-balance-test mpi-euler-test mpi-ssprk3-test mpi-bdf1-test mpi-bdf2-test mpi-periodic-test $(MPI_RECONSTRUCTION_TESTS)
+.PHONY: mpi-timing-test mpi-fields-test mpi-recovery-test mpi-geometry-test mpi-balance-test mpi-euler-test mpi-ssprk3-test mpi-bdf1-test mpi-bdf2-test mpi-linear-test mpi-periodic-test $(MPI_RECONSTRUCTION_TESTS)
 ifeq ($(WITH_MPI),1)
 # Для проверок с одноимённым Python-сценарием берём его имя из выбранной цели Make.
 MPI_QA_ARGS := --aero "$(BIN)/aero$(EXE)" --meshdec "$(BIN)/meshdec$(EXE)" --mpiexec "$(MPIEXEC)"
 mpi-timing-test mpi-fields-test mpi-recovery-test mpi-balance-test mpi-geometry-test: aero meshdec
 	$(running_test)
 	"$(PYTHON)" qa/mpi_$(patsubst mpi-%-test,%,$@).py $(MPI_QA_ARGS)
+mpi-linear-test: aero meshdec
+	$(running_test)
+	"$(PYTHON)" qa/linear_euler.py $(MPI_QA_ARGS) $(if $(MPI_BDF1_DEVICES),--devices=$(MPI_BDF1_DEVICES))
 mpi-bdf1-test mpi-bdf2-test: $(AERO_MATRIX_TEST)
 mpi-bdf1-test mpi-bdf2-test: matrix_args = --matrix-test "$(AERO_MATRIX_TEST)" $(if $(MPI_BDF1_DEVICES),--devices=$(MPI_BDF1_DEVICES))
 mpi-euler-test mpi-ssprk3-test mpi-bdf1-test mpi-bdf2-test: aero meshdec
@@ -92,9 +96,9 @@ $(MPI_RECONSTRUCTION_TESTS): aero meshdec
 mpi-periodic-test: aero meshdec
 	$(running_test)
 	"$(PYTHON)" qa/mpi_periodic.py $(MPI_QA_ARGS)
-test: mpi-timing-test mpi-fields-test mpi-recovery-test mpi-geometry-test mpi-balance-test mpi-euler-test mpi-ssprk3-test mpi-bdf1-test mpi-bdf2-test mpi-periodic-test $(MPI_RECONSTRUCTION_TESTS)
+test: mpi-timing-test mpi-fields-test mpi-recovery-test mpi-geometry-test mpi-balance-test mpi-euler-test mpi-ssprk3-test mpi-bdf1-test mpi-bdf2-test mpi-linear-test mpi-periodic-test $(MPI_RECONSTRUCTION_TESTS)
 else
-mpi-timing-test mpi-fields-test mpi-recovery-test mpi-geometry-test mpi-balance-test mpi-euler-test mpi-ssprk3-test mpi-bdf1-test mpi-bdf2-test mpi-periodic-test $(MPI_RECONSTRUCTION_TESTS):
+mpi-timing-test mpi-fields-test mpi-recovery-test mpi-geometry-test mpi-balance-test mpi-euler-test mpi-ssprk3-test mpi-bdf1-test mpi-bdf2-test mpi-linear-test mpi-periodic-test $(MPI_RECONSTRUCTION_TESTS):
 	$(MAKE) WITH_MPI=1 $@
 endif
 $(AERO_TEST): qa/test_checks.h

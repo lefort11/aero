@@ -1,16 +1,20 @@
 #ifndef AERO_RESIDUAL_H
 #define AERO_RESIDUAL_H
 
+#include "../eulersolver/linear_euler.h"
+
 namespace aero {
 namespace implicit { class SpatialJacobian; }
 namespace residual_detail { struct Geometry; }
 enum class ResidualVariables { Conservative, Characteristic, Flux };
 enum class ResidualSolver { Roe, LocalLF };
 struct ResidualOptions {
+    LinearBackground background; // Параметры линейных уравнений, общие для всех граней.
     ResidualVariables variables;
     ResidualSolver solver;
     double upw_coeff = 1; // Вес EBR в реконструкции и множитель диссипации LF/Roe. Оценка CFL полная.
     double gamma;
+    bool retry_nonphysical = false; // Активный откат сам собирает номера всех отказавших узлов.
     double mp6_hybrid = 0; // Доля ограниченной центральной поправки на полном MP-шаблоне.
     double trace_ratio_min, trace_ratio_max;
     ResidualOptions(ResidualVariables v = ResidualVariables::Conservative,

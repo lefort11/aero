@@ -1,6 +1,6 @@
 #include "time_loop.h"
 #include "recovery.h"
-#include "../io/flowreport.h"
+#include "../io/report.h"
 #include "../io/scheduled_output.h"
 #include <algorithm>
 #include <cmath>
@@ -14,39 +14,42 @@ namespace {
 TimeStep choose_time_step(std::uint64_t next_number, double current_time, double cfl_dt,
                           const RunSettings& run, const OutputSchedule& output) {
     // Сначала ограничиваем шаг концом расчёта, затем ближайшим сроком записи полей.
-    const double remaining = run.steady() ? std::numeric_limits<double>::infinity() : run.final_time - current_time;
+    double deadline = run.steady() ? std::numeric_limits<double>::infinity() : run.final_time;
+    // Все стадии шага используют один порядок. Попадаем точно в t_fo,
+    // даже если CFL или расписание вывода допускают более длинный шаг.
+    if (run.first_order_start(current_time)) deadline = std::min(deadline, run.t_fo);
+    const double remaining = deadline - current_time;
     const double candidate_dt = std::min(cfl_dt, remaining);
     const double dt = output.limit_dt(current_time, candidate_dt);
 
     // На последнем шаге берём заданное конечное время напрямую, чтобы округление
     // при сложении не оставило ещё один шаг до конца расчёта.
-    const double end_time = (dt == remaining) ? run.final_time : current_time + dt;
+    const double end_time = (dt == remaining) ? deadline : current_time + dt;
     // Даже положительный dt может быть слишком мал, чтобы изменить current_time.
     if (!std::isfinite(end_time) || !(end_time > current_time)) {
         throw std::runtime_error("Time step too small to advance time");
     }
 
-    const bool reporting = FlowReport::due(next_number, run.flowreport_every);
+    const bool reporting = Report::due(next_number, run.report_every);
     return {next_number, current_time, end_time, dt, reporting};
 }
 
 // Выполняет все виды вывода, назначенные на уже завершённый шаг.
 void write_step_results(const TimeStep& step, OutputSchedule& output, Recovery* recovery,
                         const std::vector<double>& initial, const StepOperations& operations,
-                        SolverTimings& timing, bool use_cuda, bool final_field = false) {
+                        SolverTimings& timing, bool use_cuda, bool final_field = false, bool last_step = false, bool stop = false) {
     const bool fields_due = final_field ? output.has_zones() : output.due(step.number, step.end);
-    const bool checkpoint_due = recovery && recovery->due(step.number, step.end, final_field);
+    const bool checkpoint_due = recovery && (stop || recovery->due(step.number, step.end, final_field));
 
     // Снимок полей и контрольная точка используют один и тот же буфер.
     // На GPU это одна выгрузка на оба файла. Для одного отчёта она не нужна.
     const std::vector<double>* state = nullptr;
-    if (fields_due || checkpoint_due) {
+    const bool error_due = operations.exact_error && (step.reporting || final_field || last_step);
+    if (fields_due || checkpoint_due || error_due) {
         WallTimer timer(use_cuda ? timing.counter(SolverTimings::Readback) : nullptr);
         state = &operations.output_state();
     }
-    if (step.reporting) {
-        operations.report(step);
-    }
+    if (error_due) operations.exact_error(step, *state);
     if (fields_due) {
         WallTimer timer(timing.counter(SolverTimings::Fields));
         operations.write_fields(step, *state, final_field);
@@ -81,24 +84,32 @@ void integrate_time(const RunSettings& run, const Processes& world, OutputSchedu
     };
     const char* criterion_name = run.steady_absolute ? "absolute" : "relative";
     const bool steady = run.steady();
+    bool stopped = false;
+    bool previous_first_order = run.first_order_start(time);
+    if (operations.exact_error && !steady && time >= run.final_time)
+        operations.exact_error({number, time, time, 0., false}, operations.output_state());
     while (steady || time < run.final_time) {
         if (number == std::numeric_limits<std::uint64_t>::max()) {
             throw std::overflow_error("Step number overflow");
         }
-        const double cfl_dt = operations.cfl_step(timing);
+        const bool first_order_start = run.first_order_start(time);
+        const double cfl_dt = operations.cfl_step(first_order_start, timing);
         // CFL уже собрал потоки начального поля. При продолжении отсчитываем
         // снижение невязки от состояния, загруженного из контрольной точки.
-        if (steady && number == first_step) {
+        // При смене схемы пространственная невязка меняется даже при том же поле.
+        // Для относительного критерия берём начальную норму соответствующей фазы.
+        if (steady && (number == first_step || previous_first_order != first_order_start)) {
             reference = operations.steady_residual();
             criterion = steady_measure(reference);
-            if (criterion <= run.steady_tol) {
+            if (number == first_step && !first_order_start && criterion <= run.steady_tol) {
                 const TimeStep initial_step{number, time, time, 0., false};
                 write_step_results(initial_step, output, recovery, initial, operations, timing, run.use_cuda, true);
                 break;
             }
         }
         const TimeStep step = choose_time_step(number + 1, time, cfl_dt, run, output);
-        operations.advance(step, timing);
+        if (!operations.advance(step, timing)) continue; // Время и расписание вывода остаются прежними.
+        previous_first_order = first_order_start;
         number = step.number;
         time = step.end;
         bool converged = false, exhausted = false;
@@ -106,18 +117,28 @@ void integrate_time(const RunSettings& run, const Processes& world, OutputSchedu
             // Внутренняя сходимость Ньютона относится к одному псевдошагу.
             // Для стационара отдельно проверяем полный отток из каждого объёма.
             criterion = steady_measure(operations.steady_residual());
-            converged = criterion <= run.steady_tol;
+            // Выход на стационар проверяем по невязке выбранной схемы.
+            converged = !first_order_start && criterion <= run.steady_tol;
             exhausted = number - first_step >= run.steady_max_steps;
         }
-        write_step_results(step, output, recovery, initial, operations, timing, run.use_cuda, converged || exhausted);
+        // Отчёт относится к только что выполненному шагу. Затем выбираем CFL следующего шага
+        // и применяем ручные команды. В контрольную точку попадёт уже готовое к продолжению состояние.
+        if (step.reporting) operations.report(step);
+        if (operations.accepted) operations.accepted();
+        if (run.control_every && (number == first_step + 1 || number % run.control_every == 0) && operations.control)
+            stopped = operations.control(number);
+        if (stopped && !recovery) recovery = operations.stop_recovery();
+        write_step_results(step, output, recovery, initial, operations, timing, run.use_cuda, stopped || converged || exhausted,
+                           !steady && time == run.final_time, stopped);
         if (steady && !world.rank && (step.reporting || converged || exhausted))
             std::cout << "Steady " << criterion_name << " residual, step " << number << ": " << criterion << '\n';
-        if (converged) break;
+        if (stopped || converged) break;
         if (exhausted) throw std::runtime_error("Steady: pseudo-step limit reached before convergence");
     }
     timing.report(number, std::cout);
     if (!world.rank) {
-        if (steady)
+        if (stopped) std::cout << "STOP: final fields and recovery saved at step " << number << std::endl;
+        else if (steady)
             std::cout << "Steady state converged, " << criterion_name << " spatial residual = " << criterion << '\n';
         std::cout << "Completed " << number << (steady ? " steps. Pseudo-time = " : " steps. Final time = ")
                   << time << '\n';

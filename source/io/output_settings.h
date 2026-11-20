@@ -22,7 +22,7 @@ struct OutputZone {
 };
 
 // Отсутствие output.txt отключает запись по расписанию и позволяет читать старые постановки.
-std::vector<OutputZone> read_output_zones(const std::string& path);
+std::vector<OutputZone> read_output_zones(const std::string& path, std::vector<std::string>* warnings = nullptr);
 // Проверяет расписание, допустимые имена полей и пересечения выходных путей.
 void validate_output_zones(const std::vector<OutputZone>& zones);
 std::string output_filename(const OutputZone& zone, std::uint64_t step);

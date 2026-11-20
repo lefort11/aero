@@ -9,7 +9,7 @@ class Expression {
 public:
     explicit Expression(const std::string& formula);
     // Подставляет координаты текущего узла и возвращает одно конечное число.
-    double evaluate(double x, double y, double z) const;
+    double evaluate(double x, double y, double z, double t = 0.) const;
 
 private:
     enum Op {
@@ -17,6 +17,7 @@ private:
         X,
         Y,
         Z,
+        T,
         Neg,
         Add,
         Sub,
@@ -34,6 +35,8 @@ private:
         Exp,
         Sqrt,
         Abs,
+        Tan, Asin, Acos, Atan, Sinh, Cosh, Tanh, Expm1, Log, Log10, Log2, Log1p, Cbrt, Floor, Ceil, Round, Erf, Erfc, Atan2, Hypot, Min, Max, Fmod,
+        Not, And, Or,
         JumpFalse,
         Jump
     };

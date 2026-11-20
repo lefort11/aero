@@ -64,8 +64,8 @@ PartitionFileLayout::PartitionFileLayout(const RunSettings& run, const MeshParti
             }
         });
     }
-    // Локальный вывод обходится обычным массивом узлов. Таблица строк нужна общим файлам.
-    if (!global_fields && !run.recovery_every_steps && !run.directories.recover) {
+    // STOP может запросить recovery вне расписания. Сохраняем соответствие строк до передачи периодической нумерации выводу.
+    if (!global_fields && !run.control_every && !run.recovery_every_steps && !run.directories.recover) {
         return;
     }
     world.local([&] {
@@ -85,7 +85,7 @@ PartitionOutput::PartitionOutput(const RunSettings& run, const MeshPartition& pa
                                  const std::string& directory, std::vector<MeshIndex>& node_dof,
                                  MeshIndex state_nodes)
     : schedule(run.output_zones, layout.selection.dimension), world_(world), layout_(layout),
-      directory_(directory), gamma_(run.gamma) {
+      directory_(directory), background_(run.background), gamma_(run.gamma) {
     const bool single = world.size == 1;
     if (layout.local_fields) {
         const auto node_count = part.mesh.view().node_count;
@@ -96,7 +96,7 @@ PartitionOutput::PartitionOutput(const RunSettings& run, const MeshPartition& pa
         }
         const auto rank_path = directory + "/" + layout.rank_directory;
         const auto fields_path = single ? directory : rank_path + "/fields";
-        local_ = LocalFieldOutput(fields_path, part.mesh, run.gamma, std::move(node_dof), state_nodes);
+        local_ = LocalFieldOutput(fields_path, part.mesh, run.gamma, std::move(node_dof), state_nodes, background_);
         if (!single) {
             prepare_zone_directories(fields_path, run.output_zones, false);
             write_local_mesh(part, rank_path);
@@ -116,7 +116,7 @@ void PartitionOutput::write(std::uint64_t step, double time, const std::vector<d
     schedule.write_due(step, time, [&](const OutputZone& zone, const std::vector<unsigned>& columns) {
         if (world_.size > 1 && zone.global) {
             write_global_fields(world_, directory_, zone, columns, layout_.selection, layout_.rows, gamma_,
-                                step, time, state);
+                                step, time, state, background_);
         } else {
             world_.local([&] { local_.write(zone, columns, step, time, state); });
         }

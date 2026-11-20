@@ -1,0 +1,5 @@
+rho = 0.01*sin(2*pi*(x+y+z-sqrt(3)*t))
+ux = 0.01*sin(2*pi*(x+y+z-sqrt(3)*t))/sqrt(3)
+uy = 0.01*sin(2*pi*(x+y+z-sqrt(3)*t))/sqrt(3)
+uz = 0.01*sin(2*pi*(x+y+z-sqrt(3)*t))/sqrt(3)
+p = 0.01*sin(2*pi*(x+y+z-sqrt(3)*t))

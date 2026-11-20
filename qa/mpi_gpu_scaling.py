@@ -41,7 +41,7 @@ def benchmark(work, aero, meshdec, launcher, devices):
         final_time=final,
         cfl=0.35,
         mpi_timing=1,
-        flowreport_every=0,
+        report_every=0,
         recovery_every_steps=1000000,
         omp_threads=1,
     )

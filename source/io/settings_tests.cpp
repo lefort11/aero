@@ -57,7 +57,7 @@ struct CaseFiles {
     }
     ~CaseFiles() {
         for (const char* name :
-             {"main.txt", "bc.txt", "init.txt", "cuda.txt", "gas.txt", "scheme.txt", "implicit.txt", "test.fields", "output.txt",
+             {"main.txt", "bc.txt", "init.txt", "cuda.txt", "gas.txt", "scheme.txt", "implicit.txt", "linear.txt", "test.fields", "output.txt",
               "latest.fields", "p_000001.fields", "p_000002.fields", "p_000003.fields"})
             std::remove((dir + "/" + name).c_str());
 #ifdef _WIN32
@@ -116,7 +116,7 @@ void templates_case() {
             "template output zones");
     require(!run.use_cuda && run.devices.empty() && run.reconstruction == "ebr3" &&
                 run.euler_solver == "roe" && run.time_scheme == "ssprk3" && run.cfl == 0.5 &&
-                run.final_time == 2 && run.omp_threads == 8 && run.flowreport_every == 100,
+                run.final_time == 2 && run.omp_threads == 8 && run.report_every == 100,
             "template settings");
     const Mesh mesh = Mesh::read(run.mesh_path);
     const auto boundary = read_case_boundaries(run.boundary_path, mesh.data());
@@ -280,6 +280,20 @@ void main_and_cuda(const CaseFiles& files) {
     const std::string common =
         "time_scheme=euler\ncfl=2e-1\neuler_solver=lf\nfinal_time=0\nreconstruction_variables=flux\n";
     const std::string base = head + common + "reconstruction=weno5\n";
+    files.write("main.txt", base + "backend=cpu\n");
+    require(!files.load().background.active(), "old cases default to Euler");
+    files.write("main.txt", base + "backend=cpu\nEquations=Linear\n");
+    rejects([&] { files.load(); }, "linear.txt");
+    files.write("linear.txt", "rho0=2\np0=3\nux0=-.7\nuy0=0\n");
+    const auto linear = files.load();
+    require(linear.background.active() && linear.background_velocities == 2 &&
+            linear.background.velocity[0] == -.7 && linear.background.sound == std::sqrt(1.67*1.5),
+            "signed mean velocity and sound speed");
+    for (const char* bad : {"rho0=0\np0=3\nux0=0", "rho0=1\np0=-.1\nux0=0",
+                            "rho0=1\np0=3\nux0=nan", "rho0=1\nux0=0"}) {
+        files.write("linear.txt", bad);
+        rejects([&] { files.load(); }, "linear.txt");
+    }
     const std::string implicit_main = head + common.substr(common.find('\n') + 1)
                                       + "time_scheme=BDF1\nbackend=cpu\nreconstruction=first_order\n";
     files.write("main.txt", implicit_main);
@@ -349,7 +363,9 @@ void main_and_cuda(const CaseFiles& files) {
     }
     files.write("main.txt", base + "backend=cpu");
     require(files.load().devices.empty(), "CPU ignores invalid cuda.txt");
-    for (const char* extra : {"backend=cpu\nother=x", "backend=cpu\ncfl=0.5", "backend=gpu"}) {
+    files.write("main.txt", base + "backend=cpu\nother=x");
+    require(files.load().input_warnings.size() == 1, "unknown parameter warning");
+    for (const char* extra : { "backend=cpu\ncfl=0.5", "backend=gpu"}) {
         files.write("main.txt", base + extra);
         rejects([&] { files.load(); }, "main.txt");
     }
@@ -357,16 +373,16 @@ void main_and_cuda(const CaseFiles& files) {
     rejects([&] { files.load(); }, "missing backend");
     const std::string valid = base + "backend=cpu";
     files.write("main.txt",
-                valid + "\nomp_threads=3\nflowreport_every=17\ntrace_ratio_min=.5\ntrace_ratio_max=1.5");
+                valid + "\nomp_threads=3\nreport_every=17\ntrace_ratio_min=.5\ntrace_ratio_max=1.5");
     const auto configured = files.load();
-    require(configured.omp_threads == 3 && configured.flowreport_every == 17, "explicit report settings");
+    require(configured.omp_threads == 3 && configured.report_every == 17, "explicit report settings");
     require(configured.trace_ratio_min == .5 && configured.trace_ratio_max == 1.5, "trace ratio bounds");
 #ifdef _OPENMP
     require(omp_get_max_threads() == 3, "configured OpenMP runtime");
 #endif
     for (const char* entry :
-         {"omp_threads=-1", "omp_threads=1.5", "omp_threads=2147483648", "flowreport_every=2x",
-          "flowreport_every=-1", "flowreport_every=18446744073709551616", "trace_ratio_min=-.1",
+         {"omp_threads=-1", "omp_threads=1.5", "omp_threads=2147483648", "report_every=2x",
+          "report_every=-1", "report_every=18446744073709551616", "trace_ratio_min=-.1",
           "trace_ratio_min=1", "trace_ratio_max=1", "trace_ratio_max=nan"}) {
         files.write("main.txt", valid + "\n" + entry);
         rejects([&] { files.load(); }, std::string(entry).substr(0, std::string(entry).find('=')));
@@ -374,7 +390,7 @@ void main_and_cuda(const CaseFiles& files) {
     files.write("main.txt", valid);
     const auto defaults = files.load();
     require(defaults.trace_ratio_min == 0 && defaults.trace_ratio_max == 1e16, "default trace ratio bounds");
-    require(defaults.gamma == 1.67 && !defaults.omp_threads && !defaults.flowreport_every, "case defaults");
+    require(defaults.gamma == 1.67 && !defaults.omp_threads && !defaults.report_every, "case defaults");
     for (const auto& change :
          std::vector<std::pair<std::string, std::string>>{{"2e-1", "0"},
                                                           {"2e-1", "nan"},

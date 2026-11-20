@@ -29,7 +29,7 @@ void add_rule(Section& section, const std::string& line, const std::string& wher
 }
 }
 
-CaseBoundaries read_case_boundaries(const std::string& path, const MeshData& mesh) {
+CaseBoundaries read_case_boundaries(const std::string& path, const MeshData& mesh, bool linear, std::vector<std::string>* warnings) {
     auto input = settings_detail::open(path);
     CaseBoundaries result;
     result.patches.by_patch.resize(mesh.patch_names.size());
@@ -53,7 +53,7 @@ CaseBoundaries read_case_boundaries(const std::string& path, const MeshData& mes
         PeriodicPair pair{};
         BoundaryConfig config;
         try {
-            config = read_boundary(rules, mesh.dimension, result.patches, pair);
+            config = read_boundary(rules, mesh.dimension, result.patches, pair, linear);
         } catch (const std::invalid_argument& e) {
             throw std::invalid_argument(section.where + " [" + section.patch + "]: " + e.what());
         }
@@ -83,7 +83,11 @@ CaseBoundaries read_case_boundaries(const std::string& path, const MeshData& mes
         } else {
             if (section.patch.empty())
                 throw std::invalid_argument(where + ": expected [mesh label] before rules");
-            add_rule(section, line, where);
+            const auto key = line.substr(0, line.find_first_of(" \t="));
+            if (warnings && key != "bc_type" && key != "pair" && key != "patch" && key != "translation" &&
+                key != "superin" && key != "inflow" && key != "outflow") {
+                warnings->push_back(where + ": unknown parameter " + key);
+            } else add_rule(section, line, where);
         }
     }
     if (input.bad() || !input.eof())

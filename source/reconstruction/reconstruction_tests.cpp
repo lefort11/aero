@@ -1144,7 +1144,8 @@ void register_first_order() {
     });
     add("FirstOrder does not require EBR geometric constructions", [] {
         MeshData d = volume(false).data();
-        d.z[0] += 0.2;
+        for (auto& sign : d.cell_face_orientation)
+            sign = static_cast<std::int8_t>(-sign);
         const Mesh m(d);
         rejects([&] { prepare_reconstruction(m); });
         ReconstructionOptions o;
@@ -1437,10 +1438,10 @@ void register_lifetime_and_errors() {
         rejects([&] { reconstruct_all_sides(s, {}, (std::numeric_limits<ReconstructionIndex>::max)()); });
     });
     add("zero length edge rejected", [] { rejects([] { prepare_reconstruction(line({0, 0, 1})); }); });
-    add("nonplanar face rejected", [] {
+    add("affine reconstruction on warped faces", [] {
         MeshData d = volume(false).data();
         d.z[0] += 0.2;
-        rejects([&] { prepare_reconstruction(Mesh(d)); });
+        affine_test(Mesh(d), true);
     });
     add("inverted 3D cells rejected", [] {
         MeshData d = prism(false).data();

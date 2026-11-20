@@ -6,7 +6,7 @@ namespace periodic_mpi {
 namespace {
 struct Corner {
     Id node;
-    Point area;
+    Coordinate area;
 };
 using Face = std::vector<Corner>;
 using Ids = std::vector<Id>;
@@ -47,18 +47,18 @@ std::map<std::string, Patch> collect(const MeshPartition& part, CvView cv,
 }
 
 struct Box {
-    Point lo, hi;
+    Coordinate lo, hi;
     Box() {
         lo.fill(std::numeric_limits<double>::infinity());
         hi.fill(-std::numeric_limits<double>::infinity());
     }
-    void include(Point p) {
+    void include(Coordinate p) {
         for (unsigned i = 0; i < 3; ++i) {
             lo[i] = std::min(lo[i], p[i]);
             hi[i] = std::max(hi[i], p[i]);
         }
     }
-    bool contains(Point p, double tol) const {
+    bool contains(Coordinate p, double tol) const {
         for (unsigned i = 0; i < 3; ++i)
             if (p[i] + tol < lo[i] || p[i] - tol > hi[i])
                 return false;
@@ -72,7 +72,7 @@ struct Box {
     }
 };
 std::map<Id, Ref> match_nodes(const MeshPartition& part, const Patch& source, const Patch& target,
-                              Point shift, double tol, const std::string& label, const Processes& w,
+                              Coordinate shift, double tol, const std::string& label, const Processes& w,
                               Links& links) {
     const auto m = part.mesh.view();
     // Сначала ограничиваем поиск пар пространственным диапазоном локального участка.
@@ -84,11 +84,11 @@ std::map<Id, Ref> match_nodes(const MeshPartition& part, const Patch& source, co
     unsigned axis = 0;
     w.local([&] {
         for (Id i : target.owned)
-            target_box.include(position(m, i));
-        const auto span = sub(target_box.hi, target_box.lo);
+            target_box.include(m.coordinate(i));
+        const auto span = target_box.hi - target_box.lo;
         axis = static_cast<unsigned>(std::max_element(span.begin(), span.end()) - span.begin());
         for (Id i : target.owned)
-            bins.emplace(position(m, i)[axis], i);
+            bins.emplace(m.coordinate(i)[axis], i);
         bounds.resize(6 * static_cast<std::size_t>(w.size));
         queries = source.owned;
         for (const auto& f : source.faces)
@@ -107,7 +107,7 @@ std::map<Id, Ref> match_nodes(const MeshPartition& part, const Patch& source, co
             replies.resize(w.size);
             Box region;
             for (Id i : queries)
-                region.include(add(position(m, i), shift));
+                region.include(m.coordinate(i) + shift);
             std::vector<std::pair<int, Box>> candidates;
             for (int p = 0; p < w.size; ++p) {
                 const auto* b = bounds.data() + 6 * static_cast<std::size_t>(p);
@@ -118,7 +118,7 @@ std::map<Id, Ref> match_nodes(const MeshPartition& part, const Patch& source, co
                     candidates.emplace_back(p, box);
             }
             for (Id i : queries) {
-                const Point x = add(position(m, i), shift);
+                const Coordinate x = m.coordinate(i) + shift;
                 for (const auto& peer : candidates)
                     if (peer.second.contains(x, tol)) {
                         put(out[peer.first], i);
@@ -128,10 +128,10 @@ std::map<Id, Ref> match_nodes(const MeshPartition& part, const Patch& source, co
         },
         [&](Reader& r, int p) {
             const Id i = r.id();
-            const Point x = r.point();
+            const Coordinate x = r.point();
             for (auto it = bins.lower_bound(x[axis] - tol); it != bins.end() && it->first <= x[axis] + tol;
                  ++it) {
-                if (norm(sub(position(m, it->second), x)) <= tol) {
+                if (coordinate_length(m.coordinate(it->second) - x) <= tol) {
                     put(replies[p], i);
                     put(replies[p], vertex(part, it->second));
                 }
@@ -208,7 +208,7 @@ void match_faces(const MeshPartition& part, const Patch& source, const Patch& ta
         [&](Reader& r, int) {
             const Id size = r.id();
             Ids cycle;
-            std::map<Id, Point> areas;
+            std::map<Id, Coordinate> areas;
             for (Id j = 0; j < size; ++j) {
                 const Id n = r.id();
                 cycle.push_back(n);
@@ -224,7 +224,7 @@ void match_faces(const MeshPartition& part, const Patch& source, const Patch& ta
             for (std::size_t j = 0; j < face.size(); ++j) {
                 const Id n = part.nodes[face[j].node], next = part.nodes[face[(j + 1) % face.size()].node];
                 edges.insert(std::minmax(n, next));
-                const Point a = areas.at(n), b = face[j].area;
+                const Coordinate a = areas.at(n), b = face[j].area;
                 if (!periodic_detail::compatible_areas(a, b))
                     throw MeshError(label + "incompatible face areas");
             }
@@ -254,7 +254,7 @@ Labels match_periodic(const MeshPartition& part, CvView cv, const std::vector<Pe
         const auto& b = patches.at(p.pair);
         const auto label = "periodic " + p.patch + " -> " + p.pair + ": ";
         const auto partners = match_nodes(
-            part, a, b, {{p.translation[0], p.translation[1], p.translation[2]}}, tol, label, w, links);
+            part, a, b, p.translation, tol, label, w, links);
         match_faces(part, a, b, partners, label, w, links);
     }
     // Передаём наименьший исходный номер по связям между совпавшими участками границы.

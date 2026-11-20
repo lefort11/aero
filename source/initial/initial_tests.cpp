@@ -76,6 +76,8 @@ std::vector<double> load(const Mesh& m, const std::string& text, const PeriodicV
 }
 // Проверяет вычисление начальных полей по координатам и диагностику ошибок в выражениях.
 void formulas() {
+    near(Expression("if(t>0 && x!=0, atan2(y,x)+ln(e)+hypot(3,4),0)").evaluate(1,0,0,2), 6);
+    near(Expression("if(!t || 1/0,max(2**3,7)+min(3,4)%2,0)").evaluate(0,0,0), 9);
     near(Expression("-2^2+2^3^2+2^-2").evaluate(0, 0, 0), 508.25);
     near(Expression("if(x<=0,if(y!=1,cos(pi)+abs(-2),1/0),sqrt(-1))").evaluate(0, 0, 0), 1);
     near(Expression("if(x==1,exp(0)+sin(pi/2)+sqrt(4),0)").evaluate(1, 0, 0), 4);

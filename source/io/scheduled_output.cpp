@@ -58,13 +58,6 @@ void StagedFieldFile::publish(bool replace) {
     temporary_.clear();
 }
 
-std::array<double, 6> output_values(unsigned dimension, const double* u, double gamma, std::uint64_t node) {
-    EulerState primitive;
-    if (euler_state(dimension, u, gamma, &primitive) != EulerStatus::Success)
-        throw FieldError("output: invalid Euler state at node " + std::to_string(node));
-    return {{u[0], primitive.velocity[0], primitive.velocity[1], primitive.velocity[2], primitive.pressure,
-             u[dimension + 1]}};
-}
 Field output_field(const std::string& name) {
     Field f;
     f.name = name;
@@ -81,8 +74,8 @@ ScheduledOutput::ScheduledOutput(const std::vector<OutputZone>& zones, const std
         local_ = LocalFieldOutput(directory, mesh, gamma, std::move(node_dof), state_nodes);
 }
 LocalFieldOutput::LocalFieldOutput(const std::string& directory, const Mesh& mesh, double gamma,
-                                   std::vector<std::uint64_t> node_dof, std::size_t state_nodes)
-    : directory_(directory), gamma_(gamma) {
+                                   std::vector<std::uint64_t> node_dof, std::size_t state_nodes, const LinearBackground& background)
+    : directory_(directory), gamma_(gamma), background_(background) {
     if (directory.empty() || !std::isfinite(gamma) || gamma <= 1)
         throw std::invalid_argument("output: invalid directory or gamma");
     metadata_ = FieldSnapshot(mesh);
@@ -209,7 +202,7 @@ void LocalFieldOutput::write(const OutputZone& zone, const std::vector<unsigned>
     }
     parallel_for(count, [&](std::size_t i) {
         const auto node = node_dof_.empty() ? i : static_cast<std::size_t>(node_dof_[i]);
-        const auto values = output_values(snap.dimension, state.data() + node * width, gamma_, node);
+        const auto values = output_values(snap.dimension, state.data() + node * width, gamma_, node, background_);
         for (std::size_t k = 0; k < columns.size(); ++k)
             snap.fields[k].values[i] = values[columns[k]];
     });

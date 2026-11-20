@@ -16,9 +16,9 @@
     <ClCompile Include="..\source\io\fields.cpp" />
     <ClInclude Include="..\source\io\fields.h" />
     <ClCompile Include="..\source\io\fields_mesh.cpp" />
-    <ClCompile Include="..\source\io\flowreport.cpp" />
-    <ClInclude Include="..\source\io\flowreport.h" />
-    <ClCompile Include="..\source\io\flowreport_explicit.cpp" />
+    <ClCompile Include="..\source\io\report.cpp" />
+    <ClInclude Include="..\source\io\report.h" />
+    <ClCompile Include="..\source\io\report_explicit.cpp" />
     <ClCompile Include="..\source\io\lzma_stream.cpp" />
     <ClInclude Include="..\source\io\lzma_stream.h" />
     <ClInclude Include="..\source\io\number_codec.h" />

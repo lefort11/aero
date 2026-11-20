@@ -6,11 +6,11 @@ namespace {
 struct EdgeData {
     Key key;
     Ref a, b;
-    Point area;
+    Coordinate area;
 };
 struct Member {
     EdgeData edge;
-    Point direction;
+    Coordinate direction;
 };
 struct Volume {
     Ref node;
@@ -21,7 +21,7 @@ struct Piece {
     Key order;
     Ref node;
     Id patch;
-    Point area;
+    Coordinate area;
 };
 
 void put_edge(std::string& s, const EdgeData& e) {
@@ -86,7 +86,7 @@ std::vector<EdgeData> collect_edges(const MeshPartition& part, CvView cv, const 
                 auto& s = out[it->second.rank];
                 put(s, it->second.key);
                 put_edge(s, {key, nodes[a], nodes[b], point(cv.edge_areas[e])});
-                put(s, sub(position(m, b), position(m, a)));
+                put(s, (m.coordinate(b) - m.coordinate(a)));
             }
         },
         [&](Reader& r, int) {
@@ -118,11 +118,11 @@ std::vector<EdgeData> collect_edges(const MeshPartition& part, CvView cv, const 
                 if (e.key != kv.first)
                     throw MeshError("periodic: missing representative edge");
                 e.area = {{0, 0, 0}};
-                const Point dir = members.front().direction;
+                const Coordinate dir = members.front().direction;
                 for (const auto& member : members) {
                     // Если периодическое ребро замкнулось на себя, номеров концов недостаточно для определения направления.
-                    const bool forward = norm(sub(member.direction, dir)) <= norm(add(member.direction, dir));
-                    e.area = forward ? add(e.area, member.edge.area) : sub(e.area, member.edge.area);
+                    const bool forward = coordinate_length(member.direction - dir) <= coordinate_length(member.direction + dir);
+                    e.area = forward ? (e.area + member.edge.area) : (e.area - member.edge.area);
                 }
                 deliver(e);
             }

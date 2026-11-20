@@ -20,7 +20,7 @@ double number(const std::string& token) {
 }
 
 // После superin разрешены начальное состояние и независимые замены его компонент.
-SupersonicInflow read_supersonic_inflow(const Tokens& words, unsigned dimension) {
+SupersonicInflow read_supersonic_inflow(const Tokens& words, unsigned dimension, bool linear) {
     SupersonicInflow rule = {};
     rule.use_initial = words.size() > 1 && words[1] == "initial";
     const char* fields[] = {"rho", "p", "ux", "uy", "uz"};
@@ -34,7 +34,7 @@ SupersonicInflow read_supersonic_inflow(const Tokens& words, unsigned dimension)
         if (equals == std::string::npos || field == 2 + dimension || (rule.mask & (1u << field)))
             throw std::invalid_argument("invalid or repeated superin field: " + words[i]);
         rule.primitive[field] = number(words[i].substr(equals + 1));
-        if (field < 2 && rule.primitive[field] <= 0)
+        if (!linear && field < 2 && rule.primitive[field] <= 0)
             throw std::invalid_argument("expected positive " + name);
         rule.mask |= 1u << field; // Остальные компоненты солвер возьмёт из выбранного состояния.
     }
@@ -42,7 +42,7 @@ SupersonicInflow read_supersonic_inflow(const Tokens& words, unsigned dimension)
 }
 
 // Оба дозвуковых режима используют один синтаксис и одну проверку численного значения.
-BoundaryRule read_subsonic_rule(const Tokens& words) {
+BoundaryRule read_subsonic_rule(const Tokens& words, bool linear) {
     if (words.size() < 2 || words.size() > 3)
         throw std::invalid_argument("expected " + words[0] + " base_p|base_u|base_rho [initial|number]");
     const auto& name = words[1];
@@ -64,7 +64,7 @@ BoundaryRule read_subsonic_rule(const Tokens& words) {
     else {
         rule.source = BoundarySource::Constant;
         rule.value = number(words[2]);
-        if (rule.mode != BoundaryMode::NormalVelocity && rule.value <= 0)
+        if (!linear && rule.mode != BoundaryMode::NormalVelocity && rule.value <= 0)
             throw std::invalid_argument("expected positive value for " + name);
     }
     return rule;
@@ -100,19 +100,19 @@ struct BoundarySection {
     }
 
     // Назначает единственную строку секции. Дубликаты являются ошибкой даже при одинаковых значениях.
-    void read_line(const Tokens& words, unsigned dimension) {
+    void read_line(const Tokens& words, unsigned dimension, bool linear) {
         const auto& key = words.front();
         if (key == "bc_type" && !has_type) {
             type = read_type(words);
             has_type = true;
         } else if (key == "superin" && !has_superin) {
-            free_rules().superin = read_supersonic_inflow(words, dimension);
+            free_rules().superin = read_supersonic_inflow(words, dimension, linear);
             has_superin = true;
         } else if (key == "inflow" && !has_inflow) {
-            free_rules().inflow = read_subsonic_rule(words);
+            free_rules().inflow = read_subsonic_rule(words, linear);
             has_inflow = true;
         } else if (key == "outflow" && !has_outflow) {
-            free_rules().outflow = read_subsonic_rule(words);
+            free_rules().outflow = read_subsonic_rule(words, linear);
             has_outflow = true;
         } else if (key == "patch" && words.size() == 2 && periodic.patch.empty()) {
             periodic.patch = words[1];
@@ -155,7 +155,7 @@ struct BoundarySection {
 
 // Читает одну секцию bc.txt и возвращает разобранную пару вызывающему коду.
 BoundaryConfig read_boundary(std::istream& input, unsigned dimension, BoundaryPatches& patches,
-                             PeriodicPair& periodic) {
+                             PeriodicPair& periodic, bool linear) {
     if (dimension < 1 || dimension > 3)
         throw std::invalid_argument("invalid boundary dimension");
     BoundarySection section;
@@ -171,7 +171,7 @@ BoundaryConfig read_boundary(std::istream& input, unsigned dimension, BoundaryPa
         if (tokens.empty())
             continue;
         try {
-            section.read_line(tokens, dimension);
+            section.read_line(tokens, dimension, linear);
         } catch (const std::invalid_argument& e) {
             throw std::invalid_argument("boundary line " + std::to_string(row) + ": " + e.what());
         }

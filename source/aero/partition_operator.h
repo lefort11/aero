@@ -19,6 +19,7 @@ public:
                       const Processes& world, StencilRequests* requests, bool cuda);
     // Число узлов состояния с учётом удалённых узлов шаблонов реконструкции.
     Id state_nodes() const;
+    Id global_node(Id local) const { return ids_[local]; }
     // Возвращает объём работы и обменов процесса для отчёта о разбиении.
     PartitionWork work(Id leaves) const;
     // Строит шаблоны и добавляет в обмен удалённые узлы, нужные для реконструкции.
@@ -35,6 +36,13 @@ public:
     // Передаёт начальное и текущее состояния на GPU перед первым шагом.
     void upload_state(const std::vector<double>& state, const std::vector<double>& initial);
 #endif
+    // Обновляет порядок со стороны отмеченных узлов после согласования маски по MPI.
+    bool first_order_start = false; // На текущем шаге все рёбра используют узловые состояния до t_fo.
+    void set_low_order(std::vector<double>& marks);
+    void set_flux_weights(double upwind, double hybrid);
+    void set_courant(double cfl, bool implicit_time);
+    void copy_backup(std::vector<double>& state, std::vector<double>& backup, bool restore);
+    void failed_nodes(const std::vector<double>& state, std::vector<Id>& failed, bool implicit);
     // Собирает значения только собственных узлов в компактный буфер.
     void copy_owned(const std::vector<double>& state, std::vector<double>& compact) const;
     // Обновляет копию текущих полей на CPU для записи результатов.
@@ -56,7 +64,7 @@ public:
     double steady_residual(std::vector<double>& state, const std::vector<double>& initial);
     implicit::NewtonResult advance_bdf(std::vector<double>& state, const std::vector<double>& initial,
                                         double dt, const implicit::NewtonSettings& settings,
-                                        SolverTimings& timing);
+                                        SolverTimings& timing, const std::function<void()>& validate);
     // Обновляет собственные узлы на одной стадии интегратора.
     void update_owned(explicit_detail::Stage stage, std::vector<double>& start, double dt,
                       std::vector<double>& state, bool save_original);

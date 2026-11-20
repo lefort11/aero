@@ -21,6 +21,7 @@ public:
     const std::string& fields_directory() const { return fields_; }
     std::uint64_t step = 0;
     double time = 0;
+    std::string stabilization_state; // CFL, счётчик успешных шагов и глобальные номера отмеченных узлов.
     implicit::BdfHistory history; // Предыдущий слой и фактический шаг, если они есть в файле BDF2.
 
 private:

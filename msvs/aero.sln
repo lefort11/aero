@@ -50,7 +50,7 @@ Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "residual_tests", "residual_
 EndProject
 Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "aero", "aero.vcxproj", "{0DDA9349-E566-4D28-B80A-AB6D11175F38}"
 EndProject
-Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "io_flowreport_tests", "io_flowreport_tests.vcxproj", "{EBBC145E-FC25-4204-9DA1-004C1F1D134C}"
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "io_report_tests", "io_report_tests.vcxproj", "{EBBC145E-FC25-4204-9DA1-004C1F1D134C}"
 EndProject
 Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "aero_initial", "aero_initial.vcxproj", "{9C493C95-892E-43C3-A1A0-AF27943131E0}"
 EndProject

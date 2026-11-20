@@ -1,0 +1,11 @@
+Equations = Linear
+exact_solution = on
+mesh = ../momentum_2d/grid.mesh
+reconstruction = ebr3
+reconstruction_variables = characteristic
+time_scheme = ssprk3
+euler_solver = roe
+cfl = 0.35
+backend = cpu
+omp_threads = 1
+final_time = 0.032

@@ -1,7 +1,9 @@
 #ifndef AERO_IO_SETTINGS_H
 #define AERO_IO_SETTINGS_H
 #include "output_settings.h"
+#include "../timestep/stabilization.h"
 #include "../implicit/bdf1_step.h"
+#include "../eulersolver/linear_euler.h"
 
 #include <map>
 #include <string>
@@ -23,6 +25,9 @@ struct RunDirectories {
 
 // Названия схем проверяются при чтении настроек независимо от подключённых модулей солвера.
 struct RunSettings {
+    mutable std::vector<std::string> input_warnings; // Диагностика пополняется при чтении файлов, зависящих от размерности сетки.
+    LinearBackground background;
+    unsigned background_velocities = 0; // Число заданных компонент, проверяем по размерности сетки.
     RunDirectories directories; // Режим запуска и каталоги из командной строки.
     std::string mesh_path, initial_path,
         boundary_path;                    // Разрешённые пути к сетке, начальному полю и границам.
@@ -39,7 +44,11 @@ struct RunSettings {
     bool mpweno_ad_corr; // Антидиссипативная поправка к весам MPWENO5 из scheme.txt.
     double mp6_hybrid; // Вес связанной центральной коррекции двух следов.
     double upw_coeff; // Доля диссипации LF/Roe и доля EBR при смешивании с центральной реконструкцией.
+    Stabilization stabilization; // Управление откатом шага и локальным порядком.
     double cfl;                           // Число Куранта для шага по времени.
+    std::uint64_t control_every = 16; // Интервал проверки control.txt в принятых шагах. Ноль отключает управление.
+    double t_fo = 0.; // До этого времени (псевдовремени для steady) весь расчёт идёт с первым порядком по пространству.
+    bool first_order_start(double time) const { return time < t_fo && reconstruction != "first_order"; }
     double final_time;                    // Физическое время окончания расчёта.
     double gamma;                         // Отношение теплоёмкостей идеального газа.
     double trace_ratio_min,
@@ -50,15 +59,17 @@ struct RunSettings {
     std::vector<double> mpi_rank_weights; // Относительная скорость каждого MPI-процесса.
     std::vector<double> mpi_node_memory_mib, mpi_gpu_memory_mib; // Бюджеты памяти узлов и видеокарт в МиБ.
     bool mpi_balance = false;     // Учитывать заданные параметры баланса при распределении листьев.
+    bool exact_solution = false; // Сравнивать решение с формулами exact.txt.
     bool mpi_timing = false;      // Собирать время операций по процессам.
     double mpi_memory_factor = 4; // Множитель оценки памяти по данным архива.
-    std::uint64_t flowreport_every, recovery_every_steps = 0; // Интервалы отчёта и контрольной точки в шагах.
+    std::uint64_t report_every, recovery_every_steps = 0; // Интервалы отчёта и контрольной точки в шагах.
     std::vector<OutputZone> output_zones; // Какие поля, куда и с какой частотой записывать.
 };
 
 RunDirectories parse_run_arguments(int argc, const char* const argv[]);
 // Читает main.txt, gas.txt, необязательный output.txt и параметры CUDA из cuda.txt.
 // Начальные и граничные условия разбираются после загрузки сетки.
+std::vector<std::string> read_exact_formulas(const RunDirectories&, const std::vector<std::string>& names, std::vector<std::string>* warnings = nullptr);
 RunSettings read_run_settings(const RunDirectories& directories);
 }
 #endif

@@ -1,0 +1,4 @@
+[xmin]
+bc_type periodic
+pair xmax
+translation 1 0 0

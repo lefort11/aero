@@ -377,7 +377,7 @@ def verify(
         reconstruction=reconstruction,
         euler_solver="lf" if tilted else "roe",
         reconstruction_variables=("conservative", "flux", "characteristic")[dim - 1],
-        flowreport_every=1,
+        report_every=1,
         final_time=final,
         omp_threads=2,
     )
@@ -477,7 +477,7 @@ END
         "format = text\nvariables = " + ", ".join(names) + "\n"
     )
     options = settings(case / "main.txt")
-    options.update(mesh="grid.mesh", reconstruction=reconstruction, final_time=0.003, flowreport_every=1)
+    options.update(mesh="grid.mesh", reconstruction=reconstruction, final_time=0.003, report_every=1)
     (case / "main.txt").write_text("".join(f"{k} = {v}\n" for k, v in options.items()))
     ref = case / "reference"
     serial = run([aero, f"--input={case}", f"--output={ref}"])

@@ -1,6 +1,7 @@
-#ifndef AERO_IO_FLOWREPORT_H
-#define AERO_IO_FLOWREPORT_H
+#ifndef AERO_IO_REPORT_H
+#define AERO_IO_REPORT_H
 
+#include "../eulersolver/linear_euler.h"
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
@@ -24,10 +25,10 @@ void write_flow_summary(const FlowSummary&, std::uint64_t step, double time, dou
                         unsigned dimension, std::ostream& out, const double* newton_relative = nullptr);
 
 // Один объект обслуживает один расчёт. Объёмы относятся к независимым расчётным узлам.
-class FlowReport {
+class Report {
 public:
-    FlowReport(std::uint64_t every, double gamma, unsigned dimension, std::size_t nodes,
-               const double* volumes);
+    Report(std::uint64_t every, double gamma, unsigned dimension, std::size_t nodes,
+               const double* volumes, const LinearBackground& background = {});
     static bool due(std::uint64_t step, std::uint64_t every);
     bool due(std::uint64_t step) const;
 
@@ -49,6 +50,7 @@ private:
                       std::ostream& out);
     // Период отчётов и номер шага, для которого сохранена энергия перед обновлением.
     std::uint64_t every_, captured_step_;
+    LinearBackground background_; // Задаёт смысл текущего поля и его последней компоненты.
     double gamma_;
     unsigned dimension_;
     // Объёмы постоянны; энергию запоминаем перед шагом, для которого запрошен отчёт.

@@ -1,6 +1,7 @@
 #include "lax_friedrichs.h"
 #include "../../qa/test_checks.h"
 #include "roe.h"
+#include "linear_euler.h"
 #include "characteristic.h"
 #include <algorithm>
 #include <cmath>
@@ -229,6 +230,43 @@ int main(int argc, char** argv) {
         std::cerr << "Usage: eulersolver_tests [--require-cuda]\n";
         return 2;
     }
+    add("linear Euler agrees with directional derivative of nonlinear LF and Roe", [] {
+        const double gamma = 1.4, h = 1.e-5;
+        for (unsigned d=1; d<=3; ++d) {
+            LinearBackground gas;
+            gas.rho = 1.3;
+            gas.p = .9;
+            gas.sound = std::sqrt(gamma*gas.p/gas.rho);
+            Values n(d), velocity(d);
+            for (unsigned j=0; j<d; ++j) {
+                velocity[j] = gas.velocity[j] = .12*(j+1);
+                n[j] = (j%2 ? -1. : 1.)/std::sqrt(double(d));
+            }
+            const LinearFace face(gas,d,n.data());
+            Values left(d+2,.13), right(d+2,-.08), fl(d+2), fr(d+2);
+            left[0] = -.4;
+            right[d+1] = .22;
+            face.physical(left.data(),fl.data());
+            face.physical(right.data(),fr.data());
+            const auto perturbed = [&](const Values& q, double step) {
+                Values u = velocity;
+                for (unsigned j=0; j<d; ++j) u[j] += step*q[j+1];
+                return state(gas.rho+step*q[0],u,gas.p+step*q[d+1],gamma);
+            };
+            for (bool roe : {false,true}) {
+                EulerFluxResult expected[2], actual{};
+                for (unsigned side=0; side<2; ++side) {
+                    const double step = side ? h : -h;
+                    const auto l = perturbed(left,step), r = perturbed(right,step);
+                    expected[side] = roe ? roe_conservative(l,r,n,gamma) : lax_friedrichs_conservative(l,r,n,gamma);
+                }
+                require(face.numerical(roe,1.,left.data(),right.data(),fl.data(),fr.data(),actual),"linear flux");
+                gas.to_conservative(d,actual.flux,gamma);
+                for (unsigned k=0; k<d+2; ++k)
+                    near(actual.flux[k],(expected[1].flux[k]-expected[0].flux[k])/(2*h),3.e-6);
+            }
+        }
+    });
     add("external characteristic inverse transforms states and increments", [] {
         for (unsigned d = 1; d <= 3; ++d) {
             const Values ui = state(1, velocity(d, 0.3), 1), uj = state(2, velocity(d, -0.2), 0.7),

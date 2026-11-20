@@ -17,7 +17,13 @@ struct Grid {
     double *initial, *state, *original;
     EulerFluxResult* flux;
     Index* bad;
+    Index *failed_count, *failed_nodes; // Список недопустимых собственных узлов для отката на GPU.
 };
+// Тот же критерий плотности и давления используется на обеих архитектурах.
+AERO_HOST_DEVICE inline bool admissible_node(const residual_detail::Geometry& geometry, const double* state, Index node) {
+    EulerState gas;
+    return euler_state(geometry.dim, geometry.node_row(state, node), geometry.options.gamma, &gas) == EulerStatus::Success;
+}
 // Обновляет один собственный узел прямо в массиве состояния. k — его номер среди узлов процесса.
 template <unsigned fixed_width = 0>
 AERO_HOST_DEVICE inline bool update_node(const residual_detail::Geometry& geometry,
@@ -45,8 +51,15 @@ AERO_HOST_DEVICE inline bool update_node(const residual_detail::Geometry& geomet
     }
     // Без списка owned обрабатываем всё поле. Пока строка в кэше, готовим газ для следующей стадии.
     // В разделённой сетке сначала должен закончиться обмен состояниями с соседями.
-    if (!owned && geometry.packed.gas)
+    if (!owned && geometry.packed.gas) {
         residual_detail::decode_nodal_gas(geometry.dim, state, geometry.options.gamma, node, geometry.packed.gas);
+        if (!geometry.options.retry_nonphysical && !(geometry.packed.gas[node].density > 0.)) return false;
+    } else if (!geometry.options.retry_nonphysical && !geometry.options.background.active()) {
+        // Даже на последней стадии проверяем допустимость принятого состояния.
+        EulerState gas;
+        if (euler_state(geometry.dim, state + node * width, geometry.options.gamma, &gas) != EulerStatus::Success)
+            return false;
+    }
     return true;
 }
 // Вид передаваемой записи. Обычное поле имеет width последовательных чисел.
@@ -69,6 +82,7 @@ struct RecordField {
         }
     }
 };
+void check_newton_nodes(Grid grid);
 void update(Grid grid, explicit_detail::Stage stage, double dt, bool save_original);
 void transfer(RecordField field, const MeshIndex* ids, Index count, const double* input, double* output);
 }

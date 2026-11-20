@@ -1,4 +1,5 @@
 #include "timestep.h"
+#include "stabilization.h"
 #include "../../qa/test_checks.h"
 #include "../bc/periodic.h"
 #include "../explicit/explicit.h"
@@ -144,6 +145,19 @@ void cases(int device) {
 }
 int main(int argc, char** argv) {
     try {
+        Stabilization policy;
+        policy.factor = 2.; policy.interval = 2; policy.minimum = .25; policy.maximum = .75;
+        AdaptiveCourant courant(policy, .5);
+        courant.accept();
+        courant.reject();
+        require(courant.value() == .25 && !courant.accept(), "retry at minimum, reset success count");
+        require(courant.accept() && courant.value() == .5, "grow after N accepted steps");
+        courant.accept();
+        require(courant.accept() && courant.value() == .75, "cap growth at maximum");
+        courant.reject();
+        bool stopped = false;
+        try { courant.reject(); } catch (const std::runtime_error&) { stopped = true; }
+        require(stopped && courant.value() == .375, "reject below minimum");
         cases(-1);
         std::cout << "CPU CFL tests passed.\n";
         const int devices = ExplicitIntegrator::cuda_device_count();

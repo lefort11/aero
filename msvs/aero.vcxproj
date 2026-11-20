@@ -46,6 +46,7 @@
     <ClInclude Include="..\source\aero\partition_transfers.h" />
     <ClCompile Include="..\source\aero\recovery.cpp" />
     <ClInclude Include="..\source\aero\recovery.h" />
+    <ClCompile Include="..\source\aero\exact_error.cpp" />
     <ClCompile Include="..\source\aero\solver.cpp" />
     <ClInclude Include="..\source\aero\solver.h" />
     <ClCompile Include="..\source\aero\solver_timings.cpp" />

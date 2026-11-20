@@ -1,5 +1,6 @@
 # Общая библиотека ввода и вывода используется солвером и утилитами.
 LZMA_SOURCE := third_party/lzma
+$(BUILD)/report.o $(BUILD)/io_scheduled_output.o: source/io/flow_values.h source/eulersolver/linear_euler.h
 NUMBER_CODEC := source/io/number_codec.h
 LABEL_HEADER := source/io/utf8_label.h
 IO_HEADERS := $(LABEL_HEADER) $(NUMBER_CODEC) source/io/lzma_stream.h $(wildcard $(LZMA_SOURCE)/*.h)
@@ -12,21 +13,22 @@ FIELD_OBJECTS := $(patsubst $(IO_DIR)/%.cpp,$(BUILD)/io_%.o,$(FIELD_SOURCES))
 FIELD_TEST := $(BUILD)/io_fields_tests$(EXE)
 FIELD_DEBUG_TEST := $(BUILD)/io_fields_tests_debug$(EXE)
 SETTINGS_OBJECTS := $(BUILD)/settings.o $(BUILD)/io_output_settings.o
-$(BUILD)/settings.o: source/implicit/implicit_settings.h source/implicit/bdf1_step.h
+$(BUILD)/settings.o $(BUILD)/report_explicit.o: source/eulersolver/linear_euler.h
+$(BUILD)/settings.o: source/timestep/stabilization.h source/implicit/implicit_settings.h source/implicit/bdf1_step.h
 OUTPUT_HEADERS := $(IO_DIR)/output_settings.h $(IO_DIR)/scheduled_output.h $(IO_DIR)/fields.h
 $(BUILD)/io_output_settings.o: $(OUTPUT_HEADERS) $(IO_DIR)/settings_text.h
 ifneq ($(wildcard source/eulersolver/euler.h),)
 SETTINGS_OBJECTS += $(BUILD)/io_scheduled_output.o
 $(BUILD)/io_scheduled_output.o: $(OUTPUT_HEADERS) $(MESH_HEADERS) source/eulersolver/euler.h source/parallel/parallel_for.h
-FLOWREPORT_OBJECTS := $(BUILD)/flowreport.o
+REPORT_OBJECTS := $(BUILD)/report.o
 ifneq ($(wildcard source/explicit/explicit.h),)
-FLOWREPORT_OBJECTS += $(BUILD)/flowreport_explicit.o
+REPORT_OBJECTS += $(BUILD)/report_explicit.o
 endif
 endif
-$(BUILD)/flowreport.o: $(IO_DIR)/flowreport.cpp $(IO_DIR)/flowreport.h source/eulersolver/euler.h source/parallel/parallel_for.h | $(BUILD)
+$(BUILD)/report.o: $(IO_DIR)/report.cpp $(IO_DIR)/report.h source/eulersolver/euler.h source/parallel/parallel_for.h | $(BUILD)
 	$(compiling)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
-$(BUILD)/flowreport_explicit.o: $(IO_DIR)/flowreport_explicit.cpp $(IO_DIR)/flowreport.h source/explicit/explicit.h | $(BUILD)
+$(BUILD)/report_explicit.o: $(IO_DIR)/report_explicit.cpp $(IO_DIR)/report.h source/explicit/explicit.h | $(BUILD)
 	$(compiling)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
 ifneq ($(wildcard source/bc/bc.h),)
@@ -60,9 +62,12 @@ $(BUILD)/io_%.o: $(IO_DIR)/%.cpp $(FIELD_HEADERS) | $(BUILD)
 $(BUILD)/io_fields.o $(BUILD)/io_fields_tests.o: $(IO_DIR)/lzma_stream.h
 $(BUILD)/io_fields_mesh.o $(BUILD)/io_fields_tests.o: $(MESH_HEADERS)
 
-$(IO_LIBRARY): $(BUILD)/lzma_stream.o $(BUILD)/expression.o $(FIELD_OBJECTS) $(SETTINGS_OBJECTS) $(FLOWREPORT_OBJECTS) $(LZMA_OBJECTS)
+$(IO_LIBRARY): source/io/io.mk $(BUILD)/lzma_stream.o $(BUILD)/expression.o $(FIELD_OBJECTS) $(SETTINGS_OBJECTS) $(REPORT_OBJECTS) $(LZMA_OBJECTS)
 	$(archiving)
-	$(AR) rcs $@ $^
+	# Создаём архив заново: ar сохраняет старые объектные файлы после переименования.
+	$(RM) "$@.tmp"
+	$(AR) rcs "$@.tmp" $(filter %.o,$^)
+	mv -f "$@.tmp" "$@"
 
 $(FIELD_TEST): $(BUILD)/io_fields_tests.o $(BUILD)/mesh.o $(IO_LIBRARY)
 	$(call action,Linking,$@)

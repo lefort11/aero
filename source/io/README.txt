@@ -5,7 +5,7 @@
   settings.h           Аргументы запуска, main.txt и cuda.txt.
   settings_boundary.h  Привязка секций bc.txt к меткам загруженной сетки.
   fields.h       Чтение и запись полей AEROFIELDS v1. Формат и примеры см. в FIELDS.txt.
-  flowreport.h   Консольный отчёт по принятому шагу в 1D, 2D и 3D.
+  report.h   Консольный отчёт по принятому шагу в 1D, 2D и 3D.
   output_settings.h   Именованные зоны и параметры записи из output.txt.
   scheduled_output.h  Расписание зон и запись выбранных узловых полей.
   lzma_stream.h  Блочное сжатие для сеток и файлов полей.
@@ -68,7 +68,7 @@ mpi_memory_factor (множитель оценки памяти). Порядок
   omp_threads       Число потоков OpenMP на CPU. 0 или пропуск сохраняет настройки
                     среды выполнения (включая OMP_NUM_THREADS). Применяется после
                     успешного чтения настроек. В последовательной сборке работает один поток.
-  flowreport_every  Интервал отчёта в принятых шагах. При 100 выводятся шаги
+  report_every  Интервал отчёта в принятых шагах. При 100 выводятся шаги
                     100, 200 и далее. 0 или пропуск отключает отчёт.
   mpi_timing        1 включает итоговый отчёт о времени фаз расчёта на CPU или GPU.
                     0 или пропуск отключает замеры. Описание столбцов и пример
@@ -193,7 +193,7 @@ KokkosBackend=cuda также проверяет запись снимка ка�
 При периодических связях используйте объединённые узлы и объёмы PeriodicDomain.
 Вызовы в цикле расчёта. Номера шагов начинаются с 1.
 
-  aero::FlowReport report(run.flowreport_every, run.gamma, dimension, grid.node_count, grid.volumes);
+  aero::Report report(run.report_every, run.gamma, dimension, grid.node_count, grid.volumes);
   // Для очередного шага с номером step
   report.capture(step, solver);
   solver.step(scheme, time, dt, assemble);
@@ -208,7 +208,7 @@ KokkosBackend=cuda также проверяет запись снимка ка�
 Пример вывода в 2D
 
   Local time = 2026-11-20 12:00:00
-  Flow report    Step = 100    t = 0.875    CFL = 0.5    dt = 1.000000e-02
+  Report    Step = 100    t = 0.875    CFL = 0.5    dt = 1.000000e-02
   Variable         Minimum        Maximum     Domain integral
   rho             1.000000       2.000000            1.750000
   ux             -1.000000       2.000000           -0.250000
@@ -227,8 +227,8 @@ Minimum и Maximum вычисляются по узлам. Domain integral ра�
 Например, на шаге 100 берутся энергии шагов 99 и 100. Для SSPRK3 это состояния
 до первой и после третьей стадии. В сборке с OpenMP статистика вычисляется
 параллельно на CPU. Для CUDA-интегратора два снимка поля передаются на CPU
-только на отчётном шаге. Проверки запускаются через make io-flowreport-test
-и make io-flowreport-cuda-test или проект io_flowreport_tests в Visual Studio.
+только на отчётном шаге. Проверки запускаются через make io-report-test
+и make io-report-cuda-test или проект io_report_tests в Visual Studio.
 
 LZMA доступна сетке, солверу и утилитам через общую статическую библиотеку.
 Makefile: build/libaero_io.a, правила source/io/io.mk.

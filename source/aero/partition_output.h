@@ -37,6 +37,7 @@ private:
     const Processes& world_;            // Участники коллективной записи полей.
     const PartitionFileLayout& layout_; // Нумерация узлов принадлежит постановке расчёта.
     std::string directory_;             // Корень результатов текущего запуска или продолжения.
+    LinearBackground background_; // Величины фона для вычисления пульсации энергии.
     double gamma_;                      // Показатель адиабаты для вычисления полей газа.
     LocalFieldOutput local_;            // Метаданные сетки и нумерация локального вывода.
 };

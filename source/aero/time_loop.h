@@ -21,13 +21,17 @@ struct TimeStep {
 // Операции решателя, которыми пользуется общий цикл по времени.
 struct StepOperations {
     // Вычисляет ограничение CFL и оставляет потоки готовыми для первой стадии.
-    std::function<double(SolverTimings&)> cfl_step;
+    std::function<double(bool first_order_start, SolverTimings&)> cfl_step;
     // Использует готовые физические потоки для проверки выхода на стационар.
     std::function<double()> steady_residual;
     // Выполняет все стадии шага и обмен значениями в граничных узлах подобластей.
-    std::function<void(const TimeStep&, SolverTimings&)> advance;
+    std::function<bool(const TimeStep&, SolverTimings&)> advance;
+    std::function<bool(std::uint64_t)> control; // Применяет команды после принятого шага. STOP запрашивает итоговый вывод.
+    std::function<Recovery*()> stop_recovery; // Создаёт контрольную точку даже при отключённом расписании.
+    std::function<void()> accepted; // После отчёта можно повысить CFL следующего шага.
     // Даёт текущее состояние в памяти CPU для вывода полей и контрольной точки.
     std::function<const std::vector<double>&()> output_state;
+    std::function<void(const TimeStep&, const std::vector<double>&)> exact_error;
     // Выгружает предыдущий принятый слой только при записи контрольной точки BDF2.
     std::function<void(implicit::BdfHistory&)> checkpoint_history;
     // Печатает сводку, собранную при выполнении шага.

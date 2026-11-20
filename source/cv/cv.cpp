@@ -103,19 +103,6 @@ void split_segment(const Geometry& g, MeshCell cell, const std::vector<MeshIndex
     }
 }
 
-// Проверяет плоскостность грани и возвращает смещение её центра относительно первой вершины.
-V planar_face_center(const Geometry& g, MeshIndexSpan nodes) {
-    V face_normal = {};
-    for (MeshIndex j = 0; j < nodes.size; ++j)
-        face_normal =
-            face_normal + cross(g.delta(nodes[j], nodes[0]), g.delta(nodes[(j + 1) % nodes.size], nodes[0]));
-    const double length = norm(face_normal);
-    g.require(length > 0 && std::isfinite(length), "degenerate face");
-    check_plane(g, nodes, face_normal * (1 / length));
-
-    return g.center(nodes);
-}
-
 // Делит ячейку на доли узлов. Внешняя грань принадлежит ровно одной ячейке,
 // поэтому её площадки можно заполнять сразу даже при параллельном обходе.
 void collect_cell_contributions(const MeshView& m, MeshIndex id, const std::vector<MeshIndex>& boundary_start,
@@ -140,7 +127,9 @@ void collect_cell_contributions(const MeshView& m, MeshIndex id, const std::vect
         const MeshIndexSpan nodes = face.node_ids();
         V face_center = {};
         if (m.dimension == 3) {
-            face_center = planar_face_center(g, nodes);
+            // Вершины могут лежать на разных высотах. Каждое ребро вместе с общим
+            // средним положением вершин образует свой треугольник поверхности.
+            face_center = g.center(nodes);
         }
         for (MeshIndex j = 0; j < face.edge_count(); ++j) {
             const MeshIndex next = (j + 1) % nodes.size;

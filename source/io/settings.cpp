@@ -89,9 +89,12 @@ public:
         return count;
     }
 
-    void finish() const {
-        if (!entries_.empty())
-            throw std::invalid_argument(entries_.begin()->second.where + ": unknown key");
+    void finish(std::vector<std::string>* warnings) const {
+        for (const auto& item : entries_) {
+            const auto message = item.second.where + ": unknown parameter";
+            if (!warnings) throw std::invalid_argument(message);
+            warnings->push_back(message);
+        }
     }
 
 private:
@@ -111,12 +114,18 @@ Entry lowercase(Entry e) {
     return e;
 }
 
-double number(const Entry& e, bool zero_allowed) {
+double finite_number(const Entry& e) {
     std::istringstream stream(e.value);
     stream.imbue(std::locale::classic());
     double value;
-    if (!(stream >> value) || !stream.eof() || !std::isfinite(value) || value < 0 ||
-        (!zero_allowed && value == 0))
+    if (!(stream >> value) || !stream.eof() || !std::isfinite(value))
+        throw std::invalid_argument(e.where + ": expected a finite number");
+    return value;
+}
+
+double number(const Entry& e, bool zero_allowed) {
+    const double value = finite_number(e);
+    if (value < 0 || (!zero_allowed && value == 0))
         throw std::invalid_argument(
             e.where + (zero_allowed ? ": expected finite value >= 0" : ": expected finite value > 0"));
     return value;
@@ -219,7 +228,8 @@ RunDirectories parse_run_arguments(int argc, const char* const argv[]) {
             std::string file = key.substr(0, colon);
             if (file.size() >= 4 && file.substr(file.size() - 4) == ".txt")
                 file.resize(file.size() - 4);
-            if ((file != "main" && file != "gas" && file != "cuda" && file != "scheme" && file != "implicit") || colon + 1 == key.size() || eq + 1 == arg.size())
+            if ((file != "main" && file != "gas" && file != "cuda" && file != "scheme" &&
+                 file != "cfl" && file != "implicit" && file != "linear") || colon + 1 == key.size() || eq + 1 == arg.size())
                 throw std::invalid_argument("invalid parameter override: " + arg);
             dirs.overrides[file][key.substr(colon + 1)] = arg.substr(eq + 1);
             continue;
@@ -241,6 +251,14 @@ RunDirectories parse_run_arguments(int argc, const char* const argv[]) {
     return dirs;
 }
 
+std::vector<std::string> read_exact_formulas(const RunDirectories& dirs, const std::vector<std::string>& names, std::vector<std::string>* warnings) {
+    Entries file(dirs, "exact");
+    std::vector<std::string> result;
+    for (const auto& name : names) result.push_back(file.take(name).value);
+    file.finish(warnings);
+    return result;
+}
+
 RunSettings read_run_settings(const RunDirectories& directories) {
     if (directories.input.empty() || directories.output.empty())
         throw std::invalid_argument("input and output directories are required");
@@ -258,9 +276,21 @@ RunSettings read_run_settings(const RunDirectories& directories) {
     run.mp6_hybrid = scheme_settings.contains("mp6_hybrid") ? number(scheme_settings.take("mp6_hybrid"), true) : 0;
     if (run.mp6_hybrid > 1)
         throw std::invalid_argument("scheme.txt: mp6_hybrid must be in [0, 1]");
-    scheme_settings.finish();
+    scheme_settings.finish(&run.input_warnings);
     run.reconstruction_variables =
         choice(main.take("reconstruction_variables"), {"conservative", "characteristic", "flux"});
+    const bool linear = main.contains("Equations") &&
+        choice(lowercase(main.take("Equations")), {"euler","linear"}) == "linear";
+    if (linear) {
+        Entries base(directories, "linear");
+        run.background.rho = number(base.take("rho0"), false);
+        run.background.p = number(base.take("p0"), false);
+        for (const char* key : {"ux0","uy0","uz0"}) {
+            if (!base.contains(key)) break;
+            run.background.velocity[run.background_velocities++] = finite_number(base.take(key));
+        }
+        base.finish(&run.input_warnings);
+    }
     run.time_scheme = choice(lowercase(main.take("time_scheme")), {"euler", "ssprk3", "bdf1", "bdf2", "steady"});
     if (run.uses_implicit_time()) {
         Entries settings(directories, "implicit");
@@ -290,14 +320,30 @@ RunSettings read_run_settings(const RunDirectories& directories) {
         controls.newton_relative = relative("newton_tol");
         controls.max_iterations = settings.count<unsigned>("newton_max_iter");
         if (!controls.max_iterations) throw std::invalid_argument("implicit.txt: newton_max_iter must be positive");
-        settings.finish();
+        settings.finish(&run.input_warnings);
     }
     run.upw_coeff = main.contains("upw_coeff") ? number(main.take("upw_coeff"), true) : 1;
     if (run.upw_coeff > 1)
         throw std::invalid_argument("main.txt: upw_coeff must be in [0, 1]");
-    run.cfl = number(main.take("cfl"), false);
+    auto& stable = run.stabilization;
+    if (main.contains("stable_mode"))
+        stable.mode = choice(main.take("stable_mode"), {"off", "cfl", "low", "on"});
+    if (!stable.active() || main.contains("cfl")) run.cfl = number(main.take("cfl"), false);
+    if (stable.active()) {
+        if (run.background.active()) throw std::invalid_argument("stable_mode requires Equations = Euler");
+        Entries control(directories, "cfl");
+        stable.interval = control.count<std::uint64_t>("num_steps");
+        stable.factor = number(control.take("coeff"), false);
+        run.cfl = number(control.take("cfl_init"), false);
+        stable.minimum = number(control.take("cfl_min"), false);
+        stable.maximum = number(control.take("cfl_max"), false);
+        if (!stable.interval || stable.factor <= 1. || stable.maximum < run.cfl || stable.minimum > run.cfl)
+            throw std::invalid_argument("cfl.txt: require num_steps >= 1, coeff > 1 and cfl_min <= cfl_init <= cfl_max");
+        control.finish(&run.input_warnings);
+    }
     run.use_cuda = choice(main.take("backend"), {"cpu", "cuda"}) == "cuda";
     run.euler_solver = choice(main.take("euler_solver"), {"roe", "lf"});
+    run.t_fo = main.contains("t_fo") ? number(main.take("t_fo"), true) : 0.;
     run.final_time = run.steady() && !main.contains("final_time") ? 0. : number(main.take("final_time"), true);
     run.trace_ratio_min = main.contains("trace_ratio_min") ? number(main.take("trace_ratio_min"), true) : 0;
     run.trace_ratio_max =
@@ -306,23 +352,30 @@ RunSettings read_run_settings(const RunDirectories& directories) {
         throw std::invalid_argument("main.txt: expected 0 <= trace_ratio_min < 1 < trace_ratio_max");
     read_partition_settings(main, scheme.default_memory_factor, run);
     run.omp_threads = main.optional_count<int>("omp_threads");
-    run.flowreport_every = main.optional_count<std::uint64_t>("flowreport_every");
+    run.exact_solution = main.contains("exact_solution") && choice(main.take("exact_solution"), {"on","off"}) == "on";
+    if (main.contains("control_every")) run.control_every = main.count<std::uint64_t>("control_every");
+    run.report_every = main.optional_count<std::uint64_t>("report_every");
     run.recovery_every_steps = main.optional_count<std::uint64_t>("recovery_every_steps");
-    main.finish();
+    main.finish(&run.input_warnings);
     Entries gas(directories, "gas");
     const Entry gamma = gas.take("gamma");
     run.gamma = number(gamma, false);
     if (run.gamma <= 1)
         throw std::invalid_argument(gamma.where + ": expected gamma > 1");
-    gas.finish();
+    gas.finish(&run.input_warnings);
+    if (linear) {
+        run.background.sound = std::sqrt(run.gamma*(run.background.p/run.background.rho));
+        if (!(run.background.sound > 0.) || !std::isfinite(run.background.sound))
+            throw std::invalid_argument("linear.txt: invalid background sound speed");
+    }
     if (run.use_cuda) {
         Entries cuda(directories, "cuda");
         run.devices = device_list(cuda.take("devices"));
-        cuda.finish();
+        cuda.finish(&run.input_warnings);
     }
     run.initial_path = resolve(directories.input, "init.txt");
     run.boundary_path = resolve(directories.input, "bc.txt");
-    run.output_zones = read_output_zones(resolve(directories.input, "output.txt"));
+    run.output_zones = read_output_zones(resolve(directories.input, "output.txt"), &run.input_warnings);
 #ifdef _OPENMP
     // Настройка OpenMP действует на вызывающую задачу. При повторном запуске с omp_threads=0
     // возвращаем исходные параметры, чтобы предыдущая постановка не определяла число потоков.

@@ -76,7 +76,7 @@ def verify(case, aero, meshdec, launcher, devices, fixture, scheme, recon, empty
         time_scheme=scheme,
         final_time=0.004,
         cfl=0.025,
-        flowreport_every=2,
+        report_every=2,
         omp_threads=1,
     )
     if dim == 2:

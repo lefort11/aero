@@ -95,3 +95,17 @@ CASES = {
     "wave_3d": (wave_3d, 3, True),
     "contact_3d": (contact_3d, 3, False),
 }
+
+
+def linear_acoustic(dim):
+    """Плоская звуковая волна вдоль диагонали. Фон покоится, ρ₀ = c₀ = 1."""
+    def solution(x, y, z, t, gamma):
+        phase = sum((x, y, z)[:dim]) - sqrt(dim) * t
+        p = 0.01 * sin(2 * pi * phase)
+        velocity = (p / sqrt(dim),) * dim
+        return (p, *velocity, p)
+    return solution
+
+
+for dimension in (1, 2, 3):
+    CASES[f"linear_acoustic_{dimension}d"] = (linear_acoustic(dimension), dimension, True)

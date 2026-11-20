@@ -197,13 +197,9 @@ Mesh volume_mesh(const Plane& plane) {
         }
     return b.finish();
 }
-struct Point {
-    double x, y, z;
-};
-Point position(const Mesh& mesh, FieldLocation loc, MeshIndex id) {
+Coordinate position(const Mesh& mesh, FieldLocation loc, MeshIndex id) {
     if (loc == FieldLocation::Node) {
-        const MeshNode n = mesh.node(id);
-        return {n.x(), n.y(), n.z()};
+        return mesh.view().coordinate(id);
     }
     Polygon ids;
     if (loc == FieldLocation::Edge)
@@ -213,30 +209,25 @@ Point position(const Mesh& mesh, FieldLocation loc, MeshIndex id) {
             loc == FieldLocation::Face ? mesh.face(id).node_ids() : mesh.cell(id).node_ids();
         ids.assign(span.begin(), span.end());
     }
-    Point p = {0, 0, 0};
-    for (MeshIndex n : ids) {
-        p.x += mesh.node(n).x();
-        p.y += mesh.node(n).y();
-        p.z += mesh.node(n).z();
-    }
-    const double size = static_cast<double>(ids.size());
-    p.x /= size;
-    p.y /= size;
-    p.z /= size;
+    Coordinate p{};
+    for (MeshIndex node : ids)
+        p = p + mesh.view().coordinate(node);
+    const double count = static_cast<double>(ids.size());
+    for (double& component : p) component /= count;
     return p;
 }
-double pulse(Point p, unsigned dim) {
-    double r = (p.x - 0.45) * (p.x - 0.45);
+double pulse(Coordinate p, unsigned dim) {
+    double r = (p[0] - 0.45) * (p[0] - 0.45);
     if (dim >= 2)
-        r += (p.y - 0.55) * (p.y - 0.55);
+        r += (p[1] - 0.55) * (p[1] - 0.55);
     if (dim == 3)
-        r += (p.z - 0.5) * (p.z - 0.5);
+        r += (p[2] - 0.5) * (p[2] - 0.5);
     return std::exp(-r / 0.035);
 }
-Point velocity(Point p, unsigned dim) {
+Coordinate velocity(Coordinate p, unsigned dim) {
     if (dim == 1)
-        return {1 + 0.3 * std::sin(2 * pi * p.x), 0, 0};
-    return {-(p.y - 0.5), p.x - 0.5, dim == 3 ? 0.2 * std::sin(pi * p.z) : 0};
+        return {1 + 0.3 * std::sin(2 * pi * p[0]), 0, 0};
+    return {-(p[1] - 0.5), p[0] - 0.5, dim == 3 ? 0.2 * std::sin(pi * p[2]) : 0};
 }
 Field make_field(const Mesh& mesh, FieldLocation loc, const std::string& name, const std::string& unit,
                  const std::vector<std::string>& components) {
@@ -252,20 +243,18 @@ Field make_field(const Mesh& mesh, FieldLocation loc, const std::string& name, c
                                                          : v.edge_count;
     for (std::size_t c = 0; c < components.size(); ++c)
         for (MeshIndex i = 0; i < count; ++i) {
-            const Point p = position(mesh, loc, i);
+            const Coordinate p = position(mesh, loc, i);
             double value = 0;
             if (name == "temperature")
                 value = 300 + 80 * pulse(p, v.dimension);
             else if (name == "pressure")
                 value = 100000 + 20000 * pulse(p, v.dimension);
             else if (name == "density")
-                value = 1.2 + 0.1 * std::sin(2 * pi * p.x) * (v.dimension >= 2 ? std::cos(2 * pi * p.y) : 1);
+                value = 1.2 + 0.1 * std::sin(2 * pi * p[0]) * (v.dimension >= 2 ? std::cos(2 * pi * p[1]) : 1);
             else {
-                const Point u = velocity(p, v.dimension);
-                value = name == "speed" ? std::sqrt(u.x * u.x + u.y * u.y + u.z * u.z)
-                                        : (c == 0   ? u.x
-                                           : c == 1 ? u.y
-                                                    : u.z);
+                const Coordinate u = velocity(p, v.dimension);
+                value = name == "speed" ? std::sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2])
+                                        : u[c];
             }
             f.values.push_back(value);
         }

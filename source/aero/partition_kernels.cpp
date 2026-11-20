@@ -8,6 +8,9 @@
 namespace aero {
 namespace partition_detail {
 // Запускает обновление только собственных степеней свободы MPI-процесса.
+void check_newton_nodes(Grid g) {
+    device_work::check(device_work::aero_device_failed_nodes(g));
+}
 void update(Grid g, explicit_detail::Stage stage, double dt, bool save_original) {
     if (!g.owned_count)
         return;

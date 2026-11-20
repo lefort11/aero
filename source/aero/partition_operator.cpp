@@ -47,6 +47,7 @@ PartitionOperator::PartitionOperator(const MeshPartition& part, CvView cv, const
         });
         grid_.packed.normals = normals_.data();
     }
+    residual_detail::validate_linear_walls(grid_);
     prepare_nodal_gas();
 }
 
@@ -173,6 +174,7 @@ PackedEdgeOrder pack_weno_edge(const PartitionStencil& stencil, MeshIndex edge, 
 }
 
 void PartitionOperator::prepare_nodal_gas() {
+    if (grid_.options.background.active()) return;
     grid_.packed.state_nodes = state_nodes();
     if (!flux_.empty()) {
         nodal_gas_.resize(state_nodes());
@@ -183,7 +185,7 @@ void PartitionOperator::prepare_nodal_gas() {
 template <unsigned scheme_order>
 void PartitionOperator::prepare_weno_tiles(std::vector<WenoEdgeTile<scheme_order>>& tiles) {
     auto& g = grid_;
-    if (g.dim != 2 || g.options.variables != ResidualVariables::Characteristic ||
+    if (g.options.background.active() || g.dim != 2 || g.options.variables != ResidualVariables::Characteristic ||
         g.options.solver != ResidualSolver::Roe || stencil_.weno_order.empty() ||
         state_nodes() > std::numeric_limits<unsigned>::max())
         return;
@@ -347,7 +349,7 @@ static MeshIndex implicit_storage_bytes(const residual_detail::Geometry& g, cons
     bytes = partition_bytes(bytes, owned.size(), block + width * sizeof(unsigned char)); // LU и перестановки BJ.
     // История BDF2 и промежуточное поле CSGS выделяются по запросу.
     const auto capacity = std::max<MeshIndex>(1,owned.size()*width);
-    if (settings.jacobian_update_every) bytes = partition_bytes(bytes, owned.size(), width*sizeof(double));
+    if (g.options.background.active() || settings.jacobian_update_every) bytes = partition_bytes(bytes, owned.size(), width*sizeof(double));
     if (settings.second_order) bytes=partition_bytes(bytes,capacity,sizeof(double));
     if (settings.csgs) {
         bytes=partition_bytes(bytes,capacity,sizeof(double));
@@ -377,6 +379,67 @@ void PartitionOperator::upload_state(const std::vector<double>& state, const std
     gpu_->upload_state(state, initial);
 }
 #endif
+
+void PartitionOperator::copy_backup(std::vector<double>& state, std::vector<double>& backup, bool restore) {
+    if (restore) gas_current_ = false;
+#ifdef AERO_WITH_KOKKOS_GPU
+    if (gpu_) { gpu_->copy_backup(state.size(), restore); return; }
+#endif
+    if (restore) state = backup;
+    else backup = state;
+}
+
+void PartitionOperator::failed_nodes(const std::vector<double>& state, std::vector<Id>& failed, bool implicit) {
+#ifdef AERO_WITH_KOKKOS_GPU
+    if (gpu_) { gpu_->failed_nodes(failed, implicit); return; }
+#else
+    (void)implicit;
+#endif
+    for (Id node : owned)
+        if (!partition_detail::admissible_node(grid_, state.data(), node)) failed.push_back(node);
+}
+
+// Пересобираем матрицу только при ручном изменении потока. Для BDF2 переносим предыдущий слой.
+void PartitionOperator::set_flux_weights(double upwind, double hybrid) {
+    if (grid_.options.upw_coeff == upwind && grid_.options.mp6_hybrid == hybrid) return;
+    grid_.options.upw_coeff = upwind;
+    grid_.options.mp6_hybrid = hybrid;
+#ifdef AERO_WITH_KOKKOS_GPU
+    if (gpu_) gpu_->set_flux_options(grid_.options);
+#endif
+    if (bdf_) {
+        implicit::BdfHistory history;
+        bdf_->export_history(history);
+        bdf_.reset();
+        if (history.dt > 0.) implicit_step().import_history(history);
+    }
+}
+
+void PartitionOperator::set_courant(double cfl, bool implicit_time) {
+    grid_.stencil.mp5.alpha = mp5_alpha_for_time_scheme(cfl, implicit_time);
+#ifdef AERO_WITH_KOKKOS_GPU
+    if (gpu_) gpu_->set_alpha(grid_.stencil.mp5.alpha);
+#endif
+}
+
+void PartitionOperator::set_low_order(std::vector<double>& marks) {
+    // Тот же обмен, что у состояния. Отметка хранится в первом компоненте строки.
+#ifdef AERO_WITH_KOKKOS_GPU
+    // Последняя распаковка состояния может ещё читать закреплённый буфер MPI.
+    // Дожидаемся её до повторного использования этого буфера на CPU для меток.
+    if (gpu_) world_.local([&] { gpu_->synchronize(); });
+#endif
+    halo_host(marks);
+    for (Id e = 0; e < grid_.edges; ++e) {
+        auto& face = surfaces_[e];
+        if (face.use_nodal_traces == 1) continue; // Постоянное условие открытой границы.
+        face.use_nodal_traces = (marks[width_ * face.begin] ? 2 : 0) |
+                                (marks[width_ * face.end] ? 4 : 0);
+    }
+#ifdef AERO_WITH_KOKKOS_GPU
+    if (gpu_) gpu_->update_surfaces(surfaces_);
+#endif
+}
 
 void PartitionOperator::copy_owned(const std::vector<double>& state, std::vector<double>& compact) const {
 #ifdef AERO_WITH_KOKKOS_GPU
@@ -419,15 +482,16 @@ bool PartitionOperator::assemble_fluxes(const std::vector<double>& u, const std:
         WallTimer timer(timing.counter(SolverTimings::Flux));
 #ifdef AERO_WITH_KOKKOS_GPU
         if (gpu_) {
-            gpu_->fluxes();
+            gpu_->fluxes(first_order_start);
             return;
         }
 #endif
         // Каждый процесс вычисляет назначенные ему поверхности, включая физические площадки своих узлов.
         const Id* faces = world_.size == 1 ? nullptr : compute_.data();
-        residual_detail::cpu_face_fluxes(
-            {grid_, faces, compute_.size(), u.data(), initial.data(), flux_.data(), nullptr, nullptr, gas_current_},
-            ids_.data());
+        residual_detail::FaceBatch batch = {
+            grid_, faces, compute_.size(), u.data(), initial.data(), flux_.data(), nullptr, nullptr, gas_current_};
+        if (first_order_start) batch.use_first_order();
+        residual_detail::cpu_face_fluxes(batch, ids_.data());
     };
     world_.local([&] {
         try { compute(); }
@@ -549,12 +613,12 @@ double PartitionOperator::steady_residual(std::vector<double>& state, const std:
 }
 
 implicit::NewtonResult PartitionOperator::advance_bdf(std::vector<double>& state, const std::vector<double>& initial,
-        double dt, const implicit::NewtonSettings& settings, SolverTimings& timing) {
+        double dt, const implicit::NewtonSettings& settings, SolverTimings& timing, const std::function<void()>& validate) {
     const auto fields = implicit_fields(state, initial);
     // При каждой поправке используем тот же поток и ту же реконструкцию из main.txt.
     // В матрицу поправки входят производные выбранного потока первого порядка.
-    const auto refresh = [&] { assemble_fluxes(state, initial, timing); };
-    const auto trial = [&] { return assemble_fluxes(state, initial, timing, true); };
+    const auto refresh = [&] { if (validate) validate(); assemble_fluxes(state, initial, timing); };
+    const auto trial = [&] { if (validate) validate(); return assemble_fluxes(state, initial, timing, true); };
     return bdf_->advance(fields.state, fields.initial, fields.volumes, fields.flux, dt, settings, refresh, trial);
 }
 
@@ -572,7 +636,7 @@ void PartitionOperator::update_owned(explicit_detail::Stage stage, std::vector<d
         [&](std::size_t k) {
             if (!partition_detail::update_node(grid_, flux_.data(), volumes_, nodes, state.data(),
                                                start.data(), k, stage, dt, save_original)) {
-                throw std::domain_error("Nonfinite stage at global node " + std::to_string(ids_[owned[k]]));
+                throw std::domain_error("Invalid Euler stage state at global node " + std::to_string(ids_[owned[k]]));
             }
         },
         256);

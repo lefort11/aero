@@ -3,6 +3,7 @@
 #include "../parallel/kernel_math.h"
 
 #include "mesh_index.h"
+#include "coordinate.h"
 #include <cstddef>
 #include <iosfwd>
 #include <stdexcept>
@@ -82,6 +83,8 @@ struct MeshView {
     const double* x;
     const double* y;
     const double* z;
+    // Возвращает координаты одного узла из трёх массивов сетки.
+    AERO_HOST_DEVICE Coordinate coordinate(MeshIndex node) const { return {{x[node], y[node], z[node]}}; }
     // Связь «грань → вершины»: смещения и номера узлов в порядке обхода грани.
     const MeshIndex* face_offsets;
     const MeshIndex* face_indices;

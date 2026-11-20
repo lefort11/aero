@@ -1,0 +1,5 @@
+initial_type = formula
+rho = 0.01*sin(2*pi*(x+y))
+ux = 0.01*sin(2*pi*(x+y))/sqrt(2)
+uy = 0.01*sin(2*pi*(x+y))/sqrt(2)
+p = 0.01*sin(2*pi*(x+y))

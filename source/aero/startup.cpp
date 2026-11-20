@@ -67,12 +67,21 @@ std::string settings_text(const std::string& path) {
 void show_settings(const RunSettings& r) {
     std::cout << std::setprecision(15) << "Run settings\ninput = " << r.directories.input
               << "\noutput = " << r.directories.output << "\ninteractive = " << r.directories.interactive
+              << "\nEquations = " << (r.background.active() ? "Linear" : "Euler")
               << "\nmesh = " << r.mesh_path << "\nbackend = " << (r.use_cuda ? "cuda" : "cpu")
               << "\nreconstruction = " << r.reconstruction
               << "\nreconstruction_variables = " << r.reconstruction_variables
               << "\neuler_solver = " << r.euler_solver << "\ntime_scheme = " << r.time_scheme
               << "\nupw_coeff = " << r.upw_coeff << "\ntrace_ratio_min = " << r.trace_ratio_min << "\ntrace_ratio_max = " << r.trace_ratio_max
               << "\ngamma = " << r.gamma << "\ncfl = " << r.cfl;
+    if (r.background.active()) {
+        std::cout << "\nBackground: rho0 = " << r.background.rho << ", p0 = " << r.background.p;
+        const char* names[] = {"ux0", "uy0", "uz0"};
+        for (unsigned j = 0; j < r.background_velocities; ++j)
+            std::cout << ", " << names[j] << " = " << r.background.velocity[j];
+        std::cout << ", c0 = " << r.background.sound << "\nOutput fields are perturbations.";
+    }
+    if (r.t_fo > 0.) std::cout << "\nt_fo = " << r.t_fo;
     if (!r.steady()) std::cout << "\nfinal_time = " << r.final_time;
     std::cout << "\nomp_threads = " << r.omp_threads << " (runtime maximum ";
 #ifdef _OPENMP
@@ -80,7 +89,7 @@ void show_settings(const RunSettings& r) {
 #else
     std::cout << 1;
 #endif
-    std::cout << ")\nflowreport_every = " << r.flowreport_every << '\n';
+    std::cout << ")\nreport_every = " << r.report_every << '\n';
     if (r.steady())
         std::cout << "steady_criterion = " << (r.steady_absolute ? "absolute" : "relative") << "\nsteady_tol = " << r.steady_tol << "\nsteady_max_steps = " << r.steady_max_steps << '\n';
     if (r.uses_implicit_time())

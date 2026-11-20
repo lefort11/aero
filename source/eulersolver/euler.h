@@ -116,12 +116,13 @@ AERO_HOST_DEVICE inline EulerStatus euler_unit_direction(unsigned dimension, con
     return euler_detail::normalized_coordinates<1>(direction, unit);
 }
 
-// Переводит вектор [ρ, ρu, E] в физические величины. Результат записывается после всех проверок.
-KOKKOS_FORCEINLINE_FUNCTION EulerStatus euler_state(unsigned dimension, const double* u, double gamma,
-                                                EulerState* result) {
+namespace euler_detail {
+// При неположительном давлении плотность, скорость и само давление доступны ограничителю.
+KOKKOS_FORCEINLINE_FUNCTION EulerStatus decode_state(unsigned dimension, const double* u, double gamma,
+                                                      EulerState& state) {
     if (dimension < 1 || dimension > 3)
         return EulerStatus::InvalidDimension;
-    if (!u || !result)
+    if (!u)
         return EulerStatus::NullPointer;
     if (!euler_detail::finite(gamma) || !(gamma > 1))
         return EulerStatus::InvalidGamma;
@@ -130,7 +131,6 @@ KOKKOS_FORCEINLINE_FUNCTION EulerStatus euler_state(unsigned dimension, const do
             return EulerStatus::NonFinite;
     if (!(u[0] > 0))
         return EulerStatus::InvalidDensity;
-    EulerState state = {};
     state.density = u[0];
     state.density_root = ::sqrt(u[0]);
     // Для скорости, удельной энергии и давления знаменатель один. В обычном диапазоне
@@ -162,8 +162,20 @@ KOKKOS_FORCEINLINE_FUNCTION EulerStatus euler_state(unsigned dimension, const do
         return EulerStatus::NonFinite;
     if (!(state.sound_speed > 0))
         return EulerStatus::InvalidPressure;
-    *result = state;
     return EulerStatus::Success;
+}
+}
+
+// Переводит вектор [ρ, ρu, E] в физические величины. Результат записывается после всех проверок.
+KOKKOS_FORCEINLINE_FUNCTION EulerStatus euler_state(unsigned dimension, const double* u, double gamma,
+                                                   EulerState* result) {
+    if (!result)
+        return dimension < 1 || dimension > 3 ? EulerStatus::InvalidDimension : EulerStatus::NullPointer;
+    EulerState state = {};
+    const auto status = euler_detail::decode_state(dimension, u, gamma, state);
+    if (status == EulerStatus::Success)
+        *result = state;
+    return status;
 }
 
 namespace euler_detail {
