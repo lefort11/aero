@@ -3,6 +3,9 @@
 #include "../parallel/parallel_for.h"
 #ifdef AERO_WITH_KOKKOS_GPU
 #include "../parallel/device_check.h"
+#ifdef AERO_HAS_VISCOSITY
+#include "../viscosity/jacobian.h"
+#endif
 #endif
 #include "../residual/flux_cfl.h"
 #include <algorithm>
@@ -147,10 +150,9 @@ PackedEdgeOrder pack_weno_edge(const PartitionStencil& stencil, MeshIndex edge, 
     const auto& rows = stencil.slopes;
     // В исходной записи по четыре наклона с каждой стороны. Ближний правый наклон при WENO5
     // доступен как противоположный у левой стороны (2), при WENO3 — как собственный у правой (4 + 1).
-    const unsigned row_number[] = {0, 1, left == 5 ? 2u : 5u, 3, 7};
     unsigned term = 0, weight = 0;
     for (unsigned r = 0; r < tile.rows_per_edge; ++r) {
-        const auto row = 8 * edge + row_number[r];
+        const auto row = 8 * edge + residual_detail::edge_slope_offset(r, left);
         const auto first = rows.offsets[row], end = rows.offsets[row + 1];
         const unsigned capacity = residual_detail::slope_terms(r);
         const bool unused = (r == residual_detail::FarLeftSlope && order.shortened(0)) ||
@@ -266,6 +268,58 @@ Id PartitionOperator::prepare_stencil(const MeshPartition& part, const PeriodicP
     return world_.sum(stencil_.incomplete);
 }
 
+#ifdef AERO_HAS_VISCOSITY
+void PartitionOperator::prepare_viscosity(const MeshPartition& part, const PeriodicPartition* seam,
+        const ResidualFrame& frame, const ViscositySettings& settings, double mach, bool gpu) {
+    if (settings.law == "off") return;
+    // Периодический сосед может находиться вне конвективного шаблона. Включаем его
+    // в уже существующий обмен полями, один раз для всех элементов этого процесса.
+    std::map<Id,Id> slots;
+    world_.local([&] {
+        aes_.reset(new viscosity::Aes);
+        for (Id i = 0; i < ids_.size(); ++i) slots.emplace(ids_[i],i);
+        for (Id k = 0; k < stencil_.extra_nodes.size(); ++k)
+            slots.emplace(stencil_.extra_nodes[k].first,ids_.size()+k);
+    });
+    const auto locate = [&](Id global, int owner) {
+        const auto inserted = slots.emplace(global,state_nodes());
+        const Id local = inserted.first->second;
+        if (inserted.second) {
+            if (owner == world_.rank) throw MeshError("AES: missing owned node");
+            stencil_.extra_nodes.emplace_back(global,owner);
+            nodes_.imports[owner].push_back(local);
+        }
+        return local;
+    };
+    aes_->prepare(part,seam,frame,world_,settings,grid_.options.gamma,mach,grid_.nodes,locate);
+    world_.local([&] {
+        for (Id face = grid_.edges; face < grid_.faces; ++face) {
+            const auto& s = surfaces_[face];
+            if (grid_.patches.by_patch[s.patch].type() == BoundaryType::Wall)
+                aes_->wall[s.begin] = 1;
+        }
+        if (!gpu) {
+            aes_->allocate_host(state_nodes());
+            grid_.options.diffusion = aes_->view().rows;
+            grid_.options.wall = aes_->wall.data();
+        }
+        prepare_nodal_gas();
+        if (!stencil_.row_owner.empty()) grid_.stencil = stencil_.view(state_nodes());
+    });
+}
+// При задании u=0 убираем только кинетическую энергию: начальные p и T сохраняются.
+void PartitionOperator::apply_wall(std::vector<double>& field) const {
+    for (Id node : owned) {
+        if (!aes_->wall[node]) continue;
+        double* u = field.data()+node*width_;
+        for (unsigned m = 1; m+1 < width_; ++m) {
+            u[width_-1] -= .5 * (u[m]/u[0])*u[m];
+            u[m] = 0.;
+        }
+    }
+}
+#endif
+
 void PartitionOperator::connect(bool cuda, bool implicit_time) {
     Processes::Messages node_requests, edge_keys;
     world_.local([&] {
@@ -323,6 +377,9 @@ void PartitionOperator::connect(bool cuda, bool implicit_time) {
 
 #ifdef AERO_WITH_KOKKOS_GPU
 void PartitionOperator::layout_gpu(bool compact_buffer) {
+#ifdef AERO_HAS_VISCOSITY
+    gpu_->set_viscosity(aes_.get());
+#endif
     gpu_->layout(grid_, stencil_, compute_, owned, volumes_, state_nodes(), compact_buffer, world_.size == 1);
     nodes_.prepare_gpu(*gpu_);
     edges_.prepare_gpu(*gpu_);
@@ -362,7 +419,17 @@ static MeshIndex implicit_storage_bytes(const residual_detail::Geometry& g, cons
 }
 
 void PartitionOperator::reserve_gpu(bool compact_buffer, GpuMemoryFit& fit, const implicit::NewtonSettings* settings) {
-    const auto extra = settings ? implicit_storage_bytes(grid_, owned, *settings) : 0;
+    auto extra = settings ? implicit_storage_bytes(grid_, owned, *settings) : 0;
+#ifdef AERO_HAS_VISCOSITY
+    if (settings && aes_) {
+        const auto v = aes_->view();
+        // На смешанной сетке часть пар добавляет новые столбцы; считаем верхнюю границу до резервирования карты.
+        extra = partition_bytes(extra,v.neighbour_count,sizeof(Id)+width_*width_*sizeof(double));
+        extra = partition_bytes(extra,state_nodes()+1,sizeof(Id));
+        extra = partition_bytes(extra,v.vertex_count,sizeof(viscosity::ColumnElement)+sizeof(viscosity::Gradient));
+        if (settings->csgs) extra = partition_bytes(extra,state_nodes()-grid_.nodes,sizeof(Id));
+    }
+#endif
     gpu_.reset(new PartitionGpu);
     layout_gpu(compact_buffer);
     fit.failed = !gpu_->reserve(fit, extra);
@@ -492,6 +559,9 @@ bool PartitionOperator::assemble_fluxes(const std::vector<double>& u, const std:
             grid_, faces, compute_.size(), u.data(), initial.data(), flux_.data(), nullptr, nullptr, gas_current_};
         if (first_order_start) batch.use_first_order();
         residual_detail::cpu_face_fluxes(batch, ids_.data());
+#ifdef AERO_HAS_VISCOSITY
+        if (aes_) aes_->evaluate(u.data(), grid_.packed.gas, gas_current_ && grid_.packed.gas);
+#endif
     };
     world_.local([&] {
         try { compute(); }
@@ -554,6 +624,16 @@ const double* PartitionOperator::extend_linear_vector(const double* compact) {
 
 implicit::Partition PartitionOperator::linear_partition() {
     implicit::Partition part;
+#ifdef AERO_HAS_VISCOSITY
+    if (aes_) {
+        part.host_aes = aes_->view();
+        part.host_aes.node_count = state_nodes();
+        part.active_aes = part.host_aes;
+#ifdef AERO_WITH_KOKKOS_GPU
+        if (gpu_) part.active_aes = gpu_->viscosity_view();
+#endif
+    }
+#endif
     if (world_.size == 1) return part;
     part.rows = owned.size();
     part.faces = compute_.size();
@@ -631,13 +711,25 @@ void PartitionOperator::update_owned(explicit_detail::Stage stage, std::vector<d
     }
 #endif
     const Id* nodes = world_.size == 1 ? nullptr : owned.data();
+    // На всех узлах одно число уравнений. Выбираем перед стадией тот же вариант
+    // сборки строки, что и на GPU: длина суммы потоков известна при компиляции.
+#ifdef AERO_HAS_VISCOSITY
+    // На одном процессе обновлены все узлы. Вычисляем вязкость, пока новое состояние
+    // ещё в кэше. Для MPI ждём обмена и готовим вязкость сразу для своих и соседних узлов.
+    const auto* transport = !nodes && grid_.packed.gas && aes_ ? &aes_->view() : nullptr;
+#endif
+    const auto update = width_ == 5 ? partition_detail::update_node<5> :
+                        width_ == 4 ? partition_detail::update_node<4> : partition_detail::update_node<3>;
     parallel_for(
         owned.size(),
         [&](std::size_t k) {
-            if (!partition_detail::update_node(grid_, flux_.data(), volumes_, nodes, state.data(),
-                                               start.data(), k, stage, dt, save_original)) {
+            if (!update(grid_, flux_.data(), volumes_, nodes, state.data(),
+                        start.data(), k, stage, dt, save_original)) {
                 throw std::domain_error("Invalid Euler stage state at global node " + std::to_string(ids_[owned[k]]));
             }
+#ifdef AERO_HAS_VISCOSITY
+            if (transport) transport->prepare_gas(k, state.data(), grid_.packed.gas);
+#endif
         },
         256);
     gas_current_ = world_.size == 1;

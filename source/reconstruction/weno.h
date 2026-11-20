@@ -134,12 +134,22 @@ KOKKOS_FORCEINLINE_FUNCTION double weno_five(double center, double near, double 
     return center + weno_third(change);
 }
 
+// У парной реконструкции показатели двух ближних наклонов уже вычислены для обеих сторон.
+// Дальний показатель относится только к текущей стороне. Порядок сложений сохраняем и здесь.
+template <bool safe_products>
+KOKKOS_FORCEINLINE_FUNCTION double weno_five_side(double center, double near, double opposite, double far,
+                                                 double epsilon, const WenoIndicators& near_indicator,
+                                                 const WenoIndicators& opposite_indicator) {
+    return weno_five<safe_products>(center, near, opposite, far, epsilon + opposite_indicator.outer,
+                                    epsilon + near_indicator.inner, epsilon + WenoIndicators(near, far).outer);
+}
+
 template <unsigned order, bool safe_products>
 KOKKOS_FORCEINLINE_FUNCTION double weighted_weno_increment(const double* d, double epsilon) {
     if (order == 3)
         return weno_three<safe_products>(d[0], d[1], epsilon);
-    return weno_five<safe_products>(d[0], d[1], d[2], d[3], epsilon + WenoIndicators(d[0], d[2]).outer,
-        epsilon + WenoIndicators(d[0], d[1]).inner, epsilon + WenoIndicators(d[1], d[3]).outer);
+    return weno_five_side<safe_products>(d[0], d[1], d[2], d[3], epsilon,
+                                         WenoIndicators(d[0], d[1]), WenoIndicators(d[0], d[2]));
 }
 
 // Вне обычного диапазона выбираем единицы отдельно для каждой характеристики.

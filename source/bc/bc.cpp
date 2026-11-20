@@ -1,4 +1,5 @@
 #include "bc.h"
+#include "../io/settings_text.h"
 
 #include <sstream>
 #include <locale>
@@ -11,12 +12,7 @@ using Tokens = std::vector<std::string>;
 
 // Разбирает весь токен в локали с десятичной точкой и отвергает NaN и бесконечность.
 double number(const std::string& token) {
-    std::istringstream stream(token);
-    stream.imbue(std::locale::classic());
-    double value;
-    if (!(stream >> value) || !stream.eof() || !euler_detail::finite(value))
-        throw std::invalid_argument("invalid finite number: " + token);
-    return value;
+    return settings_detail::finite_real(token, "boundary value " + token);
 }
 
 // После superin разрешены начальное состояние и независимые замены его компонент.

@@ -9,6 +9,10 @@
 #include "../parallel/processes.h"
 #include <limits>
 
+#ifdef AERO_HAS_VISCOSITY
+#include "../viscosity/aes.h"
+#endif
+
 namespace aero {
 void select_partition_gpu(const Processes& world, const std::vector<int>& devices);
 void query_gpu_memory(GpuMemoryFit& fit, const std::vector<double>& limits, const Processes& world);
@@ -46,6 +50,10 @@ class PartitionGpu {
             return allocate(host.size(), host.data());
         }
     } storage_;
+#ifdef AERO_HAS_VISCOSITY
+    const viscosity::Aes* aes_ = nullptr;
+    viscosity::Operator viscous_grid_{};
+#endif
     partition_detail::Grid grid_{};
     // Та же геометрия и адреса полей нужны Kokkos на каждой стадии. Запись живёт в storage_.
     residual_detail::FaceBatch* device_faces_ = nullptr;
@@ -62,6 +70,10 @@ class PartitionGpu {
 
 public:
     PartitionGpu() = default;
+#ifdef AERO_HAS_VISCOSITY
+    viscosity::Operator viscosity_view() const { return viscous_grid_; }
+    void set_viscosity(const viscosity::Aes* aes) { aes_ = aes; }
+#endif
     static std::vector<double> measure_weights(const Processes& world, ResidualOptions options,
                                                MeshIndex budget);
     void layout(residual_detail::Geometry geometry, const PartitionStencil& stencil,

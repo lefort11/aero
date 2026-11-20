@@ -10,6 +10,9 @@
 #include "../implicit/newton_vectors.h"
 #include "device_execution.h"
 #include "mpweno5_edges.h"
+#ifdef AERO_HAS_VISCOSITY
+#include "../viscosity/jacobian.h"
+#endif
 #include <map>
 #include <memory>
 #include <mutex>
@@ -335,6 +338,21 @@ const char* aero_device_csgs_color(int device, const implicit::CsgsSweep& sweep,
                     KOKKOS_LAMBDA(Index i) { operation(first+i); });
     }, device);
 }
+#ifdef AERO_HAS_VISCOSITY
+const char* aero_device_viscous_matrix(int device, const viscosity::Jacobian& matrix, const double* state) {
+    const auto v = matrix;
+    const auto aes = v.aes;
+    const unsigned width = aes.dim+2;
+    return on_device(nullptr, [&](const Execution& exec) {
+        for_indices(exec,"Aero: clear viscous matrix",v.value_count,KOKKOS_LAMBDA(Index k) { v.values[k] = 0.; });
+        for_indices(exec,"Aero: viscous Jacobian states",aes.node_count,KOKKOS_LAMBDA(Index n) { aes.prepare_gas(n,state,nullptr); });
+        for_indices(exec,"Aero: viscous Jacobian gradients",aes.cell_count,KOKKOS_LAMBDA(Index e) { v.prepare_cell(e); });
+        for_indices(exec,"Aero: viscous Jacobian columns",aes.node_count*width,KOKKOS_LAMBDA(Index k) {
+            v.assemble_column(k/width,static_cast<unsigned>(k%width));
+        });
+    }, device);
+}
+#endif
 const char* aero_device_spatial_faces(int device, const implicit::SpatialBlocks& matrix, const double* u,
                                       const double* initial, MeshIndex* bad) {
     const auto blocks = matrix;
@@ -421,6 +439,16 @@ const char* aero_device_krylov_reduce(int device, MeshIndex count, const double*
         *scalar = implicit::krylov_reduce(exec, count, x, y);
     }, device);
 }
+#ifdef AERO_HAS_VISCOSITY
+const char* aero_device_viscosity(const viscosity::Operator& input, const double* state, const EulerState* cached) {
+    const auto g = input;
+    return on_device(nullptr, [&](const Execution& exec) {
+        for_indices(exec,"Aero: viscous gas",g.node_count,KOKKOS_LAMBDA(Index i) { g.prepare_gas(i,state,cached); });
+        for_indices(exec,"Aero: viscous material",g.cell_count,KOKKOS_LAMBDA(Index i) { g.average_material(i); });
+        for_indices(exec,"Aero: AES edge contributions",g.row_count,KOKKOS_LAMBDA(Index i) { g.assemble(i); });
+    });
+}
+#endif
 const char* aero_device_normals(const Geometry& geometry) {
     const Geometry g = geometry;
     return on_device(nullptr, [&](const Execution& exec) {

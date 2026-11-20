@@ -1,8 +1,32 @@
+# Обязательны без значения по умолчанию: mesh, reconstruction, reconstruction_variables,
+# time_scheme, euler_solver и backend.
+# cfl обязателен при stabilization = off, значения по умолчанию нет. При cfl, low и on
+# стартовое число Куранта задаёт cfl_init из cfl.txt.
+# final_time обязателен для euler, ssprk3, BDF1 и BDF2, значения по умолчанию нет.
+# При steady его можно опустить: останов определяется критериями из implicit.txt.
+#
+# Необязательные параметры и их значения по умолчанию:
+# Equations = Euler; stabilization = off (для Linear допустим только off); exact_solution = off.
+# upw_coeff = 1; t_fo = 0; trace_ratio_min = 0; trace_ratio_max = 1e16.
+# omp_threads = 0 (число потоков выбирает среда OpenMP); report_every = 0 (отчёт выключен).
+# control_every = 16; recovery_every_steps = 0 (периодическая запись выключена).
+# Для MPI: mpi_timing = 0; mpi_rank_weights и mpi_gpu_memory_mib по умолчанию автоматические.
+# mpi_node_memory_mib необязателен: при пропуске нет ручного лимита; явное auto включает учёт памяти.
+# mpi_memory_factor необязателен: 4 для first_order, 12 для ebr3, 16 для ebr5 и weno3,
+# 24 для weno5, mp5 и MPWENO5.
+
 # Готовый пример для 2D на CPU. Активные значения относятся к этому примеру.
 # Чтобы включить параметр из комментария, уберите начальный #.
 
 # Euler — полные уравнения, Linear — пульсации вокруг однородного фона из linear.txt.
 Equations = Euler
+
+# viscosity допускает off (без вязкости), normal или sutherland. Значение по умолчанию — off.
+# Для обоих законов задайте в gas.txt числа Рейнольдса и Прандтля и опорную температуру.
+# Для обоих законов требуется mach, для sutherland также постоянная Сазерленда.
+# Вязкость доступна для Equations = Euler при сборке с каталогом source/viscosity.
+# В BDF1 и BDF2 вязкие члены AES входят в невязку и в матрицу поправки Ньютона.
+# viscosity = off
 
 # Сетка и численная схема (обязательные параметры)
 # mesh — путь относительно этого каталога. Один процесс читает .mesh или .mdec.
@@ -47,7 +71,8 @@ control_every = 16
 # mpi_timing — 0 (по умолчанию) или 1. Включает замеры на CPU и GPU:
 # потоки, стадии, обмен halo и потоками, CFL, копирование для вывода и запись.
 # mpi_timing = 1
-# recovery_every_steps — целое >= 0; 0 или пропуск отключает запись.
+# recovery_every_steps — целое >= 0; 0 или пропуск отключает промежуточные точки.
+# При завершении расчёта и по команде STOP решатель всегда сохраняет recovery.
 # При положительном интервале запись также выполняется на последнем шаге.
 # Файлы recovery-0.bin и recovery-1.bin чередуются. При запуске --recover
 # выбирает последнюю исправную запись; --recover 0 и --recover 1 задают слот.
@@ -76,8 +101,9 @@ control_every = 16
 # 1 — исходные следы EBR, 0 — общий центральный след до ограничения.
 upw_coeff = 1
 
-# Сравнивать с формулами exact.txt на отчётных шагах и в конце расчёта.
+# Необязательный параметр, по умолчанию off. Включает вывод L_2 и L_inf на отчётных шагах и в конце.
+# formula — формулы из exact.txt (также допускается прежнее on), fields — снимок по пути из exact.txt.
 exact_solution = off
 
 # Стабилизация Euler: off, cfl (откат), low (временный первый порядок), on (постоянный).
-stable_mode = off
+stabilization = off

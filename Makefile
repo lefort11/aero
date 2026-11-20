@@ -103,6 +103,12 @@ endif
 ifeq ($(WITH_OPENMP),0)
 BUILD := $(BUILD)/serial
 endif
+# Разные наборы модулей меняют раскладку общих структур CPU и Kokkos.
+ifeq ($(wildcard source/viscosity/transport.h),)
+BUILD := $(BUILD)/inviscid
+else
+override CPPFLAGS += -DAERO_HAS_VISCOSITY=1
+endif
 BUILD_TYPE ?= $(if $(filter programs,$(MAKECMDGOALS)),Release,Default)
 ifeq ($(BUILD_TYPE),Release)
 build_optimization := -O3
@@ -118,7 +124,7 @@ $(error BUILD_TYPE must be Default, Debug or Release)
 endif
 include source/parallel/kokkos.mk
 MESH_SOURCE := source/mesh
-MESH_HEADERS := $(MESH_SOURCE)/coordinate.h $(MESH_SOURCE)/mesh.h $(MESH_SOURCE)/mesh_index.h source/parallel/kernel_math.h
+MESH_HEADERS := source/parallel/modules.h $(wildcard source/viscosity/*.h) $(MESH_SOURCE)/coordinate.h $(MESH_SOURCE)/mesh.h $(MESH_SOURCE)/mesh_index.h source/parallel/kernel_math.h
 ifeq ($(kokkos_gpu),1)
 # Обычный C++ компилирует вызывающую сторону. Только модуль Kokkos
 # собирается компилятором устройства; статическая сборка включает его в EXE.

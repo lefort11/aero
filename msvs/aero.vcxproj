@@ -36,6 +36,8 @@
     <ClCompile Include="..\source\aero\partition_kernels.cpp" />
     <ClInclude Include="..\source\aero\partition_kernels.h" />
     <ClCompile Include="..\source\aero\partition_operator.cpp" />
+    <ClCompile Include="..\source\viscosity\aes.cpp" Condition="Exists('..\source\viscosity\aes.cpp')" />
+    <ClCompile Include="..\source\viscosity\grad.cpp" Condition="Exists('..\source\viscosity\grad.cpp')" />
     <ClInclude Include="..\source\aero\partition_operator.h" />
     <ClCompile Include="..\source\aero\partition_output.cpp" />
     <ClInclude Include="..\source\aero\partition_output.h" />

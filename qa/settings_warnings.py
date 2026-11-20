@@ -16,10 +16,10 @@ def check(case):
     for name in ("main", "gas", "scheme", "output", "exact", "init", "bc"):
         with (case / (name + ".txt")).open("a") as file:
             file.write(f"\ntypo_{name} = 1\n")
-    cmd = [ROOT / "bin" / ("aero.exe" if os.name == "nt" else "aero"), f"--input={case}", f"--output={case / 'out'}",
+    cmd = [ROOT / "bin" / ("aero.exe" if os.name == "nt" else "aero"), f"--input={case}",
            f"main:mesh={source / 'grid.mesh'}", "main:exact_solution=on",
            "main:report_every=1", "main:final_time=.01"]
-    log = run(cmd)
+    log = run([*cmd, f"--output={case / 'out'}"])
     reports = len(re.findall(r"^Report\s+Step =", log, re.M))
     assert reports >= 2, log
     for name in ("main", "gas", "scheme", "output", "exact", "init", "bc"):
@@ -28,7 +28,7 @@ def check(case):
         path = case / (name + ".txt")
         original = path.read_text()
         path.write_text(re.sub(rf"(?m)^\s*{key}\s*=.*$", "", original))
-        log = run(cmd, success=False)
+        log = run([*cmd, f"--output={case / ('missing-' + key)}"], success=False)
         assert key in log and "Starting time integration" not in log, log
         path.write_text(original)
 

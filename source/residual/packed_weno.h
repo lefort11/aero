@@ -60,8 +60,8 @@ KOKKOS_FORCEINLINE_FUNCTION void reconstruct_wave_pair(const double slopes[][4],
     // Для левого следа правый наклон даёт внешний кандидат. Для правого следа
     // те же наклоны меняются ролями. Дальний кандидат у каждой стороны свой.
     const WenoIndicators l(center, nl), r(center, nr);
-    left = weno_five<true>(center, nl, nr, fl, el + r.outer, el + l.inner, el + WenoIndicators(nl, fl).outer);
-    right = weno_five<true>(center, nr, nl, fr, er + l.outer, er + r.inner, er + WenoIndicators(nr, fr).outer);
+    left = weno_five_side<true>(center, nl, nr, fl, el, l, r);
+    right = weno_five_side<true>(center, nr, nl, fr, er, r, l);
 }
 
 // Обе стороны используют один базис Роу. Перевод приращения в состояние общий с разреженной реконструкцией.
@@ -100,9 +100,12 @@ struct PlaneEdge {
 
 // Все наклоны считаются в одном базисе. Левый и правый след читают противоположные концы этой таблицы.
 template <unsigned scheme_order>
-KOKKOS_FORCEINLINE_FUNCTION bool project_stencil(const WenoEdgeTile<scheme_order>& tile, unsigned lane,
-                                           const double* field, const PlaneEdge& plane, double gamma,
-                                           double slopes[][4]) {
+KOKKOS_FORCEINLINE_FUNCTION bool prepare_edge_slopes(const Geometry& g, Index edge, const double* field,
+                                            const WenoEdgeTile<scheme_order>& tile, unsigned lane,
+                                            PlaneEdge& plane, double slopes[][4]) {
+    // Обе стороны используют один базис Роу. Сразу возвращаем ошибку, если его нельзя построить.
+    if (!plane.prepare(g, field, edge)) return false;
+    const double gamma = g.options.gamma;
     const auto& basis = plane.basis;
     const double* normal = plane.gas.normal;
     // Для WENO3 достаточно трёх проекций, для WENO5 нужны ещё два дальних наклона.
@@ -158,7 +161,7 @@ KOKKOS_FORCEINLINE_FUNCTION bool packed_edge_flux(const Geometry& g, const doubl
                                              EulerFluxResult& out) {
     PlaneEdge plane;
     double slopes[WenoEdgeTile<scheme_order>::rows_per_edge][4];
-    if (!plane.prepare(g, field, edge) || !project_stencil(tile, lane, field, plane, g.options.gamma, slopes))
+    if (!prepare_edge_slopes(g, edge, field, tile, lane, plane, slopes))
         return false;
     EdgeTraces traces;
     reconstruct_packed_traces<scheme_order, use_mp5, use_mpweno, hybrid_mode>(g, edge, slopes, traces);

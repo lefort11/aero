@@ -7,6 +7,9 @@
 #ifdef AERO_WITH_KOKKOS_GPU
 #include "../parallel/device_arrays.h"
 #endif
+#ifdef AERO_HAS_VISCOSITY
+#include "../viscosity/jacobian_pattern.h"
+#endif
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
@@ -18,7 +21,8 @@ namespace {
 // один раз. При обновлении коэффициентов поиск по номерам узлов уже не нужен.
 struct BlockPattern {
     std::vector<MeshIndex> rows, columns, neighbour;
-    void build(const residual_detail::Geometry& g, MeshIndex count, const MeshIndex* owned) {
+    void build(const residual_detail::Geometry& g, MeshIndex count, const Partition& part) {
+        const auto* owned = part.host_owned;
         rows.reserve(count + 1);
         neighbour.resize(g.offsets[g.nodes]);
         std::vector<char> seen; // Переиспользуем отметки кратных связей для следующего узла.
@@ -34,6 +38,9 @@ struct BlockPattern {
                 neighbour[p] = edge.begin == i ? edge.end : edge.begin;
                 if (neighbour[p] != i) columns.push_back(neighbour[p]);
             }
+#ifdef AERO_HAS_VISCOSITY
+            if (part.host_aes.dim) viscosity::append_columns(part.host_aes,i,columns);
+#endif
             auto begin = columns.begin() + static_cast<std::ptrdiff_t>(start);
             std::sort(begin, columns.end());
             columns.erase(std::unique(begin, columns.end()), columns.end());
@@ -74,6 +81,11 @@ struct SpatialJacobian::Storage {
     CsgsSweep sweep{};                // Постоянные адреса для проходов.
     std::vector<double> forward_host; // Промежуточный результат прямого прохода.
     double* forward = nullptr;
+#ifdef AERO_HAS_VISCOSITY
+    viscosity::Jacobian viscous{};
+    viscosity::JacobianPattern viscous_pattern;
+    std::vector<viscosity::Gradient> gradients;
+#endif
     BlockPattern pattern;     // Номера строк, соседей и блоков на CPU.
     std::vector<double> diagonal; // По одному числу на уравнение и узел при сохранении матрицы.
     std::vector<double> entries, faces; // Коэффициенты всей матрицы и временные производные площадок на CPU.
@@ -103,13 +115,21 @@ void SpatialJacobian::allocate_blocks(const residual_detail::Geometry& host) {
     b.row_count = partition.extend_vector ? partition.rows : host.nodes;
     b.face_count = partition.share_blocks ? partition.faces : host.faces;
     b.computed = partition.computed;
-    s.pattern.build(host, b.row_count, partition.host_owned);
+    s.pattern.build(host, b.row_count, partition);
     const auto stride = s.blocks.stride();
     const auto limit = s.entries.max_size() / stride;
     if (host.faces > limit || host.edges > limit - host.faces || s.pattern.columns.size() > limit)
         throw std::length_error("Spatial Jacobian: matrix too large");
     const auto entries = s.pattern.columns.size() * stride;
     const auto faces = (host.faces + host.edges) * stride;
+#ifdef AERO_HAS_VISCOSITY
+    b.viscous = partition.host_aes.dim != 0;
+    if (b.viscous) {
+        s.viscous_pattern.build(partition.host_aes,s.pattern.rows,s.pattern.columns);
+        s.viscous.aes = partition.active_aes;
+        s.viscous.value_count = entries;
+    }
+#endif
 #ifdef AERO_WITH_KOKKOS_GPU
     if (s.device >= 0) {
         gpu::DeviceScope scope(s.device);
@@ -120,6 +140,16 @@ void SpatialJacobian::allocate_blocks(const residual_detail::Geometry& host) {
         b.neighbour = s.arrays.allocate(s.pattern.neighbour.size(), s.pattern.neighbour.data());
         b.values = s.arrays.allocate<double>(entries);
         b.face_values = s.arrays.allocate<double>(faces);
+#ifdef AERO_HAS_VISCOSITY
+        if (b.viscous) {
+            const auto& pattern = s.viscous_pattern;
+            s.viscous.offsets = s.arrays.upload(pattern.offsets);
+            s.viscous.elements = s.arrays.upload(pattern.elements);
+            s.viscous.gradients = s.arrays.allocate<viscosity::Gradient>(s.viscous.aes.vertex_count);
+            s.viscous.values = b.values;
+            s.viscous_pattern = {};
+        }
+#endif
         s.pattern = BlockPattern{}; // На GPU портрет матрицы хранится только на карте.
         return;
     }
@@ -131,6 +161,15 @@ void SpatialJacobian::allocate_blocks(const residual_detail::Geometry& host) {
     b.neighbour = s.pattern.neighbour.data();
     b.values = s.entries.data();
     b.face_values = s.faces.data();
+#ifdef AERO_HAS_VISCOSITY
+    if (b.viscous) {
+        s.viscous.offsets = s.viscous_pattern.offsets.data();
+        s.viscous.elements = s.viscous_pattern.elements.data();
+        s.gradients.resize(s.viscous.aes.vertex_count);
+        s.viscous.gradients = s.gradients.data();
+        s.viscous.values = b.values;
+    }
+#endif
 }
 SpatialJacobian::~SpatialJacobian() = default;
 
@@ -165,8 +204,12 @@ void SpatialJacobian::prepare_csgs() {
     }
 #endif
     host_parallel::ensure_runtime();
+    MeshIndex state_nodes = b.grid.nodes;
+#ifdef AERO_HAS_VISCOSITY
+    if (b.viscous) state_nodes = s.viscous.aes.node_count;
+#endif
     std::unique_ptr<CsgsOrder> order(
-        new CsgsOrder(b.grid.nodes, graph->rows, graph->columns, s.device >= 0,
+        new CsgsOrder(state_nodes, graph->rows, graph->columns, s.device >= 0,
                       static_cast<MeshIndex>(host_parallel::Execution().concurrency())));
     auto& view = s.sweep;
     view.rows = b.rows;
@@ -283,7 +326,7 @@ void SpatialJacobian::assemble_matrix(const double* u, const double* initial, co
     // Только владелец площадки дифференцирует поток. До обмена все ранги
     // согласуют ошибки, в том числе ранги без единственной собственной строки.
     s.partition.local([&] {
-        if (b.face_count && !u) throw std::invalid_argument("Spatial Jacobian: missing state");
+        if ((b.face_count || b.row_count) && !u) throw std::invalid_argument("Spatial Jacobian: missing state");
 #ifdef AERO_WITH_KOKKOS_GPU
         if (s.device >= 0 && b.face_count) {
             MeshIndex bad;
@@ -299,6 +342,28 @@ void SpatialJacobian::assemble_matrix(const double* u, const double* initial, co
     });
     if (s.partition.share_blocks) s.partition.share_blocks(b.face_values);
     s.partition.local([&] {
+#ifdef AERO_HAS_VISCOSITY
+        if (b.viscous && b.row_count) {
+            // Заполняем вязкую часть первой. Строки конвекции затем добавят свои блоки,
+            // закрепят импульс на стенке и сохранят полную пространственную диагональ.
+            const auto& v = s.viscous;
+#ifdef AERO_WITH_KOKKOS_GPU
+            if (s.device >= 0) {
+                device_work::check(device_work::aero_device_viscous_matrix(s.device,v,u));
+            } else
+#endif
+            {
+                parallel_for(b.row_count,[&](MeshIndex row) {
+                    std::fill(v.values+b.rows[row]*b.stride(),v.values+b.rows[row+1]*b.stride(),0.);
+                });
+                parallel_for(v.aes.node_count,[&](MeshIndex n) { v.aes.prepare_gas(n,u,nullptr); });
+                parallel_for(v.aes.cell_count,[&](MeshIndex e) { v.prepare_cell(e); });
+                parallel_for(v.aes.node_count,[&](MeshIndex n) {
+                    for (unsigned c = 0; c < b.grid.components(); ++c) v.assemble_column(n,c);
+                });
+            }
+        }
+#endif
 #ifdef AERO_WITH_KOKKOS_GPU
         if (s.device >= 0 && b.row_count) {
             MeshIndex bad;

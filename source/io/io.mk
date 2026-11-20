@@ -16,7 +16,7 @@ SETTINGS_OBJECTS := $(BUILD)/settings.o $(BUILD)/io_output_settings.o
 $(BUILD)/settings.o $(BUILD)/report_explicit.o: source/eulersolver/linear_euler.h
 $(BUILD)/settings.o: source/timestep/stabilization.h source/implicit/implicit_settings.h source/implicit/bdf1_step.h
 OUTPUT_HEADERS := $(IO_DIR)/output_settings.h $(IO_DIR)/scheduled_output.h $(IO_DIR)/fields.h
-$(BUILD)/io_output_settings.o: $(OUTPUT_HEADERS) $(IO_DIR)/settings_text.h
+$(BUILD)/io_output_settings.o: $(NUMBER_CODEC) $(OUTPUT_HEADERS) $(IO_DIR)/settings_text.h
 ifneq ($(wildcard source/eulersolver/euler.h),)
 SETTINGS_OBJECTS += $(BUILD)/io_scheduled_output.o
 $(BUILD)/io_scheduled_output.o: $(OUTPUT_HEADERS) $(MESH_HEADERS) source/eulersolver/euler.h source/parallel/parallel_for.h
@@ -35,6 +35,7 @@ ifneq ($(wildcard source/bc/bc.h),)
 SETTINGS_OBJECTS += $(BUILD)/settings_boundary.o
 endif
 
+$(BUILD)/settings.o: source/parallel/modules.h $(wildcard source/viscosity/settings.h)
 $(BUILD)/settings.o: $(IO_DIR)/settings.cpp $(IO_DIR)/settings.h $(IO_DIR)/settings_text.h $(IO_DIR)/output_settings.h source/reconstruction/scheme.h | $(BUILD)
 	$(compiling)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@

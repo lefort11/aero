@@ -20,7 +20,7 @@ $(BC_GPU): $(BC_DIR)/bc_gpu_tests.cpp $(BC_TEST_HEADERS) $(PERIODIC_HEADERS) | $
 	$(compiling)
 	$(compile_device_host)
 endif
-$(BUILD)/bc.o: $(BC_DIR)/bc.cpp $(BC_HEADERS) | $(BUILD)
+$(BUILD)/bc.o: $(BC_DIR)/bc.cpp $(BC_HEADERS) source/io/settings_text.h | $(BUILD)
 	$(compiling)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
 $(BC_LIB): $(BUILD)/bc.o $(PERIODIC_OBJECTS)
@@ -48,4 +48,5 @@ bc-cuda-test:
 	$(MAKE) KOKKOS_BACKEND=cuda $(BIN)/bc_tests_cuda1$(EXE)
 	$(running_test)
 	./$(BIN)/bc_tests_cuda1$(EXE) --require-cuda
+$(BC_DEBUG): source/io/settings_text.h
 $(BC_TEST) $(BC_DEBUG): qa/test_checks.h

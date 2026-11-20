@@ -186,19 +186,56 @@ def check_exact_report(aero, mpi, case, distributed):
     original = init.read_bytes()
     init.write_text("initial_type formula\nrho=1+t\nux=0\np=1\n")
     (case / "exact.txt").write_text("rho=1+t*(1+cos(2*pi*x))\nux=0\np=1\n")
+    formula = (case / "exact.txt").read_text()
     for model in ("Euler", "Linear"):
+        args = [f"--input={case}", f"main:Equations={model}", "main:report_every=0"]
+        exact_file = case / "exact.txt"
+        exact_file.write_text(formula)
         for label, command, extra in (("cpu", [aero], []), ("mpi", mpi, distributed)):
             out = case / f"exact-{model}-{label}"
-            log = run([*command, f"--input={case}", f"--output={out}", f"main:Equations={model}",
-                       "main:exact_solution=on", "main:report_every=0", *extra])
+            log = run([*command, *args, f"--output={out}", "main:exact_solution=formula", *extra])
             report = (out / "sol_error.txt").read_text()
             if report not in log or report.count("Solution error") != 1:
                 raise AssertionError("Expected one identical final error report in the file and console")
             name, l2, linf = report.splitlines()[2].split()
             if name != "rho" or abs(float(l2)-END*math.sqrt(1.5)) > 1e-12 or abs(float(linf)-2*END) > 1e-12:
                 raise AssertionError(report)
+
+        # Берём настоящий глобальный снимок другого запуска. Сначала проверяем все
+        # поля на совпадение, затем меняем всю плотность на известные 0.125.
+        exact_file.write_text(f'path = "exact-{model}-cpu/all.fields"\n')
+        for offset in (0., .125):
+            init.write_text(f"initial_type formula\nrho={1+offset}\nux=0\np=1\n")
+            for label, command, extra in (("cpu", [aero], []), ("mpi", mpi, distributed)):
+                out = case / f"snapshot-{model}-{label}-{offset}"
+                log = run([*command, *args, f"--output={out}", "main:exact_solution=fields", *extra])
+                report = (out / "sol_error.txt").read_text()
+                if report not in log:
+                    raise AssertionError(report)
+                rows = {k: (float(l2), float(linf)) for k, l2, linf in
+                        (row.split() for row in report.splitlines()[2:])}
+                expected = dict(rho=offset, ux=0., p=0., E=.03125*offset if model == "Linear" else 0.)
+                if rows.keys() != expected.keys() or any(abs(value - expected[k]) > 2.e-13
+                        for k, norms in rows.items() for value in norms):
+                    raise AssertionError(report)
+                if label == "cpu" and not offset and any(any(norms) for norms in rows.values()):
+                    raise AssertionError("Expected an exactly zero self-comparison\n" + report)
+        # Неоднородный снимок обнаруживает ошибку в нумерации узлов MPI, даже если
+        # общее число узлов и объёмов совпало при загрузке файла.
+        init.write_text("initial_type formula\nrho=1+.1*cos(2*pi*x)\nux=.02*sin(2*pi*x)\np=1\n")
+        source = case / f"nonuniform-{model}"
+        run([aero, *args, f"--output={source}", "main:exact_solution=off"])
+        exact_file.write_text(f'path="{source.name}/all.fields"\n')
+        for label, command, extra in (("cpu", [aero], []), ("mpi", mpi, distributed)):
+            out = case / f"snapshot-nonuniform-{model}-{label}"
+            run([*command, *args, f"--output={out}", "main:exact_solution=fields", *extra])
+            report = (out / "sol_error.txt").read_text()
+            maximum = max(float(value) for row in report.splitlines()[2:] for value in row.split()[1:])
+            if maximum > (0. if label == "cpu" else 2.e-13):
+                raise AssertionError(report)
+        init.write_text("initial_type formula\nrho=1+t\nux=0\np=1\n")
     init.write_bytes(original)
-    print("OK Euler and Linear exact norms, CPU and MPI", flush=True)
+    print("OK Euler and Linear formula and snapshot norms, CPU and MPI", flush=True)
 
 
 def check_modes(args, case):

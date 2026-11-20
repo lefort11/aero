@@ -7,6 +7,10 @@
 #include "../explicit/explicit_stage.h"
 #include "../implicit/bdf1_step.h"
 
+#ifdef AERO_HAS_VISCOSITY
+#include "../viscosity/aes.h"
+#endif
+
 namespace aero {
 // Пространственный оператор одной подобласти. Сетка и её владельцы живут дольше оператора.
 class PartitionOperator {
@@ -28,6 +32,11 @@ public:
                        const StencilRequests& requests, const ReconstructionOptions& options);
     // Согласует с соседями порядок узлов и рёбер и выделяет буферы для повторных обменов.
     void connect(bool cuda, bool implicit_time);
+#ifdef AERO_HAS_VISCOSITY
+    void prepare_viscosity(const MeshPartition&, const PeriodicPartition*, const ResidualFrame&,
+                           const ViscositySettings&, double mach, bool gpu);
+    void apply_wall(std::vector<double>& field) const;
+#endif
 #ifdef AERO_WITH_KOKKOS_GPU
     // Размещает данные сетки и индексы обмена в общей области памяти GPU.
     void layout_gpu(bool compact_buffer);
@@ -97,6 +106,9 @@ private:
     std::vector<double> linear_input_; // Вход A*x в локальной нумерации для CPU, включая соседние узлы.
     PartitionTransfers nodes_; // Значения узлов, общие для соседних подобластей.
     PartitionTransfers edges_; // Результаты расчёта потоков на рёбрах между подобластями.
+#ifdef AERO_HAS_VISCOSITY
+    std::unique_ptr<viscosity::Aes> aes_;
+#endif
     unsigned width_;           // Число консервативных переменных в одном узле.
     const double* volumes_;    // Объёмы контрольных ячеек в расчётной нумерации.
     const std::vector<Id>&

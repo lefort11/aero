@@ -115,12 +115,7 @@ Entry lowercase(Entry e) {
 }
 
 double finite_number(const Entry& e) {
-    std::istringstream stream(e.value);
-    stream.imbue(std::locale::classic());
-    double value;
-    if (!(stream >> value) || !stream.eof() || !std::isfinite(value))
-        throw std::invalid_argument(e.where + ": expected a finite number");
-    return value;
+    return finite_real(e.value, e.where);
 }
 
 double number(const Entry& e, bool zero_allowed) {
@@ -130,6 +125,22 @@ double number(const Entry& e, bool zero_allowed) {
             e.where + (zero_allowed ? ": expected finite value >= 0" : ": expected finite value > 0"));
     return value;
 }
+
+// Проверяем все явно заданные величины. Для активного закона take также проверяет
+// наличие обязательных ключей. Это позволяет менять закон, сохранив общий gas.txt.
+#ifdef AERO_HAS_VISCOSITY
+void read_viscosity_parameters(Entries& gas, ViscositySettings& settings) {
+    const bool active = settings.law != "off";
+    const auto parameter = [&](const char* key, bool required, bool allow_zero, double& value) {
+        if (required || gas.contains(key)) value = number(gas.take(key), allow_zero);
+    };
+    parameter("reynolds", active, false, settings.reynolds);
+    parameter("prandtl", active, false, settings.prandtl);
+    parameter("t_amb", active, false, settings.t_amb);
+    parameter("sutherland_s", settings.law == "sutherland", true, settings.sutherland_s);
+}
+
+#endif
 
 std::vector<double> positive_list(const Entry& e) {
     std::vector<double> values;
@@ -326,19 +337,23 @@ RunSettings read_run_settings(const RunDirectories& directories) {
     if (run.upw_coeff > 1)
         throw std::invalid_argument("main.txt: upw_coeff must be in [0, 1]");
     auto& stable = run.stabilization;
-    if (main.contains("stable_mode"))
-        stable.mode = choice(main.take("stable_mode"), {"off", "cfl", "low", "on"});
-    if (!stable.active() || main.contains("cfl")) run.cfl = number(main.take("cfl"), false);
+    if (main.contains("stabilization"))
+        stable.mode = choice(main.take("stabilization"), {"off", "cfl", "low", "on"});
+    if (!stable.active() || main.contains("cfl")) {
+        const auto entry = main.take("cfl");
+        run.cfl = finite_number(entry);
+        // В main.txt проверяется обычный CFL; адаптивный диапазон задаётся ниже в cfl.txt.
+        Stabilization{}.validate(run.cfl, entry.where);
+    }
     if (stable.active()) {
-        if (run.background.active()) throw std::invalid_argument("stable_mode requires Equations = Euler");
+        if (run.background.active()) throw std::invalid_argument("stabilization requires Equations = Euler");
         Entries control(directories, "cfl");
         stable.interval = control.count<std::uint64_t>("num_steps");
-        stable.factor = number(control.take("coeff"), false);
-        run.cfl = number(control.take("cfl_init"), false);
-        stable.minimum = number(control.take("cfl_min"), false);
-        stable.maximum = number(control.take("cfl_max"), false);
-        if (!stable.interval || stable.factor <= 1. || stable.maximum < run.cfl || stable.minimum > run.cfl)
-            throw std::invalid_argument("cfl.txt: require num_steps >= 1, coeff > 1 and cfl_min <= cfl_init <= cfl_max");
+        stable.factor = finite_number(control.take("coeff"));
+        run.cfl = finite_number(control.take("cfl_init"));
+        stable.minimum = finite_number(control.take("cfl_min"));
+        stable.maximum = finite_number(control.take("cfl_max"));
+        stable.validate(run.cfl, "cfl.txt");
         control.finish(&run.input_warnings);
     }
     run.use_cuda = choice(main.take("backend"), {"cpu", "cuda"}) == "cuda";
@@ -352,16 +367,30 @@ RunSettings read_run_settings(const RunDirectories& directories) {
         throw std::invalid_argument("main.txt: expected 0 <= trace_ratio_min < 1 < trace_ratio_max");
     read_partition_settings(main, scheme.default_memory_factor, run);
     run.omp_threads = main.optional_count<int>("omp_threads");
-    run.exact_solution = main.contains("exact_solution") && choice(main.take("exact_solution"), {"on","off"}) == "on";
+    if (main.contains("exact_solution")) {
+        const auto mode = choice(main.take("exact_solution"), {"off", "formula", "fields", "on"});
+        if (mode == "fields") run.exact_solution = ExactSolution::Fields;
+        if (mode == "formula" || mode == "on") run.exact_solution = ExactSolution::Formula;
+    }
     if (main.contains("control_every")) run.control_every = main.count<std::uint64_t>("control_every");
     run.report_every = main.optional_count<std::uint64_t>("report_every");
     run.recovery_every_steps = main.optional_count<std::uint64_t>("recovery_every_steps");
+#ifdef AERO_HAS_VISCOSITY
+    if (main.contains("viscosity"))
+        run.viscosity.law = choice(lowercase(main.take("viscosity")), {"off", "normal", "sutherland"});
+    if (linear && run.viscosity.law != "off") throw std::invalid_argument("viscosity requires Equations = Euler");
+#endif
     main.finish(&run.input_warnings);
     Entries gas(directories, "gas");
     const Entry gamma = gas.take("gamma");
     run.gamma = number(gamma, false);
     if (run.gamma <= 1)
         throw std::invalid_argument(gamma.where + ": expected gamma > 1");
+    if (gas.contains("mach")) run.mach = number(gas.take("mach"), false);
+#ifdef AERO_HAS_VISCOSITY
+    read_viscosity_parameters(gas, run.viscosity);
+    if (run.viscosity.law != "off" && !run.mach) throw std::invalid_argument("gas.txt: missing mach");
+#endif
     gas.finish(&run.input_warnings);
     if (linear) {
         run.background.sound = std::sqrt(run.gamma*(run.background.p/run.background.rho));

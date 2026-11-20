@@ -54,8 +54,8 @@ struct FaceSpeed {
 // Суммирует по всем площадкам узла произведения скорости на площадь. Ориентация потока для CFL роли не играет.
 template <class Offset, class ReadFace>
 AERO_HOST_DEVICE inline CflStep local(const Offset* offsets, double volume, double cfl, size_t node,
-                                      ReadFace read_face) {
-    double sum = 0;
+                                      ReadFace read_face, double sum = 0.) {
+    if (!(sum >= 0. && sum <= max_finite_double)) return {-1, node};
     for (Offset j = offsets[node]; j < offsets[node + 1]; ++j) {
         const FaceSpeed face = read_face(j);
         if (!(face.speed >= 0 && face.speed <= max_finite_double))

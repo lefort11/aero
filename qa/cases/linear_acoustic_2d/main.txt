@@ -1,5 +1,5 @@
 Equations = Linear
-exact_solution = on
+exact_solution = formula
 mesh = ../momentum_2d/grid.mesh
 reconstruction = ebr3
 reconstruction_variables = characteristic

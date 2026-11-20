@@ -1,5 +1,5 @@
 Equations = Linear
-exact_solution = on
+exact_solution = formula
 mesh = ../wave_3d/grid.mesh
 reconstruction = ebr3
 reconstruction_variables = characteristic

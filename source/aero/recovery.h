@@ -17,7 +17,8 @@ public:
     // Записывает данные владельцев в другой слот и завершает запись проверенным заголовком.
     void save(std::uint64_t step, double time, const std::vector<double>& state,
               const std::vector<double>& initial);
-    bool due(std::uint64_t step, double time, bool final_field = false) const;
+    // Только промежуточные точки подчиняются расписанию. Итоговую пишет интегратор.
+    bool due(std::uint64_t step) const;
     const std::string& fields_directory() const { return fields_; }
     std::uint64_t step = 0;
     double time = 0;

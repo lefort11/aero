@@ -9,10 +9,10 @@
 #include <sstream>
 
 namespace aero {
-void RunControl::parse(const std::string& commands) {
+void RunControl::parse(const std::string& commands, std::ostream* warnings) {
     std::istringstream in(commands);
     std::set<std::string> keys;
-    bool explicit_cfl = false;
+    bool explicit_cfl = false, has_commands = false;
     std::string line;
     std::size_t row = 0;
     while (std::getline(in, line)) {
@@ -21,44 +21,42 @@ void RunControl::parse(const std::string& commands) {
         if (line.empty()) continue;
         const auto eq = line.find('=');
         const auto key = trim(line.substr(0, eq));
-        if (!keys.insert(key).second) throw std::invalid_argument("duplicate " + key);
-        if (line == "STOP") { stop = true; continue; }
-        if (line == "reset_fail") { reset = true; continue; }
-        if (eq == std::string::npos) throw std::invalid_argument("expected key=value: " + line);
-        const std::string token = trim(line.substr(eq + 1));
-        if (key == "cfl:num_steps") {
-            limits.interval = number_codec::parse_decimal(token, [](const char* why) { throw std::invalid_argument(why); });
-            change_cfl = true;
+        has_commands = true;
+        const auto argument = [&]() {
+            if (eq == std::string::npos) throw std::invalid_argument("expected key=value: " + line);
+            return trim(line.substr(eq + 1));
+        };
+        const auto real = [&]() { return finite_real(argument(), "control.txt (" + key + ")"); };
+        if (key == "STOP" || key == "reset_fail") {
+            if (eq != std::string::npos) throw std::invalid_argument(key + " takes no value");
+            if (key == "STOP") stop = true;
+            else reset = true;
+        } else if (key == "upw_coeff") upwind = real();
+        else if (key == "mp6_hybrid") hybrid = real();
+        else if (key == "cfl") { cfl = real(); explicit_cfl = true; }
+        else if (key == "cfl_min") limits.minimum = real();
+        else if (key == "cfl_max") limits.maximum = real();
+        else if (key == "cfl:coeff") limits.factor = real();
+        else if (key == "cfl:num_steps")
+            limits.interval = number_codec::parse_decimal(argument(), [](const char* why) { throw std::invalid_argument(why); });
+        else {
+            // Опечатка не отменяет остальные команды, даже если её значение не является числом.
+            if (warnings) *warnings << "WARNING: control.txt:" << row << ": unknown parameter '" << key << "'" << std::endl;
             continue;
         }
-        std::istringstream field(token);
-        field.imbue(std::locale::classic());
-        double value;
-        if (!(field >> value) || !field.eof() || !std::isfinite(value)) throw std::invalid_argument("invalid " + key);
-        if (key == "upw_coeff") upwind = value;
-        else if (key == "mp6_hybrid") hybrid = value;
-        else {
-            change_cfl = true;
-            if (key == "cfl") { cfl = value; explicit_cfl = true; }
-            else if (key == "cfl_min") limits.minimum = value;
-            else if (key == "cfl_max") limits.maximum = value;
-            else if (key == "cfl:coeff") limits.factor = value;
-            else throw std::invalid_argument("unknown command " + key);
-        }
+        if (!keys.insert(key).second) throw std::invalid_argument("duplicate " + key);
+        accepted_.push_back(eq == std::string::npos ? key : key + " = " + argument());
     }
-    if (keys.empty()) throw std::invalid_argument("empty command file");
+    if (!has_commands) throw std::invalid_argument("empty command file");
+    const bool limits_changed = keys.count("cfl_min") || keys.count("cfl_max") || keys.count("cfl:coeff") || keys.count("cfl:num_steps");
+    change_cfl = explicit_cfl || limits_changed;
     if (upwind < 0 || upwind > 1 || hybrid < 0 || hybrid > 1)
         throw std::invalid_argument("upw_coeff and mp6_hybrid must be in [0,1]");
-    if (!limits.active() && (keys.count("cfl_min") || keys.count("cfl_max") || keys.count("cfl:coeff") || keys.count("cfl:num_steps")))
+    if (!limits.active() && limits_changed)
         throw std::invalid_argument("adaptive CFL settings require active stabilization");
-    if (limits.active()) {
-        if (!limits.interval || limits.factor <= 1 || limits.minimum <= 0 || limits.maximum < limits.minimum)
-            throw std::invalid_argument("invalid adaptive CFL settings");
-        // При изменении одних границ приводим текущий CFL к новому диапазону.
-        if (!explicit_cfl) cfl = std::max(limits.minimum, std::min(cfl, limits.maximum));
-        if (cfl < limits.minimum || cfl > limits.maximum) throw std::invalid_argument("cfl outside limits");
-    }
-    if (cfl <= 0) throw std::invalid_argument("cfl must be positive");
+    // Без явного cfl сохраняем текущее значение в пределах новых границ.
+    if (limits.active() && !explicit_cfl) cfl = std::max(limits.minimum, std::min(cfl, limits.maximum));
+    limits.validate(cfl, "control.txt");
 }
 
 bool RunControl::read(const std::string& directory, const Processes& world) {
@@ -81,11 +79,15 @@ bool RunControl::read(const std::string& directory, const Processes& world) {
     }
     if (world.size > 1) world.broadcast(commands, 0);
     if (commands.empty()) return false;
-    try { parse(commands); }
+    try { parse(commands, world.rank ? nullptr : &std::cerr); }
     catch (const std::invalid_argument& e) {
         if (!world.rank) std::cerr << "Control rejected: " << e.what() << std::endl;
         return false;
     }
-    return true;
+    return !accepted_.empty();
+}
+
+void RunControl::report_accepted(std::ostream& out) const {
+    for (const auto& setting : accepted_) out << "Control accepted: " << setting << '\n';
 }
 }

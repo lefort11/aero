@@ -274,6 +274,50 @@ void output_zones(const CaseFiles& files) {
     }
 }
 
+// Оба закона используют одни опорные величины. Для Сазерленда проверяем и
+// дополнительную константу, включая ноль — предел, совпадающий с законом normal.
+#ifdef AERO_HAS_VISCOSITY
+void viscosity_settings(const CaseFiles& files) {
+    files.write("main.txt", "mesh=grid.mesh\nreconstruction=first_order\nreconstruction_variables=conservative\n"
+                            "time_scheme=euler\ncfl=.5\neuler_solver=roe\nfinal_time=0\nbackend=cpu");
+    const std::string gas = "gamma=1.4\n";
+    const std::string reference = gas + "mach=0.5\nreynolds=1e6\nprandtl=0.72\nt_amb=273.15\n";
+    files.write("gas.txt", gas);
+    require(files.load().viscosity.law == "off", "default inviscid case");
+
+    RunDirectories dirs(files.dir, "./results");
+    dirs.overrides["main"]["viscosity"] = "NORMAL";
+    for (const char* key : {"mach", "reynolds", "prandtl", "t_amb"}) {
+        auto incomplete = reference;
+        const auto start = incomplete.find(key);
+        incomplete.erase(start, incomplete.find('\n', start) + 1 - start);
+        files.write("gas.txt", incomplete);
+        rejects([&] { read_run_settings(dirs); }, std::string("missing ") + key);
+    }
+    files.write("gas.txt", reference);
+    const auto normal = read_run_settings(dirs).viscosity;
+    require(normal.law == "normal" && normal.reynolds == 1e6 && normal.prandtl == 0.72 &&
+            normal.t_amb == 273.15, "normal viscosity parameters");
+
+    dirs.overrides["main"]["viscosity"] = "sutherland";
+    rejects([&] { read_run_settings(dirs); }, "missing sutherland_s");
+    files.write("gas.txt", reference + "sutherland_s=110.4");
+    require(read_run_settings(dirs).viscosity.sutherland_s == 110.4, "Sutherland temperature");
+    dirs.overrides["gas"]["sutherland_s"] = "0";
+    require(read_run_settings(dirs).viscosity.sutherland_s == 0., "zero Sutherland temperature");
+    for (const auto& invalid : RunDirectories::Parameters{{"reynolds","-1"}, {"prandtl","0"},
+                                                        {"t_amb","nan"}, {"sutherland_s","-1"}}) {
+        dirs.overrides["gas"] = {invalid};
+        rejects([&] { read_run_settings(dirs); }, invalid.first);
+    }
+    dirs.overrides.clear();
+    dirs.overrides["main"]["viscosity"] = "normal";
+    require(read_run_settings(dirs).input_warnings.empty(), "shared gas file for both laws");
+    dirs.overrides["main"]["viscosity"] = "unknown";
+    rejects([&] { read_run_settings(dirs); }, "viscosity");
+}
+
+#endif
 void main_and_cuda(const CaseFiles& files) {
     const std::string head = "\xef\xbb\xbf# test\r\nmesh = \"path #1/grid.mesh\" # relative\n";
     files.write("gas.txt", "gamma=1.67");
@@ -472,6 +516,9 @@ int main() {
         arguments();
         templates_case();
         CaseFiles files;
+#ifdef AERO_HAS_VISCOSITY
+        viscosity_settings(files);
+#endif
         main_and_cuda(files);
 #ifdef _OPENMP
         require(omp_get_max_threads() == original_threads, "restore OpenMP runtime default");

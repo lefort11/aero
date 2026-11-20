@@ -30,9 +30,17 @@ using LfEdgeJacobian = EdgeFluxJacobian;
 
 namespace edge_detail {
 // Производная p=(γ−1)(E−|m|²/(2ρ)) по одной консервативной переменной.
+template<class Gas>
 AERO_HOST_DEVICE inline double pressure_column(unsigned col, unsigned energy, double gamma, double kinetic,
-                                               const EulerState& gas) {
+                                               const Gas& gas) {
     return (gamma - 1.) * (col == 0 ? kinetic : col == energy ? 1. : -gas.velocity[col - 1]);
+}
+// Производная u_m = (rho*u_m)/rho по одной консервативной переменной.
+// Эту же замену переменных используют открытая граница и вязкие члены.
+template<class Gas>
+AERO_HOST_DEVICE inline double velocity_column(unsigned col, unsigned axis, const Gas& gas) {
+    const double momentum = col == axis+1 ? 1. : 0.;
+    return (momentum - (col == 0 ? gas.velocity[axis] : 0.)) / gas.density;
 }
 // Общий столбец производных физического потока Эйлера для LF и Роу.
 // Изменяем одну консервативную переменную. Производные давления и нормальной

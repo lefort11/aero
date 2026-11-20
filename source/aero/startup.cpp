@@ -74,6 +74,16 @@ void show_settings(const RunSettings& r) {
               << "\neuler_solver = " << r.euler_solver << "\ntime_scheme = " << r.time_scheme
               << "\nupw_coeff = " << r.upw_coeff << "\ntrace_ratio_min = " << r.trace_ratio_min << "\ntrace_ratio_max = " << r.trace_ratio_max
               << "\ngamma = " << r.gamma << "\ncfl = " << r.cfl;
+#ifdef AERO_HAS_VISCOSITY
+    if (r.viscosity.law != "off") {
+        const auto& v = r.viscosity;
+        std::cout << "\nviscosity = " << v.law << " (AES)"
+                  << "\nreynolds = " << v.reynolds << "\nprandtl = " << v.prandtl
+                  << "\nt_amb = " << v.t_amb;
+        if (v.law == "sutherland") std::cout << "\nsutherland_s = " << v.sutherland_s;
+    }
+#endif
+    if (r.mach > 0.) std::cout << "\nmach = " << r.mach;
     if (r.background.active()) {
         std::cout << "\nBackground: rho0 = " << r.background.rho << ", p0 = " << r.background.p;
         const char* names[] = {"ux0", "uy0", "uz0"};

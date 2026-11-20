@@ -1,6 +1,7 @@
 #ifndef AERO_PARALLEL_DEVICE_API_H
 #define AERO_PARALLEL_DEVICE_API_H
 #include "../mesh/mesh_index.h"
+#include "modules.h"
 #include <cstdlib>
 #include <stdexcept>
 
@@ -16,6 +17,9 @@
 # define AERO_DEVICE_ENTRY
 #endif
 namespace aero {
+#ifdef AERO_HAS_VISCOSITY
+namespace viscosity { struct Jacobian; }
+#endif
 namespace implicit { struct CsgsSweep; struct JacobiBlocks; struct SpatialBlocks; struct KrylovUpdate; struct NewtonUpdate; }
 namespace device_work {
 extern "C" {
@@ -30,6 +34,9 @@ AERO_DEVICE_ENTRY const char* aero_device_jacobi_apply(int device, const implici
                                                       const double* residual, double* correction);
 AERO_DEVICE_ENTRY const char* aero_device_csgs_color(int device, const implicit::CsgsSweep&,
                                                     MeshIndex first, MeshIndex count);
+#ifdef AERO_HAS_VISCOSITY
+AERO_DEVICE_ENTRY const char* aero_device_viscous_matrix(int device, const viscosity::Jacobian&, const double* state);
+#endif
 AERO_DEVICE_ENTRY const char* aero_device_spatial_faces(int device, const implicit::SpatialBlocks&,
                                                const double* state, const double* initial, MeshIndex* bad);
 AERO_DEVICE_ENTRY const char* aero_device_spatial_rows(int device, const implicit::SpatialBlocks&,

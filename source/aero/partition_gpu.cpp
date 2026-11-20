@@ -1,5 +1,8 @@
 #include "../parallel/device_check.h"
 #include "partition_gpu.h"
+#ifdef AERO_HAS_VISCOSITY
+#include "../parallel/device_work.h"
+#endif
 #include "partition_report.h"
 #include <algorithm>
 #include <array>
@@ -187,6 +190,13 @@ void PartitionGpu::layout(residual_detail::Geometry g, const PartitionStencil& s
     g.stencil.slope_weights = storage_.upload(stencil.slopes.weights);
     g.stencil.weno_order = storage_.upload(stencil.weno_order);
     g.stencil.weno_epsilon_scale = storage_.upload(stencil.epsilon_scale);
+#ifdef AERO_HAS_VISCOSITY
+    if (aes_) {
+        viscous_grid_ = aes_->upload(storage_,state_nodes);
+        g.options.diffusion = viscous_grid_.rows;
+        g.options.wall = storage_.upload(aes_->wall);
+    }
+#endif
     grid_.geometry = g;
     grid_.volumes = storage_.allocate(g.nodes, volumes);
     grid_.computed = whole_mesh ? nullptr : storage_.upload(computed);
@@ -289,7 +299,8 @@ void PartitionGpu::set_alpha(double alpha) {
     update_face_batch();
 }
 void PartitionGpu::set_flux_options(const ResidualOptions& options) {
-    grid_.geometry.options = options;
+    grid_.geometry.options.upw_coeff = options.upw_coeff;
+    grid_.geometry.options.mp6_hybrid = options.mp6_hybrid;
     update_face_batch();
 }
 void PartitionGpu::update_face_batch() {
@@ -303,6 +314,12 @@ void PartitionGpu::fluxes(bool first_order_start) {
     auto batch = face_batch();
     if (first_order_start) batch.use_first_order();
     residual_detail::gpu_face_fluxes(batch, grid_.bad, nullptr, first_order_start ? nullptr : device_faces_);
+#ifdef AERO_HAS_VISCOSITY
+    if (aes_) {
+        const auto error = device_work::aero_device_viscosity(viscous_grid_,grid_.state,grid_.geometry.packed.gas);
+        if (error) throw std::runtime_error(error);
+    }
+#endif
     check_kernel("flux");
 }
 double PartitionGpu::cfl(double courant) {

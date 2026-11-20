@@ -12,6 +12,17 @@ struct Stabilization {
     std::string mode = "off";
     double factor = 2., minimum = 0., maximum = 1.;
     std::uint64_t interval = 1;
+    // Одни и те же ограничения действуют при старте, ручной команде и восстановлении.
+    void validate(double cfl, const std::string& where) const {
+        if (!std::isfinite(cfl) || cfl <= 0.)
+            throw std::invalid_argument(where + ": cfl must be finite and positive");
+        if (!active()) return;
+        if (!interval || !std::isfinite(factor) || factor <= 1.)
+            throw std::invalid_argument(where + ": require num_steps >= 1 and coeff > 1");
+        if (!std::isfinite(minimum) || !std::isfinite(maximum) || minimum <= 0. ||
+            cfl < minimum || cfl > maximum)
+            throw std::invalid_argument(where + ": require 0 < cfl_min <= cfl <= cfl_max");
+    }
     bool active() const { return mode != "off"; }
     bool local_order() const { return mode == "low" || mode == "on"; }
 };
@@ -25,13 +36,12 @@ public:
     AdaptiveCourant(const Stabilization& options, double initial) : options_(options), value_(initial) {}
     double value() const { return value_; }
     std::uint64_t successes() const { return successes_; }
-    void configure(const Stabilization& options, double value) {
+    // После ручной команды отсчёт начинается заново. Из recovery возвращается сохранённый счётчик.
+    void configure(const Stabilization& options, double value, std::uint64_t successes = 0) {
+        options.validate(value, "CFL");
+        if (successes >= options.interval)
+            throw std::invalid_argument("CFL success count must be less than num_steps");
         options_ = options;
-        restore(value, 0);
-    }
-    void restore(double value, std::uint64_t successes) {
-        if (!(value > 0.) || !std::isfinite(value) || (options_.active() && (value < options_.minimum || value > options_.maximum)) || successes >= options_.interval)
-            throw std::runtime_error("Checkpoint CFL outside configured limits");
         value_ = value;
         successes_ = successes;
     }

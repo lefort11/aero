@@ -117,8 +117,9 @@ Packet read_header(std::ifstream& in, Id count, unsigned width, double gamma, co
                 read_real(&bytes[header_gamma]) == gamma &&
                 !std::memcmp(&bytes[header_hash], hash.data(), 64),
             "incompatible mesh or gas (including the linear background)");
-    require(read_word(&bytes[header_step]) && std::isfinite(read_real(&bytes[header_time])) &&
-                read_real(&bytes[header_time]) > 0,
+    // Стационарное начальное поле или final_time=0 дают корректную точку (шаг 0, t=0).
+    const double time = read_real(&bytes[header_time]);
+    require(std::isfinite(time) && (read_word(&bytes[header_step]) ? time > 0. : time == 0.),
             "invalid step or time");
     saved_dt = 0.;
     if (history) {
@@ -253,13 +254,14 @@ Recovery::Recovery(const RunSettings& run, const Processes& world, Id count, uns
 std::string Recovery::path(int slot) const {
     return run_.directories.output + "/recovery-" + std::to_string(slot) + ".bin";
 }
-bool Recovery::due(Id accepted, double t, bool final_field) const {
-    return accepted > 0 && run_.recovery_every_steps && (final_field || accepted % run_.recovery_every_steps == 0 || (!run_.steady() && t == run_.final_time));
+bool Recovery::due(Id accepted) const {
+    return accepted > 0 && run_.recovery_every_steps && accepted % run_.recovery_every_steps == 0;
 }
 void Recovery::restore(std::vector<double>& state, std::vector<double>& initial) {
     const int requested = run_.directories.recovery_slot;
     std::string adaptive[2];
     Id steps[2] = {};
+    int valid[2] = {}; // У целого заголовка номер шага может быть нулевым.
     double times[2] = {}, saved_dt[2] = {};
     world_.local([&] {
         if (world_.rank)
@@ -274,16 +276,18 @@ void Recovery::restore(std::vector<double>& state, std::vector<double>& initial)
                 const auto h = read_header(in, count_, width_, run_.gamma, hash_, saved_dt[s], adaptive[s]);
                 steps[s] = read_word(&h[header_step]);
                 times[s] = read_real(&h[header_time]);
+                valid[s] = 1;
             } catch (const std::exception& e) {
                 std::cerr << path(s) << ": " << e.what() << '\n';
             }
         }
     });
     world_.broadcast(steps, 2, 0);
+    world_.broadcast(valid, 2, 0);
     world_.broadcast(saved_dt, 2, 0);
     const int first = steps[1] > steps[0] ? 1 : 0;
     for (int s : {first, 1 - first}) {
-        if (!steps[s])
+        if (!valid[s])
             continue;
         try {
             history.dt=saved_dt[s];

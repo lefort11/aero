@@ -48,6 +48,12 @@ inline bool needs_nodal_traces(BoundaryType type) {
 // Порядок строк в упаковке обоих концов ребра. Центральная и ближние строки хранятся по одному разу.
 enum WenoSlopeRow : unsigned { CentralSlope, NearLeftSlope, NearRightSlope, FarLeftSlope, FarRightSlope };
 
+// В исходном шаблоне первые четыре строки принадлежат левой стороне, следующие четыре — правой.
+// При укороченной левой стороне её противоположный наклон берём из собственной строки правой.
+AERO_HOST_DEVICE constexpr unsigned edge_slope_offset(unsigned slope, unsigned left_order) {
+    return slope == FarRightSlope ? 7u : (slope == NearRightSlope && left_order != 5 ? 5u : slope);
+}
+
 // Число узлов в наклоне: концы ребра, интерполяция ближней грани либо разность двух интерполяций.
 AERO_HOST_DEVICE constexpr unsigned slope_terms(unsigned row) {
     return row == CentralSlope ? 2 : (row <= NearRightSlope ? 3 : 4);
@@ -419,8 +425,9 @@ AERO_HOST_DEVICE inline bool hybrid_edge_traces(const FieldReader& reader, Index
     if (characteristic_2d || reader.variables == ResidualVariables::Characteristic) {
         // Строки уже выражены в характеристических переменных Роу.
         for (unsigned k = 0; k < 5; ++k) {
-            const unsigned side = k == FarRightSlope ? 1 : 0;
-            const Index slope_row = 4*row + (side ? 7 : k);
+            const unsigned offset = edge_slope_offset(k, 5); // Гибрид здесь использует полный шаблон.
+            const unsigned side = offset / 4;
+            const Index slope_row = 4*row + offset;
             if (!transformed_row<0,characteristic_2d>(reader, st.row_owner[row+side], own[side], st.slope_offsets,
                     st.slope_nodes, st.slope_weights, slope_row, slopes[k], 1))
                 return false;
@@ -579,8 +586,10 @@ template <bool roe_2d = false, bool states_only = false>
 KOKKOS_FORCEINLINE_FUNCTION bool solve_edge_flux(const Geometry& g, const Surface& surface,
                                               const double* left, const double* right,
                                               const euler_detail::InterfaceGas& gas, const EdgeTraces* physical,
-                                              EulerFluxResult& out) {
-    const unsigned dim = roe_2d ? 2 : g.dim;
+                                              EulerFluxResult& out, unsigned nodal_lf_dim = 0) {
+    // Для LF первого порядка размерность выбирается перед обходом рёбер. Тогда
+    // компилятор знает число компонент при проекции потока и при его интегрировании.
+    const unsigned dim = nodal_lf_dim ? nodal_lf_dim : (roe_2d ? 2 : g.dim);
     EdgeTraces local;
     double speed;
     if (!states_only && physical) {
@@ -596,7 +605,7 @@ KOKKOS_FORCEINLINE_FUNCTION bool solve_edge_flux(const Geometry& g, const Surfac
         physical = &local;
     }
     const euler_detail::FaceStates face = {dim, left, right, surface.area, g.options.gamma, g.options.upw_coeff};
-    const auto status = roe_2d || g.options.solver == ResidualSolver::Roe
+    const auto status = roe_2d || (!nodal_lf_dim && g.options.solver == ResidualSolver::Roe)
         ? roe_detail::RoeFlux::combine<roe_2d ? 2 : 0>(face, gas, physical->left, physical->right, speed, &out)
         : euler_detail::RusanovFlux::combine(face, gas, physical->left, physical->right, speed, &out);
     return status == EulerStatus::Success && integrate_flux(dim + 2, surface.measure, out);
@@ -728,7 +737,7 @@ AERO_HOST_DEVICE inline bool linear_edge_flux(const Geometry& g, Index edge, con
 
 template <bool roe_2d = false, bool nodal_only = false, unsigned linear_width = 0, bool characteristic_2d = false>
 KOKKOS_FORCEINLINE_FUNCTION bool integrated_edge_flux(const Geometry& g, Index edge, const double* field,
-                                                  EulerFluxResult& out) {
+                                                  EulerFluxResult& out, unsigned nodal_lf_dim = 0) {
     const Surface& surface = g.surfaces[edge];
     const double* begin = g.node_row(field, surface.begin);
     const double* end = g.node_row(field, surface.end);
@@ -740,7 +749,7 @@ KOKKOS_FORCEINLINE_FUNCTION bool integrated_edge_flux(const Geometry& g, Index e
     if (!prepare_edge_basis<roe_2d, nodal_only>(g, surface, base, basis))
         return false;
     if (nodal_only || !g.stencil.row_owner || surface.use_nodal_traces == 1)
-        return solve_edge_flux<roe_2d>(g, surface, begin, end, base, nullptr, out);
+        return solve_edge_flux<roe_2d>(g, surface, begin, end, base, nullptr, out, nodal_lf_dim);
 
     EdgeTraces state, reconstructed_flux;
     EdgeTraces* physical_flux = nullptr;
@@ -800,8 +809,8 @@ struct FaceBatch {
         return f < geometry.edges ? compute_edge<true, nodal_only, linear_width>(f) : compute_boundary(f);
     }
     template <bool roe, bool nodal, unsigned linear_width = 0, bool characteristic_2d = false>
-    AERO_HOST_DEVICE bool compute_edge(Index f) const {
-        if (!integrated_edge_flux<roe, nodal, linear_width, characteristic_2d>(geometry, f, state, flux[f]))
+    AERO_HOST_DEVICE bool compute_edge(Index f, unsigned nodal_lf_dim = 0) const {
+        if (!integrated_edge_flux<roe, nodal, linear_width, characteristic_2d>(geometry, f, state, flux[f], nodal_lf_dim))
             return false;
         save_speed(f);
         return true;
@@ -849,6 +858,13 @@ AERO_HOST_DEVICE inline bool assemble_node_residual(const Geometry& g, Index nod
             sum[c] += entry.outward_flux(stored.flux[c]);
     }
     for (unsigned c = 0; c < width; ++c) {
+#ifdef AERO_HAS_VISCOSITY
+        if (g.options.diffusion) {
+            sum[c] += g.options.diffusion[node].residual[c];
+            // На неподвижной стенке скорость закреплена. Плотность и энергия остаются неизвестными.
+            if (c > 0 && c+1 < width && g.options.wall[node]) sum[c] = 0.;
+        }
+#endif
         if (!euler_detail::finite(sum[c]))
             return false;
         row[c] = sum[c]; // Интегратор применит минус и разделит эту сумму на объём узла.

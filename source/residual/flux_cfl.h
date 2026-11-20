@@ -20,12 +20,19 @@ struct FaceSpeeds {
 struct FluxCfl {
     const Index* offsets; // Диапазоны смежных площадок для каждого узла.
     FaceSpeeds speeds;    // Передаём в редукцию Kokkos только нужные ей массивы.
+#ifdef AERO_HAS_VISCOSITY
+    const viscosity::Row* diffusion;
+#endif
     const double* volumes;
     const MeshIndex* owned;
     Index count;
     FluxCfl(const Geometry& grid, const EulerFluxResult* flux, const double* node_volumes,
             const MeshIndex* owned_nodes, Index rows)
-        : offsets(grid.offsets), speeds{grid.incidence, grid.surfaces, flux}, volumes(node_volumes),
+        : offsets(grid.offsets), speeds{grid.incidence, grid.surfaces, flux},
+#ifdef AERO_HAS_VISCOSITY
+          diffusion(grid.options.diffusion),
+#endif
+          volumes(node_volumes),
           owned(owned_nodes), count(rows) {}
     AERO_HOST_DEVICE CflStep local(Index k, double courant) const {
         const Index i = owned ? owned[k] : k;
@@ -33,7 +40,11 @@ struct FluxCfl {
         if (!owned &&
             (!(volume > 0 && volume <= max_finite_double) || offsets[i] == offsets[i + 1]))
             return {-1, i};
-        return cfl_detail::local(offsets, volume, courant, i, speeds);
+        double viscous_rate = 0.;
+#ifdef AERO_HAS_VISCOSITY
+        if (diffusion) viscous_rate = diffusion[i].cfl_rate;
+#endif
+        return cfl_detail::local(offsets, volume, courant, i, speeds, viscous_rate);
     }
 };
 double cpu_flux_cfl(const FluxCfl&, double courant, const MeshIndex* global_ids = nullptr);

@@ -251,6 +251,9 @@ std::string run_case(const std::string& program, const std::string& device, bool
         std::remove(path.c_str());
     }
     require(records == 2, "two scheduled times");
+    require(bool(std::ifstream(out + "/recovery-0.bin", std::ios::binary)), "missing final recovery");
+    std::remove((out + "/recovery-0.bin").c_str());
+    std::remove((out + "/recovery.lock").c_str());
     std::remove((out + "/state.fields").c_str());
     remove_dir(out + "/history");
     remove_dir(out);

@@ -87,7 +87,7 @@ AERO_HOST_DEVICE inline bool block(unsigned d, BoundaryConfig patch, const FreeB
                 matrix[(k + 1) * width + col] = area[k] * v.p;
         } else {
             for (unsigned k = 0; k < d; ++k)
-                v.velocity[k] = ((col == k + 1 ? 1. : 0.) - gas.velocity[k] * v.rho) / gas.density;
+                v.velocity[k] = edge_detail::velocity_column(col,k,gas);
             apply_rule(d, regime, *rules, gas, boundary, normal, gamma, v);
             // Правило произведения для расхода массы, импульса и потока полной энтальпии.
             const double dq = euler_detail::dot(d, v.velocity, area);

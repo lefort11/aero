@@ -16,6 +16,9 @@ struct SpatialBlocks {
     const MeshIndex* neighbour;  // Индекс блока соседа для каждого вхождения ребра.
     const MeshIndex* computed;   // Индексы площадок, поток которых вычисляет процесс.
     MeshIndex face_count, row_count;
+#ifdef AERO_HAS_VISCOSITY
+    bool viscous;                // Блоки AES уже заполнены перед добавлением производных конвективных потоков.
+#endif
     bool roe;                    // Выбор численного потока для матрицы поправки.
     bool simplified;             // Фиксировать диссипацию LF или Роу при дифференцировании.
     AERO_HOST_DEVICE MeshIndex node(MeshIndex row) const { return columns[rows[row]]; }
@@ -88,6 +91,15 @@ struct SpatialBlocks {
         const unsigned offset = first*Width;
         const unsigned count = Equations*Width;
         double diagonal[count] = {};
+#ifdef AERO_HAS_VISCOSITY
+        const bool add_to_existing = viscous;
+        if (viscous) {
+            const double* diffusion = values+rows[row]*stride+offset;
+            for (unsigned k = 0; k < count; ++k) diagonal[k] = diffusion[k];
+        }
+#else
+        const bool add_to_existing = false;
+#endif
         for (MeshIndex p=grid.offsets[i]; p<grid.offsets[i+1]; ++p) {
             const auto entry = grid.incidence[p];
             const auto f = entry.face();
@@ -106,11 +118,29 @@ struct SpatialBlocks {
             for (unsigned k=0; k<count; ++k) {
                 diagonal[k] += entry.outward_flux(own[k]);
                 const double contribution = entry.outward_flux(other[k]);
-                block[k] = (slot&1) ? block[k]+contribution : contribution;
+                block[k] = (add_to_existing || (slot&1)) ? block[k]+contribution : contribution;
                 // Производные грани уже проверены. Переполнение возможно только при сложении связей.
                 if ((slot&1) && !euler_detail::finite(block[k])) return false;
             }
         }
+#ifdef AERO_HAS_VISCOSITY
+        if (viscous) {
+            const bool wall = grid.options.wall && grid.options.wall[i];
+            for (unsigned r = 0; r < Equations; ++r) {
+                // Невязка импульса на неподвижной стенке тождественно нулевая.
+                // Обнуляем всю пространственную строку уже после консервативной сборки.
+                const bool fixed = wall && first+r > 0 && first+r+1 < Width;
+                if (fixed) for (unsigned c = 0; c < Width; ++c) diagonal[r*Width+c] = 0.;
+                for (MeshIndex p = rows[row]+1; p < rows[row+1]; ++p) {
+                    double* equation = values+p*stride+(first+r)*Width;
+                    for (unsigned c = 0; c < Width; ++c) {
+                        if (fixed) equation[c] = 0.;
+                        else if (!euler_detail::finite(equation[c])) return false;
+                    }
+                }
+            }
+        }
+#endif
         if (volumes) {
             const double mass = volumes[i]/dt;
             if (!(mass>0.) || !euler_detail::finite(mass)) return false;

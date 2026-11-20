@@ -25,8 +25,7 @@ KOKKOS_INLINE_FUNCTION void project(const FaceBatch& batch, Index face, MpEdgeTi
 
     PlaneEdge edge;
     double slopes[5][4];
-    if (!edge.prepare(g, batch.state, face) ||
-        !project_stencil(*stencil, geometry_lane, batch.state, edge, g.options.gamma, slopes)) {
+    if (!prepare_edge_slopes(g, face, batch.state, *stencil, geometry_lane, edge, slopes)) {
         Kokkos::atomic_fetch_min(bad, face);
         return;
     }

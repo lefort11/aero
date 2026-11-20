@@ -2,6 +2,10 @@
 #define AERO_IMPLICIT_PARTITION_H
 #include "../mesh/mesh_index.h"
 #include <functional>
+#include "../parallel/modules.h"
+#ifdef AERO_HAS_VISCOSITY
+#include "../viscosity/transport.h"
+#endif
 
 namespace aero {
 namespace residual_detail { struct Geometry; }
@@ -11,6 +15,9 @@ enum { NewtonFieldCount = 3, KrylovFieldCount = 6 };
 // Связь численного метода с разбиением сетки. Сам решатель не зависит от MPI:
 // в обычном расчёте списки пусты, номера узлов и строк совпадают.
 struct Partition {
+#ifdef AERO_HAS_VISCOSITY
+    viscosity::Operator host_aes{}, active_aes{}; // Топология для CSR и массивы исполнителя для производных.
+#endif
     MeshIndex rows = 0, faces = 0;       // Число собственных узлов и вычисляемых площадок.
     const MeshIndex* host_owned = nullptr; // Соответствие строки CSR узлу для построения структуры на CPU.
     const MeshIndex* owned = nullptr;    // То же соответствие на исполнителе данной подобласти.

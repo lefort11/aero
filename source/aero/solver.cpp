@@ -170,11 +170,14 @@ public:
         if (command.change_cfl && run_.stabilization.mode == "low" && courant() >= .99 * command.limits.maximum)
             reset_marks();
         accepted_fluxes_ = false;
-        if (!world_.rank) std::cout << "Control applied after step " << step << ", CFL = " << courant()
-            << ", upw_coeff = " << command.upwind << ", mp6_hybrid = " << command.hybrid
-            << ", cfl_min = " << command.limits.minimum << ", cfl_max = " << command.limits.maximum
-            << ", num_steps = " << command.limits.interval << ", coeff = " << command.limits.factor
-            << ", first-order cells = " << first_order_cells() << std::endl;
+        if (!world_.rank) {
+            command.report_accepted(std::cout);
+            std::cout << "Control applied after step " << step << ", CFL = " << courant()
+                      << ", upw_coeff = " << command.upwind << ", mp6_hybrid = " << command.hybrid
+                      << ", cfl_min = " << command.limits.minimum << ", cfl_max = " << command.limits.maximum
+                      << ", num_steps = " << command.limits.interval << ", coeff = " << command.limits.factor
+                      << ", first-order cells = " << first_order_cells() << std::endl;
+        }
         return command.stop;
     }
 
@@ -207,10 +210,17 @@ public:
                 have_marks_ = true;
             }
             print_counts(step, failed_count_);
+            const double previous_cfl = courant();
             courant_.reject();
             op_.set_courant(courant(), run_.uses_implicit_time());
             accepted_fluxes_ = false;
-            if (!world_.rank) std::cout << "Retry step " << step.number << ", CFL = " << courant() << '\n';
+            if (!world_.rank) {
+                // Сообщаем сразу при каждом откате, даже если периодический отчёт выключен.
+                std::ostringstream message;
+                message << std::setprecision(17) << "Retry step " << step.number
+                        << ": CFL reduced from " << previous_cfl << " to " << courant();
+                std::cout << message.str() << std::endl;
+            }
             return false;
         }
     }
@@ -254,8 +264,7 @@ public:
         }
         if (!(in >> value >> count) || mode != run_.stabilization.mode)
             throw std::runtime_error("Incompatible checkpoint stabilization mode");
-        courant_.configure(run_.stabilization, value);
-        courant_.restore(value, count);
+        courant_.configure(run_.stabilization, value, count);
         op_.set_courant(value, run_.uses_implicit_time());
         for (auto* group : {&master_low_, &report_failed_}) {
             if (!(in >> count)) throw std::runtime_error("Invalid checkpoint cell count");
@@ -463,6 +472,9 @@ prepare_partition_operator(const RunSettings& run, const ReconstructionOptions& 
         downgraded =
             op->prepare_stencil(part, seam, boundaries.periodic_pairs, input.get(), requests, reconstruction);
     }
+#ifdef AERO_HAS_VISCOSITY
+    op->prepare_viscosity(part,seam,frame,run.viscosity,run.mach,run.use_cuda);
+#endif
     if (single) {
         done();
         const auto edges = seam ? seam->edges.size() : part.mesh.view().edge_count;
@@ -529,11 +541,9 @@ void report_active_backend(const RunSettings& run, const Processes& world) {
 // Поля остаются на выбранном исполнителе. Копию с GPU загружаем на CPU, когда её запросил вывод.
 void integrate_partition(const RunSettings& run, const Processes& world, unsigned dimension,
                          PartitionStepper& stepper, PartitionOperator& op, PartitionState& fields,
-                         PartitionOutput& output, std::unique_ptr<Recovery>& recovery, ExactError* error,
-                         const std::function<Recovery*()>& ensure_recovery) {
+                         PartitionOutput& output, Recovery& recovery, ExactError* error) {
     StepOperations operations;
     operations.control = [&](Id step) { return stepper.control(step); };
-    operations.stop_recovery = ensure_recovery;
     operations.cfl_step = [&](bool first_order_start, SolverTimings& timing) {
         return stepper.prepare_first_stage(first_order_start, timing);
     };
@@ -548,11 +558,11 @@ void integrate_partition(const RunSettings& run, const Processes& world, unsigne
         return fields.current;
     };
     operations.checkpoint_history = [&](implicit::BdfHistory& history) {
-            world.local([&] {
-                if (run.implicit_settings.second_order) op.implicit_step().export_history(history);
-                recovery->stabilization_state = stepper.checkpoint();
-            });
-        };
+        world.local([&] {
+            if (run.implicit_settings.second_order) op.implicit_step().export_history(history);
+            recovery.stabilization_state = stepper.checkpoint();
+        });
+    };
     if (error) operations.exact_error = [&](const TimeStep& step, const std::vector<double>& state) {
         error->write(step.number, step.end, state);
     };
@@ -560,7 +570,7 @@ void integrate_partition(const RunSettings& run, const Processes& world, unsigne
     operations.write_fields = [&](const TimeStep& step, const std::vector<double>& snapshot, bool final_field) {
         output.write(step.number, step.end, snapshot, final_field);
     };
-    integrate_time(run, world, output.schedule, recovery.get(), fields.initial, operations);
+    integrate_time(run, world, output.schedule, recovery, fields.initial, operations);
 }
 
 // Готовит одну подобласть и ведёт расчёт до конечного времени.
@@ -610,15 +620,8 @@ int run_partition(RunSettings run, const ReconstructionOptions& reconstruction, 
 #endif
     const PartitionFileLayout file_layout(run, part, geometry.periodic_partition(), world);
     // Контрольная точка и общий файл полей используют одну таблицу исходных номеров.
-    std::unique_ptr<Recovery> recovery;
-    const auto ensure_recovery = [&]() -> Recovery* {
-        if (recovery) return recovery.get();
-        const auto hash = archive ? part.mesh_sha256 : FieldSnapshot::mesh_fingerprint(part.mesh);
-        recovery.reset(
-            new Recovery(run, world, part.global_counts[0], mesh.dimension, hash, file_layout.rows));
-        return recovery.get();
-    };
-    if (run.recovery_every_steps || run.directories.recover) ensure_recovery();
+    const auto hash = archive ? part.mesh_sha256 : FieldSnapshot::mesh_fingerprint(part.mesh);
+    Recovery recovery(run, world, part.global_counts[0], mesh.dimension, hash, file_layout.rows);
     world.local([&] {
         if (!single) {
             stencil_peak = process_peak_kib();
@@ -632,7 +635,7 @@ int run_partition(RunSettings run, const ReconstructionOptions& reconstruction, 
 
     // Контрольная точка хранит только собственные узлы. Соседние значения восстанавливаем обменом.
     if (run.directories.recover) {
-        recovery->restore(fields.current, fields.initial);
+        recovery.restore(fields.current, fields.initial);
         if (!single) {
             op->halo_host(fields.current);
         }
@@ -641,13 +644,23 @@ int run_partition(RunSettings run, const ReconstructionOptions& reconstruction, 
         op->halo_host(fields.initial);
     }
 
-    const auto& base = recovery ? recovery->fields_directory() : run.directories.output;
+    const auto& base = recovery.fields_directory();
     std::unique_ptr<ExactError> error;
     std::unique_ptr<PartitionOutput> output;
     world.local([&] {
-        if (!run.directories.recover) {
-            fields.start_from_initial(part, geometry.periodic_partition());
+        if (!run.directories.recover) fields.start_from_initial(part, geometry.periodic_partition());
+    });
+#ifdef AERO_HAS_VISCOSITY
+    if (run.viscosity.law != "off") {
+        op->apply_wall(fields.initial);
+        op->apply_wall(fields.current);
+        if (!single) {
+            op->halo_host(fields.initial);
+            op->halo_host(fields.current);
         }
+    }
+#endif
+    world.local([&] {
 #ifdef AERO_WITH_KOKKOS_GPU
         if (gpu) {
             op->upload_state(fields.current, fields.initial);
@@ -656,12 +669,12 @@ int run_partition(RunSettings run, const ReconstructionOptions& reconstruction, 
                 PartitionGpu::synchronize();
         }
 #endif
-        if (run.implicit_settings.second_order && recovery && recovery->history.dt > 0.) {
-            op->implicit_step().import_history(recovery->history);
+        if (run.implicit_settings.second_order && recovery.history.dt > 0.) {
+            op->implicit_step().import_history(recovery.history);
         }
-        if (recovery) recovery->history = implicit::BdfHistory{};
-        if (run.exact_solution)
-            error.reset(new ExactError(run, world, part, geometry.periodic_partition(),
+        recovery.history = implicit::BdfHistory{};
+        if (run.exact_solution != ExactSolution::Off)
+            error.reset(new ExactError(run, world, part, geometry.periodic_partition(), file_layout.selection,
                                        periodic ? seam.volumes.data() : cv.volumes, base));
         output.reset(
             new PartitionOutput(run, part, file_layout, world, base, seam.node_dof, op->state_nodes()));
@@ -669,13 +682,13 @@ int run_partition(RunSettings run, const ReconstructionOptions& reconstruction, 
     if (!single) {
         write_partition_report(world, op->work(part.end_leaf - part.first_leaf), stencil_peak, std::cout);
     }
-    if (recovery && run.directories.recover) {
-        op->first_order_start = run.first_order_start(recovery->time);
-        stepper.resume(recovery->stabilization_state);
+    if (run.directories.recover) {
+        op->first_order_start = run.first_order_start(recovery.time);
+        stepper.resume(recovery.stabilization_state);
     }
     print_input_warnings(run, world, std::cerr);
     report_active_backend(run, world);
-    integrate_partition(run, world, mesh.dimension, stepper, *op, fields, *output, recovery, error.get(), ensure_recovery);
+    integrate_partition(run, world, mesh.dimension, stepper, *op, fields, *output, recovery, error.get());
     return 0;
 }
 }

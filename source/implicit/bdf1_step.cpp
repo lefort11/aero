@@ -17,21 +17,33 @@ namespace {
 template<class Update, class Share, class Residual>
 double predict_initial_field(double norm, const NewtonSettings& settings, const Update& update,
                              const Share& share, const Residual& residual,
-                             const std::function<void()>& refresh, const std::function<bool()>& trial_flux) {
+                             const std::function<void()>& refresh, const std::function<bool()>& trial_flux,
+                             bool viscous) {
     if (!trial_flux || norm == 0.) return norm;
-    // Нужен старт для Ньютона. Останавливаем Пикара вблизи требуемой точности
-    // или раньше, если невязка перестала уменьшаться хотя бы на пятую часть.
-    const double target = norm * (4. * settings.newton_relative);
+    // При быстрой сходимости последовательные подстановки дешевле сборки AES
+    // и решения линейной системы. Для вязкого шага оставляем запас по допуску,
+    // чтобы точность поля была близка к получаемой после поправки Ньютона.
+    const double target = norm * ((viscous ? .02 : 4.) * settings.newton_relative);
     // Хорошо сокращающаяся невязка допускает несколько дополнительных дешёвых
     // проб перед сборкой якобиана. При лимите в одну поправку сразу вызываем Ньютон.
-    const unsigned limit = std::min(16u, settings.max_iterations - 1);
+    const unsigned limit = std::min(viscous ? 24u : 16u, settings.max_iterations - 1);
     for (unsigned k = 0; k < limit && norm > target; ++k) {
-        update(NewtonUpdate::Predict);
+        update(NewtonUpdate::Predict, 1.);
         share();
-        const double trial = trial_flux() ? residual() : HUGE_VAL;
+        double trial = trial_flux() ? residual() : HUGE_VAL;
+        if (viscous && std::isfinite(trial) && !(trial < .8 * norm)) {
+            // На жёстком вязком члене полная подстановка может перебросить поле
+            // через корень. При противоположных знаках одной линейной моды
+            // доля norm/(norm+trial) даёт нуль этой моды между двумя полями.
+            // Для системы это только проба, её проверяем по полной невязке.
+            const double relaxation = 1. / (1. + trial/norm);
+            update(NewtonUpdate::RelaxPrediction, relaxation);
+            share();
+            trial = trial_flux() ? residual() : HUGE_VAL;
+        }
         if (!(trial < .8 * norm)) {
             // После отката нужны и потоки, и правая часть для восстановленного поля.
-            update(NewtonUpdate::UndoPrediction);
+            update(NewtonUpdate::UndoPrediction, 1.);
             share();
             refresh();
             return residual();
@@ -195,7 +207,7 @@ double BdfStep::spatial_rate_norm(const double* volumes, const EulerFluxResult* 
     auto& s = *storage_;
     s.partition.local([&] {
         s.update({s.grid, flux, volumes, nullptr, nullptr, s.rhs, nullptr, nullptr,
-                  0., 0., 0., NewtonUpdate::SpatialRate, s.partition.owned});
+                  0., 0., 0., NewtonUpdate::SpatialRate, s.partition.owned, 1.});
     });
     const double norm = s.linear.infinity_norm(s.rhs);
     if (!std::isfinite(norm)) throw std::domain_error("Steady: nonfinite spatial residual");
@@ -219,11 +231,12 @@ NewtonResult BdfStep::advance(double* state, const double* initial, const double
     const double fraction = ratio/(1.+ratio);
     const double leading = 1.+fraction, history_weight = ratio*fraction;
     if (!std::isfinite(history_weight)) throw std::domain_error("BDF: invalid time step ratio");
-    const auto update = [&](NewtonUpdate::Operation op) {
+    const auto update_trial = [&](NewtonUpdate::Operation op, double relaxation) {
         s.partition.local([&] {
-            s.update({s.grid, flux, volumes, state, s.start, s.rhs, s.correction, s.previous, dt, leading, history_weight, op, s.partition.owned});
+            s.update({s.grid, flux, volumes, state, s.start, s.rhs, s.correction, s.previous, dt, leading, history_weight, op, s.partition.owned, relaxation});
         });
     };
+    const auto update = [&](NewtonUpdate::Operation op) { update_trial(op, 1.); };
     // Первое приближение — принятое поле U_n. Его копия нужна в уравнении
     // баланса на каждой итерации и для отката всего шага при отказе решателя.
     update(NewtonUpdate::SaveStart);
@@ -244,8 +257,12 @@ NewtonResult BdfStep::advance(double* state, const double* initial, const double
         const double initial_norm = residual_norm();
         double norm = initial_norm;
         if (!std::isfinite(norm)) throw std::domain_error("BDF: nonfinite nonlinear residual");
-        norm = predict_initial_field(norm, settings, update, share_state, residual_norm, refresh_fluxes,
-                                     try_prediction_fluxes);
+        bool viscous = false;
+#ifdef AERO_HAS_VISCOSITY
+        viscous = s.partition.host_aes.dim != 0; // Один выбор для всех рангов, включая пустые.
+#endif
+        norm = predict_initial_field(norm, settings, update_trial, share_state, residual_norm, refresh_fluxes,
+                                     try_prediction_fluxes, viscous);
         for (unsigned iteration = 0;; ++iteration) {
             // Равновесное поле с нулевой исходной невязкой принимаем без решения системы.
             const double relative = initial_norm == 0. ? 0. : norm / initial_norm;

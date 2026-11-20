@@ -24,6 +24,9 @@ struct DeviceArrays {
         if (src) checked(copy(p, src, n * sizeof(T), Copy::ToDevice));
         return p;
     }
+    template <class T> T* upload(const std::vector<T>& values) {
+        return allocate(values.size(),values.data());
+    }
     ~DeviceArrays() {
         if (allocations.empty()) return;
         DeviceScope scope(device);

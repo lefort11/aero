@@ -2,6 +2,10 @@
 #define AERO_RESIDUAL_H
 
 #include "../eulersolver/linear_euler.h"
+#include "../parallel/modules.h"
+#ifdef AERO_HAS_VISCOSITY
+#include "../viscosity/transport.h"
+#endif
 
 namespace aero {
 namespace implicit { class SpatialJacobian; }
@@ -9,6 +13,10 @@ namespace residual_detail { struct Geometry; }
 enum class ResidualVariables { Conservative, Characteristic, Flux };
 enum class ResidualSolver { Roe, LocalLF };
 struct ResidualOptions {
+#ifdef AERO_HAS_VISCOSITY
+    const viscosity::Row* diffusion = nullptr; // Интегральный вклад AES в невязку каждого узла.
+    const unsigned char* wall = nullptr; // У неподвижной стенки компоненты импульса закреплены.
+#endif
     LinearBackground background; // Параметры линейных уравнений, общие для всех граней.
     ResidualVariables variables;
     ResidualSolver solver;

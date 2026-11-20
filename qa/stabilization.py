@@ -33,23 +33,31 @@ def check(args, case):
             if parallel and args.devices:
                 opts += ["main:backend=cuda", f"cuda:devices={args.devices}"]
             cmd = [*cmd, *common, *opts, f"main:mesh={archive if parallel else mesh}", f"--output={dest}",
-                   f"main:stable_mode={mode}"]
+                   f"main:stabilization={mode}"]
             log = run(cmd, success=mode != "off")
             if mode == "off":
                 assert "stage" in log and "Retry step" not in log
                 continue
-            assert "Retry step" in log
+            reductions = re.findall(r"^Retry step (\d+): CFL reduced from (\S+) to (\S+)$", log, re.M)
+            assert reductions and len(reductions) == log.count("Retry step"), log
+            assert all(float(new) == float(old) / 2 for _, old, new in reductions), reductions
             # Строка после нормы энергии относится к отчёту за принятый шаг.
             counts = re.findall(r"Energy residual[^\n]*\nStep (\d+), failed cells = (\d+), first-order cells = (\d+)", log)
             assert counts and any(int(failed) for _, failed, _ in counts)
             assert any(int(low) for _, _, low in counts) == (mode in ("low", "on"))
             _, fields = binary_snapshot(dest / "final.fields")
             if reference is None:
-                reference = counts, fields
+                reference = counts, fields, reductions
             else:
+                assert reductions == reference[2]  # Каждый отказ печатает только процесс 0.
                 assert counts == reference[0]
                 for key in fields:
                     assert max(abs(a-b) for a,b in zip(fields[key], reference[1][key])) < 1e-11
+        if mode == "cfl":
+            # Уменьшение CFL сообщается сразу, даже когда обычный отчёт отключён.
+            log = run([args.aero, *common, f"main:mesh={mesh}", f"--output={case / 'quiet'}",
+                       "main:stabilization=cfl", "main:report_every=0"])
+            assert "CFL reduced from 4 to 2" in log, log
         print("OK stabilization", mode)
 
 

@@ -1,5 +1,6 @@
 #include "output_settings.h"
 #include "settings_text.h"
+#include "number_codec.h"
 #include <algorithm>
 #include <cerrno>
 #include <cmath>
@@ -11,25 +12,19 @@
 namespace aero {
 namespace {
 using namespace settings_detail;
-template <class T> T positive(const std::string& text, const std::string& where) {
-    std::istringstream in(text);
-    in.imbue(std::locale::classic());
-    T value;
-    if (!(in >> value) || !in.eof() || !(value > 0) || !std::isfinite(static_cast<double>(value)))
-        throw std::invalid_argument(where + ": expected a finite positive interval");
-    return value;
-}
 // Заполняет один параметр текущей зоны. Совместимость всех параметров проверяется после чтения.
 void entry(OutputZone& z, const std::string& key, const std::string& value, const std::string& where, std::vector<std::string>* warnings) {
     if (key == "file")
         z.file = label(value, where);
     else if (key == "every_steps") {
-        if (value.find_first_not_of("0123456789") != std::string::npos)
-            throw std::invalid_argument(where + ": expected a positive step count");
-        z.every_steps = positive<std::uint64_t>(value, where);
-    } else if (key == "every_time")
-        z.every_time = positive<double>(value, where);
-    else if (key == "multi" && (value == "1" || value == "0"))
+        z.every_steps = number_codec::parse_decimal(value, [&](const char* reason) {
+            throw std::invalid_argument(where + ": " + reason);
+        });
+        if (!z.every_steps) throw std::invalid_argument(where + ": expected a positive step count");
+    } else if (key == "every_time") {
+        z.every_time = finite_real(value, where);
+        if (z.every_time <= 0.) throw std::invalid_argument(where + ": expected a positive time interval");
+    } else if (key == "multi" && (value == "1" || value == "0"))
         z.multi = value == "1";
     else if (key == "layout" && (value == "local" || value == "global"))
         z.global = value == "global";

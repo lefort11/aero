@@ -1,3 +1,7 @@
+# Файл обязателен для Euler при stabilization = cfl, low или on.
+# Все пять параметров обязательны: num_steps, coeff, cfl_init, cfl_min, cfl_max.
+# Значений по умолчанию нет.
+
 # После num_steps принятых шагов повышаем CFL в coeff раз до cfl_max.
 # При отказе сразу делим CFL на coeff и повторяем весь шаг.
 num_steps = 10

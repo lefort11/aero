@@ -35,16 +35,16 @@ TimeStep choose_time_step(std::uint64_t next_number, double current_time, double
 }
 
 // Выполняет все виды вывода, назначенные на уже завершённый шаг.
-void write_step_results(const TimeStep& step, OutputSchedule& output, Recovery* recovery,
+void write_step_results(const TimeStep& step, OutputSchedule& output, Recovery& recovery,
                         const std::vector<double>& initial, const StepOperations& operations,
-                        SolverTimings& timing, bool use_cuda, bool final_field = false, bool last_step = false, bool stop = false) {
-    const bool fields_due = final_field ? output.has_zones() : output.due(step.number, step.end);
-    const bool checkpoint_due = recovery && (stop || recovery->due(step.number, step.end, final_field));
+                        SolverTimings& timing, bool use_cuda, bool final_step) {
+    const bool fields_due = final_step ? output.has_zones() : output.due(step.number, step.end);
+    const bool checkpoint_due = final_step || recovery.due(step.number);
 
     // Снимок полей и контрольная точка используют один и тот же буфер.
     // На GPU это одна выгрузка на оба файла. Для одного отчёта она не нужна.
     const std::vector<double>* state = nullptr;
-    const bool error_due = operations.exact_error && (step.reporting || final_field || last_step);
+    const bool error_due = operations.exact_error && (step.reporting || final_step);
     if (fields_due || checkpoint_due || error_due) {
         WallTimer timer(use_cuda ? timing.counter(SolverTimings::Readback) : nullptr);
         state = &operations.output_state();
@@ -52,22 +52,22 @@ void write_step_results(const TimeStep& step, OutputSchedule& output, Recovery* 
     if (error_due) operations.exact_error(step, *state);
     if (fields_due) {
         WallTimer timer(timing.counter(SolverTimings::Fields));
-        operations.write_fields(step, *state, final_field);
+        operations.write_fields(step, *state, final_step);
     }
     if (checkpoint_due) {
         WallTimer timer(timing.counter(SolverTimings::Recovery));
-        if (operations.checkpoint_history) operations.checkpoint_history(recovery->history);
-        recovery->save(step.number, step.end, *state, initial);
-        recovery->history = implicit::BdfHistory{};
+        if (operations.checkpoint_history) operations.checkpoint_history(recovery.history);
+        recovery.save(step.number, step.end, *state, initial);
+        recovery.history = implicit::BdfHistory{};
     }
 }
 }
 
 void integrate_time(const RunSettings& run, const Processes& world, OutputSchedule& output,
-                    Recovery* recovery, const std::vector<double>& initial,
+                    Recovery& recovery, const std::vector<double>& initial,
                     const StepOperations& operations) {
-    std::uint64_t number = recovery ? recovery->step : 0;
-    double time = recovery ? recovery->time : 0;
+    std::uint64_t number = recovery.step;
+    double time = recovery.time;
     if (!world.rank)
         std::cout << "Starting time integration\n";
     // При продолжении расчёта пропускаем уже записанные снимки.
@@ -86,8 +86,10 @@ void integrate_time(const RunSettings& run, const Processes& world, OutputSchedu
     const bool steady = run.steady();
     bool stopped = false;
     bool previous_first_order = run.first_order_start(time);
-    if (operations.exact_error && !steady && time >= run.final_time)
-        operations.exact_error({number, time, time, 0., false}, operations.output_state());
+    // Возможен запуск с final_time = 0 или продолжение с уже достигнутого времени.
+    // В обоих случаях итоговые файлы относятся к загруженному состоянию.
+    if (!steady && time >= run.final_time)
+        write_step_results({number,time,time,0.,false}, output,recovery,initial,operations,timing,run.use_cuda,true);
     while (steady || time < run.final_time) {
         if (number == std::numeric_limits<std::uint64_t>::max()) {
             throw std::overflow_error("Step number overflow");
@@ -127,9 +129,10 @@ void integrate_time(const RunSettings& run, const Processes& world, OutputSchedu
         if (operations.accepted) operations.accepted();
         if (run.control_every && (number == first_step + 1 || number % run.control_every == 0) && operations.control)
             stopped = operations.control(number);
-        if (stopped && !recovery) recovery = operations.stop_recovery();
-        write_step_results(step, output, recovery, initial, operations, timing, run.use_cuda, stopped || converged || exhausted,
-                           !steady && time == run.final_time, stopped);
+        const bool final_step = stopped || converged || exhausted || (!steady && time == run.final_time);
+        // Один вызов обслуживает и расписание, и завершение: у зоны multi=1
+        // будет ровно один снимок с номером последнего принятого шага.
+        write_step_results(step, output, recovery, initial, operations, timing, run.use_cuda, final_step);
         if (steady && !world.rank && (step.reporting || converged || exhausted))
             std::cout << "Steady " << criterion_name << " residual, step " << number << ": " << criterion << '\n';
         if (stopped || converged) break;

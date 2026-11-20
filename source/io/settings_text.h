@@ -2,11 +2,24 @@
 #define AERO_IO_SETTINGS_TEXT_H
 
 #include <fstream>
+#include <cmath>
+#include <locale>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 
 namespace aero {
 namespace settings_detail {
+// Читаем весь токен с десятичной точкой, независимо от системной локали.
+inline double finite_real(const std::string& text, const std::string& where) {
+    std::istringstream stream(text);
+    stream.imbue(std::locale::classic());
+    double value;
+    if (!(stream >> value) || !stream.eof() || !std::isfinite(value))
+        throw std::invalid_argument(where + ": expected a finite number");
+    return value;
+}
+
 inline std::string trim(const std::string& s) {
     const auto first = s.find_first_not_of(" \t\r\n");
     return first == std::string::npos ? "" : s.substr(first, s.find_last_not_of(" \t\r\n") - first + 1);

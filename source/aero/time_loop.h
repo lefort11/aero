@@ -27,7 +27,6 @@ struct StepOperations {
     // Выполняет все стадии шага и обмен значениями в граничных узлах подобластей.
     std::function<bool(const TimeStep&, SolverTimings&)> advance;
     std::function<bool(std::uint64_t)> control; // Применяет команды после принятого шага. STOP запрашивает итоговый вывод.
-    std::function<Recovery*()> stop_recovery; // Создаёт контрольную точку даже при отключённом расписании.
     std::function<void()> accepted; // После отчёта можно повысить CFL следующего шага.
     // Даёт текущее состояние в памяти CPU для вывода полей и контрольной точки.
     std::function<const std::vector<double>&()> output_state;
@@ -37,12 +36,12 @@ struct StepOperations {
     // Печатает сводку, собранную при выполнении шага.
     std::function<void(const TimeStep&)> report;
     // Записывает из одного снимка все зоны, которым подошёл срок вывода.
-    // Последний аргумент запрашивает запись всех заданных зон при выходе на стационар.
+    // Последний аргумент запрашивает запись всех заданных зон при завершении расчёта.
     std::function<void(const TimeStep&, const std::vector<double>&, bool)> write_fields;
 };
 
 // Ведёт расчёт до конечного времени от начального состояния или контрольной точки.
 void integrate_time(const RunSettings& run, const Processes& world, OutputSchedule& output,
-                    Recovery* recovery, const std::vector<double>& initial, const StepOperations& operations);
+                    Recovery& recovery, const std::vector<double>& initial, const StepOperations& operations);
 }
 #endif

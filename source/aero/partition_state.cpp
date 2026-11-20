@@ -24,7 +24,7 @@ void PartitionState::prepare(const RunSettings& run, const MeshPartition& part, 
         throw std::runtime_error("Cannot open " + run.initial_path);
     }
     const auto* selected_nodes = world.size == 1 ? nullptr : &selection;
-    current = read_initial(part.mesh, run.gamma, input, run.directories.input, nullptr, selected_nodes, run.background, &run.input_warnings);
+    current = read_initial(part.mesh, run.gamma, input, run.directories.input, nullptr, selected_nodes, run.background, &run.input_warnings, run.mach);
     if (!seam) {
         initial.swap(current); // Обычная сетка уже использует локальный порядок узлов.
     }

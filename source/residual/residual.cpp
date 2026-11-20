@@ -151,14 +151,22 @@ bool cpu_flux_for_face(const FaceBatch& batch, Index face) {
         return cpu_face_with_stencil<5>(batch, face);
     return cpu_face_with_stencil<3>(batch, face);
 }
-// Тип уравнений известен до начала параллельного обхода. Условие в цикле
-// компилятор сворачивает для каждого из двух вариантов этой функции.
-template <bool linear> void compute_cpu_faces(const FaceBatch& batch, const MeshIndex* global_nodes) {
+// В первом порядке оба состояния уже известны в узлах. Граничный поток остаётся общим
+// для всех схем, а на внутреннем ребре LF сразу обрабатывает ровно dim+2 компоненты.
+template<unsigned dim> bool cpu_nodal_lf(const FaceBatch& batch, Index face) {
+    return face < batch.geometry.edges ? batch.compute_edge<false,true>(face, dim) : batch.compute_boundary(face);
+}
+
+bool cpu_linear_flux(const FaceBatch& batch, Index face) { return batch.compute_linear(face); }
+
+// Способ вычисления потока выбран перед обходом. Нумерация MPI и обработка ошибок общие.
+template<bool (*compute)(const FaceBatch&, Index)>
+void compute_cpu_faces(const FaceBatch& batch, const MeshIndex* global_nodes) {
     parallel_for(
         batch.count,
         [&](Index k) {
             const Index f = batch.face(k);
-            if (linear ? batch.compute_linear(f) : cpu_flux_for_face(batch, f))
+            if (compute(batch, f))
                 return;
             if (global_nodes)
                 throw std::domain_error("Invalid flux at global node " +
@@ -175,10 +183,18 @@ void residual_detail::cpu_face_fluxes(const FaceBatch& batch, const MeshIndex* g
         parallel_for(packed.state_nodes, [&](Index i) {
             decode_nodal_gas(batch.geometry.dim, batch.state, batch.geometry.options.gamma, i, packed.gas);
         });
-    if (batch.geometry.options.background.active())
-        compute_cpu_faces<true>(batch, global_nodes);
-    else
-        compute_cpu_faces<false>(batch, global_nodes);
+    const auto& geometry = batch.geometry;
+    if (geometry.options.background.active()) {
+        compute_cpu_faces<cpu_linear_flux>(batch, global_nodes);
+    } else if (!geometry.stencil.row_owner && geometry.options.solver == ResidualSolver::LocalLF) {
+        switch (geometry.dim) {
+            case 1: compute_cpu_faces<cpu_nodal_lf<1>>(batch, global_nodes); break;
+            case 2: compute_cpu_faces<cpu_nodal_lf<2>>(batch, global_nodes); break;
+            case 3: compute_cpu_faces<cpu_nodal_lf<3>>(batch, global_nodes); break;
+        }
+    } else {
+        compute_cpu_faces<cpu_flux_for_face>(batch, global_nodes);
+    }
 }
 
 ResidualOptions residual_options(const std::string& variables, const std::string& solver, double gamma,

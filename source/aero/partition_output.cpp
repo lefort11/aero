@@ -64,10 +64,7 @@ PartitionFileLayout::PartitionFileLayout(const RunSettings& run, const MeshParti
             }
         });
     }
-    // STOP может запросить recovery вне расписания. Сохраняем соответствие строк до передачи периодической нумерации выводу.
-    if (!global_fields && !run.control_every && !run.recovery_every_steps && !run.directories.recover) {
-        return;
-    }
+    // Итоговая контрольная точка всегда использует исходные номера узлов.
     world.local([&] {
         for (MeshIndex node = 0; node < part.nodes.size(); ++node) {
             if (part.node_owners[node] != world.rank) {

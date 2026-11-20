@@ -10,6 +10,10 @@ namespace aero {
 namespace device_work {
 using residual_detail::Index;
 extern "C" {
+#ifdef AERO_HAS_VISCOSITY
+AERO_DEVICE_ENTRY const char* aero_device_viscosity(const viscosity::Operator&, const double* state,
+                                                     const EulerState* cached);
+#endif
 AERO_DEVICE_ENTRY const char* aero_device_normals(const residual_detail::Geometry&);
 AERO_DEVICE_ENTRY const char* aero_device_faces(const residual_detail::FaceBatch&, Index* bad, void* stream,
                                                const residual_detail::FaceBatch* device_faces);

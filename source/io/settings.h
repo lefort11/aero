@@ -1,6 +1,10 @@
 #ifndef AERO_IO_SETTINGS_H
 #define AERO_IO_SETTINGS_H
 #include "output_settings.h"
+#include "../parallel/modules.h"
+#ifdef AERO_HAS_VISCOSITY
+#include "../viscosity/settings.h"
+#endif
 #include "../timestep/stabilization.h"
 #include "../implicit/bdf1_step.h"
 #include "../eulersolver/linear_euler.h"
@@ -23,10 +27,16 @@ struct RunDirectories {
         : input(in), output(out), interactive(edit) {}
 };
 
+// Источник точных значений для узловых норм ошибки.
+enum class ExactSolution { Off, Formula, Fields };
+
 // Названия схем проверяются при чтении настроек независимо от подключённых модулей солвера.
 struct RunSettings {
     mutable std::vector<std::string> input_warnings; // Диагностика пополняется при чтении файлов, зависящих от размерности сетки.
     LinearBackground background;
+#ifdef AERO_HAS_VISCOSITY
+    ViscositySettings viscosity; // Настройки переноса из main.txt и gas.txt.
+#endif
     unsigned background_velocities = 0; // Число заданных компонент, проверяем по размерности сетки.
     RunDirectories directories; // Режим запуска и каталоги из командной строки.
     std::string mesh_path, initial_path,
@@ -50,6 +60,7 @@ struct RunSettings {
     double t_fo = 0.; // До этого времени (псевдовремени для steady) весь расчёт идёт с первым порядком по пространству.
     bool first_order_start(double time) const { return time < t_fo && reconstruction != "first_order"; }
     double final_time;                    // Физическое время окончания расчёта.
+    double mach = 0.; // Число Маха набегающего потока при единичном масштабе скорости.
     double gamma;                         // Отношение теплоёмкостей идеального газа.
     double trace_ratio_min,
         trace_ratio_max;                  // Границы отношения восстановленной плотности и давления к узловым.
@@ -59,7 +70,7 @@ struct RunSettings {
     std::vector<double> mpi_rank_weights; // Относительная скорость каждого MPI-процесса.
     std::vector<double> mpi_node_memory_mib, mpi_gpu_memory_mib; // Бюджеты памяти узлов и видеокарт в МиБ.
     bool mpi_balance = false;     // Учитывать заданные параметры баланса при распределении листьев.
-    bool exact_solution = false; // Сравнивать решение с формулами exact.txt.
+    ExactSolution exact_solution = ExactSolution::Off; // Формулы или снимок полей из exact.txt.
     bool mpi_timing = false;      // Собирать время операций по процессам.
     double mpi_memory_factor = 4; // Множитель оценки памяти по данным архива.
     std::uint64_t report_every, recovery_every_steps = 0; // Интервалы отчёта и контрольной точки в шагах.

@@ -76,6 +76,18 @@ std::vector<double> load(const Mesh& m, const std::string& text, const PeriodicV
 }
 // Проверяет вычисление начальных полей по координатам и диагностику ошибок в выражениях.
 void formulas() {
+    for (unsigned d : {1u, 2u, 3u}) {
+        const auto mesh = d == 1 ? line() : simplex(d);
+        std::istringstream input(d == 3 ? "initial_type freestream\nphi=90\ntheta=30" :
+                                 d == 2 ? "initial_type freestream\nphi=90" : "initial_type freestream");
+        const auto q = read_initial(mesh, 1.4, input, ".", nullptr, nullptr, {}, nullptr, .5);
+        near(q[0], 1.);
+        near(q[1], d == 1 ? 1. : 0.);
+        if (d > 1) near(q[2], d == 3 ? std::sqrt(.75) : 1.);
+        if (d == 3) near(q[3], .5);
+        near(q[d+1], .5 + 4./(1.4*.4));
+    }
+    rejects([&] { load(line(), "initial_type freestream"); }, "mach");
     near(Expression("if(t>0 && x!=0, atan2(y,x)+ln(e)+hypot(3,4),0)").evaluate(1,0,0,2), 6);
     near(Expression("if(!t || 1/0,max(2**3,7)+min(3,4)%2,0)").evaluate(0,0,0), 9);
     near(Expression("-2^2+2^3^2+2^-2").evaluate(0, 0, 0), 508.25);
@@ -89,6 +101,7 @@ void formulas() {
     const Mesh m = line();
     const std::string sod = "initial_type formula\nrho=if(x<.5,1,.125)\nux=0\np=if(x<.5,1,.1)";
     auto u = load(m, sod);
+    require(load(m, "\xef\xbb\xbf" + sod + " # comment") == u, "UTF-8 BOM and formula comment");
     near(u[3], 1);
     near(u[6], .125);
     near(u[8], .25);
@@ -161,6 +174,29 @@ void files() {
         for (std::size_t i = 0; i < u.size(); ++i)
             near(u[i], expected[i]);
     }
+    // Одна и та же привязка должна читать как начальные, так и эталонные поля.
+    // Запрашиваем узлы в обратном порядке, как при выборке представителей.
+    const auto reference = [&](const Mesh& mesh, const std::string& mapping, const LinearBackground& background) {
+        std::istringstream input("path = \"" + data.filename + "\"\n" + mapping);
+        return read_exact_fields(mesh, 1.4, input, "build", nullptr, background, {2, 0});
+    };
+    const std::string mapped = "rho=density\nux=\"gas velocity\" horizontal\np=pressure\n";
+    auto values = reference(m, mapped, {});
+    near(values[0][4], 2.);
+    near(values[0][5], 6.);
+    values = reference(m, "field=U", {});
+    near(values[0][1], 1.);
+    near(values[1][5], 3.);
+    LinearBackground background;
+    background.rho = 2.;
+    background.velocity[0] = .25;
+    values = reference(m, "field=U", background);
+    near(values[0][1], .75);
+    near(values[0][5], 6.);
+    values = reference(m, mapped + "E=density", {});
+    near(values[0][5], 2.);
+    rejects([&] { reference(line(6), mapped, {}); }, "SHA-256");
+    rejects([&] { reference(m, "rho=missing", {}); }, "exact.txt:");
     rejects([&] { load(line(6), block + "field U"); }, "SHA-256");
     rejects([&] { load(m, block + "field density"); }, "component count");
     Field cell = field("cell density", {"value"}, {1, 1});
