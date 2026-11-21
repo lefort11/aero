@@ -23,7 +23,7 @@ RECONSTRUCTION_CUDA_TEST_OBJECT := $(BUILD)/reconstruction_cuda_tests.o
 $(RECONSTRUCTION_CUDA_TEST_OBJECT): $(RECONSTRUCTION_SOURCE)/reconstruction_gpu_tests.cpp $(RECONSTRUCTION_HEADERS) source/parallel/device_scope.h source/parallel/device_memory.h | $(BUILD)
 	$(compiling)
 	$(compile_device_host)
-$(EBR_CUDA_OBJECT): $(RECONSTRUCTION_SOURCE)/reconstruction_gpu.cpp $(RECONSTRUCTION_HEADERS) source/parallel/device_scope.h source/parallel/device_memory.h | $(BUILD)
+$(EBR_CUDA_OBJECT): $(RECONSTRUCTION_SOURCE)/reconstruction_gpu.cpp $(RECONSTRUCTION_SOURCE)/device_stencil.h source/parallel/device_arrays.h source/parallel/device_check.h $(RECONSTRUCTION_HEADERS) source/parallel/device_scope.h source/parallel/device_memory.h | $(BUILD)
 	$(compiling)
 	$(compile_device_host)
 endif

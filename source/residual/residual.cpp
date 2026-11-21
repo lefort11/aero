@@ -129,18 +129,18 @@ bool cpu_packed_flux(const FaceBatch& batch, Index face, const WenoEdgeTile<orde
 template <unsigned order> bool cpu_face_with_stencil(const FaceBatch& batch, Index f) {
     // У линейных схем EBR все четыре компоненты в 2D используют одну строку весов.
     if (batch.linear_roe_2d())
-        return batch.compute_roe_2d<false, 4>(f);
+        return batch.compute_face<true,false,4>(f);
     const auto* tile = complete_tile<order>(batch.geometry, f);
     if (tile)
         return cpu_packed_flux(batch, f, *tile);
     // Для границы либо неполной стороны порядок и способ чтения определяются на месте.
-    return batch.roe_2d() ? batch.compute_roe_2d<false>(f) : batch.compute(f);
+    return batch.roe_2d() ? batch.compute_face<true>(f) : batch.compute_face(f);
 }
 
 // Номер face уже переведён из локального списка MPI в индекс площадки подобласти.
 bool cpu_flux_for_face(const FaceBatch& batch, Index face) {
     if (batch.nodal_roe_2d())
-        return batch.compute_nodal_roe_2d(face);
+        return batch.compute_face<true,true>(face);
     if (batch.geometry.packed.order == 5)
         return cpu_face_with_stencil<5>(batch, face);
     return cpu_face_with_stencil<3>(batch, face);
@@ -148,7 +148,7 @@ bool cpu_flux_for_face(const FaceBatch& batch, Index face) {
 // В первом порядке оба состояния уже известны в узлах. Граничный поток остаётся общим
 // для всех схем, а на внутреннем ребре LF сразу обрабатывает ровно dim+2 компоненты.
 template<unsigned dim> bool cpu_nodal_lf(const FaceBatch& batch, Index face) {
-    return face < batch.geometry.edges ? batch.compute_edge<false,true>(face, dim) : batch.compute_boundary(face);
+    return batch.compute_face<false,true>(face,dim);
 }
 
 bool cpu_linear_flux(const FaceBatch& batch, Index face) { return batch.compute_linear(face); }
@@ -180,12 +180,11 @@ void residual_detail::cpu_face_fluxes(const FaceBatch& batch, const MeshIndex* g
     const auto& geometry = batch.geometry;
     if (geometry.options.background.active()) {
         compute_cpu_faces<cpu_linear_flux>(batch, global_nodes);
-    } else if (!geometry.stencil.row_owner && geometry.options.solver == ResidualSolver::LocalLF) {
-        switch (geometry.dim) {
-            case 1: compute_cpu_faces<cpu_nodal_lf<1>>(batch, global_nodes); break;
-            case 2: compute_cpu_faces<cpu_nodal_lf<2>>(batch, global_nodes); break;
-            case 3: compute_cpu_faces<cpu_nodal_lf<3>>(batch, global_nodes); break;
-        }
+    } else if (batch.nodal_lf()) {
+        const auto launch = batch.select_by_dimension(compute_cpu_faces<cpu_nodal_lf<1>>,
+                                                       compute_cpu_faces<cpu_nodal_lf<2>>,
+                                                       compute_cpu_faces<cpu_nodal_lf<3>>);
+        launch(batch,global_nodes);
     } else {
         compute_cpu_faces<cpu_flux_for_face>(batch, global_nodes);
     }

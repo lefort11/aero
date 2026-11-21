@@ -17,7 +17,7 @@ KOKKOS_FORCEINLINE_FUNCTION bool characteristic_slope(const WenoEdgeTile<order>&
     // В каждой предыдущей строке коэффициент опорного узла пропущен.
     const auto weight = [&](Index i) { return tile.weights[first - row + i - 1][lane]; };
     double slope[4];
-    sum_slope<4>(4, slope_terms(row), values, weight, slope);
+    reconstruction_detail::sum_slope<4>(4, slope_terms(row), values, weight, slope);
     return euler_detail::project_characteristic<2>(basis, normal, gamma, basis.kinetic_energy(),
                                                     slope, waves[row], inverse_sound) == EulerStatus::Success;
 }
@@ -174,15 +174,15 @@ template <unsigned order>
 AERO_HOST_DEVICE inline const WenoEdgeTile<order>* complete_tile(const Geometry& g, Index face) {
     if (!g.packed.tiles || face >= g.edges)
         return nullptr;
-    const auto* tile = static_cast<const WenoEdgeTile<order>*>(g.packed.tiles) + face / 32;
-    return tile->order[face % 32].complete() ? tile : nullptr;
+    const auto* tile = static_cast<const WenoEdgeTile<order>*>(g.packed.tiles) + edge_tile::index(face);
+    return tile->order[edge_tile::lane(face)].complete() ? tile : nullptr;
 }
 
 // Одна запись потока на ребро. Запись скорости нужна только вызывающей стороне, запросившей её.
 template <bool use_mp5, bool use_mpweno = false, int hybrid_mode = -1, unsigned order>
 AERO_HOST_DEVICE inline bool compute_packed_face(const FaceBatch& batch, Index face, const WenoEdgeTile<order>& tile) {
     if (!packed_edge_flux<order, use_mp5, use_mpweno, hybrid_mode>(
-            batch.geometry, batch.state, face, tile, face % 32, batch.flux[face]))
+            batch.geometry, batch.state, face, tile, edge_tile::lane(face), batch.flux[face]))
         return false;
     batch.save_speed(face);
     return true;

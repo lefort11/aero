@@ -17,8 +17,8 @@ KOKKOS_INLINE_FUNCTION void project(const FaceBatch& batch, Index face, MpEdgeTi
     const auto& g = batch.geometry;
     if (face >= g.edges)
         return;
-    const auto* stencil = static_cast<const WenoEdgeTile<5>*>(g.packed.tiles) + face / MpEdgeTile::width;
-    const unsigned geometry_lane = face % MpEdgeTile::width;
+    const auto* stencil = static_cast<const WenoEdgeTile<5>*>(g.packed.tiles) + edge_tile::index(face);
+    const unsigned geometry_lane = edge_tile::lane(face);
     const auto order = stencil->order[geometry_lane];
     if (!order.ready())
         return; // Для неполных шаблонов и границ уже подготовлены отдельные списки.
@@ -53,7 +53,7 @@ KOKKOS_INLINE_FUNCTION void project(const FaceBatch& batch, Index face, MpEdgeTi
 // одновременно восстанавливают четыре характеристики для двух плиток по 32 ребра.
 constexpr unsigned team_size = 256;
 static_assert((team_size & (team_size - 1)) == 0, "Kokkos team_scan requires a power-of-two team size");
-constexpr unsigned warp_size = MpEdgeTile::width;
+constexpr unsigned warp_size = edge_tile::width;
 using Teams = Kokkos::TeamPolicy<Kokkos::DefaultExecutionSpace, Kokkos::LaunchBounds<team_size>>;
 
 struct WeightQueue {
@@ -92,18 +92,18 @@ struct WeightQueue {
 // плитку: в каждой группе одна волна, у каждого потока своё ребро.
 template <bool correction>
 inline void reconstruct_waves(const Kokkos::DefaultExecutionSpace& exec, MpEdgeTile* tiles, Index faces, double alpha) {
-    const Index tiles_count = (faces + warp_size - 1) / warp_size;
+    const Index tiles_count = edge_tile::count(faces);
     const Index teams_count = (tiles_count * 4 * warp_size + team_size - 1) / team_size;
     Teams policy(exec, teams_count, team_size, 1);
     policy.set_scratch_size(0, Kokkos::PerTeam(sizeof(WeightQueue)));
     Kokkos::parallel_for("Aero: MPWENO5 wave pairs", policy,
         KOKKOS_LAMBDA(const Teams::member_type& team) {
             auto& queue = *static_cast<WeightQueue*>(team.team_scratch(0).get_shmem(sizeof(WeightQueue)));
-            const unsigned rank = team.team_rank(), lane = rank % warp_size;
+            const unsigned rank = team.team_rank(), lane = edge_tile::lane(rank);
             const Index task = team_size * static_cast<Index>(team.league_rank()) + rank;
             const unsigned wave = (task / warp_size) % 4;
             const Index tile_id = task / (4 * warp_size);
-            const bool present = tile_id * warp_size + lane < faces;
+            const bool present = edge_tile::edge(tile_id,lane) < faces;
             // Последняя группа может быть неполной. Все её потоки участвуют в голосовании
             // и барьерах, но только действительные рёбра читают наклоны и пишут следы.
             auto& tile = tiles[present ? tile_id : 0];

@@ -75,27 +75,37 @@ struct PackedEdgeOrder {
     AERO_HOST_DEVICE bool shortened(unsigned side) const { return (flags & (2u << side)) != 0; }
 };
 
+// Одна раскладка для постоянной геометрии WENO и временных данных MPWENO5.
+// Номер ребра задаёт номер плитки и позицию внутри неё на обоих исполнителях.
+namespace edge_tile {
+constexpr unsigned width = 32;
+AERO_HOST_DEVICE constexpr Index index(Index edge) { return edge / width; }
+AERO_HOST_DEVICE constexpr unsigned lane(Index edge) { return static_cast<unsigned>(edge % width); }
+AERO_HOST_DEVICE constexpr Index edge(Index tile, unsigned position) { return tile * width + position; }
+// Последняя неполная плитка тоже занимает место. Сложение не переполняется даже при максимальном n.
+AERO_HOST_DEVICE constexpr Index count(Index n) { return index(n) + (lane(n) != 0); }
+}
+
 // В плитке соседние потоки CUDA читают подряд данные одного и того же элемента шаблона.
 // Для полного двумерного WENO5 пять разных наклонов содержат 2, 3, 3, 4 и 4 слагаемых.
 template <unsigned scheme_order> struct WenoEdgeTile {
     // Обеим сторонам достаточно трёх общих наклонов. Пятый порядок добавляет по дальнему с каждой стороны.
     static constexpr unsigned rows_per_edge = scheme_order == 5 ? 5 : 3;
-    unsigned nodes[first_slope_term(rows_per_edge)][32]; // Индексы слагаемых по строкам наклонов.
-    PackedEdgeOrder order[32]; // Хранится вместе с постоянной геометрией ребра.
+    unsigned nodes[first_slope_term(rows_per_edge)][edge_tile::width]; // Индексы слагаемых по строкам наклонов.
+    PackedEdgeOrder order[edge_tile::width]; // Хранится вместе с постоянной геометрией ребра.
     // В каждой строке первый узел задаёт начало отсчёта. Для него вес хранить не требуется.
-    double weights[first_slope_term(rows_per_edge) - rows_per_edge][32];
+    double weights[first_slope_term(rows_per_edge) - rows_per_edge][edge_tile::width];
 };
 // Рабочая плитка чистой MPWENO5 на GPU. В одной строке подряд лежат значения
 // 32 рёбер: так соседние исполнители читают один и тот же наклон соседних рёбер.
 struct MpEdgeTile {
-    static constexpr unsigned width = 32;
     static constexpr Index batch_limit = 131072; // До 4096 плиток; память одинакова для всех стадий.
-    PackedEdgeOrder order[width]; // Копируется только после успешной проекции текущего поля.
-    double waves[5][4][width]; // Пять строк по четырём волнам; затем строки 0 и 1 содержат следы.
+    PackedEdgeOrder order[edge_tile::width]; // Копируется только после успешной проекции текущего поля.
+    double waves[5][4][edge_tile::width]; // Пять строк по четырём волнам; затем строки 0 и 1 содержат следы.
 
     // Средний газ один на обе стороны ребра. Нормаль уже хранится с геометрией.
-    double velocity[2][width], enthalpy[width], sound[width];
-    double kinetic[width], normal_speed[width], tangent_speed[width];
+    double velocity[2][edge_tile::width], enthalpy[edge_tile::width], sound[edge_tile::width];
+    double kinetic[edge_tile::width], normal_speed[edge_tile::width], tangent_speed[edge_tile::width];
 
     AERO_HOST_DEVICE void store_basis(unsigned lane, const euler_detail::PlaneWaveBasis& basis) {
         velocity[0][lane] = basis.velocity[0];
@@ -218,33 +228,6 @@ AERO_HOST_DEVICE inline bool project_slope(const LinearReader& r, bool character
     return true;
 }
 
-// Применяет одну строку геометрических весов сразу ко всем компонентам. Способ чтения
-// узлов и весов задаёт вызывающая сторона: одна формула обслуживает оба формата шаблона.
-template <unsigned fixed_width = 0, class Values, class Weight>
-KOKKOS_FORCEINLINE_FUNCTION bool sum_slope(unsigned width, Index count, const Values& values, const Weight& weight,
-                                       double* slope) {
-    const unsigned components = fixed_width ? fixed_width : width;
-    for (unsigned c = 0; c < components; ++c)
-        slope[c] = 0;
-    if (!count)
-        return true;
-    // Состояния можно читать прямо из поля. Для режима Flux нужны буферы под вычисленные потоки.
-    double reference_buffer[5], value_buffer[5];
-    const double* reference = values(0, reference_buffer);
-    if (!reference)
-        return false;
-    // Вычитание первого значения даёт точный нулевой наклон на постоянном поле.
-    for (Index i = 1; i < count; ++i) {
-        const double* value = values(i, value_buffer);
-        if (!value)
-            return false;
-        const double factor = weight(i);
-        for (unsigned c = 0; c < components; ++c)
-            slope[c] += factor * (value[c] - reference[c]);
-    }
-    return true;
-}
-
 // Для характеристик переносим линейную проекцию за сумму. Физический поток нелинеен,
 // поэтому в режиме Flux по-прежнему вычисляем его отдельно в каждом узле до суммирования.
 // Для неполного плоского WENO тип переменных уже известен при выборе обхода.
@@ -275,7 +258,7 @@ KOKKOS_FORCEINLINE_FUNCTION bool transformed_row(const FieldReader& reader, Inde
     };
     const auto weight = [&](Index i) { return weights[begin + i]; };
     double slope[5];
-    if (!sum_slope<characteristic_2d ? 4 : linear_width>(width, count, values, weight, slope))
+    if (!reconstruction_detail::sum_slope<characteristic_2d ? 4 : linear_width>(width, count, values, weight, slope))
         return false;
     if (!project_slope(reader, characteristic_2d || (!linear_width && reader.variables == ResidualVariables::Characteristic), slope))
         return false;
@@ -795,6 +778,13 @@ struct FaceBatch {
     AERO_HOST_DEVICE bool roe_2d() const {
         return geometry.dim == 2 && geometry.options.solver == ResidualSolver::Roe;
     }
+    // Первый порядок LF читает только два узла. Размерность выбираем один раз
+    // до обхода всего списка, чтобы ядро работало с постоянной шириной состояния.
+    bool nodal_lf() const { return !geometry.stencil.row_owner && geometry.options.solver == ResidualSolver::LocalLF; }
+    template<class Launcher>
+    Launcher select_by_dimension(Launcher one, Launcher two, Launcher three) const {
+        return geometry.dim == 1 ? one : (geometry.dim == 2 ? two : three);
+    }
     AERO_HOST_DEVICE bool nodal_roe_2d() const {
         return roe_2d() && !geometry.stencil.row_owner;
     }
@@ -804,10 +794,6 @@ struct FaceBatch {
         return roe_2d() && geometry.stencil.row_owner && !geometry.stencil.weno_order &&
                geometry.options.variables != ResidualVariables::Flux;
     }
-    template <bool nodal_only, unsigned linear_width = 0>
-    AERO_HOST_DEVICE bool compute_roe_2d(Index f) const {
-        return f < geometry.edges ? compute_edge<true, nodal_only, linear_width>(f) : compute_boundary(f);
-    }
     template <bool roe, bool nodal, unsigned linear_width = 0, bool characteristic_2d = false>
     AERO_HOST_DEVICE bool compute_edge(Index f, unsigned nodal_lf_dim = 0) const {
         if (!integrated_edge_flux<roe, nodal, linear_width, characteristic_2d>(geometry, f, state, flux[f], nodal_lf_dim))
@@ -815,18 +801,21 @@ struct FaceBatch {
         save_speed(f);
         return true;
     }
-    AERO_HOST_DEVICE bool compute_nodal_roe_2d(Index f) const { return compute_roe_2d<true>(f); }
     AERO_HOST_DEVICE bool compute_boundary(Index f) const {
         if (!integrated_boundary_flux(geometry, f, state, initial, flux[f]))
             return false;
         save_speed(f);
         return true;
     }
-    AERO_HOST_DEVICE bool compute(Index f) const {
-        return f < geometry.edges ? compute_edge<false,false>(f) : compute_boundary(f);
+    // Список MPI может перемежать внутренние рёбра и граничные площадки.
+    // Для раздельных диапазонов исполнитель вызывает нужную функцию напрямую.
+    AERO_HOST_DEVICE bool is_boundary(Index face) const { return face >= geometry.edges; }
+    template <bool roe_2d = false, bool nodal = false, unsigned linear_width = 0>
+    AERO_HOST_DEVICE bool compute_face(Index face, unsigned lf_dim = 0) const {
+        return is_boundary(face) ? compute_boundary(face) : compute_edge<roe_2d,nodal,linear_width>(face,lf_dim);
     }
     AERO_HOST_DEVICE bool compute_linear(Index f) const {
-        if (f >= geometry.edges) return compute_boundary(f);
+        if (is_boundary(f)) return compute_boundary(f);
         if (!linear_edge_flux(geometry,f,state,flux[f])) return false;
         save_speed(f);
         return true;

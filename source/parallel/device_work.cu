@@ -129,12 +129,12 @@ void process_mpweno_edges(const Execution& exec, const FaceBatch& batch, Index* 
         const Index count = std::min(batch.count - first, Index(MpEdgeTile::batch_limit));
         for_indices(exec, "Aero: MPWENO5 projected stencil", count, KOKKOS_LAMBDA(Index k) {
             const Index face = indices ? indices[first + k] : first + k;
-            mpweno_edges::project(*stored, face, work[k / MpEdgeTile::width], k % MpEdgeTile::width, bad);
+            mpweno_edges::project(*stored, face, work[edge_tile::index(k)], edge_tile::lane(k), bad);
         });
         mpweno_edges::reconstruct(exec, work, count, batch.geometry.stencil.mp5);
         for_indices(exec, "Aero: MPWENO5 complete edge flux", count, KOKKOS_LAMBDA(Index k) {
             const Index face = indices ? indices[first + k] : first + k;
-            mpweno_edges::write_flux(*stored, face, work[k / MpEdgeTile::width], k % MpEdgeTile::width, bad);
+            mpweno_edges::write_flux(*stored, face, work[edge_tile::index(k)], edge_tile::lane(k), bad);
         });
         first += count;
     }
@@ -190,7 +190,7 @@ void other_faces(const Execution& exec, FaceBatch batch, Index* bad) {
     // После разделения сетки MPI и у неполных шаблонов нужные номера берём из списка.
     for_indices(exec, "Aero: remaining fluxes", batch.count, KOKKOS_LAMBDA(Index k) {
         const Index face = batch.face(k);
-        if (!(face<batch.geometry.edges ? batch.compute_edge<roe_2d,nodal_only,linear_width>(face,lf_dim) : batch.compute_boundary(face)))
+        if (!batch.compute_face<roe_2d,nodal_only,linear_width>(face,lf_dim))
             Kokkos::atomic_fetch_min(bad, face);
     });
 }
@@ -232,12 +232,11 @@ void compute_unpacked_fluxes(const Execution& exec, FaceBatch batch, Index* bad)
     }
     // Как и на CPU, LF первого порядка получает состояния прямо из узлов.
     // Постоянная размерность исключает реконструкцию из кода ядра этого запуска.
-    if (!batch.geometry.stencil.row_owner && batch.geometry.options.solver==ResidualSolver::LocalLF) {
-        switch (batch.geometry.dim) {
-        case 1: other_faces<false,true,0,1>(exec,batch,bad); break;
-        case 2: other_faces<false,true,0,2>(exec,batch,bad); break;
-        default: other_faces<false,true,0,3>(exec,batch,bad); break;
-        }
+    if (batch.nodal_lf()) {
+        const auto launch = batch.select_by_dimension(other_faces<false,true,0,1>,
+                                                       other_faces<false,true,0,2>,
+                                                       other_faces<false,true,0,3>);
+        launch(exec,batch,bad);
     } else if (batch.nodal_roe_2d())
         other_faces<true, true>(exec, batch, bad);
     // У EBR3 и EBR5 различны только заранее рассчитанные веса. В 2D в узле четыре компоненты.

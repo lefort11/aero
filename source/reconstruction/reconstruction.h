@@ -36,6 +36,36 @@ struct ReconstructionFieldView {
     }
 };
 
+namespace reconstruction_detail {
+// Применяет одну строку геометрических весов сразу ко всем компонентам. Способ чтения
+// узлов и весов задаёт вызывающая сторона: одна формула обслуживает оба формата шаблона.
+template <unsigned fixed_width = 0, class Values, class Weight>
+KOKKOS_FORCEINLINE_FUNCTION bool sum_slope(unsigned width, ReconstructionIndex count, const Values& values, const Weight& weight,
+                                       double* slope) {
+    const unsigned components = fixed_width ? fixed_width : width;
+    for (unsigned c = 0; c < components; ++c)
+        slope[c] = 0;
+    if (!count)
+        return true;
+    // Состояния можно читать прямо из поля. Для режима Flux нужны буферы под вычисленные потоки.
+    constexpr unsigned capacity = fixed_width ? fixed_width : 5;
+    double reference_buffer[capacity], value_buffer[capacity];
+    const double* reference = values(0, reference_buffer);
+    if (!reference)
+        return false;
+    // Вычитание первого значения даёт точный нулевой наклон на постоянном поле.
+    for (ReconstructionIndex i = 1; i < count; ++i) {
+        const double* value = values(i, value_buffer);
+        if (!value)
+            return false;
+        const double factor = weight(i);
+        for (unsigned c = 0; c < components; ++c)
+            slope[c] += factor * (value[c] - reference[c]);
+    }
+    return true;
+}
+}
+
 // Способ чтения значения может зависеть от ребра и стороны, например при работе в характеристическом базисе.
 // Возвращаем удвоенные приращения: 2·(Q_L−Q_i) слева и 2·(Q_j−Q_R) справа.
 // Низкоуровневый вызов предполагает корректные индексы и доступную исполнителю память.
@@ -46,14 +76,15 @@ evaluate_reconstruction_sparse(const ReconstructionIndex* offsets, const Reconst
                                ReconstructionIndex read_row, ReconstructionIndex component,
                                const Reader& read) {
     const ReconstructionIndex begin = offsets[sparse_row], end = offsets[sparse_row + 1];
-    if (begin == end)
-        return 0.0; // Первому порядку достаточно значения на конце ребра.
-    const double reference = read(read_row, nodes[begin], component);
-    double result = 0.0;
-    // Разностная запись точно обнуляет константу и избегает вычитания двух больших восстановленных состояний.
-    // Первый коэффициент задан нулевой суммой строки. Разность в его узле равна нулю.
-    for (ReconstructionIndex k = begin + 1; k < end; ++k)
-        result += weights[k] * (read(read_row, nodes[k], component) - reference);
+    // Библиотечный читатель выдаёт одну компоненту. Тот же обход в солвере
+    // читает сразу всё состояние или вычисляет один физический поток для всех компонент.
+    const auto values = [&](ReconstructionIndex i, double* buffer) -> const double* {
+        *buffer = read(read_row,nodes[begin+i],component);
+        return buffer;
+    };
+    const auto weight = [&](ReconstructionIndex i) { return weights[begin+i]; };
+    double result;
+    reconstruction_detail::sum_slope<1>(1,end-begin,values,weight,&result);
     return result;
 }
 

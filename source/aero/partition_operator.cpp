@@ -16,6 +16,7 @@
 #include <limits>
 
 namespace aero {
+namespace edge_tile = residual_detail::edge_tile;
 using Id = MeshIndex;
 using residual_detail::Surface;
 
@@ -199,13 +200,13 @@ void PartitionOperator::prepare_weno_tiles(std::vector<WenoEdgeTile<scheme_order
     const MeshIndex small_gpu_edge_limit = 8192;
     if (flux_.empty() && g.edges <= small_gpu_edge_limit)
         return;
-    const auto count = (g.edges + 31) / 32;
+    const auto count = edge_tile::count(g.edges);
     const bool allow_mixed = scheme_order == 5 && flux_.empty() && g.stencil.mp5.weno && g.options.mp6_hybrid == 0;
     tiles.resize(count);
     parallel_for(count, [&](MeshIndex t) {
         auto& tile = tiles[t];
-        for (unsigned lane = 0; lane < 32; ++lane) {
-            const auto edge = 32 * t + lane;
+        for (unsigned lane = 0; lane < edge_tile::width; ++lane) {
+            const auto edge = edge_tile::edge(t,lane);
             tile.order[lane] = edge < g.edges && !g.surfaces[edge].use_nodal_traces
                 ? pack_weno_edge(stencil_, edge, tile, lane, allow_mixed) : PackedEdgeOrder{};
         }
@@ -213,8 +214,8 @@ void PartitionOperator::prepare_weno_tiles(std::vector<WenoEdgeTile<scheme_order
     bool have_packed_edges = false;
     for (const auto face : compute_) {
         if (face < g.edges) {
-            const auto& tile = tiles[face / 32];
-            const unsigned lane = face % 32;
+            const auto& tile = tiles[edge_tile::index(face)];
+            const unsigned lane = edge_tile::lane(face);
             if (tile.order[lane].complete()) {
                 have_packed_edges = true;
                 continue;
@@ -238,7 +239,7 @@ void PartitionOperator::prepare_weno_tiles(std::vector<WenoEdgeTile<scheme_order
     if (allow_mixed) {
         // Уже включённые в пакет рёбра перемещаем в хвост разреженного списка.
         const auto mixed = std::stable_partition(other_faces_.begin(), nodal, [&](Id f) {
-            return !tiles[f / 32].order[f % 32].ready();
+            return !tiles[edge_tile::index(f)].order[edge_tile::lane(f)].ready();
         });
         g.packed.mixed_edges = static_cast<Id>(nodal - mixed);
     }
@@ -398,7 +399,7 @@ void PartitionOperator::layout_gpu(bool compact_buffer) {
 #ifdef AERO_HAS_VISCOSITY
     gpu_->set_viscosity(aes_.get());
 #endif
-    gpu_->layout(grid_, stencil_, compute_, owned, volumes_, state_nodes(), compact_buffer, world_.size == 1);
+    gpu_->layout(grid_, compute_, owned, volumes_, state_nodes(), compact_buffer, world_.size == 1);
     if (need_pressure_rate_) device_pressure_rate_ = gpu_->layout_node_scalars(owned.size());
     if (steady_steps_) steady_steps_->values = gpu_->layout_node_scalars(grid_.nodes);
     if (track_time_) device_moments_ = gpu_->layout_moments(grid_.nodes);

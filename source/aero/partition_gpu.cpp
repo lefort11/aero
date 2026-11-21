@@ -1,5 +1,6 @@
 #include "../parallel/device_check.h"
 #include "partition_gpu.h"
+#include "../reconstruction/device_stencil.h"
 #ifdef AERO_HAS_VISCOSITY
 #include "../parallel/device_work.h"
 #endif
@@ -12,6 +13,7 @@
 #include <set>
 
 namespace aero {
+namespace edge_tile = residual_detail::edge_tile;
 namespace {
 void cuda_check(aero::gpu::Status status) {
     gpu::checked(status, "MPI CUDA: ");
@@ -155,7 +157,7 @@ PartitionGpu::Storage::~Storage() {
     if (base)
         aero::gpu::release(base);
 }
-void PartitionGpu::layout(residual_detail::Geometry g, const PartitionStencil& stencil,
+void PartitionGpu::layout(residual_detail::Geometry g,
                           const std::vector<MeshIndex>& computed, const std::vector<MeshIndex>& owned,
                           const double* volumes, std::size_t state_nodes, bool compact_buffer,
                           bool whole_mesh) {
@@ -164,13 +166,13 @@ void PartitionGpu::layout(residual_detail::Geometry g, const PartitionStencil& s
     grid_.filtered_gas=nullptr;
 #endif
     if (g.packed.tiles) {
-        const auto count = (g.edges + 31) / 32;
+        const auto count = edge_tile::count(g.edges);
         // Один буфер обслуживает все стадии. Большую подобласть проходим частями:
         // отложенные веса не требуют дополнительной памяти пропорционально всей сетке.
         if (g.packed.order == 5 && g.stencil.mp5.weno && g.options.mp6_hybrid == 0) {
             using Tile = residual_detail::MpEdgeTile;
             const auto faces = std::min<MeshIndex>(computed.size(), MeshIndex(Tile::batch_limit));
-            g.packed.mp_work = storage_.allocate<Tile>((faces + Tile::width - 1) / Tile::width);
+            g.packed.mp_work = storage_.allocate<Tile>(edge_tile::count(faces));
         }
         if (g.packed.order == 5)
             g.packed.tiles = storage_.allocate(count, static_cast<const residual_detail::WenoEdgeTile<5>*>(g.packed.tiles));
@@ -184,15 +186,7 @@ void PartitionGpu::layout(residual_detail::Geometry g, const PartitionStencil& s
     g.incidence = storage_.allocate(g.offsets[g.nodes], g.incidence);
     g.offsets = storage_.allocate(g.nodes + 1, g.offsets);
     g.patches = upload_boundary_patches(storage_, g.patches);
-    g.stencil.offsets = storage_.upload(stencil.linear.offsets);
-    g.stencil.nodes = storage_.upload(stencil.linear.nodes);
-    g.stencil.weights = storage_.upload(stencil.linear.weights);
-    g.stencil.row_owner = storage_.upload(stencil.row_owner);
-    g.stencil.slope_offsets = storage_.upload(stencil.slopes.offsets);
-    g.stencil.slope_nodes = storage_.upload(stencil.slopes.nodes);
-    g.stencil.slope_weights = storage_.upload(stencil.slopes.weights);
-    g.stencil.weno_order = storage_.upload(stencil.weno_order);
-    g.stencil.weno_epsilon_scale = storage_.upload(stencil.epsilon_scale);
+    g.stencil = upload_reconstruction_stencil(storage_,g.stencil);
 #ifdef AERO_HAS_VISCOSITY
     if (aes_) {
         viscous_grid_ = aes_->upload(storage_,state_nodes);

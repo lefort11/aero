@@ -82,7 +82,7 @@ public:
 #endif
     static std::vector<double> measure_weights(const Processes& world, ResidualOptions options,
                                                MeshIndex budget);
-    void layout(residual_detail::Geometry geometry, const PartitionStencil& stencil,
+    void layout(residual_detail::Geometry geometry,
                 const std::vector<MeshIndex>& computed, const std::vector<MeshIndex>& owned,
                 const double* volumes, std::size_t state_nodes, bool compact_buffer, bool whole_mesh);
     // Пробует зарезервировать рассчитанный объём и передаёт фактическую потребность планировщику.

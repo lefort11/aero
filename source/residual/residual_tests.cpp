@@ -16,6 +16,7 @@
 #endif
 #ifdef AERO_WITH_KOKKOS_GPU
 #include "../../qa/device_test_buffer.h"
+#include "../parallel/device_arrays.h"
 #include "../parallel/device_memory.h"
 #endif
 
@@ -106,6 +107,58 @@ void signed_surface_balance() {
     // На узле 0: +3−2=1. На узле 1: −3+7−7=−3. Сумма по сетке равна внешнему потоку −2.
     compare(residual, {1, 2, 3, -3, -6, -9});
 }
+
+// В списке подобласти сначала стоит стенка, затем внутреннее ребро.
+// Проверяем номера записей, знак давления у стенки и пропуск площадки вне списка.
+void mixed_face_list(int device) {
+    using namespace residual_detail;
+    const Surface surfaces[] = {
+        {0, 1, 0, {2, 0, 0}, 2, 1},  // Ребро входит в список.
+        {0, 1, 0, {1, 0, 0}, 1, 1},  // Ребро пропускаем.
+        {0, 0, 0, {-3, 0, 0}, 3, 1}  // Нормаль стенки направлена против оси x.
+    };
+    const MeshIndex selected[] = {2, 0};
+    const BoundaryConfig wall;
+    const double state[] = {1, 0, 2.5, 1, 0, 2.5}; // Газ в покое, давление равно единице.
+    EulerFluxResult flux[3]{};
+    flux[1].flux[1] = 123.; // Этого ребра нет в списке данного процесса.
+
+    FaceBatch batch{};
+    auto& g = batch.geometry;
+    g.dim = 1;
+    g.nodes = g.edges = 2;
+    g.faces = 3;
+    g.options = residual_options("conservative", "lf", 1.4);
+    g.surfaces = surfaces;
+    g.patches = {&wall, nullptr, 1, 0};
+    batch.count = 2;
+    batch.indices = selected;
+    batch.state = state;
+    batch.flux = flux;
+    if (device < 0) cpu_face_fluxes(batch);
+#ifdef AERO_WITH_KOKKOS_GPU
+    else {
+        checked(gpu::select(device));
+        gpu::DeviceArrays arrays;
+        arrays.device = device;
+        g.surfaces = arrays.allocate(3, surfaces);
+        g.patches.by_patch = arrays.allocate(1, &wall);
+        batch.indices = arrays.allocate(2, selected);
+        batch.state = arrays.allocate(6, state);
+        batch.flux = arrays.allocate(3, flux);
+        Index bad = g.faces;
+        Index* device_bad = arrays.allocate(1, &bad);
+        gpu_face_fluxes(batch, device_bad, nullptr);
+        checked(gpu::copy(&bad, device_bad, sizeof(bad), gpu::Copy::ToHost));
+        require(bad == g.faces, "mixed face list rejected valid state");
+        checked(gpu::copy(flux, batch.flux, sizeof(flux), gpu::Copy::ToHost));
+    }
+#endif
+    near(flux[0].flux[1], 2.);
+    near(flux[1].flux[1], 123.);
+    near(flux[2].flux[1], -3.);
+}
+
 // Разные объёмы и обратная нумерация владельцев. В одном узле шаг задаёт газ,
 // в другом его ограничивает SA. Вязкий вклад добавляется в тот же знаменатель CFL.
 void local_steady_cfl() {
@@ -632,6 +685,7 @@ int main(int argc, char** argv) {
 #ifndef AERO_RESIDUAL_NO_TIME_TEST
             sod_step(dev);
 #endif
+            mixed_face_list(dev);
             edge_modes(dev);
             ring_test(dev);
             inlet_outlet_edges(dev);
