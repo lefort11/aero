@@ -209,9 +209,11 @@ std::string run_case(const std::string& program, const std::string& device, bool
         require(trace.find("CUDA unavailable; running on CPU.") != std::string::npos, "missing CPU fallback");
     std::string expected = device.empty() || expect_fallback ? "CPU" : "CUDA device " + device;
     for (const auto& key : std::vector<std::string>{"Active backend = " + expected, "Boundary label",
-                                                    "Building reconstruction stencils... done",
+                                                    "Preparing flux surfaces... done",
                                                     "STEP 1  |", "Final time = 0.008"})
         require(trace.find(key) != std::string::npos, "missing " + key + " in " + log);
+    require(trace.find("Building reconstruction stencils") == std::string::npos,
+            "first-order run reported a reconstruction stencil build");
     require(read(dir + "/bc.txt") == rules, "existing boundary settings must be preserved");
     for (const auto& name : mesh.data().patch_names)
         require(trace.find(name + "\t1\n") != std::string::npos, "boundary face count for " + name);

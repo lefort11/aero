@@ -502,7 +502,7 @@ prepare_partition_operator(const RunSettings& run, const ReconstructionOptions& 
     const auto* seam = geometry.periodic_partition();
     const auto& boundaries = geometry.boundaries;
     if (single) {
-        stage("Building reconstruction stencils");
+        stage("Preparing flux surfaces");
     }
 
     StencilRequests requests;
@@ -523,7 +523,9 @@ prepare_partition_operator(const RunSettings& run, const ReconstructionOptions& 
     }
     if (run.steady()) world.local([&] { op->prepare_steady_steps(run.use_cuda, run.local_time_step, run.local_time_step_max_ratio); });
     Id downgraded = 0;
+    if (single) done();
     if (needs_stencil) {
+        if (single) stage("Building reconstruction stencils");
         auto options = reconstruction;
         if (options.geometry == StencilGeometry::Pl || options.geometry == StencilGeometry::Auto) {
             for (Id p=0;p<part.physical_patches;++p)
@@ -535,20 +537,27 @@ prepare_partition_operator(const RunSettings& run, const ReconstructionOptions& 
             WallTimer preparation(run.mpi_timing ? &seconds : nullptr);
             downgraded = op->prepare_stencil(part, seam, boundaries.periodic_pairs, input.get(), requests, options);
         }
+        if (single) done();
         if (run.mpi_timing) {
             const double slowest = world.reduce_double(seconds, true);
             if (!world.rank) std::cout << "Stencil preparation (s) = " << slowest << '\n';
         }
     }
 #ifdef AERO_HAS_VISCOSITY
-    op->prepare_viscosity(part,seam,frame,run);
+    if (run.viscosity.law != "off") {
+        if (single) stage("Preparing viscous operator");
+        op->prepare_viscosity(part,seam,frame,run);
+        if (single) done();
+    }
 #ifdef AERO_HAS_TURBULENCE
-    if(run.turbulence.uses_sa())
+    if(run.turbulence.uses_sa()) {
+        if (single) stage("Preparing SA transport");
         op->prepare_sa(part,seam,boundaries.patches,boundaries.periodic_pairs,run.turbulence,run.use_cuda,run.uses_implicit_time(),run.time_scheme=="steady");
+        if (single) done();
+    }
 #endif
 #endif
     if (single) {
-        done();
         const auto edges = seam ? seam->edges.size() : part.mesh.view().edge_count;
         std::cout << "Computational nodes = " << op->state_nodes() << "  edges = " << edges << "  ";
     }
