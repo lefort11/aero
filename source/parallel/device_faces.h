@@ -114,7 +114,7 @@ void other_faces(const Execution& exec, FaceBatch batch, Index* bad) {
 // На границах и при нехватке точек остаётся обычная формула именно выбранной схемы.
 template<bool physical, unsigned order, bool mp = false, bool mpweno = false, bool hybrid = false>
 void cartesian_edges(const Execution& exec, FaceBatch batch, Index* bad, const FaceBatch* stored) {
-    const Index* ids = batch.indices;
+    const auto* ids = batch.indices;
     // У MPWENO5 больше временных весов. Ограничиваем число регистров на
     // поток, чтобы несколько блоков одновременно загружали соседние шаблоны.
     for_indices<mpweno ? 4 : 0>(exec,"Aero: Cartesian reconstructed edges",batch.count,KOKKOS_LAMBDA(Index k) {

@@ -27,12 +27,12 @@ endif
 CUDA_HOME ?= /usr/local/cuda
 NVCC ?= $(if $(wildcard $(CUDA_HOME)/bin/nvcc),$(CUDA_HOME)/bin/nvcc,nvcc)
 CPPFLAGS ?=
-CXXFLAGS ?= -std=c++11 -pedantic-errors -O2 -Wall -Wextra -Wpedantic -Wconversion -Wshadow
+CXXFLAGS ?= -std=c++11 -pedantic-errors -O3 -Wall -Wextra -Wpedantic -Wconversion -Wshadow
 LDFLAGS ?=
 LDLIBS ?=
 WITH_OPENMP ?= 1
 WITH_MPI ?= 1
-build_optimization := -O2
+build_optimization := -O3
 STATIC_LINK ?= 1
 CUDA_LIBDIR ?= $(if $(wildcard $(CUDA_HOME)/lib64),$(CUDA_HOME)/lib64,$(CUDA_HOME)/lib)
 ifeq ($(STATIC_LINK),1)
