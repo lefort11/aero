@@ -1,6 +1,7 @@
 #include "recovery.h"
 #include "../io/sha256.h"
 #include <iomanip>
+#include <sstream>
 #include <locale>
 #include "startup.h"
 #include "../io/number_codec.h"
@@ -348,6 +349,15 @@ void Recovery::restore(std::vector<double>& state, std::vector<double>& initial)
         }
         stabilization_state.swap(adaptive[s]);
         world_.broadcast(stabilization_state, 0);
+        // Новые снимки хранят начальную норму в проверяемом контрольной суммой разделе.
+        if (stabilization_state.compare(0, 6, "steady") == 0) {
+            const auto end = stabilization_state.find('\n');
+            std::istringstream in(stabilization_state.substr(6, end - 6));
+            in.imbue(std::locale::classic());
+            require(end != std::string::npos && (in >> steady_reference) && std::isfinite(steady_reference)
+                    && steady_reference >= 0., "invalid initial steady residual");
+            stabilization_state.erase(0, end + 1);
+        }
         world_.broadcast(&times[s], 1, 0);
         time = times[s];
         last_ = s;
@@ -402,7 +412,14 @@ void Recovery::save(Id accepted, double t, const std::vector<double>& state,
         if (world_.size == 1)
             sync_file(file);
         std::fstream out(file, std::ios::in | std::ios::out | std::ios::binary);
-        const auto bytes = header(count_, width_, run_.gamma, hash_, accepted, t, has_history, !stabilization_state.empty(), scalar!=nullptr,has_samples);
+        std::string metadata = stabilization_state;
+        if (steady_reference >= 0.) {
+            std::ostringstream line;
+            line.imbue(std::locale::classic());
+            line << "steady " << std::setprecision(17) << steady_reference << '\n';
+            metadata.insert(0, line.str());
+        }
+        const auto bytes = header(count_, width_, run_.gamma, hash_, accepted, t, has_history, !metadata.empty(), scalar!=nullptr,has_samples);
         out.write(bytes.data(), header_size);
         if (has_history) {
             char extra[16];
@@ -410,12 +427,12 @@ void Recovery::save(Id accepted, double t, const std::vector<double>& state,
             seal(extra,sizeof(extra));
             out.write(extra,sizeof(extra));
         }
-        if (!stabilization_state.empty()) {
-            require(stabilization_state.size() < INT_MAX - 8u, "stabilization section too large");
+        if (!metadata.empty()) {
+            require(metadata.size() < INT_MAX - 8u, "stabilization section too large");
             out.seekp(offset(count_, width_, has_history, scalar!=nullptr,has_samples));
-            out.write(stabilization_state.data(), static_cast<std::streamsize>(stabilization_state.size()));
+            out.write(metadata.data(), static_cast<std::streamsize>(metadata.size()));
             char crc[8];
-            store_word(crc, io::crc32(stabilization_state.data(), stabilization_state.size()));
+            store_word(crc, io::crc32(metadata.data(), metadata.size()));
             out.write(crc, 8);
         }
         out.close();

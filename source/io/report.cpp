@@ -177,6 +177,8 @@ void write_flow_summary(const FlowSummary& total, std::uint64_t step, double tim
     if (!details.steady_criterion.empty())
         table << "Steady         " << details.steady_criterion << " residual = " << details.steady_residual
               << "    target = " << details.steady_tol << '\n';
+    if (details.steady_criterion == "absolute")
+        table << "               relative residual = " << details.relative_steady_residual << '\n';
     table << "Energy         " << (details.max_local_step ? "RMS(delta E" : "RMS(dE")
           << (details.linear ? "'" : "") << (details.max_local_step ? ") = " : "/dt) = ") << rms << '\n';
     if (!details.stabilization.empty())

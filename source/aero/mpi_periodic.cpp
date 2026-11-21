@@ -21,7 +21,7 @@ struct Piece {
     Key order;
     Ref node;
     Id patch;
-    Coordinate area;
+    Coordinate area, position;
 };
 
 void put_edge(std::string& s, const EdgeData& e) {
@@ -178,7 +178,7 @@ std::vector<Piece> collect_physical_boundary(const MeshPartition& part, CvView c
                         if (part.node_owners[n] != w.rank)
                             continue;
                         const Piece piece = {
-                            {part.boundary_order[b], j}, nodes[n], patch, point(cv.boundary[k + j].area)};
+                            {part.boundary_order[b], j}, nodes[n], patch, point(cv.boundary[k + j].area), m.coordinate(n)};
                         if (piece.node.rank == w.rank)
                             boundary.push_back(piece);
                         else {
@@ -187,13 +187,14 @@ std::vector<Piece> collect_physical_boundary(const MeshPartition& part, CvView c
                             put(s, piece.node);
                             put(s, patch);
                             put(s, piece.area);
+                            put(s, piece.position);
                         }
                     }
                 // В двойственной сетке площадки следуют в порядке узлов граней, включая швы.
                 k += corners.size;
             }
         },
-        [&](Reader& r, int) { boundary.push_back({r.key(), r.ref(), r.id(), r.point()}); });
+        [&](Reader& r, int) { boundary.push_back({r.key(), r.ref(), r.id(), r.point(), r.point()}); });
     return boundary;
 }
 }
@@ -241,7 +242,7 @@ PeriodicPartition partition_periodic(const MeshPartition& part, CvView cv,
         std::sort(boundary.begin(), boundary.end(),
                   [](const Piece& a, const Piece& b) { return a.order < b.order; });
         for (const auto& p : boundary)
-            grid.boundary.push_back({local(p.node), p.order.first, p.patch, vector(p.area)});
+            grid.boundary.push_back({local(p.node), p.order.first, p.patch, vector(p.area), p.position});
     });
     return grid;
 }

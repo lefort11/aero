@@ -4,6 +4,7 @@
 #include "indexed_io.h"
 #include "../io/diagnostic_fields.h"
 #include <memory>
+#include <limits>
 
 namespace aero {
 // Строки следуют исходным номерам узлов. Каждый процесс записывает свои узлы вместе с их периодическими копиями.
@@ -26,6 +27,11 @@ public:
     const std::string& fields_directory() const { return fields_; }
     std::uint64_t step = 0;
     double time = 0;
+    double steady_reference = -1.; // Норма невязки исходного поля. Отрицательное значение означает отсутствие записи.
+    double relative_steady_residual(double norm) const {
+        if (steady_reference > 0.) return norm / steady_reference;
+        return norm == 0. ? 0. : std::numeric_limits<double>::infinity();
+    }
     std::string stabilization_state; // CFL, счётчик успешных шагов и глобальные номера отмеченных узлов.
     bool has_samples = false; // Признак формата одинаков и на процессе с пустой подобластью.
     std::vector<diagnostic::Moments> samples; // Средние и последние значения для продолжения с тем же dt.

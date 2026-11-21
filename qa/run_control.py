@@ -117,12 +117,12 @@ def check_steady_steps(args, work, parallel):
     dest.mkdir()
     cmd, mesh = solver_command(args, case, parallel, sample / "grid.mesh")
     cmd += [f"--input={case}", f"--output={dest}", f"main:mesh={mesh}", "main:time_scheme=steady",
-            "main:reconstruction=first_order", "main:report_every=1", "implicit:steady_max_steps=3",
+            "main:reconstruction=first_order", "main:report_every=1",
             "implicit:steady_tol=1e-15", "implicit:simplified_newton=on", "implicit:jacobian_update_every=3"]
 
     def phase(start, command, expected, initial="off", reject=False):
         (dest / "control.txt").write_text(command)
-        options = [f"implicit:local_time_step={initial}"]
+        options = [f"implicit:local_time_step={initial}", f"implicit:steady_max_steps={start + 3}"]
         if start:
             options.append("--recover")
         log = run(cmd + options, success=False)

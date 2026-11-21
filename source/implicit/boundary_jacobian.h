@@ -58,17 +58,20 @@ AERO_HOST_DEVICE inline void apply_rule(unsigned d, bc_detail::FreeRegime regime
 
 // Граничная площадка даёт один диагональный блок. Площадь уже содержится в area.
 AERO_HOST_DEVICE inline bool block(unsigned d, BoundaryConfig patch, const FreeBoundaryRules* table,
-        const double* current, const double* initial, const double* area, double gamma, double* matrix) {
+        const double* current, const double* initial, const double* area, double gamma, double* matrix,
+        const ProfileState* profile = nullptr) {
     double normal[3];
     EulerState gas, boundary;
     if (euler_unit_direction(d, area, normal) != EulerStatus::Success ||
         euler_state(d, current, gamma, &gas) != EulerStatus::Success)
         return false;
     const double un = euler_detail::dot(d, gas.velocity, normal);
-    const auto regime = bc_detail::free_regime(un, gas.sound_speed);
+    auto regime = bc_detail::free_regime(un, gas.sound_speed);
     const bool wall = solid_wall(patch.type());
     const auto* rules = patch.rules(table);
-    if (!wall && (!rules || bc_detail::free_boundary_state(d, *rules, gas, normal, un, gamma, initial,
+    if (profile) {
+        if (bc_detail::profile_state(d,profile->gas,gas,normal,un,gamma,boundary,regime)!=BoundaryStatus::Success) return false;
+    } else if (!wall && (!rules || bc_detail::free_boundary_state(d, *rules, gas, normal, un, gamma, initial,
                                                             boundary) != BoundaryStatus::Success))
         return false;
 
@@ -88,7 +91,17 @@ AERO_HOST_DEVICE inline bool block(unsigned d, BoundaryConfig patch, const FreeB
         } else {
             for (unsigned k = 0; k < d; ++k)
                 v.velocity[k] = edge_detail::velocity_column(col,k,gas);
-            apply_rule(d, regime, *rules, gas, boundary, normal, gamma, v);
+            if (profile && regime == bc_detail::FreeRegime::SuperIn) v = Variation{};
+            else if (profile && regime == bc_detail::FreeRegime::In) {
+                // Только J+ зависит от внутреннего состояния. Остальные заданные
+                // характеристики и выбранный режим фиксированы при дифференцировании.
+                const double dc = .5*gas.sound_speed*(v.p/gas.pressure-v.rho/gas.density);
+                const double du = .5*euler_detail::dot(d,v.velocity,normal)+dc/(gamma-1.);
+                const double cb = ::sqrt(gamma*boundary.pressure/boundary.density);
+                v.rho = boundary.density*du/cb;
+                v.p = gamma*boundary.pressure*du/cb;
+                for (unsigned k=0;k<d;++k) v.velocity[k]=du*normal[k];
+            } else apply_rule(d, regime, *rules, gas, boundary, normal, gamma, v);
             // Правило произведения для расхода массы, импульса и потока полной энтальпии.
             const double dq = euler_detail::dot(d, v.velocity, area);
             const double dm = v.rho * volume_flux + boundary.density * dq;

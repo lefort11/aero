@@ -55,7 +55,7 @@ struct RunSettings {
     double local_time_step_max_ratio = 4.; // Предел dt_i/dt_min в steady. Ноль отключает ограничение.
     bool local_time_step = false; // Свой псевдошаг CFL в каждом узле при установлении.
     double steady_tol = 1.e-6;            // Порог в единицах выбранного критерия.
-    unsigned steady_max_steps = 10000;    // Предел числа псевдошагов с начала этого запуска.
+    unsigned steady_max_steps = 10000;    // Предел числа псевдошагов с начала расчёта, включая восстановленные шаги.
     bool steady() const { return time_scheme == "steady"; }
     bool uses_implicit_time() const { return steady() || time_scheme == "bdf1" || time_scheme == "bdf2"; }
     std::string euler_solver;             // Численный поток Roe или LF.

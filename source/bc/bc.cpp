@@ -18,6 +18,7 @@ double number(const std::string& token) {
 // После superin разрешены начальное состояние и независимые замены его компонент.
 SupersonicInflow read_supersonic_inflow(const Tokens& words, unsigned dimension, bool linear) {
     SupersonicInflow rule = {};
+    if (words.size() == 2 && words[1] == "profile") { rule.profile = true; return rule; }
     rule.use_initial = words.size() > 1 && words[1] == "initial";
     const char* fields[] = {"rho", "p", "ux", "uy", "uz"};
     for (size_t i = rule.use_initial ? 2 : 1; i < words.size(); ++i) {
@@ -43,6 +44,7 @@ BoundaryRule read_subsonic_rule(const Tokens& words, bool linear) {
         throw std::invalid_argument("expected " + words[0] + " base_p|base_u|base_rho [initial|number]");
     const auto& name = words[1];
     BoundaryRule rule = {};
+    if (name == "profile" && words.size()==2 && words[0]=="inflow") { rule.source=BoundarySource::Profile; return rule; }
     if (name == "base_p")
         rule.mode = BoundaryMode::Pressure;
     else if (name == "base_u")
@@ -55,6 +57,7 @@ BoundaryRule read_subsonic_rule(const Tokens& words, bool linear) {
     // Без аргумента используем значение величины непосредственно внутри границы.
     if (words.size() == 2)
         rule.source = BoundarySource::Current;
+    else if (words[2] == "profile") rule.source = BoundarySource::Profile;
     else if (words[2] == "initial")
         rule.source = BoundarySource::Initial;
     else {

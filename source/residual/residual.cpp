@@ -1,4 +1,5 @@
 #include "flux_cfl.h"
+#include "../bc/profile.h"
 #include "packed_weno.h"
 #include "../parallel/parallel_for.h"
 #include "../parallel/wall_timer.h"
@@ -219,6 +220,7 @@ struct SpatialResidual::Impl {
     ReconstructionScheme scheme;         // Якобиан первого порядка требует той же схемы у невязки.
     ReconstructionContext context;       // Владеет шаблоном и его копией на устройстве.
     std::vector<Surface> surfaces;       // Сначала внутренние рёбра, затем физические площадки.
+    std::vector<ProfileState> profiles;
     BoundaryPatches patches;             // Метки и правила физических границ.
     std::vector<Index> offsets;          // Начало и конец списка для каждого узла.
     std::vector<OrientedFace> incidence; // Номера поверхностей с ориентацией относительно узла.
@@ -277,6 +279,7 @@ struct SpatialResidual::Impl {
                     throw std::invalid_argument("residual: invalid physical boundary");
                 if (needs_nodal_traces(bc.by_patch[b.patch].type()))
                     inlet_outlet_node[b.node] = 1;
+                append_boundary_profile(profiles,bc,b,d,frame.axis,options.gamma);
                 project_surface(s, b.area, d, frame);
             }
         }
@@ -296,7 +299,7 @@ struct SpatialResidual::Impl {
              surfaces.data(),
              offsets.data(),
              incidence.data(),
-             patches.view(),
+             patches.view(profiles),
              stencil,
              options, {}};
         validate_linear_walls(g);
@@ -354,7 +357,7 @@ int SpatialResidual::jacobian_geometry(Geometry& host, Geometry& active) const {
     host.surfaces = p_->surfaces.data();
     host.offsets = p_->offsets.data();
     host.incidence = p_->incidence.data();
-    host.patches = p_->patches.view();
+    host.patches = p_->patches.view(p_->profiles);
     host.stencil = p_->context.host_view();
     return p_->device;
 }

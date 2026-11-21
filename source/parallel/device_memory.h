@@ -13,6 +13,7 @@ enum class Copy { ToDevice, ToHost, OnDevice };
 
 AERO_DEVICE_ENTRY const char* message(Status);
 AERO_DEVICE_ENTRY Status count(int* devices);
+AERO_DEVICE_ENTRY Status selected_device_name(char* name, std::size_t capacity);
 AERO_DEVICE_ENTRY Status current(int* device);
 AERO_DEVICE_ENTRY Status select(int device);
 AERO_DEVICE_ENTRY Status bus_id(char* text, int capacity, int device);

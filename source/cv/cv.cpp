@@ -160,7 +160,7 @@ MedianDual::MedianDual(const Mesh& mesh) : dimension_(mesh.data().dimension) {
         const MeshIndex face = m.boundary_faces[b];
         boundary_start[face] = boundary_.size();
         for (MeshIndex node : m.face_nodes(face))
-            boundary_.push_back({node, face, m.boundary_patch[b], {}});
+            boundary_.push_back({node, face, m.boundary_patch[b], {}, m.coordinate(node)});
     }
     // Считаем геометрию ячеек параллельно, затем складываем в порядке сетки.
     // Номер потока не влияет на округление; пакет ограничивает временную память.

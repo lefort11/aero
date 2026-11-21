@@ -6,6 +6,7 @@
 #include "device_execution.h"
 #include "device_memory.h"
 #include <new>
+#include <cstdio>
 
 namespace aero {
 namespace gpu {
@@ -67,6 +68,12 @@ void copy_bytes(const Execution& exec, void* dst, const void* src, std::size_t b
 
 const char* message(Status status) { return status == Status::Success ? "Success" : last_error.c_str(); }
 Status count(int* devices) { return platform(cudaGetDeviceCount(devices)); }
+Status selected_device_name(char* name, std::size_t capacity) {
+    return run([&] {
+        const auto exec = device_work::current_execution(nullptr);
+        std::snprintf(name, capacity, "%s", exec.cuda_device_prop().name);
+    });
+}
 Status current(int* device) { return platform(cudaGetDevice(device)); }
 Status select(int device) { return platform(cudaSetDevice(device)); }
 Status bus_id(char* text, int capacity, int device) {

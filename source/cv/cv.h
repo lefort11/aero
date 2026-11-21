@@ -3,6 +3,7 @@
 
 #include "../mesh/mesh_index.h"
 #include <cmath>
+#include "../mesh/coordinate.h"
 #include <vector>
 
 namespace aero {
@@ -19,6 +20,7 @@ struct CvBoundary {
     // Номера узла-владельца, исходной внешней грани и её граничной метки.
     MeshIndex node, face, patch;
     CvVector area; // Направлена наружу из контрольного объёма этого узла.
+    Coordinate point; // Исходная координата узла до периодического отождествления.
 };
 
 // Массивы принадлежат MedianDual и индексируются исходными номерами сетки. Для CUDA нужно перенести сами массивы

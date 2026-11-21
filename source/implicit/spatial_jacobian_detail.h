@@ -75,7 +75,7 @@ struct SpatialBlocks {
         if (grid.options.background.active()) return linear_blocks(f,out);
         if (f >= grid.edges)
             return boundary_detail::block(grid.dim, grid.patches.by_patch[s.patch], grid.patches.free_rules,
-                    left, initial ? grid.node_row(initial, s.begin) : nullptr, s.area, grid.options.gamma, out);
+                    left, initial ? grid.node_row(initial, s.begin) : nullptr, s.area, grid.options.gamma, out, grid.patches.profile(f-grid.edges));
         EdgeFluxJacobian edge;
         const euler_detail::FaceStates states = {grid.dim, left, grid.node_row(u, s.end), s.area,
                                                  grid.options.gamma, grid.options.upw_coeff};

@@ -1,4 +1,5 @@
 #include "partition_operator.h"
+#include "../bc/profile.h"
 #include "../io/settings.h"
 #include "partition_kernels.h"
 #include "../parallel/parallel_for.h"
@@ -38,13 +39,13 @@ PartitionOperator::PartitionOperator(const MeshPartition& part, CvView cv, const
     }
     add_edge_surfaces(mesh, cv, periodic, frame, requests);
     const auto edge_count = surfaces_.size();
-    add_boundary_surfaces(cv, periodic, part.physical_patches, patches, frame, requests);
+    add_boundary_surfaces(cv, periodic, part.physical_patches, patches, frame, options.gamma, requests);
 
     // Ядра ожидают сначала все рёбра в порядке сетки, затем части физических границ.
     residual_detail::build_incidence(ids_.size(), edge_count, surfaces_, offsets_, incidence_);
     grid_ = {
         mesh.dimension,    ids_.size(),    edge_count, surfaces_.size(), surfaces_.data(), offsets_.data(),
-        incidence_.data(), patches.view(), {},         options, {}};
+        incidence_.data(), patches.view(boundary_profiles_), {},         options, {}};
     if (!cuda) {
         flux_.resize(surfaces_.size());
         normals_.resize(edge_count);
@@ -98,7 +99,7 @@ void PartitionOperator::add_edge_surfaces(MeshView mesh, CvView cv, const Period
 
 void PartitionOperator::add_boundary_surfaces(CvView cv, const PeriodicPartition* periodic,
                                               Id physical_patches, const BoundaryPatches& patches,
-                                              const ResidualFrame& frame, StencilRequests* requests) {
+                                              const ResidualFrame& frame, double gamma, StencilRequests* requests) {
     const Id count = periodic ? periodic->boundary.size() : cv.boundary_count;
     for (Id index = 0; index < count; ++index) {
         const auto& piece = periodic ? periodic->boundary[index] : cv.boundary[index];
@@ -109,6 +110,7 @@ void PartitionOperator::add_boundary_surfaces(CvView cv, const PeriodicPartition
             requests->inlet_nodes.insert(ids_[piece.node]);
         }
         Surface surface{};
+        append_boundary_profile(boundary_profiles_,patches,piece,cv.dimension,frame.axis,gamma);
         surface.begin = piece.node;
         surface.patch = piece.patch;
         residual_detail::project_surface(surface, piece.area, cv.dimension, frame);

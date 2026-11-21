@@ -754,7 +754,7 @@ AERO_HOST_DEVICE inline bool integrated_boundary_flux(const Geometry& g, Index f
                      g.node_row(state,piece.begin),initial_state,false,out) && integrate_flux(g.components(),piece.measure,out);
     }
     return boundary_flux(g.dim, patch, g.patches.free_rules, g.node_row(state, piece.begin), initial_state,
-                         piece.area, g.options.gamma, &out) == BoundaryStatus::Success;
+                         piece.area, g.options.gamma, &out, g.patches.profile(face-g.edges)) == BoundaryStatus::Success;
 }
 
 // При отсутствии списка индексов обходим все площадки в исходном порядке.

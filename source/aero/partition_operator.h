@@ -112,7 +112,7 @@ private:
     // Добавляет физические границы, за которые отвечает эта подобласть.
     void add_boundary_surfaces(CvView cv, const PeriodicPartition* periodic, Id physical_patches,
                                const BoundaryPatches& patches, const ResidualFrame& frame,
-                               StencilRequests* requests);
+                               double gamma, StencilRequests* requests);
     // Возвращает активное устройство или nullptr для обмена в памяти CPU.
     PartitionGpu* device() const;
 #ifdef AERO_WITH_KOKKOS_GPU
@@ -181,6 +181,7 @@ private:
     std::vector<EulerState> nodal_gas_; // Величины текущей стадии для рёбер на CPU.
     bool gas_current_ = false; // В однопроцессном расчёте стадия обновляет сразу и поле, и этот массив.
     PartitionStencil stencil_;                       // Строки реконструкции и дополнительные удалённые узлы.
+    std::vector<ProfileState> boundary_profiles_; // Профили физических площадок в порядке сборки потоков.
     std::vector<residual_detail::Surface> surfaces_; // Сначала рёбра, затем части физических границ.
     std::vector<EulerFluxResult> flux_;              // Потоки для каждой поверхности при расчёте на CPU.
     std::vector<Id> compute_; // Индексы поверхностей, на которых процесс сам вычисляет поток.

@@ -76,16 +76,17 @@ void integrate_time(const RunSettings& run, const Processes& world, OutputSchedu
 
     SolverTimings timing(world, run.mpi_timing, run.use_cuda, number);
     const auto first_step = number;
-    double reference = 0., criterion = 0.;
+    double& reference = recovery.steady_reference;
+    double criterion = 0.;
     // Абсолютный критерий измеряется в единицах |R|/V, относительный —
     // в долях начальной нормы. Нулевой исходный отток означает стационар.
     const auto steady_measure = [&](double norm) {
-        return run.steady_absolute ? norm : (reference > 0. ? norm / reference : 0.);
+        return run.steady_absolute ? norm : recovery.relative_steady_residual(norm);
     };
     const char* criterion_name = run.steady_absolute ? "absolute" : "relative";
     const bool steady = run.steady();
     bool stopped = false;
-    bool previous_first_order = run.first_order_start(time);
+    bool check_initial = steady;
     // Возможен запуск с final_time = 0 или продолжение с уже достигнутого времени.
     // В обоих случаях итоговые файлы относятся к загруженному состоянию.
     if (!steady && time >= run.final_time)
@@ -96,22 +97,21 @@ void integrate_time(const RunSettings& run, const Processes& world, OutputSchedu
         }
         const bool first_order_start = run.first_order_start(time);
         const double cfl_dt = operations.cfl_step(first_order_start, timing);
-        // CFL уже собрал потоки начального поля. При продолжении отсчитываем
-        // снижение невязки от состояния, загруженного из контрольной точки.
-        // При смене схемы пространственная невязка меняется даже при том же поле.
-        // Для относительного критерия берём начальную норму соответствующей фазы.
-        if (steady && (number == first_step || previous_first_order != first_order_start)) {
-            reference = operations.steady_residual();
-            criterion = steady_measure(reference);
-            if (number == first_step && !first_order_start && criterion <= run.steady_tol) {
-                const TimeStep initial_step{number, time, time, 0., false};
-                write_step_results(initial_step, output, recovery, initial, operations, timing, run.use_cuda, true);
-                break;
+        // При продолжении сравниваем загруженное поле с исходным полем всего расчёта.
+        if (check_initial) {
+            const double norm = operations.steady_residual();
+            if (reference < 0.) reference = norm;
+            criterion = steady_measure(norm);
+            check_initial = false;
+            const bool converged = !first_order_start && criterion <= run.steady_tol;
+            if (converged || number >= run.steady_max_steps) {
+                write_step_results({number,time,time,0.,false}, output,recovery,initial,operations,timing,run.use_cuda,true);
+                if (converged) break;
+                throw std::runtime_error("Steady: pseudo-step limit reached before convergence");
             }
         }
         const TimeStep step = choose_time_step(number + 1, time, cfl_dt, run, output);
         if (!operations.advance(step, timing)) continue; // Время и расписание вывода остаются прежними.
-        previous_first_order = first_order_start;
         number = step.number;
         time = step.end;
         bool converged = false, exhausted = false;
@@ -121,7 +121,7 @@ void integrate_time(const RunSettings& run, const Processes& world, OutputSchedu
             criterion = steady_measure(operations.steady_residual());
             // Выход на стационар проверяем по невязке выбранной схемы.
             converged = !first_order_start && criterion <= run.steady_tol;
-            exhausted = number - first_step >= run.steady_max_steps;
+            exhausted = number >= run.steady_max_steps;
         }
         // Отчёт относится к только что выполненному шагу. Затем выбираем CFL следующего шага
         // и применяем ручные команды. В контрольную точку попадёт уже готовое к продолжению состояние.

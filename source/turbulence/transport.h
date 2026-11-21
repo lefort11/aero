@@ -15,6 +15,7 @@ struct Transport {
     MeshIndex cell_count, edges;
     unsigned dim;
     const EulerFluxResult *flux;
+    const ProfileState* profiles; // Входное nu_tilde на физических площадках.
     const double *volume;
     const MeshIndex *owned;
     MeshIndex count;
@@ -172,7 +173,13 @@ struct Transport {
             const double incoming = reuse_gas ? sa.incoming[pos] : incoming_speed(orientation, inverse_density);
             if (!reuse_gas && save_rotation)
                 sa.incoming[pos] = incoming;
-            const double jump = edge ? sa.w[j] - w : (incoming > 0. ? sa.ambient - w : 0.);
+            double jump = 0.;
+            if (edge) jump = sa.w[j] - w;
+            else if (incoming > 0.) {
+                const auto index = orientation.face()-edges;
+                const double inlet = profiles && profiles[index].gas.density>0. ? profiles[index].nutilde : sa.ambient;
+                jump = inlet-w;
+            }
             advection += incoming * jump;
             diagonal += incoming;
             double jump_u[3]{};

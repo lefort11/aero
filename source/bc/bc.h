@@ -12,7 +12,7 @@ AERO_HOST_DEVICE inline bool solid_wall(BoundaryType type) {
     return type==BoundaryType::Wall || type==BoundaryType::SlipWall;
 }
 enum class BoundaryMode { Pressure, NormalVelocity, Density };
-enum class BoundarySource { Current, Initial, Constant };
+enum class BoundarySource { Current, Initial, Constant, Profile };
 
 // На дозвуковой границе задаётся одна величина. Остальные получаем из характеристик.
 struct BoundaryRule {
@@ -23,6 +23,7 @@ struct BoundaryRule {
 
 // На сверхзвуковом входе все характеристики входят, поэтому задавать можно всё состояние.
 struct SupersonicInflow {
+    bool profile; // Полное состояние берётся из таблицы сопла.
     bool use_initial;    // Брать за основу начальное состояние площадки вместо текущего.
     unsigned mask;       // Установленный бит отмечает явно заданную компоненту.
     double primitive[5]; // Значения по номерам битов: rho, p, ux, uy, uz.
@@ -58,10 +59,19 @@ public:
 };
 
 // Этот вид таблиц передаётся в вычислительные ядра и не владеет памятью.
+struct ProfileState {
+    EulerState gas; // Нулевая плотность означает обычную площадку без профиля.
+    double nutilde;
+};
 struct BoundaryPatchView {
     const BoundaryConfig* by_patch;             // Одна короткая запись на метку сетки.
     const FreeBoundaryRules* free_rules;        // Комплекты только для открытых меток.
-    unsigned long long patch_count, free_count; // Размеры двух массивов при передаче на GPU.
+    unsigned long long patch_count, free_count;
+    const ProfileState* profiles; // По одной записи на физическую площадку.
+    unsigned long long profile_count;
+    AERO_HOST_DEVICE const ProfileState* profile(unsigned long long piece) const {
+        return profiles && profiles[piece].gas.density > 0. ? profiles + piece : nullptr;
+    } // Размеры двух массивов при передаче на GPU.
 };
 
 enum class BoundaryStatus {
@@ -189,6 +199,33 @@ AERO_HOST_DEVICE inline FreeRegime free_regime(double un, double sound) {
     return un < 0 ? FreeRegime::In : FreeRegime::Out;
 }
 
+// При пуске из покоя режим определяет скорость Роу между профилем и внутренним газом.
+AERO_HOST_DEVICE inline BoundaryStatus profile_state(unsigned d, const EulerState& ref, const EulerState& inside,
+        const double* normal, double un, double gamma, EulerState& boundary, FreeRegime& regime) {
+    euler_detail::RoeAverage roe;
+    if (euler_detail::average_roe_state(d,inside,ref,normal,gamma,roe) != EulerStatus::Success)
+        return BoundaryStatus::InvalidState;
+    regime = free_regime(roe.normal_speed,roe.sound_speed);
+    boundary = inside;
+    if (regime == FreeRegime::SuperOut) return BoundaryStatus::Success;
+    if (regime == FreeRegime::Out) {
+        BoundaryRule rule{BoundaryMode::Pressure,BoundarySource::Constant,ref.pressure};
+        return apply_subsonic_rule(d,rule,inside,normal,un,gamma,nullptr,boundary);
+    }
+    boundary = ref;
+    if (regime == FreeRegime::SuperIn) return BoundaryStatus::Success;
+    // Наружная нормаль. Из области приходит J+, из сопла J−, энтропия и касательная скорость.
+    const double ref_un = euler_detail::dot(d,ref.velocity,normal);
+    const double plus = un + 2.*inside.sound_speed/(gamma-1.);
+    const double minus = ref_un - 2.*ref.sound_speed/(gamma-1.);
+    const double c = .25*(gamma-1.)*(plus-minus);
+    if (!(c > 0.)) return BoundaryStatus::InvalidTarget;
+    boundary.density *= ::pow(c/ref.sound_speed,2./(gamma-1.));
+    boundary.pressure = boundary.density*c*c/gamma;
+    for (unsigned k=0;k<d;++k) boundary.velocity[k] += (.5*(plus+minus)-ref_un)*normal[k];
+    return BoundaryStatus::Success;
+}
+
 AERO_HOST_DEVICE inline BoundaryStatus free_boundary_state(unsigned d, const FreeBoundaryRules& config,
                                                            const EulerState& inside, const double* normal,
                                                            double un, double gamma, const double* initial,
@@ -237,7 +274,7 @@ AERO_HOST_DEVICE inline void open_boundary_flux(unsigned d, const EulerState& st
 // Общий для CPU и CUDA поток одной физической площадки. При ошибке result сохраняет прежнее значение.
 AERO_HOST_DEVICE inline BoundaryStatus
 boundary_flux(unsigned d, BoundaryConfig patch, const FreeBoundaryRules* free_rules, const double* current,
-              const double* initial, const double* area, double gamma, EulerFluxResult* result) {
+              const double* initial, const double* area, double gamma, EulerFluxResult* result, const ProfileState* profile = nullptr) {
     double normal[3] = {};
     if (!result || !current || euler_unit_direction(d, area, normal) != EulerStatus::Success)
         return BoundaryStatus::InvalidArgument;
@@ -257,7 +294,8 @@ boundary_flux(unsigned d, BoundaryConfig patch, const FreeBoundaryRules* free_ru
         if (!free_rules)
             return BoundaryStatus::InvalidArgument;
         EulerState boundary;
-        const auto status = bc_detail::free_boundary_state(d, *patch.rules(free_rules), inside, normal, un,
+        bc_detail::FreeRegime regime;
+        const auto status = profile ? bc_detail::profile_state(d,profile->gas,inside,normal,un,gamma,boundary,regime) : bc_detail::free_boundary_state(d, *patch.rules(free_rules), inside, normal, un,
                                                            gamma, initial, boundary);
         if (status != BoundaryStatus::Success)
             return status;
@@ -282,7 +320,16 @@ boundary_flux(unsigned d, BoundaryConfig patch, const FreeBoundaryRules* free_ru
 #include <string>
 namespace aero {
 // Владеет настройками расчёта на CPU. Порядок by_patch соответствует меткам исходной сетки.
+struct ProfileRow {
+    double radius, density, axial, radial, pressure, nutilde;
+};
+struct BoundaryProfile {
+    Coordinate center{}, axis{{1,0,0}};
+    std::vector<ProfileRow> rows;
+};
 struct BoundaryPatches {
+    std::vector<BoundaryProfile> profiles; // Индекс таблицы по номеру секции free.
+
     std::vector<BoundaryConfig> by_patch;      // Метки в порядке сетки.
     std::vector<FreeBoundaryRules> free_rules; // По одному комплекту на настроенную секцию free.
 
@@ -293,8 +340,8 @@ struct BoundaryPatches {
         return BoundaryConfig(static_cast<long long>(index));
     }
     // Представление тех же данных для CPU или для копирования в память видеокарты.
-    BoundaryPatchView view() const {
-        return {by_patch.data(), free_rules.data(), by_patch.size(), free_rules.size()};
+    BoundaryPatchView view(const std::vector<ProfileState>& samples = {}) const {
+        return {by_patch.data(), free_rules.data(), by_patch.size(), free_rules.size(), samples.empty() ? nullptr : samples.data(), samples.size()};
     }
 };
 // Одна раскладка для обычного и MPI-расчёта на GPU. Нулевое число free не требует памяти под правила.
@@ -302,6 +349,7 @@ template <class DeviceStorage>
 BoundaryPatchView upload_boundary_patches(DeviceStorage& storage, BoundaryPatchView host) {
     host.by_patch = storage.allocate(host.patch_count, host.by_patch);
     host.free_rules = storage.allocate(host.free_count, host.free_rules);
+    host.profiles = storage.allocate(host.profile_count,host.profiles);
     return host;
 }
 struct PeriodicPair {

@@ -28,6 +28,7 @@ struct ReportDetails {
     double max_local_step = 0.; // Ненулевой при локальном установлении; dt отчёта хранит минимум.
     bool linear = false;
     unsigned iterations = 0, max_iterations = 0;
+    double relative_steady_residual = 0.;
     double newton_residual = 0., newton_tol = 0., steady_residual = 0., steady_tol = 0.;
     std::uint64_t failed = 0, first_order = 0;
 };

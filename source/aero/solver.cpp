@@ -7,6 +7,7 @@
 #include "partition_operator.h"
 #ifdef AERO_WITH_KOKKOS_GPU
 #include "partition_gpu.h"
+#include "../parallel/device_check.h"
 #endif
 #include "time_loop.h"
 #include "partition_output.h"
@@ -338,7 +339,7 @@ public:
     }
 
     // Даже процесс без собственных узлов участвует в сборе общей сводки.
-    void write_report(const TimeStep& step, unsigned dimension, double cfl, double steady_residual) {
+    void write_report(const TimeStep& step, unsigned dimension, double cfl, double steady_residual, double relative_residual) {
         print_input_warnings(run_, world_, std::cout);
         ReportDetails details;
         details.scheme = run_.time_scheme;
@@ -353,6 +354,7 @@ public:
         if (run_.steady()) {
             details.steady_criterion = run_.steady_absolute ? "absolute" : "relative";
             details.steady_residual = steady_residual;
+            details.relative_steady_residual = relative_residual;
             details.steady_tol = run_.steady_tol;
             details.max_local_step = op_.largest_step(step.dt);
         }
@@ -592,6 +594,25 @@ void report_active_backend(const RunSettings& run, const Processes& world) {
         std::cout << "Active backend = " << (run.use_cuda ? "CUDA" : "CPU")
                   << " (MPI), processes = " << world.size << '\n';
     }
+#ifdef AERO_WITH_KOKKOS_GPU
+    if (run.use_cuda) {
+        std::string description;
+        world.local([&] {
+            int device = 0;
+            char name[256] = {};
+            gpu::checked(gpu::current(&device));
+            gpu::checked(gpu::selected_device_name(name, sizeof(name)));
+            description = "CUDA device" + std::to_string(device) + ": " + name;
+            if (world.size > 1) description += " (MPI rank " + std::to_string(world.rank) + ")";
+        });
+        if (world.size == 1) {
+            std::cout << description << '\n';
+            return;
+        }
+        const auto lines = world.gather_text(description);
+        if (!world.rank) for (const auto& line : lines) std::cout << line << '\n';
+    }
+#endif
 }
 
 // Общий цикл времени вызывает эти операции и в обычном расчёте, и при разбиении.
@@ -639,7 +660,8 @@ void integrate_partition(const RunSettings& run, const Processes& world, unsigne
     if (error) operations.exact_error = [&](const TimeStep& step, const std::vector<double>& state) {
         error->write(step.number, step.end, state);
     };
-    operations.report = [&](const TimeStep& step, double criterion) { stepper.write_report(step, dimension, stepper.courant(), criterion); };
+    operations.report = [&](const TimeStep& step, double criterion) { stepper.write_report(step, dimension, stepper.courant(), criterion,
+            run.steady_absolute ? recovery.relative_steady_residual(criterion) : criterion); };
     operations.write_fields = [&](const TimeStep& step, const std::vector<double>& snapshot,
                                   bool final_field, SolverTimings& timing) {
         diagnostic::Fields data;
@@ -750,6 +772,17 @@ int run_partition(RunSettings run, const ReconstructionOptions& reconstruction, 
         }
     }
 #endif
+    // Старый формат recovery содержит исходное поле, но не его норму.
+    // Вычисляем её до восстановления рабочего поля SA и параметров из control.txt.
+    if (run.steady() && run.directories.recover && recovery.steady_reference < 0.) {
+        SolverTimings timing(world, false, run.use_cuda, 0);
+        op->first_order_start = run.first_order_start(0.);
+#ifdef AERO_WITH_KOKKOS_GPU
+        if (gpu) world.local([&] { op->upload_state(fields.initial, fields.initial); });
+#endif
+        op->assemble_fluxes(fields.initial, fields.initial, timing);
+        recovery.steady_reference = op->steady_residual(fields.initial, fields.initial);
+    }
     world.local([&] {
 #ifdef AERO_WITH_KOKKOS_GPU
         if (gpu) {

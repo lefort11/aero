@@ -27,6 +27,7 @@ turbulence::Step PartitionOperator::sa_step() const {
     auto &t = s.transport;
     auto aes = aes_->view();
     t.flux = flux_.data();
+    t.profiles = grid_.patches.profiles;
     t.volume = volumes_;
     t.owned = world_.size == 1 ? nullptr : owned.data();
     t.count = owned.size();
@@ -35,6 +36,7 @@ turbulence::Step PartitionOperator::sa_step() const {
         const auto &g = gpu_->active_grid();
         aes = gpu_->viscosity_view();
         t.flux = g.flux;
+        t.profiles = g.geometry.patches.profiles;
         t.volume = g.volumes;
         t.owned = g.owned;
     }
