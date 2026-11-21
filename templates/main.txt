@@ -29,7 +29,7 @@ Equations = Euler
 # viscosity = off
 
 # Turbulence — On или Off, по умолчанию Off. Для On нужны Euler, активный закон
-# молекулярной вязкости и файл turbulence.txt с параметрами модели RANS SA.
+# молекулярной вязкости и файл turbulence.txt с параметрами модели RANS SA, LES Sigma или DDES SA.
 # Turbulence = Off
 
 # Сетка и численная схема (обязательные параметры)

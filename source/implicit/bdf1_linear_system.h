@@ -43,6 +43,8 @@ public:
     }
     // Вычисляет (J + V/dt)*x. Вход и выход расположены в разных массивах.
     void apply(const double* x, double* result) const;
+    // Одно применение выбранного предобусловливателя для пробного поля газа.
+    void predict(const double* rhs,double* correction) const;
     // Максимум модуля по всем уравнениям и узлам на том же устройстве, что и матрица.
     double infinity_norm(const double* values) const;
     // Решает A*x=b с нулевой начальной поправки. b и x — отдельные массивы.

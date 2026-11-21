@@ -2,12 +2,13 @@
 LZMA_SOURCE := third_party/lzma
 $(BUILD)/report.o $(BUILD)/io_scheduled_output.o: source/io/flow_values.h source/eulersolver/linear_euler.h
 NUMBER_CODEC := source/io/number_codec.h
+NATIVE_FORMAT := source/io/native_format.h $(NUMBER_CODEC)
 LABEL_HEADER := source/io/utf8_label.h
-IO_HEADERS := $(LABEL_HEADER) $(NUMBER_CODEC) source/io/lzma_stream.h $(wildcard $(LZMA_SOURCE)/*.h)
+IO_HEADERS := $(LABEL_HEADER) $(NATIVE_FORMAT) source/io/lzma_stream.h $(wildcard $(LZMA_SOURCE)/*.h)
 LZMA_OBJECTS := $(addprefix $(BUILD)/lzma_,LzmaDec.o LzmaEnc.o LzFind.o CpuArch.o)
 IO_LIBRARY := $(BUILD)/libaero_io.a
 IO_DIR := source/io
-FIELD_HEADERS := $(LABEL_HEADER) $(NUMBER_CODEC) $(IO_DIR)/fields.h $(IO_DIR)/sha256.h
+FIELD_HEADERS := $(LABEL_HEADER) $(NATIVE_FORMAT) $(IO_DIR)/fields.h $(IO_DIR)/sha256.h
 FIELD_SOURCES := $(IO_DIR)/fields.cpp $(IO_DIR)/fields_mesh.cpp $(IO_DIR)/sha256.cpp
 FIELD_OBJECTS := $(patsubst $(IO_DIR)/%.cpp,$(BUILD)/io_%.o,$(FIELD_SOURCES))
 FIELD_TEST := $(BUILD)/io_fields_tests$(EXE)
@@ -35,7 +36,7 @@ ifneq ($(wildcard source/bc/bc.h),)
 SETTINGS_OBJECTS += $(BUILD)/settings_boundary.o
 endif
 
-$(BUILD)/settings.o: source/parallel/modules.h $(wildcard source/viscosity/settings.h source/turbulence/sa.h)
+$(BUILD)/settings.o: source/parallel/modules.h $(wildcard source/viscosity/settings.h source/turbulence/sa.h source/turbulence/sigma.h source/turbulence/ddes.h)
 $(BUILD)/settings.o: $(IO_DIR)/settings.cpp $(IO_DIR)/settings.h $(IO_DIR)/settings_text.h $(IO_DIR)/output_settings.h source/reconstruction/scheme.h | $(BUILD)
 	$(compiling)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@

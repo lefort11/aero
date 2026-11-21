@@ -18,15 +18,6 @@ V operator-(V a, V b) {
 V operator*(V a, double s) {
     return {a.x * s, a.y * s, a.z * s};
 }
-double dot(V a, V b) {
-    return a.x * b.x + a.y * b.y + a.z * b.z;
-}
-V cross(V a, V b) {
-    return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
-}
-double norm(V a) {
-    return std::hypot(std::hypot(a.x, a.y), a.z);
-}
 bool finite(V a) {
     return std::isfinite(a.x) && std::isfinite(a.y) && std::isfinite(a.z);
 }
@@ -59,9 +50,9 @@ V polygon_normal(const Geometry& g, MeshCell cell, V center) {
     for (MeshIndex k = 0; k < cell.face_count(); ++k) {
         const MeshFace f = cell.face(k);
         const V arm = g.delta(f.node_id(0), origin) - center;
-        sum = sum + cross(arm, g.delta(f.node_id(1), f.node_id(0))) * cell.face_orientation(k);
+        sum = sum + arm.cross(g.delta(f.node_id(1), f.node_id(0))) * cell.face_orientation(k);
     }
-    const double length = norm(sum);
+    const double length = sum.length();
     g.require(length > 0 && std::isfinite(length), "degenerate polygon");
     return sum * (1 / length);
 }
@@ -70,8 +61,8 @@ void check_plane(const Geometry& g, MeshIndexSpan ids, V normal) {
     double span = 0, deviation = 0;
     for (MeshIndex id : ids) {
         const V v = g.delta(id, ids[0]);
-        span = std::max(span, norm(v));
-        deviation = std::max(deviation, std::fabs(dot(v, normal)));
+        span = std::max(span, v.length());
+        deviation = std::max(deviation, std::fabs(v.dot(normal)));
     }
     g.require(deviation <= 128 * std::numeric_limits<double>::epsilon() * span, "nonplanar polygon");
 }
@@ -90,7 +81,7 @@ void split_segment(const Geometry& g, MeshCell cell, const std::vector<MeshIndex
     const MeshView& m = g.mesh;
     const MeshIndex e = cell.edge_id(0), a = m.edge_begin[e], b = m.edge_end[e];
     const V edge = g.delta(b, a);
-    const double length = norm(edge);
+    const double length = edge.length();
     g.require(length > 0 && std::isfinite(length), "invalid line segment");
     // У осевого отрезка ненулевая компонента равна ±length. Деление даёт
     // точно ±1 даже для неодинаковых длин. Так постоянное давление не создаёт
@@ -139,16 +130,16 @@ void collect_cell_contributions(const MeshView& m, MeshIndex id, const std::vect
             const V to_cell = center - g.delta(a, origin) - edge * 0.5;
             V dual_area, exterior;
             if (m.dimension == 2) {
-                dual_area = cross(to_cell, normal) * sign;
-                exterior = cross(edge, normal) * (0.5 * sign);
+                dual_area = to_cell.cross(normal) * sign;
+                exterior = edge.cross(normal) * (0.5 * sign);
             } else {
                 // В 3D второе направление ведёт к центру грани; половина векторного произведения даёт площадь треугольника.
                 const V to_face = face_center - g.delta(a, nodes[0]) - edge * 0.5;
-                dual_area = cross(to_cell, to_face) * (0.5 * sign);
-                exterior = cross(edge, to_face) * (0.25 * sign);
+                dual_area = to_cell.cross(to_face) * (0.5 * sign);
+                exterior = edge.cross(to_face) * (0.25 * sign);
             }
             // Две равные части по сторонам двойственной площадки принадлежат концам одного ребра.
-            const double share = dot(dual_area, edge) / (2 * m.dimension);
+            const double share = dual_area.dot(edge) / (2 * m.dimension);
             g.require(share > 0 && std::isfinite(share), "non-positive or non-finite median subcell");
             parts.push_back({a, b, e, share, dual_area * (a == m.edge_begin[e] ? 1 : -1)});
             if (start != no_boundary) {
@@ -197,7 +188,7 @@ MedianDual::MedianDual(const Mesh& mesh) : dimension_(mesh.data().dimension) {
             throw MeshError("median dual: invalid volume at node " + std::to_string(i));
     });
     for (const V& area : edge_areas_)
-        if (!finite(area) || !(norm(area) > 0))
+        if (!finite(area) || !(area.length() > 0))
             throw MeshError("median dual: invalid edge area");
     for (const CvBoundary& piece : boundary_)
         if (!finite(piece.area))
@@ -211,16 +202,16 @@ MedianDual::MedianDual(const Mesh& mesh) : dimension_(mesh.data().dimension) {
         const V area = edge_areas_[e];
         closure[m.edge_begin[e]] = closure[m.edge_begin[e]] + area;
         closure[m.edge_end[e]] = closure[m.edge_end[e]] - area;
-        const double area_magnitude = norm(area);
+        const double area_magnitude = area.length();
         surface[m.edge_begin[e]] += area_magnitude;
         surface[m.edge_end[e]] += area_magnitude;
     }
     for (const CvBoundary& piece : boundary_) {
         closure[piece.node] = closure[piece.node] + piece.area;
-        surface[piece.node] += norm(piece.area);
+        surface[piece.node] += piece.area.length();
     }
     parallel_for(m.node_count, [&](MeshIndex i) {
-        if (!std::isfinite(surface[i]) || !(norm(closure[i]) <= 1e-12 * surface[i]))
+        if (!std::isfinite(surface[i]) || !(closure[i].length() <= 1e-12 * surface[i]))
             throw MeshError("median dual: surface does not close at node " + std::to_string(i));
     });
 }

@@ -1,7 +1,7 @@
 #include "fields.h"
 #include "utf8_label.h"
 #include "../parallel/parallel_for.h"
-#include "number_codec.h"
+#include "native_format.h"
 #include <algorithm>
 #include "lzma_stream.h"
 
@@ -64,6 +64,7 @@ void check_format(FieldFormat format) {
 }
 
 class Reader {
+    friend struct io::NativeFileCodec;
 public:
     Reader(std::istream& input, const FieldReadLimits& limits)
         : input_(&input), limits_(limits), budget_(limits.max_payload_bytes),
@@ -97,12 +98,7 @@ public:
             fail(std::string("Expected block: ") + label);
     }
     U64 u64() {
-        if (!text_) {
-            char data[8];
-            bytes(data, sizeof(data));
-            return number_codec::read_word(data);
-        }
-        return number_codec::parse_decimal(token(), fail);
+        return io::NativeFileCodec::read_unsigned(*this,fail);
     }
     double real() {
         if (!text_) {
@@ -379,20 +375,7 @@ public:
         }
     }
     void string(const std::string& value) {
-        if (text_) {
-            output_.put('"');
-            for (char c : value) {
-                if (c == '"' || c == '\\')
-                    output_.put('\\');
-                output_.put(c);
-            }
-            literal("\" ");
-        } else {
-            if (value.size() > static_cast<std::size_t>(std::numeric_limits<std::streamsize>::max()))
-                fail("Field string too large");
-            u64(value.size());
-            output_.write(value.data(), static_cast<std::streamsize>(value.size()));
-        }
+        io::NativeFileCodec::write_string(output_,text_,value,' ',fail,"Field string too large");
     }
     void hash(const std::string& value) {
         if (text_)

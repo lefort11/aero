@@ -35,6 +35,7 @@ struct Geometry {
     const Element& element;
     unsigned dim;
     Tensor product[8][8];
+    MeanGradient* mean;
 
     // Инвертируем матрицу рёбер симплекса. Столбцы обратной матрицы — градиенты
     // линейных базисных функций; первая функция дополняет остальные до единицы.
@@ -68,6 +69,11 @@ struct Geometry {
                 gradient[0][j] -= gradient[i][j];
             }
         const double volume = std::abs(determinant) / (dim == 3 ? 6. : dim == 2 ? 2. : 1.);
+        if (mean) {
+            mean->volume += weight*volume;
+            for (unsigned i=0;i<=dim;++i) for (unsigned j=0;j<dim;++j)
+                mean->basis[vertex[i]][j] += weight*volume*gradient[i][j];
+        }
         if (!(volume > 0. && std::isfinite(volume))) throw MeshError("AES: invalid simplex volume");
         for (unsigned i = 0; i <= dim; ++i)
             for (unsigned j = 0; j <= dim; ++j) {
@@ -146,7 +152,7 @@ struct Geometry {
 }
 
 void GradientBuilder::prepare(const Element& element, unsigned dim, double gamma, double prandtl,
-                             Cell& cell, std::vector<PairMetric>& pairs) {
+                             Cell& cell, std::vector<PairMetric>& pairs, MeanGradient* mean) {
     // Координаты element отсчитаны от первой вершины. Перенесённая копия
     // имеет тот же ключ, если все числа и все исходные рёбра совпадают точно.
     std::array<double,32> key{};
@@ -155,10 +161,16 @@ void GradientBuilder::prepare(const Element& element, unsigned dim, double gamma
         for (unsigned j = 0; j < dim; ++j) key[4*i+1+j] = element.position[i][j];
     }
     auto found = shapes_.find(key);
+    if (found != shapes_.end() && mean && !found->second.mean.volume) {
+        shapes_.erase(found);
+        found=shapes_.end();
+    }
     if (found == shapes_.end()) {
-        Geometry geometry{element,dim,{}};
+        Shape shape{{},pairs.size(),{}};
+        Geometry geometry{element,dim,{},mean ? &shape.mean : nullptr};
         geometry.build();
-        Shape shape{pairs.size(),{}};
+        if (mean) for (auto& vertex : shape.mean.basis)
+            for (double& weight : vertex) weight /= shape.mean.volume;
         for (unsigned i = 0; i < cell.count; ++i) for (unsigned j = i+1; j < cell.count; ++j) {
             double diffusion[2];
             pairs.push_back(make_metric(geometry.product[i][j],dim,gamma,prandtl,diffusion));
@@ -168,6 +180,7 @@ void GradientBuilder::prepare(const Element& element, unsigned dim, double gamma
         if (shapes_.size() >= 4096) shapes_.clear();
         found = shapes_.emplace(key,shape).first;
     }
+    if (mean) *mean = found->second.mean;
     cell.first_pair = found->second.first_pair;
     std::copy_n(found->second.diffusion.begin(),cell.count,cell.diffusion);
 }

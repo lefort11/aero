@@ -2,12 +2,18 @@
 #define AERO_CV_H
 
 #include "../mesh/mesh_index.h"
+#include <cmath>
 #include <vector>
 
 namespace aero {
 class Mesh;
 struct CvVector {
     double x, y, z;
+
+    double dot(CvVector b) const { return x*b.x + y*b.y + z*b.z; }
+    CvVector cross(CvVector b) const { return {y*b.z-z*b.y, z*b.x-x*b.z, x*b.y-y*b.x}; }
+    // hypot сохраняет масштаб и для очень коротких, и для очень длинных векторов.
+    double length() const { return std::hypot(std::hypot(x,y),z); }
 };
 struct CvBoundary {
     // Номера узла-владельца, исходной внешней грани и её граничной метки.

@@ -15,7 +15,7 @@ std::size_t extent(std::uint64_t n) {
     return static_cast<std::size_t>(n);
 }
 double magnitude(CvVector s) {
-    const double area = std::hypot(std::hypot(s.x, s.y), s.z);
+    const double area = s.length();
     if (!(area > 0 && std::isfinite(area)))
         throw std::invalid_argument("invalid CFL face area");
     return area;

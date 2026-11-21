@@ -332,10 +332,26 @@ void turbulence_settings(const CaseFiles& files) {
     files.write("turbulence.txt","model=RANS\nrans_eq=SA\nnut_nu_amb=.21\n");
     const auto sa=read_run_settings(dirs).turbulence;
     require(sa.enabled && sa.prandtl==.9 && sa.nut_nu_amb==.21,"SA parameters");
-    for(const auto& wrong:RunDirectories::Parameters{{"model","LES"},{"rans_eq","SST"},{"nut_nu_amb","nan"},{"pr_t","0"}}) {
+    for(const auto& wrong:RunDirectories::Parameters{{"model","invalid"},{"rans_eq","SST"},{"nut_nu_amb","nan"},{"pr_t","0"}}) {
         dirs.overrides["turbulence"]={wrong};
         rejects([&]{read_run_settings(dirs);},wrong.first);
     }
+    dirs.overrides.erase("turbulence");
+    files.write("turbulence.txt","model=LES\nles_eq=Sigma\nsubgridscale=SLA\n");
+    const auto les=read_run_settings(dirs).turbulence;
+    require(!les.uses_sa() && les.les.scale==turbulence::Scale::Sla && les.les.f_kh_lim==.1 &&
+            les.les.switch_on_vtm && les.les.c_sigma==1.35,"LES defaults");
+    for (const auto& wrong : RunDirectories::Parameters{{"F_KH_lim","1.1"},{"c_sigma","0"},
+             {"subgridscale","invalid"},{"switch_on_vtm","1"},{"les_eq","invalid"}}) {
+        dirs.overrides["turbulence"]={wrong};
+        rejects([&]{read_run_settings(dirs);},wrong.first);
+    }
+    dirs.overrides.erase("turbulence");
+    files.write("turbulence.txt","model=DDES\nrans_eq=SA\nnut_nu_amb=.21\nsubgridscale=vol\n");
+    const auto ddes=read_run_settings(dirs).turbulence;
+    require(ddes.uses_sa() && ddes.ddes && !ddes.uses_sigma() && ddes.c_des==.65,"DDES defaults");
+    dirs.overrides["turbulence"]={{"c_des","0"}};
+    rejects([&]{read_run_settings(dirs);},"c_des");
     dirs.overrides["main"]["Turbulence"]="Off";
     require(!read_run_settings(dirs).turbulence.enabled,"Off ignores turbulence.txt");
 }

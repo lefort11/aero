@@ -1,6 +1,6 @@
 #ifndef AERO_IMPLICIT_CSGS_ORDER_H
 #define AERO_IMPLICIT_CSGS_ORDER_H
-#include "../mesh/mesh_index.h"
+#include "csgs_sweep.h"
 #include <algorithm>
 #include <numeric>
 #include <vector>
@@ -96,6 +96,59 @@ struct CsgsOrder {
                 domain[sequence[j]] = k;
         }
         offsets.push_back(n);
+    }
+};
+// Граф CSGS строится на CPU один раз по тому же порядку, которым пользуется
+// предобусловливатель. Все внедиагональные блоки попадают ровно в один проход.
+struct CsgsLayout {
+    std::vector<CsgsRow> rows;
+    std::vector<MeshIndex> source, neighbours;
+    unsigned lanes = 1;
+    void build(const CsgsOrder& order, const std::vector<MeshIndex>& starts,
+               const std::vector<MeshIndex>& columns, bool gpu) {
+        const auto n=order.sequence.size();
+        rows.assign(n, CsgsRow{});
+        const auto pass_for=[&](MeshIndex row, MeshIndex other, MeshIndex index) {
+            return other<n && (order.domain.empty() || order.domain[row]==order.domain[other]) &&
+                   order.position[other]<index ? 0u : 1u;
+        };
+        for (MeshIndex i=0;i<n;++i) {
+            const auto row=order.sequence[i];
+            for (auto p=starts[row]+1;p<starts[row+1];++p)
+                ++rows[i].count[pass_for(row,order.row_of_node[columns[p]],i)];
+        }
+        // Для сильно неоднородного графа оставляем компактное хранение без
+        // заполнителей. Допустимая добавка памяти для раскладки GPU — до половины числа связей.
+        const auto offsets=[&](unsigned stride) {
+            MeshIndex size=0;
+            for (MeshIndex i=0;i<n;i+=stride) for (unsigned pass=0;pass<2;++pass) {
+                MeshIndex longest=0;
+                for (MeshIndex j=i;j<std::min(n,i+stride);++j) {
+                    rows[j].first[pass]=size+j-i;
+                    longest=std::max(longest,rows[j].count[pass]);
+                }
+                size+=stride*longest;
+            }
+            return size;
+        };
+        lanes=gpu ? 32 : 1;
+        auto size=offsets(lanes);
+        const auto entries=columns.size()-n;
+        if (lanes>1 && size>entries+entries/2) { lanes=1; size=offsets(lanes); }
+        source.assign(size,static_cast<MeshIndex>(-1));
+        neighbours.resize(size);
+        for (MeshIndex i=0;i<n;++i) {
+            const auto row=order.sequence[i];
+            MeshIndex next[]={rows[i].first[0],rows[i].first[1]};
+            for (auto p=starts[row]+1;p<starts[row+1];++p) {
+                const auto node=columns[p], other=order.row_of_node[node];
+                const bool local=other<n && (order.domain.empty() || order.domain[row]==order.domain[other]);
+                auto& pos=next[pass_for(row,other,i)];
+                source[pos]=p;
+                neighbours[pos]=local ? 2*other : 2*node+1;
+                pos+=lanes;
+            }
+        }
     }
 };
 }

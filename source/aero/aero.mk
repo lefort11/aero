@@ -29,6 +29,7 @@ AERO_PROGRAM := $(BUILD)/$(AERO_VARIANT)$(EXE)
 # имя каждого файла. Отдельный каталог защищает от смешивания вариантов MPI.
 AERO_OBJECT_DIR := $(BUILD)/$(AERO_VARIANT)_objects
 AERO_OBJECTS := $(patsubst source/%.cpp,$(AERO_OBJECT_DIR)/%.o,$(AERO_SOURCES))
+$(AERO_OBJECT_DIR)/mesh/mdec.o: $(NATIVE_FORMAT)
 $(AERO_OBJECT_DIR)/%.o: source/%.cpp $(AERO_HEADERS) | $(BUILD)
 	mkdir -p "$(@D)"
 	$(compiling)

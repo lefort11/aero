@@ -29,6 +29,12 @@ struct SpatialBlocks {
     double* spatial_diagonal;    // Чистые пространственные коэффициенты A_kk для повторного использования.
     double* face_values;        // Для внутреннего ребра два блока, для границы один.
 
+    // Вклад производной по времени одинаков при первой сборке и при смене шага.
+    // В steady берём шаг данного узла, при глобальном интегрировании — общий dt.
+    AERO_HOST_DEVICE bool time_mass(MeshIndex i, const double* volumes, double dt, double& mass) const {
+        mass=volumes[i]/local_steps.at(i,dt);
+        return mass>0. && euler_detail::finite(mass);
+    }
     AERO_HOST_DEVICE unsigned stride() const { return (grid.dim + 2) * (grid.dim + 2); }
     AERO_HOST_DEVICE double* face_block(MeshIndex f) const {
         return face_values + (f < grid.edges ? 2*f : grid.edges + f) * stride();
@@ -144,8 +150,8 @@ struct SpatialBlocks {
         }
 #endif
         if (volumes) {
-            const double mass = volumes[i]/local_steps.at(i, dt);
-            if (!(mass>0.) || !euler_detail::finite(mass)) return false;
+            double mass;
+            if (!time_mass(i,volumes,dt,mass)) return false;
             for (unsigned r = 0; r < Equations; ++r) {
                 const unsigned k = first + r;
                 double& coefficient = diagonal[r*Width + k];
@@ -165,8 +171,8 @@ struct SpatialBlocks {
     // пространственное значение напрямую, чтобы не вычитать старое большое V/dt.
     AERO_HOST_DEVICE bool update_time_diagonal(MeshIndex row, const double* volumes, double dt) const {
         const unsigned width = grid.components();
-        const double mass = volumes[node(row)] / local_steps.at(node(row), dt);
-        if (!(mass > 0.) || !euler_detail::finite(mass)) return false;
+        double mass;
+        if (!time_mass(node(row),volumes,dt,mass)) return false;
         double* block = values + rows[row] * stride();
         for (unsigned k = 0; k < width; ++k) {
             const double value = spatial_diagonal[row*width + k] + mass;

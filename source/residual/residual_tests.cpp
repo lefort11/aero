@@ -128,13 +128,15 @@ void local_steady_cfl() {
     grid.options.diffusion = diffusion;
     expected_gas = .5;
 #endif
-    LocalSteadySteps steps{{grid,flux,volumes,owned,2},1.,sa_rate,dt};
+    const FluxCfl coupled(grid,flux,volumes,owned,2,sa_rate);
+    LocalSteadySteps steps{coupled,1.,dt};
     StepRange range;
     steps.init(range);
     steps(0,range);
     steps(1,range);
     require(dt[0] == expected_gas && dt[1] == .25 &&
             range.minimum == dt[1] && range.maximum == dt[0], "per-node gas and SA step limits");
+    require(cpu_flux_cfl(coupled,1.) == range.minimum, "global CFL includes the SA limit");
     const LimitLocalSteps limit{owned,dt,.375};
     limit(0); // Первая собственная строка относится к узлу 1: его шаг уже меньше предела.
     require(dt[0] == expected_gas && dt[1] == .25, "cap respects ownership");

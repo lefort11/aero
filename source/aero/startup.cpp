@@ -84,9 +84,17 @@ void show_settings(const RunSettings& r) {
     }
 #endif
 #ifdef AERO_HAS_TURBULENCE
-    if (r.turbulence.enabled)
-        std::cout << "\nTurbulence = On (RANS SA)\nnut_nu_amb = " << r.turbulence.nut_nu_amb
-                  << "\npr_t = " << r.turbulence.prandtl;
+    if (r.turbulence.enabled) {
+        const auto& t=r.turbulence;
+        std::cout << "\nTurbulence = On (" << (t.ddes ? "DDES SA" : t.uses_sa() ? "RANS SA" : "LES Sigma") << ')';
+        if (t.uses_sa()) std::cout << "\nnut_nu_amb = " << t.nut_nu_amb;
+        if (t.les.scale!=turbulence::Scale::Off) std::cout << "\nsubgridscale = " << turbulence::scale_name(t.les.scale);
+        if (t.ddes) std::cout << "\nc_des = " << t.c_des;
+        if (t.uses_sigma()) std::cout << "\nc_sigma = " << t.les.c_sigma;
+        if (t.les.scale==turbulence::Scale::Sla)
+            std::cout << "\nswitch_on_vtm = " << (t.les.switch_on_vtm ? "on" : "off") << "\nF_KH_lim = " << t.les.f_kh_lim;
+        std::cout << "\npr_t = " << t.prandtl;
+    }
 #endif
     if (r.mach > 0.) std::cout << "\nmach = " << r.mach;
     if (r.background.active()) {

@@ -12,7 +12,7 @@
 namespace aero {
 namespace implicit {
 namespace {
-// Для малого шага матрицу первого приближения можно заменить временной диагональю.
+// Предиктор пробует поправку от временной диагонали либо от готового предобусловливателя.
 // Каждая проба использует те же потоки, тот же обмен и ту же норму, что и Ньютон.
 template<class Update, class Share, class Residual>
 double predict_initial_field(double norm, const NewtonSettings& settings, const Update& update,
@@ -276,8 +276,24 @@ NewtonResult BdfStep::advance(double* state, const double* initial, const double
 #ifdef AERO_HAS_VISCOSITY
         viscous = s.partition.host_aes.dim != 0; // Один выбор для всех рангов, включая пустые.
 #endif
-        norm = predict_initial_field(norm, settings, update_trial, share_state, residual_norm, refresh_fluxes,
-                                     try_prediction_fluxes, viscous, confirm_prediction);
+        // В стационарном RANS пристенная диффузия может быть жёстче временной
+        // диагонали. В упрощённом Ньютоне одна сборка обслуживает и пробные
+        // подстановки, и последующее решение BiCGSTAB, если оно потребуется.
+        bool spatial_predictor = false;
+#ifdef AERO_HAS_TURBULENCE
+        spatial_predictor = initial_norm > 0. && s.partition.steady_steps && confirm_prediction &&
+                            !s.partition.host_aes.c_des && settings.simplified_newton() && settings.max_iterations > 1;
+#endif
+        if (spatial_predictor) assemblies += s.prepare_matrix(state, initial, volumes, dt / leading, settings, 0);
+        const auto predictor_update = [&](NewtonUpdate::Operation op, double relaxation) {
+            if (spatial_predictor && op == NewtonUpdate::Predict) {
+                s.linear.predict(s.rhs, s.correction);
+                op = NewtonUpdate::PredictCorrection;
+            }
+            update_trial(op, relaxation);
+        };
+        norm = predict_initial_field(norm,settings,predictor_update,share_state,residual_norm,refresh_fluxes,
+                                     try_prediction_fluxes,viscous,confirm_prediction);
         for (unsigned iteration = 0;; ++iteration) {
             // Равновесное поле с нулевой исходной невязкой принимаем без решения системы.
             const double relative = initial_norm == 0. ? 0. : norm / initial_norm;
@@ -291,7 +307,8 @@ NewtonResult BdfStep::advance(double* state, const double* initial, const double
             }
             // Диагональ пространственной части берётся из баланса потоков. Временной
             // вклад a*V/dt добавляется при сборке системы для текущей поправки.
-            assemblies += s.prepare_matrix(state, initial, volumes, dt / leading, settings, iteration);
+            if (!spatial_predictor || iteration != 0)
+                assemblies += s.prepare_matrix(state, initial, volumes, dt / leading, settings, iteration);
             const auto result = s.linear.solve(s.rhs, s.correction, tolerance);
             if (result.status != LinearStatus::Converged) {
                 std::ostringstream message;

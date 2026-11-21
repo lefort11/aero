@@ -7,7 +7,7 @@ namespace aero {
 namespace implicit {
 // Поля текущего шага. Один вызов обрабатывает все компоненты одного узла.
 struct NewtonUpdate {
-    enum Operation { SaveStart, FormRhs, AddCorrection, RestoreStart, Predict, RelaxPrediction, UndoPrediction, SpatialRate };
+    enum Operation { SaveStart, FormRhs, AddCorrection, PredictCorrection, RestoreStart, Predict, RelaxPrediction, UndoPrediction, SpatialRate };
     residual_detail::Geometry grid;
     const EulerFluxResult* flux; // Потоки в тех же ориентациях, что при явном обновлении.
     const double* volumes;
@@ -52,13 +52,17 @@ struct NewtonUpdate {
                 current = correction[i] + relaxation * (current - correction[i]);
                 break;
             case UndoPrediction: current = correction[i]; break;
-            case AddCorrection:
+            case PredictCorrection:
+            case AddCorrection: {
+                const double change=correction[i];
+                if (operation==PredictCorrection) correction[i]=current;
 #ifdef AERO_HAS_VISCOSITY
                 // Приближённая матрица Ньютона может связать стенку с соседями.
                 // Предписанное значение импульса сохраняется при каждой поправке.
                 if (grid.options.wall && k > 0 && k+1 < width && grid.options.wall[node]) break;
 #endif
-                current += correction[i]; break;
+                current += change; break;
+            }
             case FormRhs:
                 // Правая часть A*delta = -F(U) включает накопление за шаг и чистый отток.
                 // Форма через разности точно обнуляет временную часть на постоянном поле.

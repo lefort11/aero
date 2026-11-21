@@ -4,13 +4,39 @@
 #include "../parallel/modules.h"
 #ifdef AERO_HAS_TURBULENCE
 #include "../turbulence/sa.h"
+#include "../turbulence/nodal_filter.h"
+#include "../turbulence/hex_filter.h"
 #endif
 
 namespace aero {
 namespace viscosity {
 // Внутри шага BDF скаляр SA уточняется при фиксированном газе. Этап указывает,
 // какие данные устарели и нужно ли уже собирать газовую невязку.
-enum class Evaluation { Full, BeforeSaIterations, AfterSaUpdate, RowsOnly };
+enum class Evaluation { Full, CurrentMaterial, LesClosure, DdesGasOnly, FilterOnly, BeforeSaIterations, AfterSaUpdate, AfterSaFixedGas, RowsOnly };
+// Один план для CPU и GPU. Газ может уже быть подготовлен сборкой конвективного
+// потока. Здесь определяем, какие действия выполнить после получения газа.
+struct EvaluationPlan {
+    bool filter=false;          // Вычислить подсеточный масштаб и завершить фазу.
+    bool sa_material=false;     // Обновить узловую вязкость из нового решения SA.
+    bool cell_material=false;   // Усреднить свойства газа по вершинам элемента.
+    bool rows=false;            // Добавить вязкие потоки в строки невязки.
+    bool reuse_gradients=false; // Внутри итераций SA поле газа осталось прежним.
+
+    explicit EvaluationPlan(Evaluation phase) {
+#ifdef AERO_HAS_TURBULENCE
+        if (phase==Evaluation::DdesGasOnly) return;
+        if (phase==Evaluation::LesClosure || phase==Evaluation::FilterOnly) {
+            filter=true;
+            return;
+        }
+        sa_material=phase==Evaluation::AfterSaUpdate || phase==Evaluation::AfterSaFixedGas;
+#endif
+        cell_material=phase!=Evaluation::RowsOnly;
+        rows=phase!=Evaluation::BeforeSaIterations;
+        reuse_gradients=phase==Evaluation::AfterSaFixedGas;
+    }
+};
+
 struct Gas {
     double velocity[3], pressure_over_density, density, mu;
 };
@@ -50,24 +76,153 @@ struct Operator {
     Law law;
 #ifdef AERO_HAS_TURBULENCE
     turbulence::View sa;
+    turbulence::LesSettings les;
+    const turbulence::FilterCell* filters;
+    const MeshIndex* filter_indices;
+    // При явном шаге один узел обслуживает все свои элементы. Вес для
+    // напряжений, тепла и работы напряжений меняется только вместе с полем узла.
+    struct NodalMaterial {
+        double mu, extra_heat, mu_velocity[3], scalar_diffusion;
+    };
+    NodalMaterial* material_nodes;
+    const std::uint32_t* material_vertices;
+    unsigned vertices_per_cell, material_lanes;
+    turbulence::HexFilterData hex_filter;
+    const std::uint32_t* box_nodes;
+    MeshIndex box_stride,box_pitch;
+    const double* les_volumes;
+    turbulence::LesSample* samples;
+    double* eddy_nu; // Значения ν_t в узлах, включая копии с соседних процессов.
+    double les_pr_ratio, c_des; // c_des положителен только для гибридной модели SA-DDES.
+    bool fixed_ddes_length, skip_ddes_filter;
+    double* cell_gradient_norm; // Объёмно-взвешенная норма градиента скорости для защиты слоя DDES.
+    const unsigned char* no_slip; // Маска узлов неподвижной стенки AES.
+    // При dim < 3 у градиента скорости есть нулевое сингулярное число.
+    // Вязкость Sigma тождественно равна нулю на каждом узле при любом масштабе.
+    AERO_HOST_DEVICE bool computes_les() const {
+        return (dim==3 || c_des>0.) && les.scale!=turbulence::Scale::Off;
+    }
+    // Вычитаем скорость первой вершины до умножения на градиент базисной функции.
+    // Так постоянная скорость даёт точный ноль даже на сильно искажённом элементе.
+    // Максимум модуля компоненты нужен только для фильтра с направлением по ротору.
+    template<unsigned fixed_dim,unsigned fixed_count,class Geometry,class Index>
+    AERO_HOST_DEVICE double mean_velocity_gradient(const Geometry& geometry,const Index* nodes,unsigned stride,
+                                  unsigned count,turbulence::VelocityGradient& grad) const {
+        const unsigned dimension=fixed_dim ? fixed_dim : dim;
+        const unsigned vertices=fixed_count ? fixed_count : count;
+        const bool directional=les.directional();
+        const auto& origin=gas[nodes[0]];
+        double speed=0.;
+        if (directional) for (unsigned i=0;i<dimension;++i) speed=::fmax(speed,::fabs(origin.velocity[i]));
+        for (unsigned k=1;k<vertices;++k) {
+            const auto& point=gas[nodes[k*stride]];
+            double basis[3];
+            for (unsigned j=0;j<dimension;++j) basis[j]=geometry.basis(k,j);
+            for (unsigned i=0;i<dimension;++i) {
+                if (directional) speed=::fmax(speed,::fabs(point.velocity[i]));
+                const double jump=point.velocity[i]-origin.velocity[i];
+                for (unsigned j=0;j<dimension;++j) grad[i][j]+=jump*basis[j];
+            }
+        }
+        return speed;
+    }
+    template<bool ddes,unsigned fixed_dim,bool box=false>
+    AERO_HOST_DEVICE void sample_les(MeshIndex e) const {
+        const auto& cell=cells[e];
+        const auto& geometry=filters[filter_indices[e]];
+        turbulence::VelocityGradient grad{};
+        const double speed=box ? geometry.rectangular_gradient(box_nodes+e*box_pitch,box_stride,gas,les.directional(),grad)
+                               : mean_velocity_gradient<fixed_dim,0>(geometry,cell.node,1,cell.count,grad);
+        finish_sample<ddes>(e,geometry,box ? 8 : cell.count,fixed_dim ? fixed_dim : dim,grad,speed,
+                            geometry.gradient_sum,geometry.volume*(box ? .125 : cell.inverse_count));
+    }
+    // Для компактной таблицы известны все размеры: восемь вершин и три направления.
+    // Градиент и формула модели те же, что на смешанной сетке.
+    template<bool ddes>
+    AERO_HOST_DEVICE void sample_hex(MeshIndex e) const {
+        const auto& table=hex_filter;
+        const auto* nodes=table.nodes+table.first(e,8);
+        const auto* column=table.coefficients+table.first(e,turbulence::HexFilterData::Coefficients);
+        const turbulence::HexFilter geometry{column,table.lanes,filters,filter_indices,e,
+                column[turbulence::HexFilterData::VolumeLength*table.lanes]};
+        turbulence::VelocityGradient grad{};
+        const double speed=mean_velocity_gradient<3,8>(geometry,nodes,table.lanes,8,grad);
+        finish_sample<ddes>(e,geometry,8,3,grad,speed,geometry.value(turbulence::HexFilterData::GradientSum),
+                            geometry.value(turbulence::HexFilterData::Volume)*.125);
+    }
+    template<bool ddes,class Geometry>
+    AERO_HOST_DEVICE void finish_sample(MeshIndex e,const Geometry& geometry,unsigned count,unsigned dimension,
+                    turbulence::VelocityGradient& grad,double speed,double gradient_sum,double weight) const {
+        // До восьми вкладов в производную и две производные в компоненте ротора.
+        // Порог масштабируется как скорость/длина и следует за местной точностью данных.
+        const double rotation_floor=(16.*DBL_EPSILON*speed)*gradient_sum;
+        turbulence::LesSample result;
+        if (ddes) {
+            // DDES использует только норму первого порядка. Для обычных скоростей
+            // сам квадрат нормы уже даёт безопасный масштаб для всех дальнейших операций.
+            double sum=0.;
+            for (unsigned i=0;i<dimension;++i) for (unsigned j=0;j<dimension;++j) sum+=grad[i][j]*grad[i][j];
+            double magnitude=1.;
+            if (!(sum>1.e-160 && sum<1.e160)) {
+                magnitude=turbulence::normalize_gradient(grad);
+                sum=0.;
+                for (unsigned i=0;i<dimension;++i) for (unsigned j=0;j<dimension;++j) sum+=grad[i][j]*grad[i][j];
+            }
+            cell_gradient_norm[e]=weight*(magnitude*::sqrt(sum));
+            if (fixed_ddes_length) return;
+            result=turbulence::filter_scale(grad,geometry,count,les,magnitude>0. ? rotation_floor/magnitude : 0.);
+        } else {
+            result=turbulence::evaluate_sigma(grad,geometry,count,les,rotation_floor);
+        }
+        samples[e]={weight*result.value,weight*result.tilt};
+    }
+    AERO_HOST_DEVICE turbulence::NodalFilter nodal_filter() const {
+        return {offsets,incidence,les_volumes,cell_gradient_norm,samples,no_slip,
+                eddy_nu,skip_ddes_filter ? nullptr : sa.ddes,les,c_des,fixed_ddes_length};
+    }
 #endif
     MeshIndex node_count, cell_count, row_count, vertex_count, neighbour_count;
     const Cell* cells;
     GradientStencil stencil; // Геометрические данные принадлежат тому же исполнителю, что и поле.
     const MeshIndex *offsets, *incidence;
     Gas* gas;
+    Gradient* gradient_cache; // Производные в порядке элементов или вхождений в собственные строки.
+    bool element_order;      // Восемь вершин каждого гексаэдра размещаются подряд.
     Material* material;
     Row* rows;
 
 #ifdef AERO_HAS_TURBULENCE
     // На вершину приходится несколько элементов. Функцию демпфирования вычисляем
     // один раз по текущему полю SA. Материал всех соседних элементов читает результат.
+    AERO_HOST_DEVICE void cache_material(MeshIndex node,double turbulent_mu,double pr_ratio,double scalar) const {
+        const auto& point=gas[node];
+        auto& result=material_nodes[node];
+        result.mu=point.mu+turbulent_mu;
+        result.extra_heat=turbulent_mu*(pr_ratio-1.);
+        for (unsigned i=0; i<dim; ++i) result.mu_velocity[i]=result.mu*point.velocity[i];
+        result.scalar_diffusion=scalar;
+    }
+    template<bool ddes>
+    AERO_HOST_DEVICE void gather_filter(MeshIndex node) const {
+        nodal_filter().gather<ddes>(node);
+        if (!ddes && material_nodes) cache_material(node,gas[node].density*eddy_nu[node],les_pr_ratio,0.);
+    }
     AERO_HOST_DEVICE void prepare_sa_material(MeshIndex node) const {
         const auto& g=gas[node];
         const double rho_w=g.density*sa.w[node];
-        sa.nodal_material[node]={g.mu/g.density,rho_w*turbulence::fv1(rho_w/g.mu)};
+        const double damping=turbulence::fv1(rho_w/g.mu);
+        const turbulence::View::Material properties{g.mu/g.density,rho_w*damping,damping};
+        sa.nodal_material[node]=properties;
+        if (material_nodes) cache_material(node,properties.eddy_mu,sa.pr_ratio,properties.nu+sa.w[node]);
     }
 #endif
+    AERO_HOST_DEVICE bool needs_gas(Evaluation phase) const {
+#ifdef AERO_HAS_TURBULENCE
+        // Перед вязким потоком LES уже декодировала это состояние для расчёта ν_t.
+        if (computes_les()) return phase==Evaluation::LesClosure || phase==Evaluation::DdesGasOnly;
+#endif
+        return phase==Evaluation::Full || phase==Evaluation::BeforeSaIterations;
+    }
     // При наличии готового газа используем давление и скорости, уже вычисленные для
     // конвективного потока. В экономичной раскладке на GPU этого буфера может не быть.
     AERO_HOST_DEVICE void prepare_gas(MeshIndex node, const double* state, const EulerState* cached) const {
@@ -90,17 +245,21 @@ struct Operator {
 #endif
     }
     // Для работы напряжений в уравнении энергии усредняем именно произведение mu*u.
+    enum class Mixing { General, Sa, Sigma };
+    template<unsigned fixed_dim=0,unsigned fixed_count=0,Mixing model=Mixing::General>
     AERO_HOST_DEVICE void average_material(MeshIndex index) const {
         const auto& cell = cells[index];
+        const unsigned dimension=fixed_dim ? fixed_dim : dim;
+        const unsigned vertices=fixed_count ? fixed_count : cell.count;
         Material average{};
 #ifdef AERO_HAS_TURBULENCE
         double molecular_sum=0., working_sum=0.;
 #endif
-        for (unsigned k = 0; k < cell.count; ++k) {
+        for (unsigned k = 0; k < vertices; ++k) {
             const auto& point = gas[cell.node[k]];
             double mu = point.mu;
 #ifdef AERO_HAS_TURBULENCE
-            if (sa.active) {
+            if (model==Mixing::Sa || (model==Mixing::General && sa.active)) {
                 const double working=sa.w[cell.node[k]];
                 const auto properties=sa.nodal_material[cell.node[k]];
                 molecular_sum+=properties.nu;
@@ -108,13 +267,17 @@ struct Operator {
                 const double turbulent_mu=properties.eddy_mu;
                 mu += turbulent_mu;
                 average.extra_heat += turbulent_mu*(sa.pr_ratio-1.);
+            } else if (model==Mixing::Sigma || eddy_nu) {
+                const double turbulent_mu=point.density*eddy_nu[cell.node[k]];
+                mu+=turbulent_mu;
+                average.extra_heat+=turbulent_mu*(les_pr_ratio-1.);
             }
 #endif
             average.mu += mu;
-            for (unsigned m = 0; m < dim; ++m) average.mu_velocity[m] += mu * point.velocity[m];
+            for (unsigned m = 0; m < dimension; ++m) average.mu_velocity[m] += mu * point.velocity[m];
         }
 #ifdef AERO_HAS_TURBULENCE
-        if (sa.active) {
+        if (model==Mixing::Sa || (model==Mixing::General && sa.active)) {
             // Газ и SA используют одни вершины. Средние для диффузии SA готовим
             // при том же чтении узлов, что и напряжения и тепловой поток газа.
             sa.diffusion.molecular_mean[index]=molecular_sum*cell.inverse_count;
@@ -123,12 +286,52 @@ struct Operator {
         average.extra_heat *= cell.inverse_count;
 #endif
         average.mu *= cell.inverse_count;
-        for (unsigned m = 0; m < dim; ++m) average.mu_velocity[m] *= cell.inverse_count;
+        for (unsigned m = 0; m < dimension; ++m) average.mu_velocity[m] *= cell.inverse_count;
         material[index] = average;
     }
+#ifdef AERO_HAS_TURBULENCE
+    // Среднее берём в исходном порядке вершин. Произведения mu*u уже
+    // вычислены при подготовке узла и одинаковы у всех прилегающих элементов.
+    template<unsigned count,bool scalar>
+    AERO_HOST_DEVICE void average_cached_material(MeshIndex e) const {
+        const unsigned lanes=material_lanes;
+        const auto* vertices=material_vertices+(e/lanes)*count*lanes+e%lanes;
+        Material mean{};
+        double diffusivity=0.;
+        for (unsigned k=0; k<count; ++k) {
+            const auto& point=material_nodes[vertices[k*lanes]];
+            mean.mu+=point.mu;
+            mean.extra_heat+=point.extra_heat;
+            for (unsigned i=0; i<dim; ++i) mean.mu_velocity[i]+=point.mu_velocity[i];
+            if (scalar) diffusivity+=point.scalar_diffusion;
+        }
+        const double weight=1./count;
+        mean.mu*=weight;
+        mean.extra_heat*=weight;
+        for (unsigned i=0; i<dim; ++i) mean.mu_velocity[i]*=weight;
+        if (scalar) sa.diffusion.element_mean[e]=weight*diffusivity;
+        material[e]=mean;
+    }
+    AERO_HOST_DEVICE void average_turbulent_material(MeshIndex e) const {
+        if (vertices_per_cell==8) {
+            if (sa.active) average_cached_material<8,true>(e);
+            else average_cached_material<8,false>(e);
+        } else {
+            if (sa.active) average_cached_material<4,true>(e);
+            else average_cached_material<4,false>(e);
+        }
+    }
+#endif
     // Каждую строку записывает только владелец узла. Номер вхождения хранит
     // номер элемента и местный номер его вершины (не больше семи).
-    template<unsigned d>
+    enum class Gradients { Direct, Save, Reuse, Element };
+    // Соседние исполнители читают общие скорости и коэффициенты одного
+    // гексаэдра. Состав и порядок слагаемых совпадают со сборкой по узлам.
+    AERO_HOST_DEVICE void prepare_hex_gradient(MeshIndex entry) const {
+        const auto& cell = cells[entry/8];
+        gradient_cache[entry]=stencil.vertex_gradient<3>(cell,static_cast<unsigned>(entry%8),gas);
+    }
+    template<unsigned d, Gradients mode=Gradients::Direct>
     AERO_HOST_DEVICE void assemble_row(MeshIndex node) const {
         Row result{};
         for (MeshIndex k = offsets[node]; k < offsets[node+1]; ++k) {
@@ -136,7 +339,11 @@ struct Operator {
             const auto e = entry / 8;
             const auto& average = material[e];
             const unsigned i = static_cast<unsigned>(entry % 8);
-            const auto gradient = stencil.vertex_gradient<d>(cells[e], i, gas);
+            // При изменении только рабочей вязкости BDF сохраняет точно тот же
+            // газ. Меняются средние коэффициенты элемента, но не производные поля.
+            const auto gradient=mode==Gradients::Element ? gradient_cache[entry] :
+                mode==Gradients::Reuse ? gradient_cache[k] : stencil.vertex_gradient<d>(cells[e],i,gas);
+            if (mode==Gradients::Save) gradient_cache[k]=gradient;
             average.add_flux(d, gradient, result.residual);
             double diffusion_mu=average.mu;
 #ifdef AERO_HAS_TURBULENCE
@@ -147,10 +354,11 @@ struct Operator {
         result.cfl_rate *= 2. / gas[node].density;
         rows[node] = result;
     }
+    template<Gradients mode=Gradients::Direct>
     AERO_HOST_DEVICE void assemble(MeshIndex node) const {
-        if (dim == 3) assemble_row<3>(node);
-        else if (dim == 2) assemble_row<2>(node);
-        else assemble_row<1>(node);
+        if (dim == 3) assemble_row<3,mode>(node);
+        else if (dim == 2) assemble_row<2,mode>(node);
+        else assemble_row<1,mode>(node);
     }
 };
 }

@@ -20,10 +20,12 @@ def check(log, ranks, start, stages, backend):
     lines = log.split(header)[1].strip().splitlines()
     assert lines[0].split() == ["phase", "calls_per_rank", "min_s", "mean_s", "max_s", "max_s_per_step"]
     exchange_calls = stages * steps if ranks > 1 else 0
-    field_writes = end // 2 - start // 2
-    recovery_writes = end // 3 - start // 3 + int(steps > 0 and end % 3 != 0)
+    # При завершении все зоны и recovery пишутся один раз, в том числе
+    # если после восстановления не понадобился ни один новый шаг.
+    field_writes = end // 2 - start // 2 + int(not steps or end % 2 != 0)
+    recovery_writes = end // 3 - start // 3 + int(not steps or end % 3 != 0)
     readbacks = (
-        sum(i % 2 == 0 or i % 3 == 0 or i == end for i in range(start + 1, end + 1))
+        int(not steps) + sum(i % 2 == 0 or i % 3 == 0 or i == end for i in range(start + 1, end + 1))
         if backend == "GPU"
         else 0
     )
@@ -36,6 +38,8 @@ def check(log, ranks, start, stages, backend):
         output_readback=readbacks,
         fields_write=field_writes,
         recovery_write=recovery_writes,
+        sa_transport=0,
+        les_closure=0,
         integration=1,
     )
     maxima = {}

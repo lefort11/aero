@@ -63,28 +63,38 @@ struct JacobiBlocks {
     }
     // Решает систему для одной строки, в том числе с правой частью прямого или обратного прохода.
     AERO_HOST_DEVICE void solve_block(MeshIndex node, const double* rhs, double* answer) const {
-        const MeshIndex first = node * width;
-        const double* lu = factors + first * width;
+        switch (width) {
+        case 3: return solve_fixed<3>(node,rhs,answer);
+        case 4: return solve_fixed<4>(node,rhs,answer);
+        default: return solve_fixed<5>(node,rhs,answer);
+        }
+    }
+    // Размер известен из размерности задачи. Промежуточные компоненты одного
+    // узла помещаются в регистры при обеих подстановках.
+    template<unsigned size>
+    AERO_HOST_DEVICE void solve_fixed(MeshIndex node, const double* rhs, double* answer) const {
+        const MeshIndex first = node * size;
+        const double* lu = factors + first * size;
         const unsigned char* swaps = pivots + first;
         double x[5];
-        for (unsigned row = 0; row < width; ++row)
+        for (unsigned row = 0; row < size; ++row)
             x[row] = rhs[row];
         // Применяем к правой части те же перестановки, что и к матрице.
-        for (unsigned k = 0; k < width; ++k) {
+        for (unsigned k = 0; k < size; ++k) {
             const double tmp = x[k];
             x[k] = x[swaps[k]];
             x[swaps[k]] = tmp;
         }
         // Прямой ход L y = P r. Единицы на диагонали L в памяти не храним.
-        for (unsigned row = 1; row < width; ++row)
+        for (unsigned row = 1; row < size; ++row)
             for (unsigned col = 0; col < row; ++col)
-                x[row] -= lu[row * width + col] * x[col];
+                x[row] -= lu[row * size + col] * x[col];
         // Обратный ход U z = y. Справа от диагонали все компоненты z уже известны.
-        for (unsigned end = width; end > 0; --end) {
+        for (unsigned end = size; end > 0; --end) {
             const unsigned row = end - 1;
-            for (unsigned col = row + 1; col < width; ++col)
-                x[row] -= lu[row * width + col] * x[col];
-            x[row] /= lu[row * width + row];
+            for (unsigned col = row + 1; col < size; ++col)
+                x[row] -= lu[row * size + col] * x[col];
+            x[row] /= lu[row * size + row];
             answer[row] = x[row];
         }
     }

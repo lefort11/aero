@@ -33,7 +33,7 @@ private:
     void reserve_diagonal();
     void update_time_diagonal(const double* volumes, double dt);
     void prepare_csgs();
-    void apply_csgs(const BlockJacobi& diagonal, const double* rhs, double* output) const;
+    void apply_csgs(const BlockJacobi& diagonal, const double* rhs, double* output,double* image) const;
     void prepare_jacobi(BlockJacobi& jacobi) const;
     void allocate_blocks(const residual_detail::Geometry& host);
     struct Storage;

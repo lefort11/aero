@@ -72,6 +72,11 @@ class PartitionGpu {
 public:
     PartitionGpu() = default;
 #ifdef AERO_HAS_VISCOSITY
+    const EulerState* current_gas() const { return gas_current_ ? grid_.geometry.packed.gas : nullptr; }
+#ifdef AERO_HAS_TURBULENCE
+    bool has_stage_material() const { return grid_.filtered_gas!=nullptr; }
+    bool stage_material_current() const { return gas_current_ && has_stage_material(); }
+#endif
     viscosity::Operator viscosity_view() const { return viscous_grid_; }
     void set_viscosity(const viscosity::Aes* aes) { aes_ = aes; }
 #endif

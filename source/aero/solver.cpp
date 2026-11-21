@@ -526,10 +526,10 @@ prepare_partition_operator(const RunSettings& run, const ReconstructionOptions& 
             op->prepare_stencil(part, seam, boundaries.periodic_pairs, input.get(), requests, reconstruction);
     }
 #ifdef AERO_HAS_VISCOSITY
-    op->prepare_viscosity(part,seam,frame,run.viscosity,run.mach,run.use_cuda);
+    op->prepare_viscosity(part,seam,frame,run);
 #ifdef AERO_HAS_TURBULENCE
-    if(run.turbulence.enabled)
-        op->prepare_sa(part,seam,boundaries.patches,boundaries.periodic_pairs,run.turbulence,run.use_cuda,run.uses_implicit_time());
+    if(run.turbulence.uses_sa())
+        op->prepare_sa(part,seam,boundaries.patches,boundaries.periodic_pairs,run.turbulence,run.use_cuda,run.uses_implicit_time(),run.time_scheme=="steady");
 #endif
 #endif
     if (single) {
@@ -655,6 +655,7 @@ void integrate_partition(const RunSettings& run, const Processes& world, unsigne
         if (sample_time) world.local([&]{op.copy_samples(samples);data.moments=samples.data();});
         if (write_rotation) { rotation=op.output_vorticity(snapshot);data.rotation=rotation.data(); }
 #ifdef AERO_HAS_TURBULENCE
+        if (write_sa && dimension==3 && run.turbulence.uses_sigma()) stepper.prepare_state_fluxes(run.first_order_start(step.end),timing);
         if(write_sa) world.local([&]{scalars=op.sa_output(snapshot);data.sa=scalars.data();});
 #endif
         output.write(step.number, step.end, snapshot, final_field,data);

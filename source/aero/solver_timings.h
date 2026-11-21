@@ -9,7 +9,7 @@ namespace aero {
 class SolverTimings {
 public:
     // Для каждой операции храним отдельно число вызовов и суммарное время на данном процессе.
-    enum Phase { Flux, Update, Halo, FluxExchange, Cfl, Readback, Fields, Recovery, SaTransport, Total, Count };
+    enum Phase { Flux, Update, Halo, FluxExchange, Cfl, Readback, Fields, Recovery, SaTransport, LesClosure, Total, Count };
     SolverTimings(const Processes& world, bool enabled, bool cuda, std::uint64_t first_step);
     // При включённых замерах регистрирует вызов и отдаёт накопитель таймеру данной фазы.
     double* counter(Phase phase) {

@@ -6,6 +6,7 @@
 #include "../mesh/mesh_index.h"
 
 namespace aero {
+namespace viscosity { struct Operator; }
 namespace partition_detail {
 using residual_detail::Index;
 // Указатели этого представления действительны на устройстве, выбранном данным MPI-процессом.
@@ -16,6 +17,9 @@ struct Grid {
     const double* volumes;
     double *initial, *state, *original;
     EulerFluxResult* flux;
+#ifdef AERO_HAS_TURBULENCE
+    const viscosity::Operator* filtered_gas; // На цельной сетке готовим материал при обновлении газа.
+#endif
     Index* bad;
     Index *failed_count, *failed_nodes; // Список недопустимых собственных узлов для отката на GPU.
 };

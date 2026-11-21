@@ -1,9 +1,9 @@
 #pragma once
 #include "sa.h"
-#include <tuple>
 #include "../aero/mpi_periodic.h"
 
 namespace aero {
+namespace viscosity { struct Operator; }
 namespace turbulence {
 // Расстояния относятся к исходным геометрическим граням. При периодической склейке
 // несколько координат могут соответствовать одной расчётной неизвестной.
@@ -11,10 +11,17 @@ std::vector<double> wall_distances(const MeshPartition &, const PeriodicPartitio
                                    const std::vector<PeriodicPair> &, const Processes &, MeshIndex nodes);
 struct Storage {
     std::vector<double> w, distance, work;
+    bool implicit_work=false;
     std::vector<View::Material> nodal_material;
     std::vector<RowRange> diffusion_rows, face_rows;
     std::vector<FaceTerm> face_terms;
+    std::vector<AxisFace> axis_faces;
+    std::vector<std::uint32_t> face_orientations, face_neighbours;
+    std::vector<double> face_areas;
     std::vector<double> incoming;
+    std::vector<LineVertex> line_vertices;
+    std::vector<RowRange> line_segments;
+    void prepare_lines(const std::vector<MeshIndex>& owned);
     unsigned face_stride = 1, diffusion_stride = 1;
 
     // На GPU соседние потоки читают одну позицию соседних строк подряд. Для
@@ -68,9 +75,46 @@ struct Storage {
             face_rows.push_back({first, face_terms.size()});
         }
         face_stride = arrange(host, face_rows, face_terms);
+        // Компактная запись допустима только при точном нуле двух компонент.
+        // Уже одна косая площадка сохраняет общий обход для всей подобласти.
+        bool axial=true;
+        for (const auto& f:face_terms) {
+            unsigned components=0;
+            for (double value:f.area) components+=value!=0.;
+            if (components>1 || f.encoded>(UINT32_MAX>>2) || f.neighbour>UINT32_MAX) {
+                axial=false;
+                break;
+            }
+        }
+        if (axial) {
+            axis_faces.reserve(face_terms.size());
+            for (const auto& f:face_terms) {
+                const unsigned axis=f.area[1]!=0. ? 1 : (f.area[2]!=0. ? 2 : 0);
+                axis_faces.push_back({static_cast<std::uint32_t>(4*f.encoded+axis),
+                                      static_cast<std::uint32_t>(f.neighbour),f.area[axis]});
+            }
+            std::vector<FaceTerm>().swap(face_terms);
+        }
+        if (!host && !axial && !face_terms.empty() &&
+            std::all_of(face_terms.begin(),face_terms.end(),[](const FaceTerm& f) {
+                return f.encoded<=UINT32_MAX && f.neighbour<=UINT32_MAX;
+            })) {
+            const auto count=face_terms.size();
+            face_orientations.resize(count);
+            face_neighbours.resize(count);
+            face_areas.resize(grid.dim*count);
+            for (MeshIndex i=0; i<count; ++i) {
+                const auto& f=face_terms[i];
+                face_orientations[i]=static_cast<std::uint32_t>(f.encoded);
+                face_neighbours[i]=static_cast<std::uint32_t>(f.neighbour);
+                for (unsigned d=0; d<grid.dim; ++d) face_areas[d*count+i]=f.area[d];
+            }
+            std::vector<FaceTerm>().swap(face_terms);
+        }
         view.face_stride = face_stride;
         if (host) {
-            incoming.resize(face_terms.size());
+            incoming.resize(axial ? axis_faces.size() : face_terms.size());
+            view.axis_faces=axis_faces.empty() ? nullptr : axis_faces.data();
             view.face_terms = face_terms.data();
             view.face_rows = face_rows.data();
             view.incoming = incoming.data();
@@ -78,86 +122,31 @@ struct Storage {
     }
     // На повторяющихся ячейках строки часто совпадают до сдвига номеров. Сравниваем
     // все коэффициенты точно. На неструктурированной сетке остаётся обычная раскладка.
-    bool share_diffusion_rows() {
-        struct Compare {
-            bool operator()(const std::vector<DiffusionTerm> &a, const std::vector<DiffusionTerm> &b) const {
-                return std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end(),
-                                                    [](const DiffusionTerm &x, const DiffusionTerm &y) {
-                                                        return std::tie(x.element, x.neighbour, x.geometry) <
-                                                               std::tie(y.element, y.neighbour, y.geometry);
-                                                    });
-            }
-        };
-        std::map<std::vector<DiffusionTerm>, RowRange, Compare> dictionary;
-        std::vector<RowRange> rows;
-        std::vector<DiffusionTerm> shared, key;
-        std::vector<MeshIndex> anchors;
-        const auto limit = diffusion_terms.size() / 2;
-        for (MeshIndex i = 0; i < diffusion_rows.size(); ++i) {
-            const auto row = diffusion_rows[i];
-            const auto anchor = row.first < row.end ? diffusion_terms[row.first].element : 0;
-            key.clear();
-            for (auto p = row.first; p < row.end; ++p) {
-                const auto &term = diffusion_terms[p];
-                // Индексы беззнаковые: обратное сложение восстанавливает и номера меньше базового.
-                key.push_back({term.element - anchor, term.neighbour - i, term.geometry});
-            }
-            auto it = dictionary.lower_bound(key);
-            if (it == dictionary.end() || Compare{}(key, it->first)) {
-                if (shared.size() + key.size() > limit)
-                    return false;
-                const RowRange span{shared.size(), shared.size() + key.size()};
-                shared.insert(shared.end(), key.begin(), key.end());
-                if (dictionary.size() >= 4096)
-                    dictionary.clear();
-                it = dictionary.emplace(key, span).first;
-            }
-            rows.push_back(it->second);
-            anchors.push_back(anchor);
-        }
-        diffusion_rows.swap(rows);
-        diffusion_terms.swap(shared);
-        diffusion_anchors.swap(anchors);
-        return true;
-    }
+    bool share_diffusion_rows();
     std::vector<MeshIndex> diffusion_anchors;
     std::vector<DiffusionTerm> diffusion_terms;
+    std::vector<LocalDiffusionTerm> local_terms;
+    std::vector<DiffusionTile> diffusion_tiles;
+    std::vector<double> pair_weights;
+    std::vector<MeshIndex> shape_index;
+    std::vector<ScalarContribution> vertex_contributions;
+    std::vector<DiffusionCell> cell_rows;
+    std::vector<DiffusionTriple> triples;
+    // Проверка выполняется один раз на сетку. Остальные топологии и большие
+    // локальные номера по-прежнему используют полный 64-битный список пар.
+    bool pack_three_neighbours(size_t node_count);
+    // Несколько пар элемента имеют одну среднюю вязкость. На CPU храним
+    // полную строку подряд, на GPU чередуем элементы 32 соседних строк.
+    bool prepare_element_pairs(const viscosity::Operator& aes,double scale);
+    template<unsigned lanes> bool pack_dense_rows(MeshIndex possible,std::vector<DiffusionBlock<lanes>>& blocks);
     std::vector<double> element_mean, molecular_mean;
     MeshIndex element_count = 0;
     // Нумерация соседей и интегралы AES постоянны. На стадии нужны только номера
     // двух узлов и средний коэффициент переноса элемента. Матрицу напряжений газа не читаем.
-    template <class Aes> void prepare_diffusion(const Aes &aes, View &view, bool host) {
-        element_count = aes.cell_count;
-        diffusion_rows.reserve(aes.row_count);
-        const double scale = (aes.law.gamma - 1.) * aes.law.prandtl / (aes.law.gamma * sigma);
-        for (MeshIndex node = 0; node < aes.row_count; ++node) {
-            const auto first = diffusion_terms.size();
-            for (auto pos = aes.offsets[node]; pos < aes.offsets[node + 1]; ++pos) {
-                const auto entry = aes.incidence[pos], e = entry / 8;
-                const unsigned i = static_cast<unsigned>(entry % 8);
-                const auto &cell = aes.cells[e];
-                for (unsigned j = 0; j < cell.count; ++j)
-                    if (cell.node[j] != node) {
-                        const double heat = aes.stencil.metric(cell, i, j).heat;
-                        if (heat != 0.)
-                            diffusion_terms.push_back({e, cell.node[j], -heat * scale});
-                    }
-            }
-            diffusion_rows.push_back({first, diffusion_terms.size()});
-        }
-        if (!share_diffusion_rows())
-            diffusion_stride = arrange(host, diffusion_rows, diffusion_terms);
-        if (host) {
-            element_mean.resize(element_count);
-            molecular_mean.resize(element_count);
-            view.diffusion = {
-                diffusion_rows.data(), diffusion_anchors.empty() ? nullptr : diffusion_anchors.data(),
-                diffusion_stride,      diffusion_terms.data(),
-                molecular_mean.data(), element_mean.data()};
-        }
-    }
+    void prepare_diffusion(const viscosity::Operator& aes, View& view, bool host, bool implicit, const std::vector<MeshIndex>* steady_nodes);
     // Рабочая вязкость живёт отдельно от компонент газа. При выключенной модели массивы пусты.
-    void prepare(View &v, const Settings &settings, double reynolds, double prandtl, bool host) {
+    void prepare(View &v, const Settings &settings, double reynolds, double prandtl, bool host, bool implicit) {
+        implicit_work=implicit;
         v.active = true;
         v.ambient = ambient_chi(settings.nut_nu_amb) / reynolds;
         if (!std::isfinite(v.ambient))
@@ -170,13 +159,13 @@ struct Storage {
         if (host && !w.empty()) {
             nodal_material.resize(w.size());
             v.nodal_material = nodal_material.data();
-            work.resize(6 * w.size());
+            work.resize((implicit_work ? 8 : 6) * w.size());
             v.w = w.data();
             v.inverse_distance = distance.data();
             bind_work(v, work.data(), w.size());
         }
     }
-    static void bind_work(View &v, double *data, size_t n) {
+    void bind_work(View &v, double *data, size_t n) const {
         if (!n || !data)
             return;
         v.old = data;
@@ -185,22 +174,31 @@ struct Storage {
         v.rate = data + 3 * n;
         v.diagonal = data + 4 * n;
         v.rotation = data + 5 * n;
+        if (implicit_work) {
+            v.last_correction=data+6*n;
+            v.plain_update=data+7*n;
+        }
     }
     template <class Device> void upload(View &v, Device &device) const {
         v.nodal_material = device.template allocate<View::Material>(w.size());
         v.face_terms = device.upload(face_terms);
+        v.axis_faces = device.upload(axis_faces);
+        v.face_columns={device.upload(face_orientations),device.upload(face_neighbours),
+                        device.upload(face_areas),face_orientations.size()};
+        v.lines={device.upload(line_vertices),device.upload(line_segments),line_segments.size()};
         v.face_rows = device.upload(face_rows);
-        v.incoming = device.template allocate<double>(face_terms.size());
+        v.incoming = device.template allocate<double>(implicit_work ? std::max(face_orientations.size(), std::max(axis_faces.size(),face_terms.size())) : 0);
         v.face_stride = face_stride;
         v.diffusion = {device.upload(diffusion_rows),
                        device.upload(diffusion_anchors),
                        diffusion_stride,
-                       device.upload(diffusion_terms),
+                       device.upload(diffusion_terms), device.upload(local_terms), device.upload(diffusion_tiles), nullptr, nullptr, nullptr, nullptr,
+                       device.upload(triples),
                        device.template allocate<double>(element_count),
-                       device.template allocate<double>(element_count)};
+                       device.template allocate<double>(element_count), v.diffusion.short_blocks};
         v.w = device.upload(w);
         v.inverse_distance = device.upload(distance);
-        bind_work(v, device.template allocate<double>(6 * w.size()), w.size());
+        bind_work(v, device.template allocate<double>((implicit_work ? 8 : 6) * w.size()), w.size());
     }
 };
 }

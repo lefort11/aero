@@ -78,6 +78,9 @@ struct SpatialJacobian::Storage {
     bool ready = false;        // Некорректная площадка запрещает пользоваться частично обновлённой матрицей.
     Partition partition;      // Обмен данными и глобальные нормы данной подобласти.
     std::unique_ptr<CsgsOrder> order;  // Разбиение по цветам или потокам, только для CSGS.
+    CsgsLayout layout;
+    CsgsPacking packing{};
+    std::vector<double> sweep_values; // Коэффициенты предобусловливателя для CPU.
     CsgsSweep sweep{};                // Постоянные адреса для проходов.
     std::vector<double> forward_host; // Промежуточный результат прямого прохода.
     double* forward = nullptr;
@@ -183,8 +186,17 @@ int SpatialJacobian::device() const { return storage_->device; }
 
 void SpatialJacobian::prepare_csgs() {
     auto& s = *storage_;
-    if (s.order) return;
     const auto& b = s.blocks;
+    const auto refresh = [&] {
+#ifdef AERO_WITH_KOKKOS_GPU
+        if (s.device>=0) {
+            device_work::check(device_work::aero_device_pack_csgs(s.device,s.packing,b.values));
+            return;
+        }
+#endif
+        parallel_for(s.packing.count,[&](MeshIndex p){s.packing.copy(p,b.values);});
+    };
+    if (s.order) { refresh(); return; }
     const BlockPattern* graph = &s.pattern;
 #ifdef AERO_WITH_KOKKOS_GPU
     // Раскраска выполняется один раз на CPU. Забираем только индексы CSR,
@@ -212,40 +224,57 @@ void SpatialJacobian::prepare_csgs() {
         new CsgsOrder(state_nodes, graph->rows, graph->columns, s.device >= 0,
                       static_cast<MeshIndex>(host_parallel::Execution().concurrency())));
     auto& view = s.sweep;
-    view.rows = b.rows;
-    view.columns = b.columns;
-    view.blocks = b.values;
-    const MeshIndex size = std::max<MeshIndex>(1, b.row_count * b.grid.components());
+    s.layout.build(*order,graph->rows,graph->columns,s.device>=0);
+    auto& plan=s.packing;
+    view.external=std::any_of(s.layout.neighbours.begin(),s.layout.neighbours.end(),
+                              [](MeshIndex n){return (n&1)!=0;});
+    plan.count=s.layout.source.size();
+    plan.width=b.grid.components();
+    plan.lanes=view.lanes=s.layout.lanes;
+    if (plan.count>std::numeric_limits<MeshIndex>::max()/sizeof(double)/plan.width/plan.width)
+        throw std::length_error("CSGS coefficient array too large");
+    const auto coefficients=plan.count*plan.width*plan.width;
+    const MeshIndex size=std::max<MeshIndex>(1,b.row_count*plan.width);
 #ifdef AERO_WITH_KOKKOS_GPU
     if (s.device >= 0) {
         gpu::DeviceScope scope(s.device);
         gpu::checked(scope.status);
-        view.sequence = s.arrays.allocate(order->sequence.size(), order->sequence.data());
-        view.position = s.arrays.allocate(order->position.size(), order->position.data());
-        view.row_of_node = s.arrays.allocate(order->row_of_node.size(), order->row_of_node.data());
-        s.forward = s.arrays.allocate<double>(size);
-        // После загрузки на карте остаётся вся индексация, CPU нужны только границы цветов.
-        std::vector<MeshIndex>().swap(order->sequence);
-        std::vector<MeshIndex>().swap(order->position);
-        std::vector<MeshIndex>().swap(order->row_of_node);
+        view.sequence=s.arrays.upload(order->sequence);
+        view.rows=s.arrays.upload(s.layout.rows);
+        view.neighbours=s.arrays.upload(s.layout.neighbours);
+        plan.source=s.arrays.upload(s.layout.source);
+        plan.values=s.arrays.allocate<double>(coefficients);
+        s.forward=s.arrays.allocate<double>(size);
+        s.layout=CsgsLayout{};
     } else
 #endif
     {
         s.forward_host.resize(size);
-        s.forward = s.forward_host.data();
-        view.sequence = order->sequence.data();
-        view.position = order->position.data();
-        view.row_of_node = order->row_of_node.data();
-        view.domain = order->domain.data();
+        s.forward=s.forward_host.data();
+        view.sequence=order->sequence.data();
+        view.rows=s.layout.rows.data();
+        view.neighbours=s.layout.neighbours.data();
+        plan.source=s.layout.source.data();
+        s.sweep_values.resize(coefficients);
+        plan.values=s.sweep_values.data();
     }
+    view.blocks=plan.values;
+    refresh();
+    // Разделение графа уже записано в строках проходов. Для запусков
+    // сохраняем только границы групп и, на CPU, порядок посещения.
+    std::vector<MeshIndex>().swap(order->position);
+    std::vector<MeshIndex>().swap(order->row_of_node);
+    std::vector<MeshIndex>().swap(order->domain);
+    if (s.device>=0) std::vector<MeshIndex>().swap(order->sequence);
     s.order = std::move(order);
 }
 
-void SpatialJacobian::apply_csgs(const BlockJacobi& diagonal, const double* rhs, double* output) const {
+void SpatialJacobian::apply_csgs(const BlockJacobi& diagonal, const double* rhs, double* output,double* image) const {
     const auto& s = *storage_;
     auto sweep = s.sweep;
     sweep.diagonal = diagonal.factors();
     sweep.rhs = rhs;
+    sweep.middle_rhs = output; // В прямом проходе выход ещё свободен для b−L*y.
     const auto& offsets = s.order->offsets;
     const MeshIndex groups = offsets.size() - 1;
     for (unsigned pass = 0; pass < 2; ++pass) {
@@ -277,6 +306,19 @@ void SpatialJacobian::apply_csgs(const BlockJacobi& diagonal, const double* rhs,
                 2);
         });
     }
+    // В MPI соседние компоненты z требуют полноценного обмена. На цельной
+    // сетке обе подстановки уже дали достаточно данных для умножения.
+    if (!image) return;
+    if (s.partition.extend_vector || s.partition.host_owned) { apply(output,image); return; }
+    s.partition.local([&] {
+#ifdef AERO_WITH_KOKKOS_GPU
+        if (s.device>=0) {
+            device_work::check(device_work::aero_device_csgs_image(s.device,sweep,s.blocks.row_count,image));
+            return;
+        }
+#endif
+        parallel_for(s.blocks.row_count,[&](MeshIndex k){sweep.image<1>(k,image);});
+    });
 }
 
 void SpatialJacobian::reserve_diagonal() {

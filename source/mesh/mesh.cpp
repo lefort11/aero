@@ -318,20 +318,7 @@ public:
         }
     }
     void name(const std::string& value) {
-        if (text_) {
-            output_.put('"');
-            for (const char c : value) {
-                if (c == '\\' || c == '"')
-                    output_.put('\\');
-                output_.put(c);
-            }
-            literal("\"\n");
-        } else {
-            if (value.size() > static_cast<std::size_t>(std::numeric_limits<std::streamsize>::max()))
-                fail("Boundary name is too large to write");
-            u64(value.size());
-            output_.write(value.data(), static_cast<std::streamsize>(value.size()));
-        }
+        io::NativeFileCodec::write_string(output_,text_,value,'\n',fail,"Boundary name is too large to write");
     }
     void finish() {
         block("END");

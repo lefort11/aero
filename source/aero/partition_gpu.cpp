@@ -160,6 +160,9 @@ void PartitionGpu::layout(residual_detail::Geometry g, const PartitionStencil& s
                           const double* volumes, std::size_t state_nodes, bool compact_buffer,
                           bool whole_mesh) {
     const bool store_face_batch = g.packed.tiles != nullptr;
+#ifdef AERO_HAS_TURBULENCE
+    grid_.filtered_gas=nullptr;
+#endif
     if (g.packed.tiles) {
         const auto count = (g.edges + 31) / 32;
         // Один буфер обслуживает все стадии. Большую подобласть проходим частями:
@@ -195,6 +198,14 @@ void PartitionGpu::layout(residual_detail::Geometry g, const PartitionStencil& s
         viscous_grid_ = aes_->upload(storage_,state_nodes);
         g.options.diffusion = viscous_grid_.rows;
         g.options.wall = storage_.upload(aes_->wall);
+#ifdef AERO_HAS_TURBULENCE
+        viscous_grid_.no_slip=g.options.wall;
+        // На одном процессе обновляются все узлы. Соседние значения MPI могут
+        // измениться при обмене, поэтому там материал готовится после обмена.
+        if (whole_mesh && g.packed.state_nodes && g.packed.state_nodes==owned.size() &&
+            (viscous_grid_.computes_les() || viscous_grid_.sa.active))
+            grid_.filtered_gas=storage_.allocate(1,&viscous_grid_);
+#endif
     }
 #endif
     grid_.geometry = g;
@@ -317,8 +328,13 @@ void PartitionGpu::fluxes(bool first_order_start,bool defer_viscous_rows) {
     residual_detail::gpu_face_fluxes(batch, grid_.bad, nullptr, first_order_start ? nullptr : device_faces_);
 #ifdef AERO_HAS_VISCOSITY
     if (aes_) {
-        const auto error = device_work::aero_device_viscosity(viscous_grid_,grid_.state,grid_.geometry.packed.gas,
-            defer_viscous_rows?viscosity::Evaluation::BeforeSaIterations:viscosity::Evaluation::Full);
+        auto phase = defer_viscous_rows ? viscosity::Evaluation::BeforeSaIterations : viscosity::Evaluation::Full;
+#ifdef AERO_HAS_TURBULENCE
+        // На цельной сетке предшествующая стадия SSPRK3 уже подготовила газ
+        // и вязкость SA. После отката, загрузки или обмена используем полную сборку.
+        if (!defer_viscous_rows && stage_material_current()) phase = viscosity::Evaluation::CurrentMaterial;
+#endif
+        const auto error = device_work::aero_device_viscosity(viscous_grid_,grid_.state,grid_.geometry.packed.gas,phase);
         if (error) throw std::runtime_error(error);
     }
 #endif

@@ -1,4 +1,5 @@
 #include "partition_operator.h"
+#include "../io/settings.h"
 #include "partition_kernels.h"
 #include "../parallel/parallel_for.h"
 #ifdef AERO_WITH_KOKKOS_GPU
@@ -272,13 +273,18 @@ Id PartitionOperator::prepare_stencil(const MeshPartition& part, const PeriodicP
 
 #ifdef AERO_HAS_VISCOSITY
 void PartitionOperator::prepare_viscosity(const MeshPartition& part, const PeriodicPartition* seam,
-        const ResidualFrame& frame, const ViscositySettings& settings, double mach, bool gpu) {
+        const ResidualFrame& frame, const RunSettings& run) {
+    const auto& settings=run.viscosity;
     if (settings.law == "off") return;
     // Периодический сосед может находиться вне конвективного шаблона. Включаем его
     // в уже существующий обмен полями, один раз для всех элементов этого процесса.
     std::map<Id,Id> slots;
     world_.local([&] {
         aes_.reset(new viscosity::Aes);
+#ifdef AERO_HAS_TURBULENCE
+        aes_->configure_les(run.turbulence,settings.prandtl,run.use_cuda,
+                            world_.size==1 && !run.uses_implicit_time());
+#endif
         for (Id i = 0; i < ids_.size(); ++i) slots.emplace(ids_[i],i);
         for (Id k = 0; k < stencil_.extra_nodes.size(); ++k)
             slots.emplace(stencil_.extra_nodes[k].first,ids_.size()+k);
@@ -293,14 +299,14 @@ void PartitionOperator::prepare_viscosity(const MeshPartition& part, const Perio
         }
         return local;
     };
-    aes_->prepare(part,seam,frame,world_,settings,grid_.options.gamma,mach,grid_.nodes,locate);
+    aes_->prepare(part,seam,frame,world_,settings,grid_.options.gamma,run.mach,grid_.nodes,locate);
     world_.local([&] {
         for (Id face = grid_.edges; face < grid_.faces; ++face) {
             const auto& s = surfaces_[face];
             if (grid_.patches.by_patch[s.patch].type() == BoundaryType::Wall)
                 aes_->wall[s.begin] = 1;
         }
-        if (!gpu) {
+        if (!run.use_cuda) {
             aes_->allocate_host(state_nodes());
             grid_.options.diffusion = aes_->view().rows;
             grid_.options.wall = aes_->wall.data();
@@ -374,9 +380,9 @@ void PartitionOperator::connect(bool cuda, bool implicit_time) {
             pressure_exchange_->allocate(false); // Поля для файлов собираются в памяти CPU.
         }
 #ifdef AERO_HAS_TURBULENCE
-        if(sa_active()) {
-            sa_nodes_.reset(new PartitionTransfers(nodes_,1));
-            sa_nodes_->allocate(cuda);
+        if(sa_active() || (aes_ && aes_->view().computes_les())) {
+            turbulence_exchange_.reset(new PartitionTransfers(nodes_,1));
+            turbulence_exchange_->allocate(cuda);
         }
 #endif
         if (implicit_time) {
@@ -399,7 +405,7 @@ void PartitionOperator::layout_gpu(bool compact_buffer) {
     nodes_.prepare_gpu(*gpu_);
     edges_.prepare_gpu(*gpu_);
 #ifdef AERO_HAS_TURBULENCE
-    if(sa_nodes_) sa_nodes_->prepare_gpu(*gpu_);
+    if(turbulence_exchange_) turbulence_exchange_->prepare_gpu(*gpu_);
 #endif
     if (derivative_exchange_) {
         derivative_exchange_->prepare_gpu(*gpu_);
@@ -561,7 +567,7 @@ void PartitionOperator::halo(std::vector<double>& u, double* seconds) {
 #endif
     nodes_.transfer(world_, {width_, field, nullptr}, device(), seconds);
 #ifdef AERO_HAS_TURBULENCE
-    if(sa_nodes_) sa_exchange();
+    if(sa_active()) sa_exchange();
 #endif
 }
 
@@ -701,7 +707,13 @@ void PartitionOperator::halo_host(std::vector<double>& u) {
 bool PartitionOperator::assemble_fluxes(const std::vector<double>& u, const std::vector<double>& initial,
                                         SolverTimings& timing, bool trial) {
 #ifdef AERO_HAS_TURBULENCE
-    if(sa_nodes_) sa_exchange();
+    if(sa_active()) sa_exchange();
+    if (aes_ && aes_->view().computes_les()) {
+        // У пробной поправки Ньютона рабочая вязкость SA фиксирована. Газ нужен
+        // сразу, а длина DDES понадобится только при подтверждении этой поправки.
+        const bool frozen_ddes=trial && sa_dt_>0. && aes_->view().c_des>0.;
+        update_les(u,timing,frozen_ddes ? viscosity::Evaluation::DdesGasOnly : viscosity::Evaluation::LesClosure);
+    }
 #endif
     bool defer_viscous_rows=false;
 #ifdef AERO_HAS_TURBULENCE
@@ -781,24 +793,24 @@ void PartitionOperator::prepare_steady_steps(bool gpu, bool local, double max_ra
 
 // Для общего и локального шага читаем один буфер площадок и те же вязкие оценки.
 residual_detail::FluxCfl PartitionOperator::cfl_grid() const {
+    const double* sa_rate = nullptr;
+#ifdef AERO_HAS_TURBULENCE
+    if (sa_active()) sa_rate = sa_step().transport.sa.diagonal;
+#endif
 #ifdef AERO_WITH_KOKKOS_GPU
     if (gpu_) {
         const auto& g = gpu_->active_grid();
-        return {g.geometry, g.flux, g.volumes, g.owned, g.owned_count};
+        return {g.geometry, g.flux, g.volumes, g.owned, g.owned_count, sa_rate};
     }
 #endif
-    return {grid_, flux_.data(), volumes_, world_.size == 1 ? nullptr : owned.data(), owned.size()};
+    return {grid_, flux_.data(), volumes_, world_.size == 1 ? nullptr : owned.data(), owned.size(), sa_rate};
 }
 
 double PartitionOperator::prepare_local_steps(double cfl) {
     residual_detail::StepRange range{max_finite_double, 0.};
     world_.local([&] {
         if (owned.empty()) return;
-        const double* sa_rate = nullptr;
-#ifdef AERO_HAS_TURBULENCE
-        if (sa_active()) sa_rate = sa_step().transport.sa.diagonal;
-#endif
-        const residual_detail::LocalSteadySteps steps{cfl_grid(), cfl, sa_rate, steady_steps_->values};
+        const residual_detail::LocalSteadySteps steps{cfl_grid(), cfl, steady_steps_->values};
 #ifdef AERO_WITH_KOKKOS_GPU
         if (gpu_) {
             if (const char* error = device_work::aero_device_local_steps(steps, &range))
@@ -848,12 +860,6 @@ double PartitionOperator::cfl_step(double cfl) {
 #endif
         local = residual_detail::cpu_flux_cfl(cfl_grid(), cfl, ids_.data());
     });
-#ifdef AERO_HAS_TURBULENCE
-    if(sa_active()) {
-        const double rate=sa_max(sa_step(),turbulence::Norm::Diagonal);
-        if(rate>0.) local=std::min(local,cfl/rate);
-    }
-#endif
     const double dt = world_.minimum(local);
     if (!std::isfinite(dt)) {
         throw std::domain_error("No finite global CFL step");
@@ -972,7 +978,8 @@ implicit::NewtonResult PartitionOperator::advance_bdf(std::vector<double>& state
             if (!sa_prediction_pending_) return false;
             // Потоки массы уже построены для нынешнего газа. Доводим SA до заданного
             // допуска, обновляем вязкие напряжения, затем BDF проверяет невязку газа.
-            evaluate_sa(state,timing);
+            if (aes_->view().c_des>0.) update_les(state,timing,viscosity::Evaluation::FilterOnly);
+            evaluate_sa(state,timing,false,true);
             sa_prediction_pending_=false;
             return true;
         };
@@ -995,15 +1002,14 @@ implicit::NewtonResult PartitionOperator::advance_bdf(std::vector<double>& state
 
 void PartitionOperator::update_owned(explicit_detail::Stage stage, std::vector<double>& start, double dt,
                                      std::vector<double>& state, bool save_original) {
-#ifdef AERO_HAS_TURBULENCE
-    if(sa_active()) {
-        auto step=sa_step(); step.stage=stage; step.dt=dt;
-        if(save_original) sa_apply(step,turbulence::Operation::SaveStart);
-        sa_apply(step,turbulence::Operation::Explicit);
-    }
-#endif
 #ifdef AERO_WITH_KOKKOS_GPU
     if (gpu_) {
+#ifdef AERO_HAS_TURBULENCE
+        if (sa_active() && !gpu_->has_stage_material()) {
+            auto step=sa_step(); step.stage=stage; step.dt=dt; step.save_stage_start=save_original;
+            sa_apply(step,turbulence::Operation::Explicit);
+        }
+#endif
         gpu_->update(stage, dt, save_original);
         return;
     }
@@ -1016,11 +1022,17 @@ void PartitionOperator::update_owned(explicit_detail::Stage stage, std::vector<d
     // ещё в кэше. Для MPI ждём обмена и готовим вязкость сразу для своих и соседних узлов.
     const auto* transport = !nodes && grid_.packed.gas && aes_ ? &aes_->view() : nullptr;
 #endif
+#ifdef AERO_HAS_TURBULENCE
+    const auto* sa=sa_active() ? &aes_->view().sa : nullptr;
+#endif
     const auto update = width_ == 5 ? partition_detail::update_node<5> :
                         width_ == 4 ? partition_detail::update_node<4> : partition_detail::update_node<3>;
     parallel_for(
         owned.size(),
         [&](std::size_t k) {
+#ifdef AERO_HAS_TURBULENCE
+            if (sa) sa->advance_explicit(nodes ? nodes[k] : k,stage,dt,save_original);
+#endif
             if (!update(grid_, flux_.data(), volumes_, nodes, state.data(),
                         start.data(), k, stage, dt, save_original)) {
                 throw std::domain_error("Invalid Euler stage state at global node " + std::to_string(ids_[owned[k]]));

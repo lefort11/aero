@@ -62,6 +62,17 @@ struct Jacobian {
         const unsigned width = dim+2;
         GasDerivative derivative(dim,aes.law,aes.gas[node],variable);
 #ifdef AERO_HAS_TURBULENCE
+        if (aes.eddy_nu) {
+            // В матрице Ньютона фиксируем ν_t. Производные ρν_t и работы напряжений
+            // остаются в блоке газа; в полной невязке Sigma обновляется при каждой пробе.
+            const double nu=aes.eddy_nu[node];
+            const double dmu=variable==0 ? nu : 0.;
+            derivative.transport.mu+=dmu;
+            derivative.transport.extra_heat=dmu*(aes.les_pr_ratio-1.);
+            for (unsigned m=0;m<dim;++m)
+                derivative.transport.mu_velocity[m]+=dmu*aes.gas[node].velocity[m]+
+                    nu*aes.gas[node].density*derivative.primitive.velocity[m];
+        }
         if(aes.sa.active) {
             // Газовый блок дифференцируем при фиксированной рабочей вязкости.
             // Изменение nu_tilde учитывается повторным решением уравнения SA на итерации.

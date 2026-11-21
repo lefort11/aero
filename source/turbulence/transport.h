@@ -8,6 +8,7 @@ namespace aero {
 namespace turbulence {
 // Все индексы и указатели относятся к одной подобласти и одному исполнителю.
 struct Transport {
+    NodalFilter filter;
     View sa; // Только массивы, нужные уравнению SA на выбранном исполнителе.
     const viscosity::Gas *gas_nodes;
     const viscosity::Cell *cells;
@@ -24,22 +25,132 @@ struct Transport {
         const double inward = -side.outward_flux(flux[side.face()].flux[0]) * inverse_density;
         return inward > 0. ? inward : 0.;
     }
+    // На CPU одна разность nu_tilde и один коэффициент обслуживают обе вершины
+    // пары с противоположными знаками. Элементы независимы: каждый сохраняет
+    // только свои восемь вкладов. Владельцы узлов затем суммируют их без атомиков.
+    template<bool refresh=false>
+    AERO_HOST_DEVICE void diffuse_element(MeshIndex e) const {
+        const auto& cell=cells[e];
+        const auto& stencil=sa.diffusion;
+        const double* weights=stencil.pair_weights+stencil.shape[e];
+        double working[8], sum[8]{};
+        double working_sum=0.;
+        for (unsigned i=0;i<cell.count;++i) {
+            working[i]=sa.w[cell.node[i]];
+            if (refresh) working_sum+=working[i];
+        }
+        if (refresh) set_diffusivity(e,working_sum);
+        for (unsigned i=0;i<cell.count;++i) for (unsigned j=i+1;j<cell.count;++j) {
+            const double flow=(*weights++)*(working[j]-working[i]);
+            sum[i]+=flow;
+            sum[j]-=flow;
+        }
+        const double mean=stencil.element_mean[e];
+        for (unsigned i=0;i<cell.count;++i)
+            stencil.vertex_contributions[8*e+i]={mean*sum[i],::fabs(mean)*weights[i]};
+    }
     // Значение вычисляется один раз на элемент и используется во всех прилегающих строках.
+    AERO_HOST_DEVICE void set_diffusivity(MeshIndex e,double working_sum) const {
+        sa.diffusion.element_mean[e]=sa.diffusion.molecular_mean[e]+working_sum*cells[e].inverse_count;
+    }
+    template<bool host=false>
     AERO_HOST_DEVICE void refresh_diffusivity(MeshIndex e) const {
+        if (host && sa.diffusion.vertex_contributions) { diffuse_element<true>(e); return; }
         const auto &cell = cells[e];
         double sum = 0.;
         for (unsigned j = 0; j < cell.count; ++j) {
             const auto n = cell.node[j];
             sum += sa.w[n];
         }
-        sa.diffusion.element_mean[e] = sa.diffusion.molecular_mean[e] + sum * cell.inverse_count;
+        set_diffusivity(e,sum);
+    }
+    // Для обычных подобластей номера и смещения умещаются в 32 бита.
+    // Беззнаковое сложение восстанавливает номер соседа в обоих форматах.
+    template<class Index>
+    AERO_HOST_DEVICE void add_pairs(const DiffusionEntry<Index>* terms,RowRange row,unsigned stride,
+                                    MeshIndex first,MeshIndex center,double w,double& diffusion,double& diagonal) const {
+        const Index e0=static_cast<Index>(first), n0=static_cast<Index>(center);
+        for (auto pos=row.first;pos<row.end;pos+=stride) {
+            const auto term=terms[pos];
+            const double coupling=sa.diffusion.element_mean[e0+term.element]*term.geometry;
+            diffusion+=coupling*(sa.w[n0+term.neighbour]-w);
+            diagonal+=::fabs(coupling);
+        }
+    }
+    template<unsigned lanes,unsigned neighbours>
+    AERO_HOST_DEVICE void add_dense(const DiffusionBlock<lanes>* blocks,RowRange row,double w,
+                                    double& diffusion,double& diagonal) const {
+        const unsigned lane=static_cast<unsigned>(row.first%lanes);
+        for (auto pos=row.first;pos<row.end;pos+=lanes) {
+            const auto& block=blocks[pos/lanes];
+            const double mean=sa.diffusion.element_mean[block.element[lane]];
+            double jump=0.;
+            for (unsigned j=0;j<neighbours;++j)
+                jump+=block.geometry[j][lane]*(sa.w[block.node[j][lane]]-w);
+            diffusion+=mean*jump;
+            diagonal+=::fabs(mean)*block.diagonal[lane];
+        }
+    }
+    // У треугольника и четырёхугольника не более трёх соседей в элементе.
+    // Таблица хранит семь мест для смешанных сеток. Здесь длина фактического
+    // цикла известна при компиляции, поэтому нулевые заполнители не загружаются.
+    template<unsigned lanes>
+    AERO_HOST_DEVICE void element_diffusion(const DiffusionBlock<lanes>* blocks,RowRange row,double w,
+                                            double& diffusion,double& diagonal) const {
+        if (sa.diffusion.short_blocks) add_dense<lanes,3>(blocks,row,w,diffusion,diagonal);
+        else add_dense<lanes,7>(blocks,row,w,diffusion,diagonal);
+    }
+    template<bool host>
+    AERO_HOST_DEVICE void add_volume_diffusion(MeshIndex i,double w,double& diffusion,double& diagonal) const {
+        // Каждая ненулевая пара даёт приращение от разности рабочих вязкостей.
+        // Коэффициенты могут иметь разный знак на косой сетке, поэтому в оценке
+        // шага берём модуль каждого вклада до суммирования по элементам.
+        const auto &stencil = sa.diffusion;
+        if (host && stencil.vertex_contributions) {
+            for (auto k=filter.offsets[i];k<filter.offsets[i+1];++k) {
+                const auto entry=filter.incidence[k];
+                const auto contribution=stencil.vertex_contributions[entry];
+                diffusion+=contribution.rate;
+                diagonal+=contribution.diagonal;
+            }
+            return;
+        }
+        const auto row=stencil.rows[i];
+        if (host && stencil.cell_rows) { element_diffusion(stencil.cell_rows,row,w,diffusion,diagonal); return; }
+        if (!host && stencil.tiles) { element_diffusion(stencil.tiles,row,w,diffusion,diagonal); return; }
+        const auto base_element = stencil.anchor ? stencil.anchor[i] : 0;
+        const auto base_node = stencil.anchor ? i : 0;
+        const unsigned stride=host ? 1 : stencil.stride;
+        if (stencil.triples) {
+            // Три разности имеют общий множитель. Сумма модулей геометрических
+            // коэффициентов для диагонали уже известна на неподвижной сетке.
+            // Сложение смещений без знака восстанавливает номер по модулю 2^32.
+            const auto first=static_cast<std::uint32_t>(base_element);
+            const auto center=static_cast<std::uint32_t>(base_node);
+            for (auto pos=row.first;pos<row.end;pos+=stride) {
+                const auto& group=stencil.triples[pos];
+                const double mean=stencil.element_mean[first+group.element];
+                double jump=0.;
+                for (unsigned q=0;q<3;++q)
+                    jump+=group.geometry[q]*(sa.w[center+group.neighbour[q]]-w);
+                diffusion+=mean*jump;
+                diagonal+=::fabs(mean)*group.diagonal;
+            }
+        } else if (stencil.local_terms) {
+            add_pairs(stencil.local_terms,row,stride,base_element,base_node,w,diffusion,diagonal);
+        } else {
+            add_pairs(stencil.terms,row,stride,base_element,base_node,w,diffusion,diagonal);
+        }
     }
     // Схема первого порядка по потоку массы сохраняет постоянное nu_tilde и при
     // переменной плотности. На втекании используем набегающий поток, на вытекании — значение узла.
-    template <unsigned d, bool reuse_gas, bool host = false>
-    AERO_HOST_DEVICE void residual_row(MeshIndex k, bool save_rotation) const {
+    template <unsigned d, bool reuse_gas, bool host, bool axial>
+    AERO_HOST_DEVICE void assemble_sa_row(MeshIndex k, bool save_rotation) const {
         const auto i = node(k);
-        if (sa.inverse_distance[i] < 0.) {
+        // Первый обход на новом газе собирает длину DDES в том же узле, где
+        // она нужна источнику. В повторных итерациях SA меняется только nu_tilde.
+        if (host && !reuse_gas && filter.points && sa.inverse_distance[i]>=0.) filter.gather<true>(i);
+        if (sa.zero_working_viscosity(i)) {
             sa.rate[i] = sa.diagonal[i] = 0.;
             return;
         }
@@ -47,13 +158,16 @@ struct Transport {
         const double w = sa.w[i], nu = sa.nodal_material[i].nu;
         double advection = 0., diffusion = 0., diagonal = 0., dw[3]{};
         diagnostic::Curl curl{};
-        const double inverse_density = 1. / gas.density;
+        const double inverse_density = reciprocal(gas.density);
         const auto faces = sa.face_rows[i];
         for (auto pos = faces.first; pos < faces.end; pos += (host ? 1 : sa.face_stride)) {
-            const auto &face = sa.face_terms[pos];
-            const residual_detail::OrientedFace orientation{face.encoded};
+            const AxisFace compact=axial ? sa.axis_faces[pos] : AxisFace{};
+            const FaceTerm general = !axial && !host && sa.face_columns.area ? sa.face_columns.read<d>(pos) :
+                                     axial ? FaceTerm{} : sa.face_terms[pos];
+            const FaceTerm* face=&general;
+            const residual_detail::OrientedFace orientation{axial ? compact.side_axis/4 : face->encoded};
             const bool edge = orientation.face() < edges;
-            const auto j = face.neighbour;
+            const auto j = axial ? compact.neighbour : face->neighbour;
             // В серии скалярных итераций поток газа на ребре один и тот же.
             const double incoming = reuse_gas ? sa.incoming[pos] : incoming_speed(orientation, inverse_density);
             if (!reuse_gas && save_rotation)
@@ -61,41 +175,52 @@ struct Transport {
             const double jump = edge ? sa.w[j] - w : (incoming > 0. ? sa.ambient - w : 0.);
             advection += incoming * jump;
             diagonal += incoming;
-            for (unsigned m = 0; m < d; ++m)
-                dw[m] += face.area[m] * jump;
-            if (!reuse_gas && edge) {
-                double jump_u[3]{};
-                for (unsigned n = 0; n < d; ++n)
-                    jump_u[n] = gas_nodes[j].velocity[n] - gas.velocity[n];
-                curl.add(face.area, jump_u, 1.);
+            double jump_u[3]{};
+            if (!reuse_gas && edge)
+                for (unsigned n=0;n<d;++n) jump_u[n]=gas_nodes[j].velocity[n]-gas.velocity[n];
+            if (axial) {
+                compact.add_derivatives<!reuse_gas>(jump,jump_u,dw,curl.value);
+            } else {
+                for (unsigned m=0;m<d;++m) dw[m]+=face->area[m]*jump;
+                if (!reuse_gas && edge) curl.add(face->area,jump_u,1.);
             }
         }
-        const double inv_volume = 1. / volume[i];
+        const double inv_volume = reciprocal(volume[i]);
         double grad2 = 0.;
         for (unsigned m = 0; m < d; ++m) {
             const double derivative = dw[m] * inv_volume;
             grad2 += derivative * derivative;
         }
-        // Каждая ненулевая пара даёт приращение от разности рабочих вязкостей.
-        // Коэффициенты могут иметь разный знак на косой сетке, поэтому в оценке
-        // шага берём модуль каждого вклада до суммирования по элементам.
-        const auto &stencil = sa.diffusion;
-        const auto row = stencil.rows[i];
-        const auto base_element = stencil.anchor ? stencil.anchor[i] : 0;
-        const auto base_node = stencil.anchor ? i : 0;
-        for (auto pos = row.first; pos < row.end; pos += (host ? 1 : stencil.stride)) {
-            const auto term = stencil.terms[pos];
-            const double coupling = stencil.element_mean[base_element + term.element] * term.geometry;
-            diffusion += coupling * (sa.w[base_node + term.neighbour] - w);
-            diagonal += ::fabs(coupling);
-        }
+        add_volume_diffusion<host>(i,w,diffusion,diagonal);
         // Пока Ньютон уточняет только рабочую вязкость, поле скорости неизменно.
         const double rotation = reuse_gas ? sa.rotation[i] : curl.magnitude(inv_volume);
         if (!reuse_gas && save_rotation)
             sa.rotation[i] = rotation;
-        const double source = source_rate(w, nu, rotation, sa.inverse_distance[i]);
+        // В DDES меняется длина во всех членах источника SA. Скорость фиксирована
+        // на внутренних итерациях BDF, но ν_t пересчитываем по текущему nu_tilde.
+        double inverse=sa.inverse_distance[i];
+        const double chi=w/nu;
+        // В явной стадии fv1 уже использовалась в вязком потоке газа.
+        // При уточнении BDF рабочая вязкость меняется и демпфирование считаем заново.
+        const double damp=!reuse_gas && !save_rotation ? sa.nodal_material[i].damping :
+                          (inverse!=0. || sa.ddes ? fv1(chi) : 0.);
+        if (sa.ddes) {
+            inverse=sa.ddes[i].inverse_length(inverse,nu+w*damp,kappa);
+            if (inverse<0.) {
+                sa.rate[i]=sa.diagonal[i]=0.;
+                return;
+            }
+        }
+        const double source=source_rate_from_chi(w,chi,damp,rotation,inverse);
         sa.rate[i] = (advection + diffusion) * inv_volume + cb2 / sigma * grad2 + source * w;
         sa.diagonal[i] = diagonal * inv_volume + ::fabs(source);
+    }
+    // Геометрия площадок едина для всей подобласти. У осевой площадки
+    // нужна одна компонента площади, у произвольной — все компоненты.
+    template<unsigned d,bool reuse_gas,bool host=false>
+    AERO_HOST_DEVICE void residual_row(MeshIndex k,bool save_rotation) const {
+        if (sa.axis_faces) assemble_sa_row<d,reuse_gas,host,true>(k,save_rotation);
+        else assemble_sa_row<d,reuse_gas,host,false>(k,save_rotation);
     }
     template <bool reuse_gas> AERO_HOST_DEVICE void residual(MeshIndex k, bool save_rotation) const {
         if (dim == 3)
@@ -108,20 +233,23 @@ struct Transport {
 };
 enum class Operation {
     Residual,
-    RepeatResidual,
     Explicit,
     SaveStart,
     SaveBackup,
     RestoreBackup,
     CommitHistory,
-    Relax
+    Relax,
+    RestorePlain,
+    LineRelax
 };
-enum class Norm { Rate, Diagonal, Bdf };
+enum class Norm { Rate, Bdf };
 struct Step {
     Transport transport;
     explicit_detail::Stage stage;
     double dt, leading, history;
     NodeSteps local_steps;
+    bool save_stage_start;
+    bool extrapolate; // Разрешает ускорение двух последовательных скалярных поправок BDF.
     bool keep_gas; // Давление, плотность и скорость фиксированы между итерациями скалярного уравнения.
     // Погрешность дискретного уравнения на новом слое BDF в единицах рабочей вязкости.
     AERO_HOST_DEVICE double defect(MeshIndex i) const {
@@ -129,15 +257,56 @@ struct Step {
         const double previous = history ? history * (s.old[i] - s.previous[i]) : 0.;
         return leading * (s.w[i] - s.old[i]) - previous - local_steps.at(i, dt) * s.rate[i];
     }
+    AERO_HOST_DEVICE double implicit_update(MeshIndex i) const {
+        auto& s=transport.sa;
+        const double delta=-defect(i)/(leading+local_steps.at(i,dt)*s.diagonal[i]);
+        const double plain=s.w[i]+delta;
+        if (!extrapolate) {
+            s.last_correction[i]=delta;
+            return plain;
+        }
+        s.plain_update[i]=s.zero_working_viscosity(i) || plain<0. ? 0. : plain;
+        return extrapolated_viscosity(plain,delta,s.last_correction[i]);
+    }
+    // На вытянутой сетке учитываем две сильные связи в поправке совместно.
+    // Правая часть по-прежнему берётся из полной невязки SA со всеми соседями.
+    AERO_HOST_DEVICE void relax_line(MeshIndex segment) const {
+        auto& sa=transport.sa;
+        const auto rows=sa.lines.segments[segment];
+        const unsigned count=static_cast<unsigned>(rows.end-rows.first);
+        double upper[SaLines::length], correction[SaLines::length];
+        for (unsigned k=0;k<count;++k) {
+            const auto vertex=sa.lines.vertices[rows.first+k];
+            const auto i=vertex.node;
+            const double h=local_steps.at(i,dt);
+            const double diagonal=leading+h*sa.diagonal[i];
+            const double residual=sa.zero_working_viscosity(i) ? 0. : -defect(i);
+            const double plain=sa.w[i]+residual/diagonal;
+            sa.plain_update[i]=sa.zero_working_viscosity(i) || plain<0. ? 0. : plain;
+            double scale=h*(sa.nodal_material[i].nu+sa.w[i])/transport.volume[i];
+            const double sum=vertex.left+vertex.right;
+            // Неточная производная ограничена фактической диагональю переноса.
+            // Временной член leading сохраняет строгое диагональное преобладание.
+            if (sum>0.) scale=::fmin(scale,h*sa.diagonal[i]/sum);
+            const double left=scale*vertex.left;
+            const double pivot=diagonal-(k ? left*upper[k-1] : 0.);
+            upper[k]=scale*vertex.right/pivot;
+            correction[k]=(residual+(k ? left*correction[k-1] : 0.))/pivot;
+        }
+        for (unsigned end=count;end>0;--end) {
+            const unsigned k=end-1;
+            if (end<count) correction[k]+=upper[k]*correction[k+1];
+            const auto i=sa.lines.vertices[rows.first+k].node;
+            const double next=sa.w[i]+correction[k];
+            sa.w[i]=sa.zero_working_viscosity(i) || next<0. ? 0. : next;
+        }
+    }
     AERO_HOST_DEVICE void apply(Operation op, MeshIndex k) const {
         const auto i = transport.node(k);
         const auto &s = transport.sa;
         switch (op) {
         case Operation::Residual:
             transport.residual<false>(k, keep_gas);
-            break;
-        case Operation::RepeatResidual:
-            transport.residual<true>(k, false);
             break;
         case Operation::SaveStart:
             s.old[i] = s.w[i];
@@ -151,22 +320,37 @@ struct Step {
         case Operation::CommitHistory:
             s.previous[i] = s.old[i];
             break;
+        case Operation::LineRelax: {
+            // На ранге без сильных связей та же проба совпадает с обычной поправкой.
+            const double plain=s.w[i]-defect(i)/(leading+local_steps.at(i,dt)*s.diagonal[i]);
+            s.plain_update[i]=s.w[i]=s.zero_working_viscosity(i) || plain<0. ? 0. : plain;
+            break;
+        }
+        case Operation::RestorePlain:
+            s.w[i]=s.plain_update[i];
+            break;
         case Operation::Explicit:
+            s.advance_explicit(i,stage,dt,save_stage_start);
+            break;
         case Operation::Relax: {
-            // Положительная ветвь SA. На стенке задано нулевое значение на всех стадиях.
-            const double next =
-                op == Operation::Relax
-                    ? s.w[i] - defect(i) / (leading + local_steps.at(i, dt) * s.diagonal[i])
-                    : stage.combine(stage.uses_step_start() ? s.old[i] : s.w[i], s.w[i] + dt * s.rate[i]);
-            s.w[i] = s.inverse_distance[i] < 0. ? 0. : (next < 0. ? 0. : next);
+            const double next=implicit_update(i);
+            s.w[i] = s.zero_working_viscosity(i) ? 0. : (next < 0. ? 0. : next);
             break;
         }
         }
     }
+    // После изменения nu_tilde считаем строку заново и сразу используем
+    // полученную правую часть для нормы BDF. Отдельный проход по полю не нужен.
+    template<unsigned dim,bool host>
+    AERO_HOST_DEVICE double updated_defect(MeshIndex k) const {
+        transport.residual_row<dim,true,host>(k,false);
+        return magnitude(Norm::Bdf,k);
+    }
     AERO_HOST_DEVICE double magnitude(Norm norm, MeshIndex k) const {
         const auto i = transport.node(k);
         const auto &s = transport.sa;
-        double value = norm == Norm::Bdf ? defect(i) : (norm == Norm::Rate ? s.rate[i] : s.diagonal[i]);
+        if (norm==Norm::Bdf && s.zero_working_viscosity(i)) return ::fabs(s.w[i]);
+        double value = norm == Norm::Bdf ? defect(i) : s.rate[i];
         // При нулевом значении рабочей вязкости допускается только неотрицательное обновление.
         if (norm == Norm::Bdf && s.w[i] == 0. && value > 0.)
             value = 0.;

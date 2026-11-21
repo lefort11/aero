@@ -2,7 +2,7 @@
 #define AERO_MESH_READER_H
 #include "mesh.h"
 #include "../io/lzma_stream.h"
-#include "../io/number_codec.h"
+#include "../io/native_format.h"
 #include "../io/utf8_label.h"
 #include <cstring>
 #include <istream>
@@ -43,6 +43,7 @@ private:
 
 // Приводит текстовый, двоичный и сжатый поток к одним операциям чтения полей сетки.
 class Reader {
+    friend struct io::NativeFileCodec;
 public:
     Reader(std::istream& input, const MeshReadLimits& limits)
         : input_(&input), limits_(limits), budget_(limits.max_payload_bytes) {
@@ -80,12 +81,7 @@ public:
     }
 
     std::uint64_t u64() {
-        if (!text_) {
-            char data[8];
-            bytes(data, sizeof(data));
-            return number_codec::read_word(data);
-        }
-        return number_codec::parse_decimal(token(), fail);
+        return io::NativeFileCodec::read_unsigned(*this,fail);
     }
 
     // Знак определяет направление обхода грани в ячейке. В двоичном файле −1 записан байтом 255.

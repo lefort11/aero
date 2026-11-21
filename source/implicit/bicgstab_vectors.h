@@ -73,6 +73,39 @@ inline double krylov_reduce(const Execution& exec, MeshIndex size, const double*
     }
     return result;
 }
+// Для omega нужны <t,t> и <t,r>. Каждый поток читает t один раз; обе суммы
+// возвращаются с устройства вместе. Норму остановки по-прежнему считаем в L_inf.
+struct KrylovProjection {
+    struct value_type { double square, mixed; };
+    const double *t, *r;
+    AERO_HOST_DEVICE void init(value_type& v) const {v={0.,0.};}
+    AERO_HOST_DEVICE void join(volatile value_type& a,const volatile value_type& b) const {
+        a.square+=b.square; a.mixed+=b.mixed;
+    }
+    AERO_HOST_DEVICE void operator()(MeshIndex i,value_type& v) const {
+        v.square+=t[i]*t[i]; v.mixed+=t[i]*r[i];
+    }
+};
+template<class Execution>
+inline void krylov_project(const Execution& exec,MeshIndex count,const double* t,const double* r,double* pair) {
+    using Range=Kokkos::RangePolicy<Execution,Kokkos::IndexType<MeshIndex>>;
+    KrylovProjection::value_type sums{};
+    Kokkos::parallel_reduce("Aero: BiCGSTAB omega",Range(exec,0,count),KrylovProjection{t,r},sums);
+    pair[0]=sums.square; pair[1]=sums.mixed;
+}
+template<class Execution>
+inline double krylov_update_norm(const Execution& exec,MeshIndex count,KrylovUpdate step) {
+    using Range=Kokkos::RangePolicy<Execution,Kokkos::IndexType<MeshIndex>>;
+    double norm=0.;
+    if (count) Kokkos::parallel_reduce("Aero: BiCGSTAB correction and norm",Range(exec,0,count),
+        KOKKOS_LAMBDA(MeshIndex i,double& largest) {
+            step(i);
+            const double value=::fabs(step.work.r[i]);
+            if (!(value<=max_finite_double)) largest=HUGE_VAL;
+            else if (value>largest) largest=value;
+        },Kokkos::Max<double>(norm));
+    return norm;
+}
 }
 }
 #endif

@@ -97,12 +97,17 @@ struct GradientStencil {
 
 // На этапе подготовки сетки вычисляет интегралы произведений градиентов
 // базисных функций и сохраняет коэффициенты всех пар элемента одним массивом.
+struct MeanGradient {
+    Coordinate basis[8]; // Средние по объёму производные базисных функций.
+    double volume;
+};
 class GradientBuilder {
 public:
     void prepare(const Element&, unsigned dimension, double gamma, double prandtl,
-                 Cell&, std::vector<PairMetric>&);
+                 Cell&, std::vector<PairMetric>&, MeanGradient* mean = nullptr);
 private:
     struct Shape {
+        MeanGradient mean;
         MeshIndex first_pair; // Начало коэффициентов для этой формы элемента.
         std::array<double,8> diffusion; // Геометрическая часть вязкого ограничения CFL по вершинам.
     };

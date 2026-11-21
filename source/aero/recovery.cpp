@@ -261,7 +261,7 @@ Recovery::Recovery(const RunSettings& run, const Processes& world, Id count, uns
                     "output already contains recovery data; use --recover or a new output directory");
     });
 #ifdef AERO_HAS_TURBULENCE
-    if(run.turbulence.enabled) scalar.reset(new ScalarHistory);
+    if(run.turbulence.uses_sa()) scalar.reset(new ScalarHistory);
 #endif
     if (hash_.empty())
         hash_ = archive_hash(run.mesh_path, world);

@@ -170,14 +170,14 @@ void remaining_group(const Execution& exec, FaceBatch batch, const FaceBatch* st
 }
 
 // Выбираем обход один раз на весь пакет. Внутри площадки остаются только формулы выбранного решателя.
-template <bool roe_2d, bool nodal_only = false, unsigned linear_width = 0>
+template <bool roe_2d, bool nodal_only = false, unsigned linear_width = 0, unsigned lf_dim = 0>
 void other_faces(const Execution& exec, FaceBatch batch, Index* bad) {
     if (!batch.indices && batch.count == batch.geometry.faces) {
         // В однопроцессном расчёте рёбра и внешние площадки уже лежат двумя непрерывными группами.
         // У каждого обхода свои регистры. Граничная характеристика не занимает регистры потока на ребре.
         const Index edges = batch.geometry.edges;
         for_indices(exec, "Aero: interior edges", edges, KOKKOS_LAMBDA(Index face) {
-            if (!batch.compute_edge<roe_2d, nodal_only, linear_width>(face))
+            if (!batch.compute_edge<roe_2d, nodal_only, linear_width>(face,lf_dim))
                 Kokkos::atomic_fetch_min(bad, face);
         });
         for_indices(exec, "Aero: boundary faces", batch.count - edges, KOKKOS_LAMBDA(Index i) {
@@ -190,7 +190,7 @@ void other_faces(const Execution& exec, FaceBatch batch, Index* bad) {
     // После разделения сетки MPI и у неполных шаблонов нужные номера берём из списка.
     for_indices(exec, "Aero: remaining fluxes", batch.count, KOKKOS_LAMBDA(Index k) {
         const Index face = batch.face(k);
-        if (!(roe_2d ? batch.compute_roe_2d<nodal_only, linear_width>(face) : batch.compute(face)))
+        if (!(face<batch.geometry.edges ? batch.compute_edge<roe_2d,nodal_only,linear_width>(face,lf_dim) : batch.compute_boundary(face)))
             Kokkos::atomic_fetch_min(bad, face);
     });
 }
@@ -230,7 +230,15 @@ void compute_unpacked_fluxes(const Execution& exec, FaceBatch batch, Index* bad)
         });
         return;
     }
-    if (batch.nodal_roe_2d())
+    // Как и на CPU, LF первого порядка получает состояния прямо из узлов.
+    // Постоянная размерность исключает реконструкцию из кода ядра этого запуска.
+    if (!batch.geometry.stencil.row_owner && batch.geometry.options.solver==ResidualSolver::LocalLF) {
+        switch (batch.geometry.dim) {
+        case 1: other_faces<false,true,0,1>(exec,batch,bad); break;
+        case 2: other_faces<false,true,0,2>(exec,batch,bad); break;
+        default: other_faces<false,true,0,3>(exec,batch,bad); break;
+        }
+    } else if (batch.nodal_roe_2d())
         other_faces<true, true>(exec, batch, bad);
     // У EBR3 и EBR5 различны только заранее рассчитанные веса. В 2D в узле четыре компоненты.
     else if (batch.linear_roe_2d())
@@ -263,10 +271,21 @@ template <unsigned width>
 void update_nodes(const Execution& exec, partition_detail::Grid g, explicit_detail::Stage stage,
                   double dt, bool save) {
     for_indices(exec, "Aero: owned nodes", g.owned_count, KOKKOS_LAMBDA(Index k) {
+#ifdef AERO_HAS_TURBULENCE
+        if (g.filtered_gas && g.filtered_gas->sa.active)
+            g.filtered_gas->sa.advance_explicit(k,stage,dt,save);
+#endif
         if (!partition_detail::update_node<width>(g.geometry, g.flux, g.volumes, g.owned, g.state,
-                                                  g.original, k, stage, dt, save))
+                                                  g.original, k, stage, dt, save)) {
             Kokkos::atomic_fetch_min(g.bad, Index(g.owned ? g.owned[k] : k));
-        else if (g.failed_count) {
+            return;
+        }
+#ifdef AERO_HAS_TURBULENCE
+        // update_node уже записал примитивные переменные нового слоя. Из них
+        // сразу готовим вязкость, пока давление и скорости находятся в кэше карты.
+        if (g.filtered_gas) g.filtered_gas->prepare_gas(k,g.state,g.geometry.packed.gas);
+#endif
+        if (g.failed_count) {
             const Index node = g.owned ? g.owned[k] : k;
             // На цельной сетке update_node уже получил давление и пометил недопустимый газ.
             const bool ok = !g.owned && g.geometry.packed.gas ? g.geometry.packed.gas[node].density > 0.
@@ -329,6 +348,19 @@ const char* aero_device_jacobi_apply(int device, const implicit::JacobiBlocks& i
             blocks.solve_node(node, residual, correction);
         });
     }, device);
+}
+const char* aero_device_pack_csgs(int device, const implicit::CsgsPacking& packing, const double* matrix) {
+    const auto plan=packing;
+    return on_device(nullptr,[&](const Execution& exec) {
+        for_indices(exec,"Aero: prepare CSGS coefficients",plan.count,KOKKOS_LAMBDA(Index p){plan.copy(p,matrix);});
+    },device);
+}
+const char* aero_device_csgs_image(int device,const implicit::CsgsSweep& input,MeshIndex count,double* image) {
+    const auto sweep=input;
+    return on_device(nullptr,[&](const Execution& exec) {
+        if (sweep.lanes==32) for_indices(exec,"Aero: CSGS matrix product",count,KOKKOS_LAMBDA(Index k){sweep.image<32>(k,image);});
+        else for_indices(exec,"Aero: CSGS matrix product",count,KOKKOS_LAMBDA(Index k){sweep.image<1>(k,image);});
+    },device);
 }
 const char* aero_device_csgs_color(int device, const implicit::CsgsSweep& sweep,
                                    MeshIndex first, MeshIndex count) {
@@ -434,6 +466,12 @@ const char* aero_device_krylov_update(int device, MeshIndex count, const implici
         for_indices(exec, "Aero: BiCGSTAB update", count, operation);
     }, device);
 }
+const char* aero_device_krylov_project(int device,MeshIndex count,const double* t,const double* r,double* pair) {
+    return on_device(nullptr,[&](const Execution& exec){ implicit::krylov_project(exec,count,t,r,pair); },device);
+}
+const char* aero_device_krylov_update_norm(int device,MeshIndex count,const implicit::KrylovUpdate& step,double* norm) {
+    return on_device(nullptr,[&](const Execution& exec){ *norm=implicit::krylov_update_norm(exec,count,step); },device);
+}
 const char* aero_device_krylov_reduce(int device, MeshIndex count, const double* x, const double* y, double* scalar) {
     return on_device(nullptr, [&](const Execution& exec) {
         *scalar = implicit::krylov_reduce(exec, count, x, y);
@@ -452,53 +490,111 @@ const char* aero_device_sample(const diagnostic::Sample& input,Index count) {
 }
 #ifdef AERO_HAS_VISCOSITY
 #ifdef AERO_HAS_TURBULENCE
+// Размерность известна всей задаче, поэтому выбираем ядро до обхода узлов.
+// Внутри остаётся только формула для нужного числа компонент скорости.
+template<unsigned dim,bool same_gas>
+void sa_rows(const Execution& exec,const turbulence::Transport& transport,bool save_rotation) {
+    for_indices(exec,"Aero: SA residual",transport.count,KOKKOS_LAMBDA(Index i) {
+        transport.residual_row<dim,same_gas>(i,save_rotation);
+    });
+}
+template<bool same_gas>
+void sa_residual(const Execution& exec,const turbulence::Step& step) {
+    switch (step.transport.dim) {
+    case 1: sa_rows<1,same_gas>(exec,step.transport,step.keep_gas); break;
+    case 2: sa_rows<2,same_gas>(exec,step.transport,step.keep_gas); break;
+    default: sa_rows<3,same_gas>(exec,step.transport,step.keep_gas); break;
+    }
+}
 const char* aero_device_sa_step(const turbulence::Step& input,turbulence::Operation op) {
     const auto step=input;
     return on_device(nullptr,[&](const Execution& exec){
-        if (op==turbulence::Operation::RepeatResidual) {
-            for_indices(exec,"Aero: SA element diffusivity",step.transport.cell_count,
-                        KOKKOS_LAMBDA(Index e){step.transport.refresh_diffusivity(e);});
+        if (op==turbulence::Operation::LineRelax && step.transport.sa.lines.count) {
+            for_indices(exec,"Aero: SA line relaxation",step.transport.sa.lines.count,KOKKOS_LAMBDA(Index k){step.relax_line(k);});
+            return;
         }
-        if (op==turbulence::Operation::Residual || op==turbulence::Operation::RepeatResidual) {
-            // Решение о пересчёте завихренности общее для всего запуска ядра.
-            if (op==turbulence::Operation::Residual)
-                for_indices(exec,"Aero: SA residual",step.transport.count,
-                    KOKKOS_LAMBDA(Index i){step.transport.residual<false>(i,step.keep_gas);});
-            else
-                for_indices(exec,"Aero: SA implicit residual",step.transport.count,
-                    KOKKOS_LAMBDA(Index i){step.transport.residual<true>(i,false);});
+        if (op==turbulence::Operation::Residual) {
+            sa_residual<false>(exec,step);
             return;
         }
         for_indices(exec,"Aero: SA transport",step.transport.count,KOKKOS_LAMBDA(Index i){step.apply(op,i);});
     });
 }
-const char* aero_device_sa_norm(const turbulence::Step& input,turbulence::Norm mode,double* result) {
+template<unsigned dim,bool refresh>
+double sa_norm(const Execution& exec,const turbulence::Step& step,turbulence::Norm mode) {
+    double norm=0.;
+    if (step.transport.count) {
+        using Range=Kokkos::RangePolicy<Execution,Kokkos::IndexType<Index>,Kokkos::LaunchBounds<128>>;
+        Kokkos::parallel_reduce("Aero: SA maximum",Range(exec,0,step.transport.count),
+            KOKKOS_LAMBDA(Index i,double& best) {
+                const double v=refresh ? step.updated_defect<dim,false>(i) : step.magnitude(mode,i);
+                if (v>best) best=v;
+            },Kokkos::Max<double>(norm));
+    }
+    return norm;
+}
+const char* aero_device_sa_norm(const turbulence::Step& input,turbulence::Norm mode,bool refresh,double* result) {
     const auto step=input;
     return on_device(nullptr,[&](const Execution& exec){
-        double norm=0.;
-        if(step.transport.count) {
-            using Range=Kokkos::RangePolicy<Execution,Kokkos::IndexType<Index>>;
-            Kokkos::parallel_reduce("Aero: SA maximum",Range(exec,0,step.transport.count),
-                KOKKOS_LAMBDA(Index i,double& best){const double v=step.magnitude(mode,i);if(v>best) best=v;},
-                Kokkos::Max<double>(norm));
+        if (!refresh) { *result=sa_norm<0,false>(exec,step,mode); return; }
+        for_indices(exec,"Aero: SA element diffusivity",step.transport.cell_count,
+                    KOKKOS_LAMBDA(Index e){step.transport.refresh_diffusivity(e);});
+        switch (step.transport.dim) {
+        case 1: *result=sa_norm<1,true>(exec,step,mode); break;
+        case 2: *result=sa_norm<2,true>(exec,step,mode); break;
+        default: *result=sa_norm<3,true>(exec,step,mode); break;
         }
-        *result=norm;
     });
+}
+#endif
+#ifdef AERO_HAS_TURBULENCE
+// Тип замыкания выбираем один раз на стадии, до запуска ядер Kokkos.
+template<bool ddes,unsigned dimension>
+void subgrid_on_device(const Execution& exec,const viscosity::Operator& g) {
+    if (dimension==3 && g.hex_filter.nodes)
+        for_indices(exec,"Aero: hexahedral filter",g.cell_count,KOKKOS_LAMBDA(Index e){g.sample_hex<ddes>(e);});
+    else if (dimension==3 && g.box_nodes)
+        for_indices(exec,"Aero: rectangular filter",g.cell_count,KOKKOS_LAMBDA(Index i){g.sample_les<ddes,3,true>(i);});
+    else
+        for_indices(exec,"Aero: element filter",g.cell_count,KOKKOS_LAMBDA(Index i){g.sample_les<ddes,dimension>(i);});
+    // Отдельный короткий обход оставляет регистры большого ядра SA свободными.
+    for_indices(exec,"Aero: nodal filter",g.row_count,KOKKOS_LAMBDA(Index i){g.gather_filter<ddes>(i);});
 }
 #endif
 const char* aero_device_viscosity(const viscosity::Operator& input, const double* state, const EulerState* cached,viscosity::Evaluation phase) {
     const auto g = input;
     return on_device(nullptr, [&](const Execution& exec) {
-        if (phase==viscosity::Evaluation::Full || phase==viscosity::Evaluation::BeforeSaIterations)
+        const viscosity::EvaluationPlan work(phase);
+        if (g.needs_gas(phase))
             for_indices(exec,"Aero: viscous gas",g.node_count,KOKKOS_LAMBDA(Index i) { g.prepare_gas(i,state,cached); });
 #ifdef AERO_HAS_TURBULENCE
-        if (phase==viscosity::Evaluation::AfterSaUpdate)
+        if (work.filter && !g.skip_ddes_filter) {
+            if (g.c_des==0.) subgrid_on_device<false,3>(exec,g);
+            else if (g.dim==3) subgrid_on_device<true,3>(exec,g);
+            else subgrid_on_device<true,0>(exec,g);
+        }
+        if (work.sa_material)
             for_indices(exec,"Aero: SA eddy viscosity",g.node_count,KOKKOS_LAMBDA(Index i){g.prepare_sa_material(i);});
 #endif
-        if (phase!=viscosity::Evaluation::RowsOnly)
-            for_indices(exec,"Aero: viscous material",g.cell_count,KOKKOS_LAMBDA(Index i) { g.average_material(i); });
-        if (phase!=viscosity::Evaluation::BeforeSaIterations)
+        if (work.cell_material) {
+#ifdef AERO_HAS_TURBULENCE
+            if (g.material_nodes) for_indices(exec,"Aero: turbulent material",g.cell_count,KOKKOS_LAMBDA(Index e){g.average_turbulent_material(e);});
+            else
+#endif
+                for_indices(exec,"Aero: viscous material",g.cell_count,KOKKOS_LAMBDA(Index e){g.average_material(e);});
+        }
+        if (!work.rows) return;
+        using Mode=viscosity::Operator::Gradients;
+        if (g.element_order) {
+            if (!work.reuse_gradients)
+                for_indices(exec,"Aero: AES gradients by element",g.vertex_count,KOKKOS_LAMBDA(Index k) { g.prepare_hex_gradient(k); });
+            for_indices(exec,"Aero: AES assembled gradients",g.row_count,KOKKOS_LAMBDA(Index n) { g.assemble_row<3,Mode::Element>(n); });
+        } else if (!g.gradient_cache)
             for_indices(exec,"Aero: AES edge contributions",g.row_count,KOKKOS_LAMBDA(Index i) { g.assemble(i); });
+        else if (work.reuse_gradients)
+            for_indices(exec,"Aero: AES fixed gas",g.row_count,KOKKOS_LAMBDA(Index i) { g.assemble<Mode::Reuse>(i); });
+        else
+            for_indices(exec,"Aero: AES save gradients",g.row_count,KOKKOS_LAMBDA(Index i) { g.assemble<Mode::Save>(i); });
     });
 }
 #endif

@@ -16,6 +16,7 @@
 #endif
 
 namespace aero {
+struct RunSettings;
 namespace residual_detail { struct FluxCfl; }
 // Пространственный оператор одной подобласти. Сетка и её владельцы живут дольше оператора.
 class PartitionOperator {
@@ -48,10 +49,10 @@ public:
     void connect(bool cuda, bool implicit_time);
 #ifdef AERO_HAS_VISCOSITY
     void prepare_viscosity(const MeshPartition&, const PeriodicPartition*, const ResidualFrame&,
-                           const ViscositySettings&, double mach, bool gpu);
+                           const RunSettings&);
 #ifdef AERO_HAS_TURBULENCE
     void prepare_sa(const MeshPartition&,const PeriodicPartition*,const BoundaryPatches&,
-                    const std::vector<PeriodicPair>&,const turbulence::Settings&,bool gpu,bool implicit);
+                    const std::vector<PeriodicPair>&,const turbulence::Settings&,bool gpu,bool implicit,bool steady);
     std::vector<double> sa_output(const std::vector<double>& state);
     void sa_checkpoint(std::vector<double>& current,std::vector<double>& previous,bool restore,double previous_dt);
 #endif
@@ -135,16 +136,20 @@ private:
     std::unique_ptr<viscosity::Aes> aes_;
 #endif
 #ifdef AERO_HAS_TURBULENCE
+    void update_les(const std::vector<double>& state, SolverTimings& timing,
+                    viscosity::Evaluation phase=viscosity::Evaluation::LesClosure);
+    bool les_active() const { return aes_ && aes_->view().les.scale!=turbulence::Scale::Off && !aes_->view().c_des; }
     bool sa_active() const { return aes_ && aes_->view().sa.active; }
     turbulence::Step sa_step() const;
     void sa_apply(const turbulence::Step&, turbulence::Operation) const;
-    double sa_max(const turbulence::Step&, turbulence::Norm) const;
+    double sa_max(const turbulence::Step&, turbulence::Norm,bool refresh=false) const;
     void sa_exchange();
-    void evaluate_sa(const std::vector<double>& state,SolverTimings& timing,bool rates_ready=false);
-    void solve_sa_stage(const std::vector<double>& state,bool rates_ready);
-    std::unique_ptr<PartitionTransfers> sa_nodes_; // Те же владельцы узлов, один скаляр на запись.
+    void evaluate_sa(const std::vector<double>& state,SolverTimings& timing,bool rates_ready=false,bool rows_ready=false);
+    void solve_sa_stage(const std::vector<double>& state,bool rates_ready,bool rows_ready);
+    std::unique_ptr<PartitionTransfers> turbulence_exchange_; // Те же владельцы узлов, один скаляр на запись.
     double sa_dt_ = 0., sa_previous_dt_ = 0., sa_target_ = 0., sa_tol_ = 0.;
     unsigned sa_iterations_ = 0;
+    bool sa_lines_ = false; // Один выбор пробной поправки на всех MPI-процессах.
     bool sa_bdf2_ = false, sa_implicit_time_ = false;
     bool sa_prediction_pending_ = false; // Газовый предиктор изменил газ при фиксированной nu_tilde.
 #endif

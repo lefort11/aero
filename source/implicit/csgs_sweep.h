@@ -4,38 +4,103 @@
 
 namespace aero {
 namespace implicit {
-// Адреса коэффициентов и порядок обхода для одного MPI-процесса.
-// Строка матрицы компактна, а столбец обозначает узел полного поля с соседями.
+// Номера записей строки в прямом и обратном проходах. На GPU соседние строки
+// читают одноимённые коэффициенты подряд, на CPU вся строка лежит непрерывно.
+struct CsgsRow {
+    MeshIndex first[2], count[2];
+};
+struct CsgsPacking {
+    const MeshIndex* source; // Адрес исходного блока CSR для каждой заполненной позиции.
+    double* values;
+    MeshIndex count;
+    unsigned width, lanes;
+
+    // Перекладываем только значения после сборки новой пространственной матрицы.
+    // Раскраска, соответствие соседей и разбиение по проходам от коэффициентов не зависят.
+    AERO_HOST_DEVICE void copy(MeshIndex pos, const double* matrix) const {
+        if (source[pos]==static_cast<MeshIndex>(-1)) return;
+        const unsigned size=width*width;
+        const auto first=(pos/lanes)*size*lanes+pos%lanes;
+        for (unsigned k=0;k<size;++k) values[first+k*lanes]=matrix[source[pos]*size+k];
+    }
+};
 struct CsgsSweep {
     JacobiBlocks diagonal;
-    const MeshIndex *rows, *columns;                             // Начала строк CSR и номера узлов столбцов.
-    const MeshIndex *sequence, *row_of_node, *position, *domain; // Таблицы CsgsOrder.
-    const double *blocks, *rhs;      // Коэффициенты плотных блоков и исходная правая часть.
-    const double* forward_with_halo; // Неизменный результат прямой подстановки после обмена.
-    double* output;
-    bool backward;
-    AERO_HOST_DEVICE void operator()(MeshIndex index) const {
-        const MeshIndex row = sequence[index];
-        const unsigned width = diagonal.width;
-        double balance[5];
-        for (unsigned k = 0; k < width; ++k)
-            balance[k] = rhs[row * width + k];
-        // На старте BiCGSTAB просит M^{-1}b. Начальное приближение равно нулю.
-        // Прямой проход использует только уже обработанных соседей своей подобласти.
-        for (MeshIndex p = rows[row] + 1; p < rows[row + 1]; ++p) {
-            const MeshIndex node = columns[p], other = row_of_node[node];
-            const bool local = other < diagonal.nodes && (!domain || domain[row] == domain[other]);
-            const bool updated = local && (backward ? position[other] > index : position[other] < index);
-            if (!updated && !backward) continue;
-            // В обратном проходе для соседей за границей подобласти и ещё не пройденных
-            // строк берём неизменную копию результата прямого прохода.
-            const double* x = updated ? output + other * width : forward_with_halo + node * width;
-            const double* block = blocks + p * width * width;
-            for (unsigned i = 0; i < width; ++i)
-                for (unsigned j = 0; j < width; ++j)
-                    balance[i] -= block[i * width + j] * x[j];
+    const CsgsRow* rows;
+    const MeshIndex *sequence, *neighbours;
+    const double *blocks, *rhs, *forward_with_halo;
+    double *output, *middle_rhs;
+    bool backward, external;
+    unsigned lanes;
+
+    template<unsigned width,unsigned stride>
+    AERO_HOST_DEVICE void solve_row(MeshIndex index) const {
+        const MeshIndex row=sequence[index], start=row*width;
+        // После прямого прохода уже известна правая часть b-L*y. Сохраняем её
+        // отдельно от y, чтобы в обратном проходе повторно не читать блоки L.
+        const double* original=backward ? middle_rhs : rhs;
+        double balance[width];
+        for (unsigned k=0;k<width;++k) balance[k]=original[start+k];
+
+        const auto range=rows[index];
+        auto pos=range.first[backward];
+        for (MeshIndex j=0;j<range.count[backward];++j,pos+=stride) {
+            const auto neighbour=neighbours[pos];
+            // Для чужой подобласти берём результат прямого прохода после обмена MPI.
+            // Младший бит хранит этот выбор, остальные — номер строки или узла ореола.
+            const double* field=(neighbour&1) ? forward_with_halo : output;
+            const double* x=field+(neighbour/2)*width;
+            const double* a=blocks+(pos/stride)*stride*width*width+pos%stride;
+            for (unsigned i=0;i<width;++i)
+                for (unsigned k=0;k<width;++k) balance[i]-=a[(i*width+k)*stride]*x[k];
         }
-        diagonal.solve_block(row, balance, output + row * width);
+        if (!backward)
+            for (unsigned k=0;k<width;++k) middle_rhs[start+k]=balance[k];
+        diagonal.solve_fixed<width>(row,balance,output+start);
+    }
+    // После прямой подстановки D*y = b−L*y, после обратной (D+U)*z = D*y−E*y.
+    // Поэтому A*z = b+(L+E)*(z−y). E связывает участки разных потоков CPU.
+    // Полная CSR-матрица остаётся эталоном для проверки линейной невязки.
+    template<unsigned width,unsigned stride>
+    AERO_HOST_DEVICE void image_row(MeshIndex index,double* image) const {
+        const auto row=sequence[index], start=row*width;
+        double sum[width];
+        for (unsigned k=0;k<width;++k) sum[k]=rhs[start+k];
+        const auto range=rows[index];
+        for (unsigned pass=0;pass<(external ? 2u : 1u);++pass) {
+            auto pos=range.first[pass];
+            for (MeshIndex j=0;j<range.count[pass];++j,pos+=stride) {
+                const auto neighbour=neighbours[pos];
+                if (pass && !(neighbour&1)) continue;
+                const auto n=neighbour/2*width;
+                const double* a=blocks+(pos/stride)*stride*width*width+pos%stride;
+                for (unsigned k=0;k<width;++k) {
+                    const double difference=output[n+k]-forward_with_halo[n+k];
+                    for (unsigned i=0;i<width;++i) sum[i]+=a[(i*width+k)*stride]*difference;
+                }
+            }
+        }
+        for (unsigned k=0;k<width;++k) image[start+k]=sum[k];
+    }
+    template<unsigned stride>
+    AERO_HOST_DEVICE void image(MeshIndex index,double* result) const {
+        switch (diagonal.width) {
+        case 3: return image_row<3,stride>(index,result);
+        case 4: return image_row<4,stride>(index,result);
+        default: return image_row<5,stride>(index,result);
+        }
+    }
+    template<unsigned stride>
+    AERO_HOST_DEVICE void solve(MeshIndex index) const {
+        switch (diagonal.width) {
+        case 3: return solve_row<3,stride>(index);
+        case 4: return solve_row<4,stride>(index);
+        default: return solve_row<5,stride>(index);
+        }
+    }
+    AERO_HOST_DEVICE void operator()(MeshIndex index) const {
+        if (lanes==32) solve<32>(index);
+        else solve<1>(index);
     }
 };
 }

@@ -2,6 +2,7 @@
 #include "../parallel/parallel_for.h"
 #ifdef AERO_WITH_KOKKOS_GPU
 #include "../parallel/device_work.h"
+#include "../parallel/device_check.h"
 #endif
 
 namespace aero {
@@ -9,14 +10,17 @@ using turbulence::Norm;
 using turbulence::Operation;
 void PartitionOperator::prepare_sa(const MeshPartition &part, const PeriodicPartition *periodic,
                                    const BoundaryPatches &patches, const std::vector<PeriodicPair> &pairs,
-                                   const turbulence::Settings &settings, bool gpu, bool implicit) {
+                                   const turbulence::Settings &settings, bool gpu, bool implicit, bool steady) {
     sa_implicit_time_ = implicit;
     aes_->turbulence_field.distance =
         turbulence::wall_distances(part, periodic, patches, pairs, world_, state_nodes());
+    // Для RANS на стационарном шаге можно один раз построить линии по геометрии сетки.
+    const bool use_lines = steady && !settings.ddes;
     world_.local([&] {
         aes_->prepare_sa_faces(grid_, !gpu);
-        aes_->prepare_turbulence(settings, !gpu);
+        aes_->prepare_turbulence(settings, !gpu, implicit, use_lines ? &owned : nullptr);
     });
+    sa_lines_ = use_lines && world_.reduce_double(aes_->turbulence_field.line_segments.empty() ? 0. : 1., true) > 0.;
 }
 turbulence::Step PartitionOperator::sa_step() const {
     turbulence::Step s{};
@@ -36,6 +40,7 @@ turbulence::Step PartitionOperator::sa_step() const {
     }
 #endif
     t.sa = aes.sa;
+    t.filter = aes.nodal_filter();
     t.gas_nodes = aes.gas;
     t.cells = aes.cells;
     t.cell_count = aes.cell_count;
@@ -87,74 +92,116 @@ void PartitionOperator::sa_apply(const turbulence::Step &s, Operation op) const 
         return;
     }
 #endif
-    if (op == Operation::RepeatResidual) {
-        parallel_for(s.transport.cell_count, [&](MeshIndex e) { s.transport.refresh_diffusivity(e); });
-        host_sa_residual<true>(s);
+    if (op==Operation::LineRelax && s.transport.sa.lines.count) {
+        parallel_for(s.transport.sa.lines.count,[&](MeshIndex k){s.relax_line(k);},64);
         return;
     }
     if (op == Operation::Residual) {
+        if (s.transport.sa.diffusion.vertex_contributions)
+            parallel_for(s.transport.cell_count,[&](MeshIndex e){s.transport.diffuse_element(e);});
         host_sa_residual<false>(s);
         return;
     }
     parallel_for(s.transport.count, [&](MeshIndex k) { s.apply(op, k); });
 }
-double PartitionOperator::sa_max(const turbulence::Step &s, Norm which) const {
+namespace {
+template<unsigned dim,bool refresh>
+double host_sa_norm(const turbulence::Step& s,Norm which) {
+    const auto magnitude=[&](MeshIndex k) {
+        return refresh ? s.updated_defect<dim,true>(k) : s.magnitude(which,k);
+    };
+    double value=0.;
+    if (s.transport.count<1024) {
+        for (MeshIndex i=0;i<s.transport.count;++i) value=std::max(value,magnitude(i));
+    } else {
+        host_parallel::ensure_runtime();
+        Kokkos::parallel_reduce("Aero: SA maximum",host_parallel::Range(0,s.transport.count),
+            [&](MeshIndex i,double& best) { best=std::max(best,magnitude(i)); },Kokkos::Max<double>(value));
+    }
+    return value;
+}
+}
+double PartitionOperator::sa_max(const turbulence::Step &s, Norm which,bool refresh) const {
     double value = 0.;
     world_.local([&] {
 #ifdef AERO_WITH_KOKKOS_GPU
         if (gpu_) {
-            if (const char *error = device_work::aero_device_sa_norm(s, which, &value))
+            if (const char *error = device_work::aero_device_sa_norm(s, which, refresh, &value))
                 throw std::runtime_error(error);
             return;
         }
 #endif
-        if (s.transport.count < 1024) {
-            for (MeshIndex i = 0; i < s.transport.count; ++i)
-                value = std::max(value, s.magnitude(which, i));
-        } else {
-            // Каждый поток хранит собственный максимум. В MPI наружу передаём одно число.
-            host_parallel::ensure_runtime();
-            Kokkos::parallel_reduce(
-                "Aero: SA maximum", host_parallel::Range(0, s.transport.count),
-                [&](MeshIndex i, double &best) { best = std::max(best, s.magnitude(which, i)); },
-                Kokkos::Max<double>(value));
+        if (!refresh) { value=host_sa_norm<0,false>(s,which); return; }
+        parallel_for(s.transport.cell_count,[&](MeshIndex e){s.transport.refresh_diffusivity<true>(e);});
+        switch (s.transport.dim) {
+        case 1: value=host_sa_norm<1,true>(s,which); break;
+        case 2: value=host_sa_norm<2,true>(s,which); break;
+        default: value=host_sa_norm<3,true>(s,which); break;
         }
     });
     return world_.reduce_double(value, true);
 }
+// Замыкание пересчитываем из текущего поля на каждой стадии и итерации Ньютона.
+void PartitionOperator::update_les(const std::vector<double>& state, SolverTimings& timing,
+                                   viscosity::Evaluation phase) {
+    auto* seconds=timing.counter(SolverTimings::LesClosure);
+#ifdef AERO_WITH_KOKKOS_GPU
+    if (gpu_ && seconds) PartitionGpu::synchronize();
+#endif
+    WallTimer timer(seconds);
+    double* nu=nullptr;
+    world_.local([&] {
+#ifdef AERO_WITH_KOKKOS_GPU
+        if (gpu_) {
+            const auto op=gpu_->viscosity_view();
+            device_work::check(device_work::aero_device_viscosity(op,gpu_->active_grid().state,
+                gpu_->current_gas(),gpu_->stage_material_current() && phase==viscosity::Evaluation::LesClosure
+                                     ? viscosity::Evaluation::FilterOnly : phase));
+            nu=op.eddy_nu;
+            return;
+        }
+#endif
+        aes_->evaluate(state.data(),nullptr,gas_current_ && grid_.packed.gas,phase);
+        nu=aes_->view().eddy_nu;
+    });
+    if (world_.size>1 && !aes_->view().c_des) turbulence_exchange_->transfer(world_,{1,nu,nullptr},device());
+#ifdef AERO_WITH_KOKKOS_GPU
+    if (gpu_ && seconds) PartitionGpu::synchronize();
+#endif
+}
 void PartitionOperator::sa_exchange() {
-    if (sa_nodes_)
-        sa_nodes_->transfer(world_, {1, sa_step().transport.sa.w, nullptr}, device());
+    if (turbulence_exchange_)
+        turbulence_exchange_->transfer(world_, {1, sa_step().transport.sa.w, nullptr}, device());
 }
 // При включённых замерах отделяем ядра SA от асинхронной сборки газового потока.
-void PartitionOperator::evaluate_sa(const std::vector<double> &state, SolverTimings &timing, bool rates_ready) {
+void PartitionOperator::evaluate_sa(const std::vector<double> &state, SolverTimings &timing, bool rates_ready, bool rows_ready) {
     auto *seconds = timing.counter(SolverTimings::SaTransport);
 #ifdef AERO_WITH_KOKKOS_GPU
     if (gpu_ && seconds)
         PartitionGpu::synchronize();
 #endif
     WallTimer timer(seconds);
-    solve_sa_stage(state, rates_ready);
+    solve_sa_stage(state, rates_ready, rows_ready);
 #ifdef AERO_WITH_KOKKOS_GPU
     if (gpu_ && seconds)
         PartitionGpu::synchronize();
 #endif
 }
-void PartitionOperator::solve_sa_stage(const std::vector<double> &state, bool rates_ready) {
+void PartitionOperator::solve_sa_stage(const std::vector<double> &state, bool rates_ready, bool rows_ready) {
     // Для явной стадии достаточно пространственной невязки. В BDF уточняем рабочую
     // вязкость при фиксированном газе до проверки полной невязки нового слоя.
-    const auto s = sa_step();
+    auto s = sa_step();
     if (!rates_ready)
         world_.local([&] { sa_apply(s, Operation::Residual); });
     if (!sa_dt_)
         return;
-    const auto residual_norm = [&] {
-        const double value = sa_max(s, Norm::Bdf);
-        if (!std::isfinite(value))
+    const auto residual_norm = [&](bool refresh) {
+        const double value = sa_max(s, Norm::Bdf, refresh);
+        if (!s.extrapolate && !std::isfinite(value))
             throw std::runtime_error("SA: nonfinite implicit transport residual");
         return value;
     };
-    double norm = residual_norm();
+    double norm = residual_norm(false);
     if (sa_target_ == 0.)
         sa_target_ =
             std::max(sa_tol_ * norm, 32. * std::numeric_limits<double>::epsilon() * s.transport.sa.ambient);
@@ -162,17 +209,33 @@ void PartitionOperator::solve_sa_stage(const std::vector<double> &state, bool ra
     // При достижении допуска или лимита используем текущее поле рабочей вязкости.
     // Ниже по этому полю обновляются напряжения и тепловой поток газа.
     while (norm > sa_target_ && count < sa_iterations_) {
-        world_.local([&] { sa_apply(s, Operation::Relax); });
+        const double previous_norm=norm;
+        // На небольшом псевдошаге нескольких точечных поправок обычно достаточно.
+        // Прогонку запускаем, только если после четырёх итераций перенос ещё не сошёлся.
+        const bool line_trial=sa_lines_ && count>=4;
+        s.extrapolate=line_trial || (count%2==1 && count+1<sa_iterations_);
+        world_.local([&] { sa_apply(s,line_trial ? Operation::LineRelax : Operation::Relax); });
         sa_exchange();
-        world_.local([&] { sa_apply(s, Operation::RepeatResidual); });
-        norm = residual_norm();
+        norm = residual_norm(true);
+        // Проверяем настоящую нелинейную невязку по всем процессам. Если
+        // ускоренная поправка её не уменьшила, принимаем обычную итерацию.
+        if (s.extrapolate && !(norm<previous_norm)) {
+            s.extrapolate=false;
+            world_.local([&] { sa_apply(s,Operation::RestorePlain); });
+            sa_exchange();
+            norm=residual_norm(true);
+        }
         ++count;
     }
     // При нуле итераций скалярное поле осталось тем же. Газовая сборка на входе
     // уже использовала эту вязкость и повторять её не требуется.
-    if (count == 0 && rates_ready)
+    // Пробная поправка Ньютона тоже уже содержит полную вязкую невязку
+    // данного газа. Если SA приняла старое nu_tilde, эти строки остаются точными.
+    if (count == 0 && (rows_ready || rates_ready))
         return;
-    const auto phase = count ? viscosity::Evaluation::AfterSaUpdate : viscosity::Evaluation::RowsOnly;
+    const bool same_gas=rows_ready || rates_ready;
+    const auto phase = !count ? viscosity::Evaluation::RowsOnly :
+        (same_gas ? viscosity::Evaluation::AfterSaFixedGas : viscosity::Evaluation::AfterSaUpdate);
     world_.local([&] {
 #ifdef AERO_WITH_KOKKOS_GPU
         if (gpu_) {
@@ -187,6 +250,21 @@ void PartitionOperator::solve_sa_stage(const std::vector<double> &state, bool ra
     });
 }
 std::vector<double> PartitionOperator::sa_output(const std::vector<double> &state) {
+    if (les_active()) {
+        std::vector<double> columns(2*state_nodes(),0.);
+        // При плоском течении поле ν_t известно точно, отдельного массива на GPU нет.
+        if (!aes_->view().computes_les()) return columns;
+        std::vector<double> values(state_nodes());
+#ifdef AERO_WITH_KOKKOS_GPU
+        if (gpu_) {
+            if (!values.empty()) gpu::checked(gpu::copy(values.data(),gpu_->viscosity_view().eddy_nu,
+                values.size()*sizeof(double),gpu::Copy::ToHost));
+        } else
+#endif
+        if (!values.empty()) std::copy_n(aes_->view().eddy_nu,values.size(),values.data());
+        for (size_t i=0;i<values.size();++i) columns[2*i+1]=values[i];
+        return columns;
+    }
     std::vector<double> w, previous;
     sa_checkpoint(w, previous, false, 0.);
     std::vector<double> columns(2 * w.size());

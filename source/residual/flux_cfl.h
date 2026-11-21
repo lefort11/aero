@@ -26,14 +26,15 @@ struct FluxCfl {
     const double* volumes;
     const MeshIndex* owned;
     Index count;
+    const double* sa_rate; // Диагональ переноса SA, в единицах обратного времени.
     FluxCfl(const Geometry& grid, const EulerFluxResult* flux, const double* node_volumes,
-            const MeshIndex* owned_nodes, Index rows)
+            const MeshIndex* owned_nodes, Index rows, const double* transport_rate = nullptr)
         : offsets(grid.offsets), speeds{grid.incidence, grid.surfaces, flux},
 #ifdef AERO_HAS_VISCOSITY
           diffusion(grid.options.diffusion),
 #endif
           volumes(node_volumes),
-          owned(owned_nodes), count(rows) {}
+          owned(owned_nodes), count(rows), sa_rate(transport_rate) {}
     AERO_HOST_DEVICE CflStep local(Index k, double courant) const {
         const Index i = owned ? owned[k] : k;
         const double volume = volumes[i];
@@ -44,7 +45,15 @@ struct FluxCfl {
 #ifdef AERO_HAS_VISCOSITY
         if (diffusion) viscous_rate = diffusion[i].cfl_rate;
 #endif
-        return cfl_detail::local(offsets, volume, courant, i, speeds, viscous_rate);
+        const auto gas_step = cfl_detail::local(offsets, volume, courant, i, speeds, viscous_rate);
+        if (!sa_rate) return gas_step;
+        // Ограничения газа и SA действуют на один шаг. Сравниваем их до
+        // редукции, чтобы одного обхода узлов и одного минимума MPI хватило для обоих.
+        const double rate = sa_rate[i];
+        if (!(rate >= 0. && rate <= max_finite_double)) return {-1., i};
+        if (rate == 0.) return gas_step;
+        const double transport_dt = courant / rate;
+        return cfl_detail::minimum(gas_step, {transport_dt, i});
     }
 };
 // Один обход сохраняет шаг каждого владельца и собирает границы диапазона для отчёта.
@@ -54,7 +63,6 @@ struct LocalSteadySteps {
     using value_type = StepRange;
     FluxCfl gas;
     double courant;
-    const double* sa_rate; // Диагональная оценка SA в единицах обратного времени.
     double* steps;         // Общий шаг газа и SA в нумерации узлов подобласти.
 
     AERO_HOST_DEVICE void init(StepRange& range) const { range = {max_finite_double, 0.}; }
@@ -65,11 +73,6 @@ struct LocalSteadySteps {
     AERO_HOST_DEVICE void operator()(Index row, StepRange& range) const {
         const Index node = gas.owned ? gas.owned[row] : row;
         double dt = gas.local(row, courant).dt;
-        if (sa_rate) {
-            const double rate = sa_rate[node];
-            if (!(rate >= 0. && rate <= max_finite_double)) dt = -1.;
-            else if (rate > 0.) dt = ::fmin(dt, courant / rate);
-        }
         if (!(dt > 0. && dt < max_finite_double)) dt = -1.;
         steps[node] = dt;
         if (dt < range.minimum) range.minimum = dt;

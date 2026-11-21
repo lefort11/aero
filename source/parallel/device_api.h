@@ -20,7 +20,7 @@ namespace aero {
 #ifdef AERO_HAS_VISCOSITY
 namespace viscosity { struct Jacobian; }
 #endif
-namespace implicit { struct CsgsSweep; struct JacobiBlocks; struct SpatialBlocks; struct KrylovUpdate; struct NewtonUpdate; }
+namespace implicit { struct CsgsSweep; struct CsgsPacking; struct JacobiBlocks; struct SpatialBlocks; struct KrylovUpdate; struct NewtonUpdate; }
 namespace device_work {
 extern "C" {
 AERO_DEVICE_ENTRY void aero_device_shutdown();
@@ -32,6 +32,8 @@ AERO_DEVICE_ENTRY const char* aero_device_jacobi_factor(int device, const implic
                                                        const double* diagonal, const MeshIndex* row_starts, MeshIndex* first_bad);
 AERO_DEVICE_ENTRY const char* aero_device_jacobi_apply(int device, const implicit::JacobiBlocks&,
                                                       const double* residual, double* correction);
+AERO_DEVICE_ENTRY const char* aero_device_pack_csgs(int device, const implicit::CsgsPacking&, const double* matrix);
+AERO_DEVICE_ENTRY const char* aero_device_csgs_image(int device,const implicit::CsgsSweep&,MeshIndex count,double* image);
 AERO_DEVICE_ENTRY const char* aero_device_csgs_color(int device, const implicit::CsgsSweep&,
                                                     MeshIndex first, MeshIndex count);
 #ifdef AERO_HAS_VISCOSITY
@@ -47,6 +49,8 @@ AERO_DEVICE_ENTRY const char* aero_device_spatial_apply(int device, const implic
                                                const double* vector, double* product);
 AERO_DEVICE_ENTRY const char* aero_device_krylov_update(int device, MeshIndex count, const implicit::KrylovUpdate&);
 AERO_DEVICE_ENTRY const char* aero_device_newton_update(int device, MeshIndex nodes, const implicit::NewtonUpdate&);
+AERO_DEVICE_ENTRY const char* aero_device_krylov_project(int device,MeshIndex count,const double* t,const double* r,double* pair);
+AERO_DEVICE_ENTRY const char* aero_device_krylov_update_norm(int device,MeshIndex count,const implicit::KrylovUpdate&,double* norm);
 AERO_DEVICE_ENTRY const char* aero_device_krylov_reduce(int device, MeshIndex count, const double* x,
                                                         const double* y, double* scalar);
 }

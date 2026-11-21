@@ -34,12 +34,6 @@ void validate(ResidualOptions o) {
     if (o.solver != ResidualSolver::Roe && o.solver != ResidualSolver::LocalLF)
         throw std::invalid_argument("residual: invalid solver");
 }
-double dot(CvVector a, CvVector b) {
-    return a.x * b.x + a.y * b.y + a.z * b.z;
-}
-double length(CvVector a) {
-    return std::hypot(std::hypot(a.x, a.y), a.z);
-}
 }
 void residual_detail::validate_linear_walls(const Geometry& g) {
     const auto& background = g.options.background;
@@ -56,19 +50,19 @@ void residual_detail::validate_linear_walls(const Geometry& g) {
     }
 }
 void residual_detail::project_surface(Surface& s, CvVector world, unsigned d, const ResidualFrame& frame) {
-    s.measure = length(world);
+    s.measure = world.length();
     if (!(s.measure > 0 && std::isfinite(s.measure)))
         throw std::invalid_argument("residual: invalid area");
     CvVector remainder = world;
     for (unsigned k = 0; k < d; ++k) {
         const auto axis = frame.axis[k];
-        const double a = dot(world, axis);
+        const double a = world.dot(axis);
         s.area[k] = a;
         remainder.x -= a * axis.x;
         remainder.y -= a * axis.y;
         remainder.z -= a * axis.z;
     }
-    if (!(length(remainder) <= 1.e-10 * s.measure))
+    if (!(remainder.length() <= 1.e-10 * s.measure))
         throw std::invalid_argument("residual: area outside the supplied momentum frame");
 }
 namespace {
@@ -261,7 +255,7 @@ struct SpatialResidual::Impl {
             throw std::invalid_argument("residual: incompatible grid or stencil");
         for (unsigned i = 0; i < d; ++i)
             for (unsigned j = 0; j <= i; ++j)
-                if (!(std::abs(dot(frame.axis[i], frame.axis[j]) - (i == j ? 1 : 0)) < 1.e-12))
+                if (!(std::abs(frame.axis[i].dot(frame.axis[j]) - (i == j ? 1 : 0)) < 1.e-12))
                     throw std::invalid_argument("residual: invalid momentum frame");
         surfaces.resize(edges + pieces);
         std::vector<unsigned char> inlet_outlet_node(nodes, 0);

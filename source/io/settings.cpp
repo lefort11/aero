@@ -407,10 +407,32 @@ RunSettings read_run_settings(const RunDirectories& directories) {
             if (linear || run.viscosity.law == "off")
                 throw std::invalid_argument("Turbulence = On requires Equations = Euler and viscosity = normal or sutherland");
             Entries model(directories, "turbulence");
-            choice(lowercase(model.take("model")), {"rans"});
-            choice(lowercase(model.take("rans_eq")), {"sa"});
             run.turbulence.enabled = true;
-            run.turbulence.nut_nu_amb = number(model.take("nut_nu_amb"), true);
+            const auto kind=choice(lowercase(model.take("model")), {"rans","les","ddes"});
+            run.turbulence.ddes=kind=="ddes";
+            if (kind=="les") choice(lowercase(model.take("les_eq")), {"sigma"});
+            if (kind!="rans") {
+                auto& les = run.turbulence.les;
+                const auto scale = lowercase(model.take("subgridscale"));
+                using turbulence::Scale;
+                const auto name = scale.value=="delta_omega^tilde" ? "delta_omega_tilde" : scale.value;
+                for (Scale candidate : {Scale::Max,Scale::Min,Scale::Vol,Scale::Omega,Scale::OmegaTilde,Scale::Sla})
+                    if (name==turbulence::scale_name(candidate)) les.scale=candidate;
+                if (les.scale==Scale::Off) throw std::invalid_argument(scale.where + ": unknown subgridscale " + scale.value);
+                if (kind=="les" && model.contains("c_sigma")) les.c_sigma = number(model.take("c_sigma"),false);
+                if (model.contains("switch_on_vtm"))
+                    les.switch_on_vtm = choice(lowercase(model.take("switch_on_vtm")), {"on","off"}) == "on";
+                if (model.contains("F_KH_lim")) {
+                    les.f_kh_lim = number(model.take("F_KH_lim"),true);
+                    if (les.f_kh_lim>1.) throw std::invalid_argument("turbulence.txt: F_KH_lim must be in [0,1]");
+                }
+            }
+            if (kind!="les") {
+                if (run.turbulence.ddes && model.contains("c_des"))
+                    run.turbulence.c_des=number(model.take("c_des"),false);
+                choice(lowercase(model.take("rans_eq")), {"sa"});
+                run.turbulence.nut_nu_amb = number(model.take("nut_nu_amb"), true);
+            }
             if (model.contains("pr_t")) run.turbulence.prandtl = number(model.take("pr_t"), false);
             model.finish(&run.input_warnings);
 #else
@@ -444,6 +466,12 @@ RunSettings read_run_settings(const RunDirectories& directories) {
     run.boundary_path = resolve(directories.input, "bc.txt");
     run.output_zones = read_output_zones(resolve(directories.input, "output.txt"), &run.input_warnings);
 #ifdef AERO_HAS_TURBULENCE
+    if (run.turbulence.uses_sigma()) {
+        for (auto& zone:run.output_zones) for (auto& field:zone.variables) {
+            if (field=="nu_tilde") throw std::invalid_argument("output.txt: nu_tilde requires RANS SA or DDES SA");
+            if (field=="turbulence") field="nut";
+        }
+    }
     if (!run.turbulence.enabled) for (const auto& zone:run.output_zones)
         for (const auto& field:zone.variables) if(diagnostic::turbulent(field))
             throw std::invalid_argument("output.txt: "+field+" requires Turbulence = On");
