@@ -48,6 +48,7 @@ AERO_DEVICE_ENTRY const char* aero_device_time_diagonal(int device, const implic
 AERO_DEVICE_ENTRY const char* aero_device_spatial_apply(int device, const implicit::SpatialBlocks&,
                                                const double* vector, double* product);
 AERO_DEVICE_ENTRY const char* aero_device_krylov_update(int device, MeshIndex count, const implicit::KrylovUpdate&);
+AERO_DEVICE_ENTRY const char* aero_device_newton_residual(int device, MeshIndex rows, const implicit::NewtonUpdate&, double* norm);
 AERO_DEVICE_ENTRY const char* aero_device_newton_update(int device, MeshIndex nodes, const implicit::NewtonUpdate&);
 AERO_DEVICE_ENTRY const char* aero_device_krylov_project(int device,MeshIndex count,const double* t,const double* r,double* pair);
 AERO_DEVICE_ENTRY const char* aero_device_krylov_update_norm(int device,MeshIndex count,const implicit::KrylovUpdate&,double* norm);

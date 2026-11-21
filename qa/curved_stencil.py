@@ -8,7 +8,7 @@ from mpi_geometry import run
 from mpi_fields import binary_snapshot
 
 
-def annulus(path, angles, layers, planes=1):
+def annulus(path, angles, layers, planes=1, hexahedra=False):
     """Кольцо из четырёхугольников в 2D или призматические слои от цилиндра в 3D."""
     dimension = 2 if planes == 1 else 3
     stride = angles * planes
@@ -56,6 +56,13 @@ def annulus(path, angles, layers, planes=1):
                 if planes == 1:
                     corners = (a, a+stride, b+stride, b)
                     cell(zip(corners, corners[1:]+corners[:1]))
+                elif hexahedra:
+                    # Четыре вершины внутреннего основания и четыре внешнего.
+                    # Сохраняем противоположную ориентацию общей грани в соседях.
+                    inner = (a, b, b+angles, a+angles)
+                    outer = tuple(n+stride for n in inner)
+                    sides = [(l, m, m+stride, l+stride) for l, m in zip(inner, inner[1:]+inner[:1])]
+                    cell([inner[::-1], outer, *sides])
                 else:
                     for l, m, n in ((a, b, b+angles), (a, b+angles, a+angles)):
                         cell(((l,n,m), (l+stride,m+stride,n+stride), (l,m,m+stride,l+stride),
@@ -74,8 +81,8 @@ def annulus(path, angles, layers, planes=1):
                     + row("BOUNDARY_PATCH",patches) + row("PATCH_NAMES",labels) + "END\n")
 
 
-def setup(case, angles, layers, end, planes=1):
-    annulus(case/"grid.mesh", angles, layers, planes)
+def setup(case, angles, layers, end, planes=1, hexahedra=False):
+    annulus(case/"grid.mesh", angles, layers, planes, hexahedra)
     (case/"main.txt").write_text(f"mesh=grid.mesh\nreconstruction=weno5\nreconstruction_variables=conservative\n"
                                  f"time_scheme=ssprk3\neuler_solver=roe\ncfl=.45\nbackend=cpu\nomp_threads=2\n"
                                  f"mpi_timing=1\nfinal_time={end}\nexact_solution=formula\n")
@@ -105,15 +112,38 @@ def compare(ref, actual):
                 raise AssertionError(f"{name}: {x} != {y}")
 
 
+def packed_edges(case, aero):
+    """Упаковка включается на достаточно большой сетке; сравниваем её с разреженным путём CPU."""
+    case.mkdir()
+    setup(case, 192, 24, .008)
+    solver = [aero, f"--input={case}"]
+    for variables in ("flux", "conservative"):
+        for scheme in ("weno3", "weno5", "mp5", "MPWENO5"):
+            # Начало с первого порядка проверяет переключение уже подготовленного пакета.
+            for hybrid in ((0, 1) if scheme in ("mp5", "MPWENO5") else (0,)):
+                options = [f"main:reconstruction={scheme}", f"main:reconstruction_variables={variables}",
+                           "main:t_fo=.001", "scheme:stencil_geometry=ijk", f"scheme:mp6_hybrid={hybrid}"]
+                reference = case/f"{scheme}-{variables}-{hybrid}-cpu"
+                device = case/f"{scheme}-{variables}-{hybrid}-gpu"
+                run([*solver, f"--output={reference}", *options])
+                run([*solver, f"--output={device}", *options, "main:backend=cuda"])
+                compare(reference, device)
+            print(f"PASS packed {scheme} {variables}", flush=True)
+
+
 def main():
     parser = mpi_parser(__doc__)
     parser.add_argument("--gpu", action="store_true", help="also test the selected visible GPU")
+    parser.add_argument("--packed", action="store_true", help="compare packed GPU reconstructions with CPU")
     args = parser.parse_args()
     with mpi_workspace("curved-") as work:
-        for planes in (1, 5):
-            case = Path(work)/f"planes-{planes}"
+        if args.packed:
+            packed_edges(Path(work)/"packed", args.aero)
+            return
+        for label, planes, hexahedra in (("2d", 1, False), ("prisms", 5, False), ("hexes", 5, True)):
+            case = Path(work)/label
             case.mkdir()
-            setup(case, 48 if planes == 1 else 24, 6, .015, planes)
+            setup(case, 48 if planes == 1 else 24, 6, .015, planes, hexahedra)
             run([args.meshdec,case/"grid.mesh",case/"grid.mdec","--target-ranks=2"])
             for mode in ("straight","ijk","pl","auto"):
                 (case/"scheme.txt").write_text(f"stencil_geometry={mode}\nstencil_max_angle=36\n")
@@ -127,7 +157,7 @@ def main():
                     device = case/(mode+"-gpu")
                     run([*solver,f"--output={device}","main:backend=cuda"])
                     compare(reference, device)
-                print(f"PASS annulus {mode}, planes={planes}", flush=True)
+                print(f"PASS annulus {mode}, grid={label}", flush=True)
 
 
 if __name__ == "__main__":

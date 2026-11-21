@@ -45,8 +45,8 @@ struct FaceMomentumAxes {
 // left и right на входе содержат обычные декартовы приращения MP5 или MPWENO5.
 // Рассчитываем добавку к ним в осях грани. Для состояния общий вес относится
 // к плотности, нормальному импульсу и энергии. Для потока — к потокам этих величин.
-template <bool weno>
-AERO_HOST_DEVICE inline void correct_cartesian_pair(const FaceMomentumAxes& axes, const double slopes[5][5],
+template <bool weno, unsigned width>
+AERO_HOST_DEVICE inline void correct_cartesian_pair(const FaceMomentumAxes& axes, const double slopes[][width],
                                                    Mp5Settings settings, double h, double* left, double* right) {
     double local_slopes[5][5], local_left[5], local_right[5];
     for (unsigned row = 0; row < 5; ++row)

@@ -35,7 +35,7 @@ IMPLICIT_TEST_SOURCES += source/implicit/spatial_jacobian_tests.cpp
 IMPLICIT_TEST_SOURCES += source/implicit/bdf1_linear_tests.cpp
 IMPLICIT_TEST_SOURCES += source/implicit/bdf1_step_tests.cpp
 $(IMPLICIT_TEST): $(BICGSTAB_HEADERS)
-$(IMPLICIT_TEST): qa/test_field.h $(SPATIAL_HEADERS) $(RES_LIB) $(RES_DEPS)
+$(IMPLICIT_TEST): qa/test_mesh.h qa/test_field.h $(SPATIAL_HEADERS) $(RES_LIB) $(RES_DEPS)
 $(IMPLICIT_TEST): $(IMPLICIT_TEST_SOURCES) source/implicit/lf_edge_jacobian.h source/eulersolver/euler.h source/eulersolver/lax_friedrichs.h qa/device_cases.h qa/test_checks.h qa/device_test_buffer.h $(IMPLICIT_HEADERS) $(IMPLICIT_LIBRARY) $(IMPLICIT_GPU_DEPS)
 	$(call action,Compiling and linking,$@)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(IMPLICIT_TEST_FLAGS) $(IMPLICIT_TEST_SOURCES) $(IMPLICIT_LIBRARY) $(RES_LIB) $(RES_DEPS) $(LDFLAGS) $(IMPLICIT_TEST_LIBS) $(LDLIBS) -o $@

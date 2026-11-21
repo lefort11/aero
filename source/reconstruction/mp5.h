@@ -90,8 +90,12 @@ AERO_HOST_DEVICE inline double curvature(double a, double b) {
 // Пересекаем два допустимых интервала и ограничиваем удвоенное приращение.
 struct Bounds {
     double low, high;
-    // Оба конца MP-интервала включают ноль. Интервал фиксирует значение,
-    // только когда оба его конца равны нулю, включая два представления ±0.
+    // Включает принятое приращение своей стороны в интервал для следующей поправки.
+    AERO_HOST_DEVICE void include(double accepted) {
+        low = ::fmin(low, accepted);
+        high = ::fmax(high, accepted);
+    }
+    // Оба конца интервала включают ноль. Если оба равны нулю, значение фиксировано.
     template <bool packed = false> AERO_HOST_DEVICE bool fixed() const {
 #ifndef KOKKOS_ACTIVE_EXECUTION_MEMORY_SPACE_HOST
         if (packed) {

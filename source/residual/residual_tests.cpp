@@ -1,3 +1,4 @@
+#include "../../qa/test_mesh.h"
 #include "residual_detail.h"
 #include "flux_cfl.h"
 #include "../../qa/test_checks.h"
@@ -11,6 +12,7 @@
 #include <array>
 #include <cmath>
 #include <iostream>
+#include <sstream>
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -25,8 +27,12 @@ namespace {
 using Values = std::vector<double>;
 using aero_test::require;
 void near(double a, double b) {
-    if (!(std::abs(a - b) <= 3e-11 * (1 + std::abs(b))))
-        throw std::runtime_error("numerical mismatch: " + std::to_string(a) + " versus " + std::to_string(b));
+    if (!(std::abs(a - b) <= 3e-11 * (1 + std::abs(b)))) {
+        std::ostringstream message;
+        message.precision(17);
+        message << "numerical mismatch: " << a << " versus " << b;
+        throw std::runtime_error(message.str());
+    }
 }
 struct Result {
     Values r, edge, bc;
@@ -130,7 +136,7 @@ void mixed_face_list(int device) {
     g.faces = 3;
     g.options = residual_options("conservative", "lf", 1.4);
     g.surfaces = surfaces;
-    g.patches = {&wall, nullptr, 1, 0};
+    g.patches = {&wall, nullptr, 1, 0, nullptr, 0};
     batch.count = 2;
     batch.indices = selected;
     batch.state = state;
@@ -376,7 +382,7 @@ Result reference(const Mesh& mesh, CvView cv, const ReconstructionStencil& stenc
     return out;
 }
 void edge_modes(int device) {
-    const Mesh mesh = Mesh::read("examples/tecplot/demo_1d.mesh");
+    const Mesh mesh = aero_test::test_mesh(1);
     const auto m = mesh.view();
     MedianDual dual(mesh);
     const auto cv = dual.view();
@@ -402,7 +408,13 @@ void edge_modes(int device) {
                     SpatialResidual op(m, cv, stencil, bc, o, device);
                     Result result(u.size(), cv.edge_count, cv.boundary_count);
                     evaluate(device, op, u, result);
-                    compare(result, reference(mesh, cv, stencil, o, u, bc));
+                    try {
+                        compare(result, reference(mesh, cv, stencil, o, u, bc));
+                    } catch (const std::runtime_error& error) {
+                        throw std::runtime_error(std::string(error.what()) + " in edge_modes, scheme=" +
+                            std::to_string(static_cast<int>(scheme)) + ", " + vars + ", " + solver +
+                            ", upw=" + std::to_string(weight) + ", device=" + std::to_string(device));
+                    }
                     if (weight != 1. || (scheme != ReconstructionScheme::Mp5 &&
                                          scheme != ReconstructionScheme::MPWENO5))
                         continue;
@@ -456,7 +468,7 @@ void oblique_mp_limit() {
 // Поворачиваем сетку, чтобы ни один из плоских координатных импульсов
 // нельзя было целиком принять за нормальный или касательный к ребру.
 void cartesian_hybrid_limit(unsigned d, int device) {
-    MeshData data = Mesh::read("examples/tecplot/demo_" + std::to_string(d) + "d.mesh").data();
+    MeshData data = aero_test::test_mesh(d).data();
     for (size_t i = 0; i < data.x.size(); ++i) {
         const double x = data.x[i], y = data.y[i];
         data.x[i] = .8*x - .6*y;
@@ -495,7 +507,12 @@ void cartesian_hybrid_limit(unsigned d, int device) {
                 compare(base, run(0., -1));
             // Малый положительный h проходит весь гибридный путь. Невязка и
             // скорости распространения должны сходиться к обычной схеме.
-            compare(run(1.e-14, device), base);
+            try {
+                compare(run(1.e-14, device), base);
+            } catch (const std::runtime_error& error) {
+                throw std::runtime_error(std::string(error.what()) + " at mp6_hybrid=1e-14, " +
+                    std::to_string(d) + "D " + variables + ", scheme=" + std::to_string(static_cast<int>(scheme)));
+            }
             const Result full = run(1., device);
             require(full.r != base.r, "No active MP6 correction on the rotated mesh");
             if (device >= 0)
@@ -505,7 +522,7 @@ void cartesian_hybrid_limit(unsigned d, int device) {
 }
 
 void constant_test(unsigned d, int device) {
-    const Mesh mesh = Mesh::read("examples/tecplot/demo_" + std::to_string(d) + "d.mesh");
+    const Mesh mesh = aero_test::test_mesh(d);
     const auto m = mesh.view();
     MedianDual dual(mesh);
     const auto cv = dual.view();
@@ -565,7 +582,7 @@ void constant_test(unsigned d, int device) {
     }
 }
 void inlet_outlet_edges(int device) {
-    const Mesh mesh = Mesh::read("examples/tecplot/demo_2d.mesh");
+    const Mesh mesh = aero_test::test_mesh(2);
     const auto m = mesh.view();
     MedianDual dual(mesh);
     const auto cv = dual.view();
@@ -615,8 +632,8 @@ void inlet_outlet_edges(int device) {
     require(tangent_edges && interior_to_boundary_edges, "missing inlet/outlet edge coverage");
 }
 void ring_test(int device) {
-    const Mesh mesh = Mesh::read("examples/tecplot/demo_1d.mesh");
-    PeriodicDomain ring(mesh, {{"inlet", "outlet", {1, 0, 0}}});
+    const Mesh mesh = aero_test::test_mesh(1);
+    PeriodicDomain ring(mesh, {{"xmin", "xmax", {1, 0, 0}}});
     const auto g = ring.view();
     ReconstructionOptions opts;
     opts.scheme = ReconstructionScheme::Weno3;
@@ -639,7 +656,7 @@ void ring_test(int device) {
 }
 #ifndef AERO_RESIDUAL_NO_TIME_TEST
 void sod_step(int device) {
-    Mesh mesh = Mesh::read("examples/tecplot/demo_1d.mesh");
+    Mesh mesh = aero_test::test_mesh(1);
     MedianDual dual(mesh);
     const auto cv = dual.view();
     const auto m = mesh.view();

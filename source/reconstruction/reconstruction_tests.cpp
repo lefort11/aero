@@ -1694,6 +1694,54 @@ int main(int argc, char** argv) {
         near(mp6::mean_weight(-.75*eps, -.25*eps, 0.), .5);
         near(mp6::mean_weight(2.*eps, 0., .25*eps), .125);
     });
+    add("MP6 includes the early MP5 increment on its own side", [] {
+        const Mp5Settings settings{true, false, false, 4.};
+        // Центральный и оба ближних наклона равны нулю. Полный интервал каждой
+        // стороны равен [0,0]. Малый дальний наклон даёт проход по допуску MP5,
+        // а большой наклон с другой стороны заведомо требует ограничения до нуля.
+        for (double sign : {-1., 1.}) for (bool left_passes : {false, true}) {
+            const double small = sign * 1.5e-5, large = .3;
+            const double fl = left_passes ? small : large, fr = left_passes ? large : small;
+            const double accepted = -small / 15.;
+            for (double h : {0., 1.e-14, .5, 1.}) {
+                double left = 0., right = 0.;
+                mp6::Correction actual;
+                mp6::prepare_wave<false, false>(fl, 0., 0., 0., fr, settings, h, actual, left, right);
+                near(left, left_passes ? accepted : 0., 1.e-20);
+                near(right, left_passes ? 0. : accepted, 1.e-20);
+                const double lm = std::max(left, 0.), lp = std::max(-left, 0.);
+                const double rm = std::max(right, 0.), rp = std::max(-right, 0.);
+                // Проверяем границы обеих связанных поправок. Если по ошибке
+                // включить левое значение также справа, хотя бы одна проверка упадёт.
+                near(actual.min1, -(1.5*lm + .5*rp), 1.e-20);
+                near(actual.max1,   1.5*lp + .5*rm,  1.e-20);
+                near(actual.min2, -(1.5*rm + .5*lp), 1.e-20);
+                near(actual.max2,   1.5*rp + .5*lm,  1.e-20);
+            }
+        }
+    });
+    add("MPWENO5 hybrid uses its own accepted value on each side", [] {
+        const Mp5Settings settings{false, true, true, 4.};
+        // Полином MP5 проходит быструю проверку. На данном шаблоне обычная
+        // MPWENO5 ограничит его до нуля. Нельзя расширять интервал полиномом MP5.
+        double left = 0., right = 0.;
+        mp6::Correction characteristic;
+        mp6::prepare_wave<true, false>(-1.5e-5, 0., 0., 0., .3, settings, 1., characteristic, left, right);
+        near(left, 0., 0.);
+        near(right, 0., 0.);
+        near(characteristic.min1, 0., 0.);
+        near(characteristic.max1, 0., 0.);
+        // После поворота базовые значения слева и справа задаёт вызывающий код.
+        // Используем разные знаки и модули, чтобы обнаружить перестановку сторон.
+        left = 2.e-6;
+        right = -3.e-6;
+        mp6::Correction rotated;
+        mp6::prepare_wave<true, true>(-1.5e-5, 0., 0., 0., .3, settings, .5, rotated, left, right);
+        near(rotated.min1, -4.5e-6, 2.e-20);
+        near(rotated.max1, 0., 0.);
+        near(rotated.min2, 0., 0.);
+        near(rotated.max2, 5.5e-6, 2.e-20);
+    });
     add("MP6 one-sided bound agrees with the complete interval", [] {
         // Если оба исходных значения уже внутри интервалов, достаточно границы
         // в направлении поправки. Полный расчёт здесь служит независимой проверкой
@@ -1703,11 +1751,15 @@ int main(int argc, char** argv) {
             const mp5::Bounds bl = {left-.3, left+.7}, br = {right-.6, right+.2};
             const double center = .5*(left+right) + std::sin(.31*i)*(i%3 ? 2. : 1.e-8);
             const bool skip_l = i%2 == 0, skip_r = i%5 == 0;
-            mp6::Correction full, reduced;
-            const double w = full.prepare(left, right, .1, -.4, skip_l, skip_r, center, .75, bl, br);
-            near(reduced.prepare<true>(left, right, .1, -.4, skip_l, skip_r, center, .75, bl, br), w, 0.);
-            near(reduced.smin, full.smin, 0.);
-            near(reduced.smax, full.smax, 0.);
+            mp6::Correction reduced;
+            const double w = reduced.prepare(left, right, .1, -.4, skip_l, skip_r, center, .75, bl, br);
+            const double lo = std::max(std::min(0., reduced.ds), -mp6::Correction::upper_mean(
+                                            -reduced.min1, -reduced.min2, -reduced.dd));
+            const double hi = std::min(std::max(0., reduced.ds), mp6::Correction::upper_mean(
+                                            reduced.max1, reduced.max2, reduced.dd));
+            near(reduced.smin, lo, 0.);
+            near(reduced.smax, hi, 0.);
+            near(w, mp6::mean_weight(reduced.ds, lo, hi), 0.);
         }
     });
     add("MP6 coupled wave correction and MPWENO5 switch", [] {

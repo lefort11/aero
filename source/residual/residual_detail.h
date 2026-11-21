@@ -181,10 +181,12 @@ struct Reader {
                                                     basis.kinetic_energy(), u, q);
     }
     // Физический поток в узле проецируем на нормаль текущего ребра.
-    AERO_HOST_DEVICE EulerStatus physical_flux(const double* u, double* q) const {
+    AERO_HOST_DEVICE EulerStatus physical_flux(Index node, const double* u, double* q) const {
         double speed;
         if (g.packed.gas) {
-            const auto& gas = g.packed.gas[(u - field) / g.components()];
+            // Номер берём из шаблона: он уже известен до чтения состояния.
+            // Все компоненты физического потока используют один и тот же газ.
+            const auto& gas = g.packed.gas[node];
             if (!gas.density)
                 return EulerStatus::InvalidDensity;
             return euler_detail::project_flux(g.dim, u, gas, normal, q, &speed);
@@ -203,7 +205,7 @@ struct LinearReader {
     ResidualVariables variables;
     const LinearFace& face;
     double tangent[2][3];
-    AERO_HOST_DEVICE EulerStatus physical_flux(const double* q, double* flux) const {
+    AERO_HOST_DEVICE EulerStatus physical_flux(Index, const double* q, double* flux) const {
         face.physical(q,flux);
         return EulerStatus::Success;
     }
@@ -254,7 +256,7 @@ KOKKOS_FORCEINLINE_FUNCTION bool transformed_row(const FieldReader& reader, Inde
             return state;
         if (node == owner)
             return own;
-        return reader.physical_flux(state, buffer) == EulerStatus::Success ? buffer : nullptr;
+        return reader.physical_flux(node, state, buffer) == EulerStatus::Success ? buffer : nullptr;
     };
     const auto weight = [&](Index i) { return weights[begin + i]; };
     double slope[5];
@@ -322,6 +324,13 @@ AERO_HOST_DEVICE inline void blend_ebr_traces(EdgeTraces& traces, unsigned width
     }
 }
 
+// После вычисления приращения сдвигаемся от своего узла к середине ребра.
+AERO_HOST_DEVICE inline void add_half_increment(unsigned width, const double* node, const double* increment,
+                                                 bool right, double* value) {
+    for (unsigned k = 0; k < width; ++k)
+        value[k] = node[k] + (right ? -0.5 : 0.5) * increment[k];
+}
+
 // Приращение схемы вдвое больше сдвига от узла к середине ребра.
 // При работе с волнами сначала переводим только приращение обратно в консервативные переменные.
 template <unsigned fixed_width = 0, class Basis>
@@ -330,8 +339,7 @@ KOKKOS_FORCEINLINE_FUNCTION bool trace_from_increment(unsigned width, const Basi
     if (basis && euler_detail::expand_characteristic<fixed_width>(width, *basis, increment, increment)
                      != EulerStatus::Success)
         return false;
-    for (unsigned k = 0; k < width; ++k)
-        trace[k] = own[k] + (right ? -0.5 : 0.5) * increment[k];
+    add_half_increment(width,own,increment,right,trace);
     return true;
 }
 
@@ -400,7 +408,7 @@ AERO_HOST_DEVICE inline bool hybrid_edge_traces(const FieldReader& reader, Index
         const Index node = side ? reader.surface.end : reader.surface.begin;
         const double* state = reader.field + node * width;
         if (reader.variables == ResidualVariables::Flux) {
-            if (reader.physical_flux(state, own[side]) != EulerStatus::Success) return false;
+            if (reader.physical_flux(node, state, own[side]) != EulerStatus::Success) return false;
         } else {
             for (unsigned k = 0; k < width; ++k) own[side][k] = state[k];
         }
@@ -430,8 +438,6 @@ AERO_HOST_DEVICE inline bool hybrid_edge_traces(const FieldReader& reader, Index
 template <unsigned linear_width = 0, bool characteristic_2d = false, class FieldReader>
 KOKKOS_FORCEINLINE_FUNCTION bool reconstruct_edge_traces(const FieldReader& reader, Index edge, EdgeTraces& traces) {
     const auto& stencil = reader.g.stencil;
-    if (edge >= stencil.edge_count || !stencil.row_owner || !stencil.offsets)
-        return false;
     if (!linear_width && reader.g.options.mp6_hybrid > 0 && (stencil.mp5.enabled || stencil.mp5.weno) &&
         stencil.weno_order[2*edge] == 5 && stencil.weno_order[2*edge+1] == 5)
         return hybrid_edge_traces<characteristic_2d>(reader,edge,traces);
@@ -443,7 +449,7 @@ KOKKOS_FORCEINLINE_FUNCTION bool reconstruct_edge_traces(const FieldReader& read
         double physical_flux[5], increment[5];
         const double* own = u;
         if (!characteristic_2d && !linear_width && reader.variables == ResidualVariables::Flux) {
-            if (reader.physical_flux(u, physical_flux) != EulerStatus::Success)
+            if (reader.physical_flux(node, u, physical_flux) != EulerStatus::Success)
                 return false;
             own = physical_flux;
         }
@@ -672,17 +678,62 @@ KOKKOS_FORCEINLINE_FUNCTION bool prepare_edge_basis(const Geometry& g, const Sur
                                       g.options.gamma, project_waves ? &basis : nullptr) == EulerStatus::Success;
 }
 
-template<unsigned linear_width, bool characteristic_2d, class FieldReader>
+// Для EBR одинаковая линейная строка применяется к U и F(U). Номера узлов
+// и геометрические веса можно читать один раз сразу для обоих векторов.
+template<unsigned width, class FieldReader>
+KOKKOS_FORCEINLINE_FUNCTION bool ebr_state_and_flux(const FieldReader& reader, Index edge, EdgeTraces& state,
+                                                      EdgeTraces& flux) {
+    const auto& stencil = reader.g.stencil;
+    for (unsigned side = 0; side < 2; ++side) {
+        const Index row = 2 * edge + side, begin = stencil.offsets[row];
+        const Index owner = side ? reader.surface.end : reader.surface.begin;
+        const double* own = reader.field + width * owner;
+        double own_flux[width], increment[2*width];
+        if (reader.physical_flux(owner,own,own_flux) != EulerStatus::Success) return false;
+        const auto values = [&](Index k, double* pair) -> const double* {
+            const Index node = stencil.nodes[begin+k];
+            const double* u = reader.field + width*node;
+            for (unsigned c = 0; c < width; ++c) pair[c] = u[c];
+            if (node == owner) {
+                for (unsigned c = 0; c < width; ++c) pair[width+c] = own_flux[c];
+            } else if (reader.physical_flux(node,u,pair+width) != EulerStatus::Success) return nullptr;
+            return pair;
+        };
+        const auto weight = [&](Index k) { return stencil.weights[begin+k]; };
+        if (!reconstruction_detail::sum_slope<2*width>(2*width,stencil.offsets[row+1]-begin,values,weight,increment))
+            return false;
+        add_half_increment(width,own,increment,side!=0,side ? state.right : state.left);
+        add_half_increment(width,own_flux,increment+width,side!=0,side ? flux.right : flux.left);
+    }
+    if (reader.g.options.upw_coeff < 1.) {
+        blend_ebr_traces(state,width,reader.g.options.upw_coeff);
+        blend_ebr_traces(flux,width,reader.g.options.upw_coeff);
+    }
+    return true;
+}
+
+template<unsigned linear_width, bool characteristic_2d, bool ebr_flux = false, class FieldReader>
 KOKKOS_FORCEINLINE_FUNCTION bool reconstruct_pair(const Geometry& g, Index edge, FieldReader& reader,
         EdgeTraces& state, EdgeTraces& reconstructed_flux, EdgeTraces*& physical_flux) {
+    // Для обоих концов нужны две строки одного шаблона, в том числе при совместном расчёте U и F(U).
+    if (edge >= g.stencil.edge_count || !g.stencil.row_owner || !g.stencil.offsets)
+        return false;
     // У EBR все компоненты имеют одинаковые постоянные веса. Для базиса этого ребра
     // R·(Σ aᵢ L·Uᵢ) = Σ aᵢ Uᵢ, поскольку R и L взаимно обратны. Считаем линейную
     // строку сразу по состояниям. У WENO веса зависят от каждой характеристики отдельно.
     if (reader.variables == ResidualVariables::Characteristic && !g.stencil.weno_order)
         reader.variables = ResidualVariables::Conservative;
 
-    // В режиме flux нужны две пары: физические потоки и консервативные состояния для диссипации.
-    if (!characteristic_2d && !linear_width && reader.variables == ResidualVariables::Flux) {
+    // Вариант EBR выбирается перед запуском ядра. При реконструкции состояний
+    // ядру не нужны ни физические потоки во всех узлах шаблона, ни место под их приращения.
+    static_assert(!ebr_flux || linear_width == 4 || linear_width == 5, "Invalid EBR component count");
+    if (ebr_flux) {
+        physical_flux = &reconstructed_flux;
+        if (linear_width == 4) return ebr_state_and_flux<4>(reader, edge, state, reconstructed_flux);
+        return ebr_state_and_flux<5>(reader, edge, state, reconstructed_flux);
+    }
+    // В общем ядре тип реконструкции определяется во время расчёта.
+    if (!linear_width && !characteristic_2d && reader.variables == ResidualVariables::Flux) {
         physical_flux = &reconstructed_flux;
         if (!reconstruct_edge_traces(reader, edge, reconstructed_flux))
             return false;
@@ -718,7 +769,8 @@ AERO_HOST_DEVICE inline bool linear_edge_flux(const Geometry& g, Index edge, con
                           flux.left,flux.right,out) && integrate_flux(g.components(),s.measure,out);
 }
 
-template <bool roe_2d = false, bool nodal_only = false, unsigned linear_width = 0, bool characteristic_2d = false>
+template <bool roe_2d = false, bool nodal_only = false, unsigned linear_width = 0, bool characteristic_2d = false,
+          bool ebr_flux = false>
 KOKKOS_FORCEINLINE_FUNCTION bool integrated_edge_flux(const Geometry& g, Index edge, const double* field,
                                                   EulerFluxResult& out, unsigned nodal_lf_dim = 0) {
     const Surface& surface = g.surfaces[edge];
@@ -736,7 +788,7 @@ KOKKOS_FORCEINLINE_FUNCTION bool integrated_edge_flux(const Geometry& g, Index e
 
     EdgeTraces state, reconstructed_flux;
     EdgeTraces* physical_flux = nullptr;
-    if (!reconstruct_pair<linear_width,characteristic_2d>(g,edge,reader,state,reconstructed_flux,physical_flux))
+    if (!reconstruct_pair<linear_width,characteristic_2d,ebr_flux>(g,edge,reader,state,reconstructed_flux,physical_flux))
         return false;
     return finish_edge_flux<roe_2d>(g, surface, begin, end, base, state, physical_flux, out);
 }
@@ -794,9 +846,9 @@ struct FaceBatch {
         return roe_2d() && geometry.stencil.row_owner && !geometry.stencil.weno_order &&
                geometry.options.variables != ResidualVariables::Flux;
     }
-    template <bool roe, bool nodal, unsigned linear_width = 0, bool characteristic_2d = false>
+    template <bool roe, bool nodal, unsigned linear_width = 0, bool characteristic_2d = false, bool ebr_flux = false>
     AERO_HOST_DEVICE bool compute_edge(Index f, unsigned nodal_lf_dim = 0) const {
-        if (!integrated_edge_flux<roe, nodal, linear_width, characteristic_2d>(geometry, f, state, flux[f], nodal_lf_dim))
+        if (!integrated_edge_flux<roe, nodal, linear_width, characteristic_2d, ebr_flux>(geometry, f, state, flux[f], nodal_lf_dim))
             return false;
         save_speed(f);
         return true;
@@ -810,9 +862,9 @@ struct FaceBatch {
     // Список MPI может перемежать внутренние рёбра и граничные площадки.
     // Для раздельных диапазонов исполнитель вызывает нужную функцию напрямую.
     AERO_HOST_DEVICE bool is_boundary(Index face) const { return face >= geometry.edges; }
-    template <bool roe_2d = false, bool nodal = false, unsigned linear_width = 0>
+    template <bool roe_2d = false, bool nodal = false, unsigned linear_width = 0, bool ebr_flux = false>
     AERO_HOST_DEVICE bool compute_face(Index face, unsigned lf_dim = 0) const {
-        return is_boundary(face) ? compute_boundary(face) : compute_edge<roe_2d,nodal,linear_width>(face,lf_dim);
+        return is_boundary(face) ? compute_boundary(face) : compute_edge<roe_2d,nodal,linear_width,false,ebr_flux>(face,lf_dim);
     }
     AERO_HOST_DEVICE bool compute_linear(Index f) const {
         if (is_boundary(f)) return compute_boundary(f);

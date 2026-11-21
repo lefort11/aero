@@ -1,3 +1,4 @@
+#include "../../qa/test_mesh.h"
 #include "bdf1_linear_system.h"
 #include "spatial_jacobian.h"
 #include "../residual/residual.h"
@@ -17,7 +18,7 @@ using Vector = std::vector<double>;
 // Берём известную поправку x*, отдельно строим J*x* и временной вклад V*x*/dt.
 // Это обнаруживает как потерю временного блока, так и повторное прибавление при пересборке.
 void check_mesh(unsigned d, int device) {
-    const Mesh mesh = Mesh::read("examples/tecplot/demo_" + std::to_string(d) + "d.mesh");
+    const Mesh mesh = aero_test::test_mesh(d);
     MedianDual dual(mesh);
     const auto cv = dual.view();
     const unsigned width = d + 2;

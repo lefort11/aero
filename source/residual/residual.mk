@@ -54,4 +54,4 @@ residual-cuda-test:
 	$(MAKE) KOKKOS_BACKEND=cuda $(BIN)/residual_tests_cuda1_omp$(WITH_OPENMP)$(EXE)
 	$(running_test)
 	"$(BIN)/residual_tests_cuda1_omp$(WITH_OPENMP)$(EXE)" --require-cuda
-$(RES_TEST) $(RES_DEBUG): qa/test_checks.h
+$(RES_TEST) $(RES_DEBUG): qa/test_mesh.h qa/test_checks.h

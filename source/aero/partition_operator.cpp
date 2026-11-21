@@ -193,17 +193,22 @@ void PartitionOperator::prepare_nodal_gas() {
 template <unsigned scheme_order>
 void PartitionOperator::prepare_weno_tiles(std::vector<WenoEdgeTile<scheme_order>>& tiles) {
     auto& g = grid_;
-    if (g.options.background.active() || g.dim != 2 || g.options.variables != ResidualVariables::Characteristic ||
+    // На CPU пакеты используются для характеристик. У GPU есть также ядро,
+    // которое читает консервативные переменные или потоки из того же пакета.
+    const bool on_gpu = flux_.empty();
+    const bool characteristic = g.options.variables == ResidualVariables::Characteristic;
+    if (g.options.background.active() || g.dim != 2 || (!on_gpu && !characteristic) ||
         g.options.solver != ResidualSolver::Roe || stencil_.weno_order.empty() ||
         state_nodes() > std::numeric_limits<unsigned>::max())
         return;
     // На CPU потоки площадок хранятся в flux_. На GPU для малой сетки один общий запуск
     // быстрее двух запусков для полных и остальных шаблонов. Веса реконструкции те же.
     const MeshIndex small_gpu_edge_limit = 8192;
-    if (flux_.empty() && g.edges <= small_gpu_edge_limit)
+    if (on_gpu && g.edges <= small_gpu_edge_limit)
         return;
     const auto count = edge_tile::count(g.edges);
-    const bool allow_mixed = scheme_order == 5 && flux_.empty() && g.stencil.mp5.weno && g.options.mp6_hybrid == 0;
+    const bool allow_mixed = scheme_order == 5 && on_gpu && characteristic &&
+                             g.stencil.mp5.weno && g.options.mp6_hybrid == 0;
     tiles.resize(count);
     parallel_for(count, [&](MeshIndex t) {
         auto& tile = tiles[t];

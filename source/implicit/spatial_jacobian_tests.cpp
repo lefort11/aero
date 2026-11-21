@@ -1,3 +1,4 @@
+#include "../../qa/test_mesh.h"
 #include "spatial_jacobian.h"
 #include "../residual/residual.h"
 #include "../../qa/test_field.h"
@@ -108,7 +109,7 @@ void test_spatial_jacobian(int device) {
     auto options = residual_options("conservative","lf",1.4);
     options.upw_coeff = .65;
     for (unsigned d = 1; d <= 3; ++d) {
-        const Mesh mesh = Mesh::read("examples/tecplot/demo_"+std::to_string(d)+"d.mesh");
+        const Mesh mesh = aero_test::test_mesh(d);
         MedianDual dual(mesh);
         auto run = [&](const FreeBoundaryRules* rules, double speed) {
             BoundaryPatches patches;
@@ -144,7 +145,7 @@ void test_spatial_jacobian(int device) {
         rules.superin.mask = 1;
         rules.superin.primitive[0] = 1.;
         run(&rules,2.5); // Часть компонент входного состояния по-прежнему зависит от U.
-        PeriodicDomain ring(mesh, {{"inlet","outlet",{1.,0.,0.}}});
+        PeriodicDomain ring(mesh, {{"xmin","xmax",{1.,0.,0.}}});
         SpatialResidual op(d,ring.view(),ring.prepare(reconstruction),{},options,device);
         check_product(op,d,ring.view().node_count,.35,device,true);
     }

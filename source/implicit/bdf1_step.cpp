@@ -151,6 +151,21 @@ struct BdfStep::Storage {
         previous = history_host.data();
     }
 
+    double residual_norm(const NewtonUpdate& operation) const {
+        double local = 0.;
+        partition.local([&] {
+#ifdef AERO_WITH_KOKKOS_GPU
+            if (device >= 0) {
+                device_work::check(device_work::aero_device_newton_residual(device,rows,operation,&local));
+                return;
+            }
+#endif
+            host_parallel::ensure_runtime();
+            local = form_residual_and_norm(host_parallel::Execution(),rows,operation);
+        });
+        return partition.reduce ? partition.reduce(local,true) : local;
+    }
+
     void update(const NewtonUpdate& operation) const {
 #ifdef AERO_WITH_KOKKOS_GPU
         if (device >= 0) {
@@ -218,11 +233,8 @@ void BdfStep::import_history(const BdfHistory& history) {
 
 double BdfStep::spatial_rate_norm(const double* volumes, const EulerFluxResult* flux) {
     auto& s = *storage_;
-    s.partition.local([&] {
-        s.update({s.grid, flux, volumes, nullptr, nullptr, s.rhs, nullptr, nullptr,
-                  0., 0., 0., NewtonUpdate::SpatialRate, s.partition.owned, 1., {}});
-    });
-    const double norm = s.linear.infinity_norm(s.rhs);
+    const double norm = s.residual_norm({s.grid,flux,volumes,nullptr,nullptr,s.rhs,nullptr,nullptr,
+                                         0.,0.,0.,NewtonUpdate::SpatialRate,s.partition.owned,1.,{}});
     if (!std::isfinite(norm)) throw std::domain_error("Steady: nonfinite spatial residual");
     return norm;
 }
@@ -246,20 +258,21 @@ NewtonResult BdfStep::advance(double* state, const double* initial, const double
     const double leading = 1.+fraction, history_weight = ratio*fraction;
     if (!std::isfinite(history_weight)) throw std::domain_error("BDF: invalid time step ratio");
     const NodeSteps node_steps = SteadyNodeSteps::active(s.partition.steady_steps);
+    const auto operation = [&](NewtonUpdate::Operation op, double relaxation) {
+        return NewtonUpdate{s.grid, flux, volumes, state, s.start, s.rhs, s.correction, s.previous, dt,
+                            leading, history_weight, op, s.partition.owned, relaxation, node_steps};
+    };
     const auto update_trial = [&](NewtonUpdate::Operation op, double relaxation) {
-        s.partition.local([&] {
-            s.update({s.grid, flux, volumes, state, s.start, s.rhs, s.correction, s.previous, dt, leading, history_weight, op, s.partition.owned, relaxation, node_steps});
-        });
+        s.partition.local([&] { s.update(operation(op,relaxation)); });
     };
     const auto update = [&](NewtonUpdate::Operation op) { update_trial(op, 1.); };
-    // Первое приближение — принятое поле U_n. Его копия нужна в уравнении
-    // баланса на каждой итерации и для отката всего шага при отказе решателя.
-    update(NewtonUpdate::SaveStart);
+    // Пока поле ещё принятое, сохраняем U_n и собираем первую правую часть за один обход.
+    // Все последующие пробы могут использовать эту копию для отката.
+    const double initial_norm = s.residual_norm(operation(NewtonUpdate::InitialRhs, 1.));
     LinearTolerance tolerance;
     tolerance.relative = settings.linear_relative;
     const auto residual_norm = [&] {
-        update(NewtonUpdate::FormRhs);
-        return s.linear.infinity_norm(s.rhs);
+        return s.residual_norm(operation(NewtonUpdate::FormRhs, 1.));
     };
     const auto share_state = [&] {
         if (s.partition.share_state) s.partition.share_state(state);
@@ -269,7 +282,6 @@ NewtonResult BdfStep::advance(double* state, const double* initial, const double
         // числе если предиктор сразу дал хорошее начальное приближение.
         s.begin_matrix_step(settings);
         unsigned assemblies = 0;
-        const double initial_norm = residual_norm();
         double norm = initial_norm;
         if (!std::isfinite(norm)) throw std::domain_error("BDF: nonfinite nonlinear residual");
         bool viscous = false;
@@ -309,7 +321,7 @@ NewtonResult BdfStep::advance(double* state, const double* initial, const double
             // вклад a*V/dt добавляется при сборке системы для текущей поправки.
             if (!spatial_predictor || iteration != 0)
                 assemblies += s.prepare_matrix(state, initial, volumes, dt / leading, settings, iteration);
-            const auto result = s.linear.solve(s.rhs, s.correction, tolerance);
+            const auto result = s.linear.solve_with_rhs_norm(s.rhs, s.correction, tolerance, norm);
             if (result.status != LinearStatus::Converged) {
                 std::ostringstream message;
                 message << "BiCGSTAB " << (result.status == LinearStatus::Breakdown ? "breakdown" : "iteration limit")

@@ -383,12 +383,16 @@ struct detail::ReconstructionGeometry::Impl {
                 const auto face = cell.face_id(k);
                 owners[face] = PatchFace{face, index, cell.face_orientation(k), false};
             }
-            if (m.dimension == 2) {
-                normals[index] = triangulate(m, cell_cycle(cell), eps).normal;
-            }
-            if (m.dimension == 3) {
-                check_cell_volume(cell);
-            }
+        }
+        // Общий владелец грани выбирается выше в порядке исходной нумерации.
+        // Нормаль и проверка объёма зависят только от своей ячейки: их можно
+        // готовить параллельно и для прямых, и для криволинейных шаблонов.
+        if (m.dimension >= 2) {
+            parallel_for(m.cell_count, [&](MeshIndex index) {
+                const auto cell = m.cell(index);
+                if (m.dimension == 2) normals[index] = triangulate(m, cell_cycle(cell), eps).normal;
+                else check_cell_volume(cell);
+            });
         }
         for (MeshIndex i = 0; i < m.boundary_face_count; ++i)
             owners[m.boundary_faces[i]].boundary = true;

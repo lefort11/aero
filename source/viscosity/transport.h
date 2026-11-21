@@ -86,7 +86,9 @@ struct Operator {
     };
     NodalMaterial* material_nodes;
     const std::uint32_t* material_vertices;
-    unsigned vertices_per_cell, material_lanes;
+    unsigned vertices_per_cell;
+    // В этой таблице GPU одинаковые вершины 32 соседних элементов лежат рядом.
+    static constexpr unsigned material_lanes = 32;
     turbulence::HexFilterData hex_filter;
     const std::uint32_t* box_nodes;
     MeshIndex box_stride,box_pitch;
@@ -311,15 +313,6 @@ struct Operator {
         for (unsigned i=0; i<dim; ++i) mean.mu_velocity[i]*=weight;
         if (scalar) sa.diffusion.element_mean[e]=weight*diffusivity;
         material[e]=mean;
-    }
-    AERO_HOST_DEVICE void average_turbulent_material(MeshIndex e) const {
-        if (vertices_per_cell==8) {
-            if (sa.active) average_cached_material<8,true>(e);
-            else average_cached_material<8,false>(e);
-        } else {
-            if (sa.active) average_cached_material<4,true>(e);
-            else average_cached_material<4,false>(e);
-        }
     }
 #endif
     // Каждую строку записывает только владелец узла. Номер вхождения хранит

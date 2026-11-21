@@ -169,6 +169,12 @@ void BdfLinearSystem::predict(const double* rhs,double* correction) const {
 }
 
 LinearResult BdfLinearSystem::solve(const double* b, double* x, const LinearTolerance& tol) {
+    // Для самостоятельного вызова норма ещё неизвестна. Вычисляем её только
+    // после общих проверок готовности матрицы и указателей.
+    return solve_with_rhs_norm(b,x,tol,-1.);
+}
+
+LinearResult BdfLinearSystem::solve_with_rhs_norm(const double* b, double* x, const LinearTolerance& tol, double rhs_norm) {
     auto& s = *storage_;
     const auto& w = s.work;
     if (!s.ready) throw std::logic_error("BDF: assemble before solving");
@@ -178,7 +184,7 @@ LinearResult BdfLinearSystem::solve(const double* b, double* x, const LinearTole
     });
     if (!(tol.relative >= 0. && tol.relative < 1. && tol.absolute >= 0.) || !std::isfinite(tol.absolute))
         throw std::invalid_argument("BiCGSTAB: invalid tolerance");
-    const double rhs_norm = s.norm(b);
+    if (rhs_norm < 0.) rhs_norm = s.norm(b);
     if (!std::isfinite(rhs_norm)) throw std::domain_error("BiCGSTAB: nonfinite right-hand side");
     const double threshold = std::max(tol.absolute, tol.relative * rhs_norm);
     // В итерациях масштабируем невязку, чтобы при малой правой части скалярные
@@ -191,8 +197,9 @@ LinearResult BdfLinearSystem::solve(const double* b, double* x, const LinearTole
     if (rhs_norm <= threshold) return {LinearStatus::Converged, 0, rhs_norm};
     const auto actual_residual = [&]() {
         s.matrix.apply(x, w.t);
-        update(KrylovStep::TrueResidual, 0., 0., nullptr);
-        return s.norm(w.r);
+        // Элемент b−A*x уже находится в регистре. В ту же редукцию включаем
+        // его модуль, сохраняя саму невязку для возможного перезапуска BiCGSTAB.
+        return s.update_norm({w, b, x, w.t, scale, 0., 0., KrylovStep::TrueResidual});
     };
     unsigned iteration = 0;
     LinearStatus reason = LinearStatus::IterationLimit;

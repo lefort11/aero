@@ -15,8 +15,13 @@ public:
         if (device < 0)
             return;
         status = aero::gpu::current(&previous_);
-        if (status == aero::gpu::Status::Success && previous_ != device)
+        if (status != aero::gpu::Status::Success || previous_ == device) {
+            // В обычном MPI-процессе все вызовы относятся к его карте. При
+            // выходе восстанавливать устройство нужно только после смены карты.
+            previous_ = -1;
+        } else {
             status = aero::gpu::select(device);
+        }
     }
     ~DeviceScope() {
         if (previous_ >= 0)

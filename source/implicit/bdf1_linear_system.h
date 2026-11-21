@@ -51,6 +51,10 @@ public:
     // При исчерпании итераций или вырождении возвращает достигнутую поправку и её невязку.
     LinearResult solve(const double* b, double* x, const LinearTolerance& tolerance = LinearTolerance());
 private:
+    friend class BdfStep;
+    // Ньютон уже измерил глобальную норму этой правой части. Передаём её в
+    // BiCGSTAB, чтобы не делать вторую редукцию того же вектора на GPU и в MPI.
+    LinearResult solve_with_rhs_norm(const double* b, double* x, const LinearTolerance& tolerance, double rhs_norm);
     struct Storage;
     std::unique_ptr<Storage> storage_;
 };

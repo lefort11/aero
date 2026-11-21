@@ -4,6 +4,18 @@
 
 namespace aero {
 namespace residual_detail {
+// В пакете одинаковые слагаемые 32 соседних рёбер лежат подряд. Адресация и
+// веса общие для состояний, характеристик и физических потоков. Читатель
+// определяет, какую величину надо взять в узле.
+template<WenoSlopeRow row, unsigned order, class Read>
+KOKKOS_FORCEINLINE_FUNCTION bool packed_slope(const WenoEdgeTile<order>& tile, unsigned lane,
+                                               const Read& read, double result[4]) {
+    constexpr unsigned first = first_slope_term(row);
+    const auto values = [&](Index i, double* buffer) { return read(tile.nodes[first + i][lane], buffer); };
+    const auto weight = [&](Index i) { return tile.weights[first - row + i - 1][lane]; };
+    return reconstruction_detail::sum_slope<4>(4, slope_terms(row), values, weight, result);
+}
+
 // Возвращает четыре амплитуды волн для одной строки двумерного шаблона.
 // В пределах ребра базис Роу фиксирован, поэтому сначала складываем разности состояний
 // и только затем проецируем один готовый наклон.
@@ -12,12 +24,9 @@ KOKKOS_FORCEINLINE_FUNCTION bool characteristic_slope(const WenoEdgeTile<order>&
                                                   const double* field, const euler_detail::PlaneWaveBasis& basis,
                                                   const double* normal, double gamma, double inverse_sound,
                                                   double waves[][4]) {
-    constexpr unsigned first = first_slope_term(row);
-    const auto values = [&](Index i, double*) { return field + 4ull * tile.nodes[first + i][lane]; };
-    // В каждой предыдущей строке коэффициент опорного узла пропущен.
-    const auto weight = [&](Index i) { return tile.weights[first - row + i - 1][lane]; };
+    const auto state = [&](Index node, double*) { return field + 4 * node; };
     double slope[4];
-    reconstruction_detail::sum_slope<4>(4, slope_terms(row), values, weight, slope);
+    packed_slope<row>(tile, lane, state, slope);
     return euler_detail::project_characteristic<2>(basis, normal, gamma, basis.kinetic_energy(),
                                                     slope, waves[row], inverse_sound) == EulerStatus::Success;
 }
@@ -166,6 +175,63 @@ KOKKOS_FORCEINLINE_FUNCTION bool packed_edge_flux(const Geometry& g, const doubl
     EdgeTraces traces;
     reconstruct_packed_traces<scheme_order, use_mp5, use_mpweno, hybrid_mode>(g, edge, slopes, traces);
     return plane.flux(g, edge, traces, out);
+}
+
+// В декартовых переменных не нужен базис Роу для реконструкции. Развёртка
+// трёх или пяти строк позволяет ядру хранить наклоны четырёх компонент в регистрах.
+template<bool physical, unsigned order, bool mp, bool mpweno, bool hybrid>
+KOKKOS_FORCEINLINE_FUNCTION bool cartesian_packed_values(const Geometry& g, Index edge, const double* field,
+        const PlaneEdge& plane, const WenoEdgeTile<order>& tile, unsigned lane, EdgeTraces& traces) {
+    const auto read = [&](Index node, double* buffer) -> const double* {
+        const double* state = field + 4 * node;
+        if (!physical) return state;
+        // Примитивные переменные этой стадии уже готовы. Проекция зависит от
+        // нормали текущего ребра, поэтому вычисляем её при чтении шаблона.
+        const auto& gas = g.packed.gas[node];
+        double speed;
+        return gas.density > 0. && euler_detail::project_flux(2,state,gas,plane.gas.normal,buffer,&speed)
+               == EulerStatus::Success ? buffer : nullptr;
+    };
+    double slopes[WenoEdgeTile<order>::rows_per_edge][4];
+    if (!packed_slope<CentralSlope>(tile,lane,read,slopes[CentralSlope]) ||
+        !packed_slope<NearLeftSlope>(tile,lane,read,slopes[NearLeftSlope]) ||
+        !packed_slope<NearRightSlope>(tile,lane,read,slopes[NearRightSlope])) return false;
+    if (order == 5 && (!packed_slope<FarLeftSlope>(tile,lane,read,slopes[FarLeftSlope]) ||
+                       !packed_slope<FarRightSlope>(tile,lane,read,slopes[FarRightSlope]))) return false;
+    reconstruct_packed_traces<order,mp,mpweno,0>(g,edge,slopes,traces);
+    const auto& surface = g.surfaces[edge];
+    if (hybrid) {
+        // Базовые приращения уже получены в осях сетки. Ограничиваем только
+        // добавку MP6 в нормальном и касательном направлениях данного ребра.
+        const FaceMomentumAxes axes(2, surface.area, plane.gas.normal);
+        correct_cartesian_pair<mpweno>(axes, slopes, g.stencil.mp5, g.options.mp6_hybrid,
+                                       traces.left, traces.right);
+    }
+    double fl[4], fr[4];
+    const double* left = read(surface.begin,fl), *right = read(surface.end,fr);
+    if (!left || !right) return false;
+    add_half_increment(4,left,traces.left,false,traces.left);
+    add_half_increment(4,right,traces.right,true,traces.right);
+    return true;
+}
+
+template<bool physical, unsigned order, bool mp, bool mpweno, bool hybrid>
+KOKKOS_FORCEINLINE_FUNCTION bool cartesian_packed_flux(const FaceBatch& batch, Index edge,
+                                                        const WenoEdgeTile<order>& tile) {
+    const auto& g = batch.geometry;
+    const unsigned lane = edge_tile::lane(edge);
+    PlaneEdge plane;
+    EdgeTraces states, flux;
+    if (!plane.read_nodes(g,batch.state,edge) ||
+        !cartesian_packed_values<false,order,mp,mpweno,hybrid>(g,edge,batch.state,plane,tile,lane,states)) return false;
+    // При реконструкции потоков диссипация использует восстановленные состояния,
+    // а симметричная часть — восстановленную проекцию потока.
+    if (physical && !cartesian_packed_values<true,order,mp,mpweno,hybrid>(g,edge,batch.state,plane,tile,lane,flux))
+        return false;
+    if (!finish_edge_flux<true,!physical>(g,g.surfaces[edge],plane.left,plane.right,plane.gas,
+                                          states,physical ? &flux : nullptr,batch.flux[edge])) return false;
+    batch.save_speed(edge);
+    return true;
 }
 
 // На границе и у неполного шаблона расчёт использует обычные строки реконструкции.

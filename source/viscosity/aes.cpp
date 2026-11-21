@@ -225,13 +225,14 @@ void Aes::prepare_material_vertices() {
     }
     if (!cache_material_) return;
     const auto count=cells_.front().count;
-    if (count!=4 && count!=8) return;
+    // Тот же способ усреднения работает на треугольниках и призмах. На
+    // смешанной сетке количество вершин по-прежнему читается из каждого элемента.
+    if (count != 3 && count != 4 && count != 6 && count != 8) return;
     for (const auto& cell:cells_) {
         if (cell.count!=count) return;
         for (unsigned i=0; i<count; ++i) if (cell.node[i]>UINT32_MAX) return;
     }
-    const unsigned lanes=gpu_filter_ ? 32u : 1u;
-    op_.material_lanes=lanes;
+    const unsigned lanes = Operator::material_lanes;
     op_.vertices_per_cell=count;
     if (!hex_nodes_.empty()) return; // Исходный порядок вершин уже записан фильтром в такой же раскладке.
     const auto blocks=(cells_.size()-1)/lanes+1;

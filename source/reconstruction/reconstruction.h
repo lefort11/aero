@@ -225,9 +225,8 @@ struct ReconstructionStencilData {
     std::vector<ReconstructionSideScheme> side_scheme; // Фактическая схема после проверки доступных слоёв.
     // Расстояние до внешней точки в единицах координат сетки. Ноль означает отсутствие точки.
     std::vector<double> outer_distance;
-    // EBR5 хранит расстояние от конца ребра до интерполированной позиции второго слоя только для диагностики.
-    // Дальнюю производную EBR5 получают интерполяцией производных. При отсутствии слоя расстояние равно нулю.
-    // У WENO5 дальняя точка — фактическое второе пересечение луча, а знаменатель наклона равен far_distance − outer_distance.
+    // Суммарная длина от конца ребра до дальней опоры через ближнюю.
+    // Все схемы пятого порядка берут дальний наклон со знаменателем far_distance − outer_distance.
     std::vector<double> far_distance;
     ReconstructionStencilData()
         : scheme(ReconstructionScheme::Ebr3), node_count(0), edge_count(0), offsets(1, 0),

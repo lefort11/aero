@@ -50,8 +50,7 @@ struct Correction {
                                                 second + 2.*::fmax(0., difference)));
     }
 
-    // Рассчитывает цель и вклад данной компоненты в общий ограничитель.
-    template <bool bounded = false>
+    // Обе стороны передают интервалы, уже содержащие принятые приращения.
     AERO_HOST_DEVICE double prepare(double left, double right, double raw_l, double raw_r, bool skip_l,
                                     bool skip_r, double center, double h, mp5::Bounds l, mp5::Bounds r) {
         active = 1 - .5 * (double(skip_l) + double(skip_r));
@@ -62,20 +61,12 @@ struct Correction {
         max1 = 1.5 * lp + .5 * rm;
         min2 = -(1.5 * rm + .5 * lp);
         max2 = 1.5 * rp + .5 * lm;
-        if (bounded) {
-            // Оба исходных значения уже входят в допустимые интервалы. Нулевой
-            // сдвиг разрешён, поэтому вычисляем лишь границу в направлении ds.
-            const bool negative = ds < 0.;
-            const double bound = negative ? upper_mean(-min1, -min2, -dd) : upper_mean(max1, max2, dd);
-            const double allowed = ::fmin(::fabs(ds), bound);
-            smin = negative ? -allowed : 0.;
-            smax = negative ? 0. : allowed;
-        } else {
-            // MP5 иногда принимает линейное значение по своей первой проверке.
-            // Для него ноль может лежать вне интервала, поэтому нужны обе границы.
-            smin = ::fmax(::fmin(0., ds), -upper_mean(-min1, -min2, -dd));
-            smax = ::fmin(::fmax(0., ds), upper_mean(max1, max2, dd));
-        }
+        // Нулевая поправка допустима. Достаточно проверить границу в направлении ds.
+        const bool negative = ds < 0.;
+        const double bound = negative ? upper_mean(-min1, -min2, -dd) : upper_mean(max1, max2, dd);
+        const double allowed = ::fmin(::fabs(ds), bound);
+        smin = negative ? -allowed : 0.;
+        smax = negative ? 0. : allowed;
         return mean_weight(ds, smin, smax);
     }
 
@@ -142,16 +133,14 @@ KOKKOS_FORCEINLINE_FUNCTION double prepare_wave(double fl, double l, double c, d
         left = skip_l ? bl.clamp(raw_l.value) : raw_l.value;
         right = skip_r ? br.clamp(raw_r.value) : raw_r.value;
     }
-    if (anchored) {
-        // Компонента исходного приращения после поворота может выйти за локальный MP-интервал.
-        // Включаем исходную точку в интервал перед расчётом ограничений на среднее
-        // и полуразность. Тогда нулевая добавка допустима даже при таком отклонении.
-        bl.low = ::fmin(bl.low, left);
-        bl.high = ::fmax(bl.high, left);
-        br.low = ::fmin(br.low, right);
-        br.high = ::fmax(br.high, right);
-    }
-    return correction.prepare<weno || anchored>(left, right, raw_l.value, raw_r.value, skip_l, skip_r, c, h, bl, br);
+    // MP5 может досрочно принять полином благодаря допуску 1e-10. Гибрид
+    // сохраняет принятое значение в интервале именно той стороны, где сработала
+    // эта проверка. На противоположной стороне проверяем её собственный полином.
+    // У MPWENO5 берём её собственное ограниченное приращение. После поворота
+    // в локальные оси включаем базовое значение, переданное вызывающей стороной.
+    if (anchored || raw_l.admissible) bl.include(left);
+    if (anchored || raw_r.admissible) br.include(right);
+    return correction.prepare(left, right, raw_l.value, raw_r.value, skip_l, skip_r, c, h, bl, br);
 }
 
 // Каждая строка хранит разности всех компонент. Порядок строк — центральная,

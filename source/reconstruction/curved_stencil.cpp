@@ -1,7 +1,6 @@
 #include "curved_stencil.h"
 #include "../parallel/parallel_for.h"
 #include <algorithm>
-#include <set>
 #include <cmath>
 
 namespace aero {
@@ -114,27 +113,40 @@ CurvedStencil::CurvedStencil(const Mesh& mesh, const ReconstructionOptions& o)
 
 void CurvedStencil::prepare_ijk() {
     const auto m = mesh_;
-    std::vector<List> edges(m.node_count), cells(m.edge_count);
     std::vector<char> regular(m.node_count, 1);
     for (Id c = 0; c < m.cell_count; ++c) {
         if (!structured_cell(m, c))
             for (Id n : m.cell_nodes(c))
                 regular[n] = 0;
-        for (Id e : m.cell_edges(c))
-            cells[e].push_back(c);
     }
+    // Если все узлы принадлежат хотя бы одной неструктурированной ячейке,
+    // продолжать линии IJK негде. На призматической сетке сразу переходим к PL.
+    if (std::find(regular.begin(), regular.end(), 1) == regular.end()) return;
+    std::vector<List> cells(m.edge_count);
+    for (Id c = 0; c < m.cell_count; ++c)
+        for (Id e : m.cell_edges(c))
+            if (regular[m.edge_begin[e]] || regular[m.edge_end[e]]) cells[e].push_back(c);
+
+    // В структурированной области в узле сходятся до двух рёбер каждого
+    // направления. Размер звезды известен, выделять список на каждый узел не нужно.
+    std::vector<std::array<Id, 6>> edges(m.node_count);
+    std::vector<unsigned char> degree(m.node_count, 0);
     for (Id e = 0; e < m.edge_count; ++e) {
-        edges[m.edge_begin[e]].push_back(e);
-        edges[m.edge_end[e]].push_back(e);
+        for (Id n : {m.edge_begin[e], m.edge_end[e]}) {
+            if (!regular[n]) continue;
+            if (degree[n] == 2 * m.dimension) regular[n] = 0;
+            else edges[n][degree[n]++] = e;
+        }
     }
     next_.resize(m.edge_count, {{m.edge_count, m.edge_count}});
     parallel_for(m.edge_count, [&](Id e) {
         for (unsigned side = 0; side < 2; ++side) {
             const Id n = side ? m.edge_end[e] : m.edge_begin[e];
-            if (!regular[n] || edges[n].size() > 2 * m.dimension)
+            if (!regular[n])
                 continue;
             Id candidate = m.edge_count;
-            for (Id next : edges[n]) {
+            for (unsigned i = 0; i < degree[n]; ++i) {
+                const Id next = edges[n][i];
                 // Поперечное ребро лежит с исходным в общей ячейке. Продолжение
                 // координатной линии — единственное оставшееся ребро звезды узла.
                 const Id opposite = other(m, next, n);
@@ -200,11 +212,36 @@ void CurvedStencil::prepare_pl(const Mesh& mesh, const ReconstructionOptions& o)
     layer_ = o.node_layers.empty() ? PrismLayers(mesh, o.wall_labels).local_depths(m) : o.node_layers;
     if (layer_.size() != m.node_count)
         throw ReconstructionError("PL layer numbering does not match mesh");
-    if (m.dimension == 3)
-        layer_faces_.resize(m.node_count);
+    // В плоскости грань слоя — одно ребро. Два конца обеих противоположных
+    // сторон четырёхугольника должны принадлежать двум соседним слоям. Это
+    // та же проверка оснований, но без вычисления нормалей и построения сечений.
+    if (m.dimension == 2) {
+        layer_edges_.resize(m.node_count);
+        std::vector<char> linked(m.edge_count);
+        for (Id cell = 0; cell < m.cell_count; ++cell) {
+            const auto nodes = m.cell_nodes(cell);
+            if (nodes.size != 4) continue;
+            int lo = layer_[nodes[0]], hi = lo;
+            for (Id node : nodes) {
+                lo = std::min(lo, layer_[node]);
+                hi = std::max(hi, layer_[node]);
+            }
+            if (lo < 0 || hi != lo + 1 ||
+                std::count_if(nodes.begin(), nodes.end(), [&](Id node) { return layer_[node] == lo; }) != 2) continue;
+            for (Id e : m.cell_edges(cell)) {
+                const Id l = m.edge_begin[e], r = m.edge_end[e];
+                if (!linked[e] && layer_[l] == layer_[r]) {
+                    layer_edges_[l].push_back(e);
+                    layer_edges_[r].push_back(e);
+                    linked[e] = 1;
+                }
+            }
+        }
+        return;
+    }
+    layer_faces_.resize(m.node_count);
     layer_edges_.resize(m.node_count);
-    if (m.dimension == 3)
-        normal_.resize(m.edge_count);
+    normal_.resize(m.edge_count);
     std::vector<unsigned> counts(m.edge_count);
     std::vector<char> marked(m.face_count);
     for (Id c = 0; c < m.cell_count; ++c)
@@ -226,22 +263,20 @@ void CurvedStencil::prepare_pl(const Mesh& mesh, const ReconstructionOptions& o)
                     continue;
                 marked[face] = 1;
                 const auto nodes = m.face_nodes(face);
-                if (m.dimension == 3)
-                    for (Id n : nodes)
-                        layer_faces_[n].push_back(face);
+                for (Id n : nodes) layer_faces_[n].push_back(face);
                 Coordinate area{};
                 for (Id k = 1; k + 1 < nodes.size; ++k)
                     area = area + cross(m.coordinate(nodes[k]) - m.coordinate(nodes[0]),
                                         m.coordinate(nodes[k + 1]) - m.coordinate(nodes[0]));
-                if (dot(area, growth) < 0.)
-                    area = scaled(area, -1.);
+                // Одна нормаль на грань. Все её рёбра используют тот же единичный
+                // вектор, в том числе на искривлённой четырёхугольной поверхности.
+                const auto outward = scaled(unit(area), dot(area, growth) < 0. ? -1. : 1.);
                 for (Id edge : m.face_edges(face)) {
                     if (!counts[edge]++) {
                         layer_edges_[m.edge_begin[edge]].push_back(edge);
                         layer_edges_[m.edge_end[edge]].push_back(edge);
                     }
-                    if (m.dimension == 3)
-                        normal_[edge] = normal_[edge] + unit(area);
+                    normal_[edge] = normal_[edge] + outward;
                 }
             }
         });
@@ -277,19 +312,23 @@ bool CurvedStencil::pl_points(Id e, bool fifth, CurvedPoints& p) const {
         const auto plane = unit(cross(direction, normal_[e]));
         if (coordinate_length(plane) == 0.)
             return false;
-        std::set<Id> seen{n}, ring{n};
+        // Для пятого порядка нужны два кольца. Храним номера подряд в порядке
+        // возрастания, чтобы равные расстояния разрешались одинаково на любой сетке.
+        List ring{n}, next;
         for (unsigned level = 0; level < (fifth ? 2u : 1u); ++level) {
-            std::set<Id> next;
+            next.clear();
             for (Id node : ring)
                 for (Id face : layer_faces_[node])
                     for (Id v : m.face_nodes(face))
-                        if (!seen.count(v))
-                            next.insert(v);
-            seen.insert(next.begin(), next.end());
+                        if (v != n && !std::binary_search(ring.begin(), ring.end(), v))
+                            next.push_back(v);
+            std::sort(next.begin(), next.end());
+            next.erase(std::unique(next.begin(), next.end()), next.end());
             RayPoint best;
             double best_distance = 0.;
             for (Id v : next) {
                 const auto delta = m.coordinate(v) - origin;
+                const double vertex_distance = coordinate_length(delta), height = dot(plane, delta);
                 auto consider = [&](Id w, double fraction) {
                     const auto offset = delta + scaled(m.coordinate(w) - m.coordinate(v), fraction);
                     const double distance = coordinate_length(offset);
@@ -305,14 +344,14 @@ bool CurvedStencil::pl_points(Id e, bool fifth, CurvedPoints& p) const {
                 };
                 for (Id candidate : layer_edges_[v]) {
                     const Id w = other(m, candidate, v);
-                    if (w < v || !next.count(w) || dot(normal_[candidate], normal_[e]) <= 0.)
+                    if (w < v || !std::binary_search(next.begin(), next.end(), w) || dot(normal_[candidate], normal_[e]) <= 0.)
                         continue;
                     const auto other_offset = m.coordinate(w) - origin;
                     // При повороте сетки вершина в плоскости сечения может
                     // отклониться от нуля на ошибку округления скалярного произведения.
                     const double tolerance = 32. * std::numeric_limits<double>::epsilon() *
-                                             std::max(coordinate_length(delta), coordinate_length(other_offset));
-                    double h1 = dot(plane, delta), h2 = dot(plane, other_offset);
+                                             std::max(vertex_distance, coordinate_length(other_offset));
+                    double h1 = height, h2 = dot(plane, other_offset);
                     if (std::abs(h1) <= tolerance) h1 = 0.;
                     if (std::abs(h2) <= tolerance) h2 = 0.;
                     if (h1 == 0.)

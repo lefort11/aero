@@ -1,13 +1,14 @@
 #ifndef AERO_IMPLICIT_NEWTON_VECTORS_H
 #define AERO_IMPLICIT_NEWTON_VECTORS_H
 #include "../timestep/node_step.h"
+#include <Kokkos_Core.hpp>
 #include "../residual/residual_detail.h"
 
 namespace aero {
 namespace implicit {
 // Поля текущего шага. Один вызов обрабатывает все компоненты одного узла.
 struct NewtonUpdate {
-    enum Operation { SaveStart, FormRhs, AddCorrection, PredictCorrection, RestoreStart, Predict, RelaxPrediction, UndoPrediction, SpatialRate };
+    enum Operation { InitialRhs, FormRhs, AddCorrection, PredictCorrection, RestoreStart, Predict, RelaxPrediction, UndoPrediction, SpatialRate };
     residual_detail::Geometry grid;
     const EulerFluxResult* flux; // Потоки в тех же ориентациях, что при явном обновлении.
     const double* volumes;
@@ -21,26 +22,49 @@ struct NewtonUpdate {
     double relaxation; // Доля пробной поправки при ослаблении вязкого предиктора.
 
     NodeSteps local_steps;
+    // Собираем баланс узла и сразу определяем наибольшую по модулю компоненту.
+    // spatial[k] содержит сумму исходящих потоков через все грани контрольного объёма.
+    template<unsigned width>
+    AERO_HOST_DEVICE double residual_norm(MeshIndex row) const {
+        const MeshIndex node = owned ? owned[row] : row;
+        double spatial[width];
+        const bool valid = residual_detail::assemble_node_residual<width>(grid, node, flux, spatial);
+        double largest = 0.;
+        for (unsigned k = 0; k < width; ++k) {
+            double value;
+            if (operation == SpatialRate) {
+                // Критерий выхода на стационар использует скорость изменения поля.
+                value = valid ? spatial[k] / volumes[node] : HUGE_VAL;
+            } else {
+                const MeshIndex i = row * width + k;
+                const double current = state[node * width + k];
+                // На первой итерации копируем принятое поле для баланса BDF и отката.
+                // Ровно тот же узел уже понадобился для вычисления правой части.
+                if (operation == InitialRhs) start[i] = current;
+                double change = leading * (current - start[i]);
+                if (history_weight != 0.) change -= history_weight * (start[i] - previous[i]);
+                value = valid ? -((volumes[node] / local_steps.at(node, dt)) * change + spatial[k]) : HUGE_VAL;
+                rhs[i] = value;
+            }
+            // Любая неконечная компонента должна прервать принятие шага на всех процессах.
+            const double magnitude = ::fabs(value);
+            if (!(magnitude <= max_finite_double)) largest = HUGE_VAL;
+            else if (magnitude > largest) largest = magnitude;
+        }
+        return largest;
+    }
+
+    // Вносит уже найденную поправку в поле либо восстанавливает сохранённое состояние.
     AERO_HOST_DEVICE void operator()(MeshIndex row) const {
         const MeshIndex node = owned ? owned[row] : row;
         const unsigned width = grid.components();
-        double spatial[5];
-        // Суммируем исходящие потоки один раз для всех уравнений узла.
-        const bool needs_flux = operation == FormRhs || operation == SpatialRate;
-        const bool valid = !needs_flux || residual_detail::assemble_node_residual(grid, node, flux, spatial);
-        if (operation == SpatialRate) {
-            // Деление на объём даёт скорость изменения поля. Размер контрольного
-            // объёма и величина псевдошага не входят в критерий стационарности.
-            for (unsigned k = 0; k < width; ++k)
-                rhs[row * width + k] = valid ? spatial[k] / volumes[node] : HUGE_VAL;
-            return;
-        }
         for (unsigned k = 0; k < width; ++k) {
             const MeshIndex i = row * width + k;
             double& current = state[node * width + k];
             switch (operation) {
-            case SpatialRate: break; // Все компоненты уже обработаны выше.
-            case SaveStart: start[i] = current; break;
+            case InitialRhs:
+            case FormRhs:
+            case SpatialRate: return; // Эти операции обслуживает residual_norm().
             case RestoreStart: current = start[i]; break;
             case Predict:
                 // Один шаг последовательных приближений к балансу BDF. Обратная
@@ -63,18 +87,39 @@ struct NewtonUpdate {
 #endif
                 current += change; break;
             }
-            case FormRhs:
-                // Правая часть A*delta = -F(U) включает накопление за шаг и чистый отток.
-                // Форма через разности точно обнуляет временную часть на постоянном поле.
-                // На первом шаге предыдущего слоя нет, используем неявный Эйлер.
-                double change = leading * (current - start[i]);
-                if (history_weight != 0.) change -= history_weight * (start[i] - previous[i]);
-                rhs[i] = valid ? -((volumes[node] / local_steps.at(node, dt)) * change + spatial[k]) : HUGE_VAL;
-                break;
             }
         }
     }
 };
+
+// Отрицательную невязку нужно и сохранить для решателя, и проверить по норме.
+// Один исполнитель обрабатывает узел целиком. Норма по процессу получается
+// при том же обходе, без повторного чтения всего вектора из памяти карты.
+template<unsigned width, class Execution>
+double form_residual_and_norm(const Execution& exec, MeshIndex rows, NewtonUpdate update) {
+    if (!rows) return 0.;
+    using Range = Kokkos::RangePolicy<Execution,Kokkos::IndexType<MeshIndex>>;
+    const auto range = Kokkos::Experimental::require(Range(exec,0,rows),
+                                  Kokkos::Experimental::WorkItemProperty::HintLightWeight);
+    double norm = 0.;
+    Kokkos::parallel_reduce("Aero: Newton residual and norm",range,KOKKOS_LAMBDA(MeshIndex row,double& largest) {
+        const double node_norm = update.residual_norm<width>(row);
+        if (node_norm > largest) largest = node_norm;
+    },Kokkos::Max<double>(norm));
+    return norm;
+}
+
+// На одной сетке все строки имеют одну ширину. Выбираем её до запуска,
+// чтобы исполнитель складывал компоненты без проверки размерности на каждой грани.
+template<class Execution>
+double form_residual_and_norm(const Execution& exec, MeshIndex rows, NewtonUpdate update) {
+    switch (update.grid.dim) {
+    case 1: return form_residual_and_norm<3>(exec, rows, update);
+    case 2: return form_residual_and_norm<4>(exec, rows, update);
+    default: return form_residual_and_norm<5>(exec, rows, update);
+    }
+}
+
 }
 }
 #endif

@@ -9,7 +9,7 @@
 #include "../implicit/bicgstab_vectors.h"
 #include "../implicit/newton_vectors.h"
 #include "device_execution.h"
-#include "mpweno5_edges.h"
+#include "device_faces.h"
 #ifdef AERO_HAS_VISCOSITY
 #include "../viscosity/jacobian.h"
 #endif
@@ -92,164 +92,6 @@ Execution select_execution(int device, cudaStream_t stream) {
         }
     });
     return runtime->execution(device, stream);
-}
-
-// Полный шаблон обслуживает обе стороны ребра. Геометрия и формула WENO общие с CPU.
-template <unsigned order, bool use_mp5, bool use_mpweno, bool hybrid>
-KOKKOS_INLINE_FUNCTION void packed_flux(const FaceBatch& batch, Index face, Index* bad) {
-    const auto* tile = complete_tile<order>(batch.geometry, face);
-    if (tile && !compute_packed_face<use_mp5, use_mpweno, hybrid>(batch, face, *tile))
-        Kokkos::atomic_fetch_min(bad, face);
-}
-
-// Для подобласти передаём в ядро один указатель на постоянные адреса. При отдельном
-// библиотечном вызове указатели могут измениться, тогда передаём значения текущего пакета.
-template <unsigned order, bool use_mp5 = false, bool use_mpweno = false, bool hybrid = false>
-void full_edges(const Execution& exec, FaceBatch batch, Index* bad, const FaceBatch* device_faces) {
-    if (device_faces) {
-        const MeshIndex* indices = batch.indices;
-        for_indices<use_mpweno ? 4 : 0>(exec, "Aero: WENO edges", batch.count, KOKKOS_LAMBDA(Index k) {
-            packed_flux<order, use_mp5, use_mpweno, hybrid>(*device_faces, indices ? indices[k] : k, bad);
-        });
-    } else {
-        for_indices<use_mpweno ? 4 : 0>(exec, "Aero: WENO edges", batch.count, KOKKOS_LAMBDA(Index k) {
-            packed_flux<order, use_mp5, use_mpweno, hybrid>(batch, batch.face(k), bad);
-        });
-    }
-}
-
-// Полные рёбра MPWENO5 и их укороченные стороны проходят три ядра в одном потоке CUDA.
-// Первый проход строит наклоны, второй восстанавливает следы, третий записывает один поток на ребро.
-void process_mpweno_edges(const Execution& exec, const FaceBatch& batch, Index* bad, const FaceBatch* stored) {
-    auto* work = batch.geometry.packed.mp_work;
-    const auto* indices = batch.indices;
-    // Номер k относится к текущей порции. Номер face учитывает всю подобласть MPI
-    // и может отличаться от k даже в первой порции.
-    for (Index first = 0; first < batch.count; ) {
-        const Index count = std::min(batch.count - first, Index(MpEdgeTile::batch_limit));
-        for_indices(exec, "Aero: MPWENO5 projected stencil", count, KOKKOS_LAMBDA(Index k) {
-            const Index face = indices ? indices[first + k] : first + k;
-            mpweno_edges::project(*stored, face, work[edge_tile::index(k)], edge_tile::lane(k), bad);
-        });
-        mpweno_edges::reconstruct(exec, work, count, batch.geometry.stencil.mp5);
-        for_indices(exec, "Aero: MPWENO5 complete edge flux", count, KOKKOS_LAMBDA(Index k) {
-            const Index face = indices ? indices[first + k] : first + k;
-            mpweno_edges::write_flux(*stored, face, work[edge_tile::index(k)], edge_tile::lane(k), bad);
-        });
-        first += count;
-    }
-}
-
-// Гибрид требует сохранить интервалы всех волн до второго прохода. Выбираем ядро один раз
-// на пакет, чтобы при нулевом весе эти интервалы не занимали регистры и локальную память GPU.
-template <bool weno>
-void mp_edges(const Execution& exec, FaceBatch batch, Index* bad, const FaceBatch* device_faces) {
-    if (batch.geometry.options.mp6_hybrid > 0)
-        full_edges<5, !weno, weno, true>(exec, batch, bad, device_faces);
-    else
-        full_edges<5, !weno, weno, false>(exec, batch, bad, device_faces);
-}
-
-// При подготовке упаковки рёбра с неполной реконструкцией, узловые рёбра и границы
-// уже собраны по типам. Все потоки одного запуска выполняют одну физическую операцию.
-enum class RemainingFace { Sparse, Nodal, Boundary };
-template <RemainingFace kind>
-void remaining_group(const Execution& exec, FaceBatch batch, const FaceBatch* stored, Index begin,
-                     Index count, Index* bad) {
-    const auto apply = KOKKOS_LAMBDA(const FaceBatch& data, Index k) {
-        const Index face = data.geometry.packed.remaining[begin + k];
-        const bool ok = kind == RemainingFace::Boundary ? data.compute_boundary(face)
-                          : data.compute_edge<true, kind == RemainingFace::Nodal, 0, kind == RemainingFace::Sparse>(face);
-        if (!ok)
-            Kokkos::atomic_fetch_min(bad, face);
-    };
-    if (stored)
-        for_indices(exec, "Aero: remaining WENO faces", count, KOKKOS_LAMBDA(Index k) { apply(*stored, k); });
-    else
-        for_indices(exec, "Aero: remaining WENO faces", count, KOKKOS_LAMBDA(Index k) { apply(batch, k); });
-}
-
-// Выбираем обход один раз на весь пакет. Внутри площадки остаются только формулы выбранного решателя.
-template <bool roe_2d, bool nodal_only = false, unsigned linear_width = 0, unsigned lf_dim = 0>
-void other_faces(const Execution& exec, FaceBatch batch, Index* bad) {
-    if (!batch.indices && batch.count == batch.geometry.faces) {
-        // В однопроцессном расчёте рёбра и внешние площадки уже лежат двумя непрерывными группами.
-        // У каждого обхода свои регистры. Граничная характеристика не занимает регистры потока на ребре.
-        const Index edges = batch.geometry.edges;
-        for_indices(exec, "Aero: interior edges", edges, KOKKOS_LAMBDA(Index face) {
-            if (!batch.compute_edge<roe_2d, nodal_only, linear_width>(face,lf_dim))
-                Kokkos::atomic_fetch_min(bad, face);
-        });
-        for_indices(exec, "Aero: boundary faces", batch.count - edges, KOKKOS_LAMBDA(Index i) {
-            const Index face = edges + i;
-            if (!batch.compute_boundary(face))
-                Kokkos::atomic_fetch_min(bad, face);
-        });
-        return;
-    }
-    // После разделения сетки MPI и у неполных шаблонов нужные номера берём из списка.
-    for_indices(exec, "Aero: remaining fluxes", batch.count, KOKKOS_LAMBDA(Index k) {
-        const Index face = batch.face(k);
-        if (!batch.compute_face<roe_2d,nodal_only,linear_width>(face,lf_dim))
-            Kokkos::atomic_fetch_min(bad, face);
-    });
-}
-
-// Полные шаблоны WENO и MP уложены по 32 ребра. Выбираем ядро один раз на пакет.
-void compute_packed_fluxes(const Execution& exec, FaceBatch batch, Index* bad, const FaceBatch* device_faces) {
-    const auto& packed = batch.geometry.packed;
-    // После включения гибрида используем ядро с ограничением MP6 даже при наличии рабочего буфера MPWENO5.
-    const bool split_mpweno = device_faces && packed.mp_work && batch.geometry.options.mp6_hybrid == 0.;
-    if (split_mpweno)
-        process_mpweno_edges(exec, batch, bad, device_faces);
-    else if (packed.order == 5 && batch.geometry.stencil.mp5.weno)
-        mp_edges<true>(exec, batch, bad, device_faces);
-    else if (packed.order == 5 && batch.geometry.stencil.mp5.enabled)
-        mp_edges<false>(exec, batch, bad, device_faces);
-    else if (packed.order == 5)
-        full_edges<5>(exec, batch, bad, device_faces);
-    else
-        full_edges<3>(exec, batch, bad, device_faces);
-
-    // После полных шаблонов обходим три непересекающихся диапазона списка remaining.
-    const Index boundary = packed.sparse_edges + packed.nodal_edges;
-    // Укороченные стороны уже получили поток в третьем проходе MPWENO5.
-    const Index handled_mixed = split_mpweno ? packed.mixed_edges : 0;
-    remaining_group<RemainingFace::Sparse>(exec, batch, device_faces, 0, packed.sparse_edges - handled_mixed, bad);
-    remaining_group<RemainingFace::Nodal>(exec, batch, device_faces, packed.sparse_edges, packed.nodal_edges, bad);
-    remaining_group<RemainingFace::Boundary>(exec, batch, device_faces, boundary, packed.count - boundary, bad);
-}
-
-// Для первого порядка, EBR и сеток без упаковки используем обычный список площадок.
-void compute_unpacked_fluxes(const Execution& exec, FaceBatch batch, Index* bad) {
-    // Первый порядок читает два узла без обращения к строкам шаблона.
-    if (batch.geometry.options.background.active()) {
-        for_indices(exec, "Aero: linear Euler fluxes", batch.count, KOKKOS_LAMBDA(Index k) {
-            const auto face = batch.face(k);
-            if (!batch.compute_linear(face)) Kokkos::atomic_fetch_min(bad,face);
-        });
-        return;
-    }
-    // Как и на CPU, LF первого порядка получает состояния прямо из узлов.
-    // Постоянная размерность исключает реконструкцию из кода ядра этого запуска.
-    if (batch.nodal_lf()) {
-        const auto launch = batch.select_by_dimension(other_faces<false,true,0,1>,
-                                                       other_faces<false,true,0,2>,
-                                                       other_faces<false,true,0,3>);
-        launch(exec,batch,bad);
-    } else if (batch.nodal_roe_2d())
-        other_faces<true, true>(exec, batch, bad);
-    // У EBR3 и EBR5 различны только заранее рассчитанные веса. В 2D в узле четыре компоненты.
-    else if (batch.linear_roe_2d())
-        other_faces<true, false, 4>(exec, batch, bad);
-    else if (batch.roe_2d())
-        other_faces<true>(exec, batch, bad);
-    // В 3D фиксированная ширина линейной строки равна пяти.
-    else if (batch.geometry.dim == 3 && batch.geometry.stencil.row_owner &&
-             !batch.geometry.stencil.weno_order && batch.geometry.options.variables != ResidualVariables::Flux)
-        other_faces<false, false, 5>(exec, batch, bad);
-    else
-        other_faces<false>(exec, batch, bad);
 }
 
 // На CPU и GPU одна редукция сравнивает пары (шаг, узел), включая случай равных шагов.
@@ -453,6 +295,11 @@ const char* aero_device_spatial_apply(int device, const implicit::SpatialBlocks&
         }
     }, device);
 }
+const char* aero_device_newton_residual(int device, MeshIndex rows, const implicit::NewtonUpdate& update, double* norm) {
+    return on_device(nullptr,[&](const Execution& exec) {
+        *norm = implicit::form_residual_and_norm(exec,rows,update);
+    },device);
+}
 const char* aero_device_newton_update(int device, MeshIndex nodes, const implicit::NewtonUpdate& update) {
     const auto operation = update;
     return on_device(nullptr, [&](const Execution& exec) {
@@ -547,6 +394,25 @@ const char* aero_device_sa_norm(const turbulence::Step& input,turbulence::Norm m
 }
 #endif
 #ifdef AERO_HAS_TURBULENCE
+// На сетке из однотипных элементов число вершин и наличие уравнения SA
+// одинаковы у всей группы. Выбираем их до запуска, чтобы в цикле по вершинам
+// сразу собирать нужные коэффициенты переноса.
+template<unsigned vertices,bool with_sa>
+void cell_material(const Execution& exec, const viscosity::Operator& g) {
+    for_indices(exec,"Aero: turbulent material",g.cell_count,KOKKOS_LAMBDA(Index e){
+        g.average_cached_material<vertices,with_sa>(e);
+    });
+}
+template<bool with_sa>
+void cell_material(const Execution& exec, const viscosity::Operator& g) {
+    switch (g.vertices_per_cell) {
+    case 3: return cell_material<3,with_sa>(exec,g);
+    case 4: return cell_material<4,with_sa>(exec,g);
+    case 6: return cell_material<6,with_sa>(exec,g);
+    default: return cell_material<8,with_sa>(exec,g);
+    }
+}
+
 // Тип замыкания выбираем один раз на стадии, до запуска ядер Kokkos.
 template<bool ddes,unsigned dimension>
 void subgrid_on_device(const Execution& exec,const viscosity::Operator& g) {
@@ -560,6 +426,22 @@ void subgrid_on_device(const Execution& exec,const viscosity::Operator& g) {
     for_indices(exec,"Aero: nodal filter",g.row_count,KOKKOS_LAMBDA(Index i){g.gather_filter<ddes>(i);});
 }
 #endif
+// Одно ядро собирает невязку узла. Выбираем размерность до запуска, чтобы
+// на плоской сетке временные массивы и циклы занимали только две компоненты.
+template<unsigned dimension, viscosity::Operator::Gradients mode>
+void viscous_rows(const Execution& exec, const viscosity::Operator& g) {
+    for_indices(exec, "Aero: viscous residual", g.row_count, KOKKOS_LAMBDA(Index node) {
+        g.assemble_row<dimension,mode>(node);
+    });
+}
+
+template<viscosity::Operator::Gradients mode>
+void launch_viscous_rows(const Execution& exec, const viscosity::Operator& g) {
+    if (g.dim == 2) viscous_rows<2,mode>(exec,g);
+    else if (g.dim == 3) viscous_rows<3,mode>(exec,g);
+    else viscous_rows<1,mode>(exec,g);
+}
+
 const char* aero_device_viscosity(const viscosity::Operator& input, const double* state, const EulerState* cached,viscosity::Evaluation phase) {
     const auto g = input;
     return on_device(nullptr, [&](const Execution& exec) {
@@ -570,14 +452,18 @@ const char* aero_device_viscosity(const viscosity::Operator& input, const double
         if (work.filter && !g.skip_ddes_filter) {
             if (g.c_des==0.) subgrid_on_device<false,3>(exec,g);
             else if (g.dim==3) subgrid_on_device<true,3>(exec,g);
-            else subgrid_on_device<true,0>(exec,g);
+            else if (g.dim == 2) subgrid_on_device<true,2>(exec,g);
+            else subgrid_on_device<true,1>(exec,g);
         }
         if (work.sa_material)
             for_indices(exec,"Aero: SA eddy viscosity",g.node_count,KOKKOS_LAMBDA(Index i){g.prepare_sa_material(i);});
 #endif
         if (work.cell_material) {
 #ifdef AERO_HAS_TURBULENCE
-            if (g.material_nodes) for_indices(exec,"Aero: turbulent material",g.cell_count,KOKKOS_LAMBDA(Index e){g.average_turbulent_material(e);});
+            if (g.material_nodes) {
+                if (g.sa.active) cell_material<true>(exec,g);
+                else cell_material<false>(exec,g);
+            }
             else
 #endif
                 for_indices(exec,"Aero: viscous material",g.cell_count,KOKKOS_LAMBDA(Index e){g.average_material(e);});
@@ -589,11 +475,11 @@ const char* aero_device_viscosity(const viscosity::Operator& input, const double
                 for_indices(exec,"Aero: AES gradients by element",g.vertex_count,KOKKOS_LAMBDA(Index k) { g.prepare_hex_gradient(k); });
             for_indices(exec,"Aero: AES assembled gradients",g.row_count,KOKKOS_LAMBDA(Index n) { g.assemble_row<3,Mode::Element>(n); });
         } else if (!g.gradient_cache)
-            for_indices(exec,"Aero: AES edge contributions",g.row_count,KOKKOS_LAMBDA(Index i) { g.assemble(i); });
+            launch_viscous_rows<Mode::Direct>(exec,g);
         else if (work.reuse_gradients)
-            for_indices(exec,"Aero: AES fixed gas",g.row_count,KOKKOS_LAMBDA(Index i) { g.assemble<Mode::Reuse>(i); });
+            launch_viscous_rows<Mode::Reuse>(exec,g);
         else
-            for_indices(exec,"Aero: AES save gradients",g.row_count,KOKKOS_LAMBDA(Index i) { g.assemble<Mode::Save>(i); });
+            launch_viscous_rows<Mode::Save>(exec,g);
     });
 }
 #endif
@@ -620,10 +506,14 @@ const char* aero_device_faces(const FaceBatch& input, Index* bad, void* stream, 
                 decode_nodal_gas(dimension, state, gamma, i, gas);
             });
         }
-        if (packed.tiles)
-            compute_packed_fluxes(exec, batch, bad, device_faces);
-        else
-            compute_unpacked_fluxes(exec, batch, bad);
+        const auto variables = batch.geometry.options.variables;
+        if (packed.tiles && variables == ResidualVariables::Characteristic)
+            face_kernels::compute_packed_fluxes(exec, batch, bad, device_faces);
+        else if (packed.tiles && device_faces) {
+            if (variables == ResidualVariables::Flux) face_kernels::cartesian_fluxes<true>(exec,batch,bad,device_faces);
+            else face_kernels::cartesian_fluxes<false>(exec,batch,bad,device_faces);
+        } else
+            face_kernels::compute_unpacked_fluxes(exec, batch, bad);
     });
 }
 const char* aero_device_gather(const Geometry& geometry, const EulerFluxResult* flux, double* residual,
