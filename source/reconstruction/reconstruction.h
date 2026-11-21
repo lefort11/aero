@@ -182,7 +182,13 @@ void aero_reconstruction_device_view(void* state, aero::ReconstructionStencilVie
 namespace aero {
 enum class ReconstructionSideScheme { FirstOrder, EdgeAverage, Ebr3, Ebr5, Weno3, Weno5, Mp5, MPWENO5 };
 
+enum class StencilGeometry { Straight, Ijk, Pl, Auto };
 struct ReconstructionOptions {
+    StencilGeometry geometry = StencilGeometry::Straight;
+    double max_turn_degrees = 36.; // Максимальное отклонение опоры от продолжения ребра.
+    std::vector<std::string> wall_labels; // Физические метки, от которых растут слои PL.
+    std::vector<int> node_layers; // При разбиении номера слоёв передаются на вспомогательную сетку.
+
     ReconstructionScheme scheme; // Схема, запрошенная для обеих сторон всех рёбер.
     // Параметры геометрии относятся к EBR и WENO. Для первого порядка внешние точки не требуются.
     double relative_tolerance;
@@ -263,7 +269,7 @@ public:
     RayPoint layer_hit(MeshIndex edge, unsigned side, const std::vector<MeshIndex>& faces) const;
     // Проверяет строку на постоянном и линейном поле и сохраняет ненулевые коэффициенты.
     void append_row(ReconstructionStencilData& data, const SparseRow& row, MeshIndex edge,
-                    unsigned side) const;
+                    unsigned side, bool curved = false) const;
 
 private:
     struct Impl;

@@ -105,6 +105,20 @@ mpi-timing-test mpi-fields-test mpi-recovery-test mpi-geometry-test mpi-balance-
 	$(MAKE) WITH_MPI=1 $@
 endif
 $(AERO_TEST): qa/test_checks.h
+.PHONY: completion-forecast-test curved-stencil-test
+completion-forecast-test: aero
+	$(running_test)
+	"$(PYTHON)" qa/completion_forecast.py --aero "$(BIN)/aero$(EXE)"
+ifeq ($(WITH_MPI),1)
+curved-stencil-test: aero meshdec
+	$(running_test)
+	"$(PYTHON)" qa/curved_stencil.py $(MPI_QA_ARGS)
+test: curved-stencil-test
+else
+curved-stencil-test:
+	$(MAKE) WITH_MPI=1 $@
+endif
+test: completion-forecast-test
 -include source/viscosity/tests.mk
 ifneq ($(wildcard source/viscosity/transport.h),)
 -include source/turbulence/tests.mk

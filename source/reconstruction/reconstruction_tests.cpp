@@ -2,6 +2,7 @@
 #include "../../qa/test_checks.h"
 #include "reconstruction.h"
 #include "mp6_hybrid.h"
+#include "curved_stencil.h"
 #include <algorithm>
 #include <cmath>
 #include <functional>
@@ -1199,6 +1200,114 @@ void register_first_order() {
 }
 
 // Проверки линейных полей, граничного замыкания и геометрических шаблонов EBR3.
+// Сектор с тонкими радиальными слоями. По окружности поле Q = r постоянно,
+// а продолжение ребра по прямой пересекает соседний слой, где Q меняется.
+Mesh sector_mesh(bool prisms) {
+    Builder b;
+    b.d.dimension = prisms ? 3 : 2;
+    const MeshIndex angles = 10, axial = prisms ? 5 : 1, layers = 5;
+    const MeshIndex stride = angles * axial;
+    for (MeshIndex k = 0; k < layers; ++k)
+        for (MeshIndex j = 0; j < axial; ++j)
+            for (MeshIndex i = 0; i < angles; ++i) {
+                const double r = 1. + .02 * static_cast<double>(k);
+                const double theta = .16 * static_cast<double>(i);
+                b.node(r * std::cos(theta), r * std::sin(theta),
+                       prisms ? .1 * static_cast<double>(j) + .02 * std::sin(2. * theta) : 0.);
+            }
+    for (MeshIndex k = 1; k < layers; ++k)
+        for (MeshIndex j = 0; j < (prisms ? axial - 1 : 1); ++j)
+            for (MeshIndex i = 0; i + 1 < angles; ++i) {
+                const MeshIndex a = (k - 1) * stride + j * angles + i, b1 = a + 1;
+                if (!prisms) {
+                    b.polygon({a, a + stride, b1 + stride, b1});
+                    continue;
+                }
+                // Треугольные основания лежат в слое, боковые рёбра направлены по радиусу.
+                const auto prism_cell = [&](MeshIndex l, MeshIndex m, MeshIndex n) {
+                    b.cell({{l, n, m},
+                            {l + stride, m + stride, n + stride},
+                            {l, m, m + stride, l + stride},
+                            {m, n, n + stride, m + stride},
+                            {n, l, l + stride, n + stride}});
+                };
+                prism_cell(a, b1, b1 + angles);
+                prism_cell(a, b1 + angles, a + angles);
+            }
+    auto data = b.finish().data();
+    data.patch_names.push_back("inner_wall");
+    for (std::size_t i = 0; i < data.boundary_faces.size(); ++i) {
+        const auto f = data.boundary_faces[i];
+        bool wall = true;
+        for (auto p = data.face_nodes.offsets[f]; p < data.face_nodes.offsets[f + 1]; ++p)
+            wall &= data.face_nodes.indices[p] < stride;
+        if (wall)
+            data.boundary_patch[i] = 1;
+    }
+    return Mesh(std::move(data));
+}
+
+void register_curved_stencils() {
+    for (bool prisms : {false, true}) {
+        add(prisms ? "PL cuts through triangular prism layers"
+                   : "IJK and PL follow a curved quadrilateral row",
+            [prisms] {
+                const auto mesh = sector_mesh(prisms);
+                const auto m = mesh.view();
+                const MeshIndex stride = prisms ? 50 : 10;
+                const auto depth = detail::PrismLayers(mesh, {"inner_wall"}).local_depths(m);
+                std::vector<double> q(m.node_count);
+                for (MeshIndex i = 0; i < m.node_count; ++i) {
+                    require(depth[i] == static_cast<int>(i / stride), "Wrong wall layer");
+                    q[i] = std::hypot(m.coordinate(i)[0], m.coordinate(i)[1]);
+                }
+                const MeshIndex a = 2 * stride + (prisms ? 24 : 4);
+                MeshIndex edge = 0;
+                while (edge < m.edge_count && (m.edge_begin[edge] != a || m.edge_end[edge] != a + 1))
+                    ++edge;
+                require(edge < m.edge_count, "Missing tangential test edge");
+                ReconstructionOptions o;
+                o.scheme = ReconstructionScheme::Ebr5;
+                o.wall_labels = {"inner_wall"};
+                const auto reference = reconstruct_all_sides(prepare_reconstruction(mesh, o), q, 1);
+                require(std::abs(reference.left_increment2[edge]) > 1.e-4,
+                        "Straight ray did not cross the layer");
+                for (auto mode : {StencilGeometry::Ijk, StencilGeometry::Pl, StencilGeometry::Auto}) {
+                    if (prisms && mode == StencilGeometry::Ijk)
+                        continue;
+                    o.geometry = mode;
+                    if (prisms) {
+                        detail::CurvedPoints support;
+                        require(detail::CurvedStencil(mesh, o).points(edge, true, support), "Missing PL support");
+                        require(support.near[0].weights.size() == 2 || support.near[1].weights.size() == 2,
+                                "Plane should intersect a layer edge between its endpoints");
+                    }
+                    const auto stencil = prepare_reconstruction(mesh, o);
+                    require(stencil.data().complete.at(2 * edge) && stencil.data().complete.at(2 * edge + 1),
+                            "Missing fifth-order support");
+                    const auto host = reconstruct_all_sides(stencil, q, 1);
+                    near(host.left_increment2[edge], 0.);
+                    near(host.right_increment2[edge], 0.);
+                    if (TestReconstructor::cuda_device_count()) {
+                        TestReconstructor gpu(stencil, ReconstructionBackend::Cuda);
+                        same(gpu.reconstruct(q, 1), host);
+                    }
+                }
+            });
+    }
+    add("IJK and unseeded PL fall back on triangles", [] {
+        const auto mesh = plane(true);
+        const auto q = values(mesh, 1, false);
+        ReconstructionOptions o;
+        o.scheme = ReconstructionScheme::Weno5;
+        const auto straight = reconstruct_all_sides(prepare_reconstruction(mesh, o), q, 1);
+        for (auto mode : {StencilGeometry::Ijk, StencilGeometry::Pl, StencilGeometry::Auto}) {
+            o.geometry = mode;
+            same(reconstruct_all_sides(prepare_reconstruction(mesh, o), q, 1), straight);
+        }
+    });
+}
+
 void register_ebr3() {
     add("uniform 1D EBR3 coefficients, not a midpoint interpolant", [] {
         const ReconstructionStencil s = prepare_reconstruction(line({0, 1, 2, 3}));
@@ -1511,6 +1620,7 @@ int main(int argc, char** argv) {
         std::cerr << "Usage: reconstruction_tests [--require-cuda]\n";
         return 2;
     }
+    register_curved_stencils();
     register_side_access();
     add("MP5 CFL, constant state, isolated jump and paired bounds", [] {
         near(mp5_alpha_from_cfl(.125), 4);

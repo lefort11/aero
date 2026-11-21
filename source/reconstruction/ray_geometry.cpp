@@ -462,7 +462,7 @@ detail::RayPoint detail::ReconstructionGeometry::layer_hit(MeshIndex e, unsigned
                        [&](std::size_t i) -> const PatchFace& { return g.owners[ids[i]]; });
 }
 void detail::ReconstructionGeometry::append_row(ReconstructionStencilData& data, const SparseRow& row,
-                                                MeshIndex e, unsigned side) const {
+                                                MeshIndex e, unsigned side, bool curved) const {
     const Impl& g = *impl_;
     const double h = edge_length(e);
     const MeshIndex center = side ? g.m.edge_end[e] : g.m.edge_begin[e];
@@ -473,13 +473,15 @@ void detail::ReconstructionGeometry::append_row(ReconstructionStencilData& data,
             throw ReconstructionError("Non-finite reconstruction weight");
         }
         sum += w.second;
-        moment = moment + ((g.m.coordinate(w.first) - g.m.coordinate(center)) / h) * w.second;
+        // На прямой проверяем точность для координат x, y, z. На ломаной наклоны
+        // берутся вдоль её звеньев, поэтому декартов линейный момент там иной.
+        if (!curved) moment = moment + ((g.m.coordinate(w.first) - g.m.coordinate(center)) / h) * w.second;
         if (w.second != 0) {
             data.nodes.push_back(w.first);
             data.weights.push_back(w.second);
         }
     }
-    if (std::abs(sum) > 100 * g.eps || coordinate_length(moment - g.edge(e) / h) > 100 * g.eps) {
+    if (std::abs(sum) > 100 * g.eps || (!curved && coordinate_length(moment - g.edge(e) / h) > 100 * g.eps)) {
         throw ReconstructionError("EBR stencil failed constant/linear consistency check");
     }
     data.offsets.push_back(static_cast<ReconstructionIndex>(data.nodes.size()));

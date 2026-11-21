@@ -288,6 +288,12 @@ RunSettings read_run_settings(const RunDirectories& directories) {
     const auto scheme = reconstruction_scheme(reconstruction.value, reconstruction.where);
     run.reconstruction = scheme.name;
     Entries scheme_settings(directories, "scheme", true);
+    if (scheme_settings.contains("stencil_geometry"))
+        run.stencil_geometry = choice(lowercase(scheme_settings.take("stencil_geometry")), {"straight","ijk","pl","auto"});
+    if (scheme_settings.contains("stencil_max_angle"))
+        run.stencil_max_angle = number(scheme_settings.take("stencil_max_angle"), false);
+    if (!(run.stencil_max_angle > 0. && run.stencil_max_angle < 90.))
+        throw std::invalid_argument("scheme.txt: stencil_max_angle must be between 0 and 90 degrees");
     run.mpweno_ad_corr = !scheme_settings.contains("mpweno_ad_corr") ||
         choice(scheme_settings.take("mpweno_ad_corr"), {"on", "off"}) == "on";
     run.mp6_hybrid = scheme_settings.contains("mp6_hybrid") ? number(scheme_settings.take("mp6_hybrid"), true) : 0;
@@ -393,6 +399,7 @@ RunSettings read_run_settings(const RunDirectories& directories) {
         if (mode == "formula" || mode == "on") run.exact_solution = ExactSolution::Formula;
     }
     if (main.contains("control_every")) run.control_every = main.count<std::uint64_t>("control_every");
+    run.prophecy_every_step = main.optional_count<std::uint64_t>("prophecy_every_step");
     run.report_every = main.optional_count<std::uint64_t>("report_every");
     run.recovery_every_steps = main.optional_count<std::uint64_t>("recovery_every_steps");
 #ifdef AERO_HAS_VISCOSITY

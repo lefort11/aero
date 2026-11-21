@@ -77,6 +77,10 @@ int run_application(int argc, char** argv, const Processes& world) {
         return 0;
     }
     ReconstructionOptions options;
+    if (run.stencil_geometry == "ijk") options.geometry = StencilGeometry::Ijk;
+    if (run.stencil_geometry == "pl") options.geometry = StencilGeometry::Pl;
+    if (run.stencil_geometry == "auto") options.geometry = StencilGeometry::Auto;
+    options.max_turn_degrees = run.stencil_max_angle;
     options.scheme = reconstruction_scheme(run.reconstruction).scheme;
     options.mpweno_ad_corr = run.mpweno_ad_corr;
     if (reconstruction_scheme(options.scheme).family == ReconstructionFamily::Mp) {

@@ -59,6 +59,8 @@ struct RunSettings {
     bool steady() const { return time_scheme == "steady"; }
     bool uses_implicit_time() const { return steady() || time_scheme == "bdf1" || time_scheme == "bdf2"; }
     std::string euler_solver;             // Численный поток Roe или LF.
+    std::string stencil_geometry = "straight";
+    double stencil_max_angle = 36.;
     bool mpweno_ad_corr; // Антидиссипативная поправка к весам MPWENO5 из scheme.txt.
     double mp6_hybrid; // Вес связанной центральной коррекции двух следов.
     double upw_coeff; // Доля диссипации LF/Roe и доля EBR при смешивании с центральной реконструкцией.
@@ -81,6 +83,7 @@ struct RunSettings {
     ExactSolution exact_solution = ExactSolution::Off; // Формулы или снимок полей из exact.txt.
     bool mpi_timing = false;      // Собирать время операций по процессам.
     double mpi_memory_factor = 4; // Множитель оценки памяти по данным архива.
+    std::uint64_t prophecy_every_step = 0; // Интервал прогноза в принятых шагах; ноль отключает вывод.
     std::uint64_t report_every, recovery_every_steps = 0; // Интервалы отчёта и контрольной точки в шагах.
     std::vector<OutputZone> output_zones; // Какие поля, куда и с какой частотой записывать.
 };

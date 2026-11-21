@@ -4,12 +4,15 @@
 #include "../eulersolver/linear_euler.h"
 #include <cstddef>
 #include <cstdint>
+#include <ctime>
 #include <iostream>
 #include <limits>
 #include <vector>
 #include <string>
 
 namespace aero {
+// Единый формат календарного времени для отчёта и прогноза завершения расчёта.
+std::string local_date_time(std::time_t timestamp);
 class ExplicitIntegrator;
 struct FlowRange {
     double low = std::numeric_limits<double>::max(), high = std::numeric_limits<double>::lowest();

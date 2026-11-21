@@ -17,6 +17,7 @@
     <ClInclude Include="..\source\reconstruction\mp5.h" />
     <ClInclude Include="..\source\reconstruction\mp6_hybrid.h" />
     <ClInclude Include="..\source\reconstruction\mpweno5.h" />
+    <ClCompile Include="..\source\reconstruction\curved_stencil.cpp" />
     <ClCompile Include="..\source\reconstruction\ray_geometry.cpp" />
     <ClCompile Include="..\source\reconstruction\reconstruction.cpp" />
     <ClInclude Include="..\source\reconstruction\reconstruction.h" />

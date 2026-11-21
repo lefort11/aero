@@ -70,7 +70,8 @@ void show_settings(const RunSettings& r) {
               << "\nEquations = " << (r.background.active() ? "Linear" : "Euler")
               << "\nmesh = " << r.mesh_path << "\nbackend = " << (r.use_cuda ? "cuda" : "cpu")
               << "\nreconstruction = " << r.reconstruction
-              << "\nreconstruction_variables = " << r.reconstruction_variables
+              << "\nstencil_geometry = " << r.stencil_geometry << "\nstencil_max_angle = " << r.stencil_max_angle
+                << "\nreconstruction_variables = " << r.reconstruction_variables
               << "\neuler_solver = " << r.euler_solver << "\ntime_scheme = " << r.time_scheme
               << "\nupw_coeff = " << r.upw_coeff << "\ntrace_ratio_min = " << r.trace_ratio_min << "\ntrace_ratio_max = " << r.trace_ratio_max
               << "\ngamma = " << r.gamma << "\ncfl = " << r.cfl;
@@ -113,6 +114,7 @@ void show_settings(const RunSettings& r) {
     std::cout << 1;
 #endif
     std::cout << ")\nreport_every = " << r.report_every << '\n';
+    if (r.prophecy_every_step) std::cout << "prophecy_every_step = " << r.prophecy_every_step << '\n';
     if (r.steady())
         std::cout << "local_time_step = " << (r.local_time_step ? "on" : "off") << "\nsteady_criterion = " << (r.steady_absolute ? "absolute" : "relative") << "\nsteady_tol = " << r.steady_tol << "\nsteady_max_steps = " << r.steady_max_steps << '\n';
     if (r.local_time_step) {

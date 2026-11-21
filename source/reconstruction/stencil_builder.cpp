@@ -1,4 +1,6 @@
+#include <mutex>
 #include "stencil_builder.h"
+#include "curved_stencil.h"
 #include <cmath>
 #include <algorithm>
 
@@ -84,7 +86,7 @@ ReconstructionSideScheme effective_side_scheme(unsigned order, const Reconstruct
 void append_stencil_sides(ReconstructionStencilData& rows, const ReconstructionGeometry& geometry,
                           const ReconstructionOptions& options, const ReconstructionSchemeInfo& scheme,
                           MeshIndex edge, double length, const SparseRow& central,
-                          const SideSupport (&support)[2]) {
+                          const SideSupport (&support)[2], bool curved) {
     const bool nonlinear = uses_slope_rows(scheme.family);
     const unsigned requested_order = scheme.layers == 2 ? 5 : 3;
     for (unsigned side = 0; side < 2; ++side) {
@@ -99,7 +101,7 @@ void append_stencil_sides(ReconstructionStencilData& rows, const ReconstructionG
             throw ReconstructionError("Incomplete requested " + family + " stencil at edge " +
                                       std::to_string(edge) + " side " + std::to_string(side));
         }
-        geometry.append_row(rows, linear_increment(order, central, own, opposite), edge, side);
+        geometry.append_row(rows, linear_increment(order, central, own, opposite), edge, side, curved);
         rows.complete.push_back(complete ? 1 : 0);
         rows.side_scheme.push_back(actual);
         rows.outer_distance.push_back(order ? own.near_point.distance : 0);
@@ -116,11 +118,6 @@ void append_stencil_sides(ReconstructionStencilData& rows, const ReconstructionG
 
 using NodeList = std::vector<MeshIndex>;
 using FaceLists = std::vector<std::vector<MeshIndex>>;
-
-struct LayerFaces {
-    FaceLists near; // Грани, у которых все вершины принадлежат первому слою узла.
-    FaceLists far;  // Аналогичные грани второго слоя; нужны только схемам пятого порядка.
-};
 
 // Один номер может встретиться через несколько узлов. Оставляем его один раз.
 void sort_unique(NodeList& ids) {
@@ -147,50 +144,62 @@ NodeList faces_inside_layer(MeshView mesh, const NodeList& layer, const FaceList
 }
 
 // Первый слой — все вершины общих ячеек. Второй — их соседи за вычетом центра и первого слоя.
-LayerFaces build_layer_faces(MeshView mesh, bool need_far) {
-    FaceLists neighbours(mesh.node_count);
-    FaceLists node_faces(mesh.node_count);
-    for (MeshIndex cell = 0; cell < mesh.cell_count; ++cell) {
-        const auto nodes = mesh.cell(cell).node_ids();
-        for (MeshIndex node : nodes) {
-            for (MeshIndex other : nodes) {
-                if (other != node) {
-                    neighbours[node].push_back(other);
-                }
-            }
-        }
-    }
-    for (MeshIndex face = 0; face < mesh.face_count; ++face) {
-        for (MeshIndex node : mesh.face_nodes(face)) {
-            node_faces[node].push_back(face);
-        }
-    }
+class StraightLayers {
+    MeshView mesh_;
+    bool fifth_;
+    FaceLists neighbours_, node_faces_, near_, far_;
+    std::vector<std::once_flag> pending_;
 
-    parallel_for(mesh.node_count, [&](MeshIndex node) { sort_unique(neighbours[node]); });
-    LayerFaces layers;
-    layers.near.resize(mesh.node_count);
-    if (need_far) {
-        layers.far.resize(mesh.node_count);
-    }
-    parallel_for(mesh.node_count, [&](MeshIndex node) {
-        const auto& first = neighbours[node];
-        layers.near[node] = faces_inside_layer(mesh, first, node_faces);
-        if (!need_far) {
+    // Формируем обе оболочки узла за один вызов. Несколько рёбер могут пользоваться ими одновременно.
+    void prepare(MeshIndex node) {
+        const auto& first = neighbours_[node];
+        near_[node] = faces_inside_layer(mesh_, first, node_faces_);
+        if (!fifth_)
             return;
-        }
         NodeList second;
         for (MeshIndex adjacent : first) {
-            for (MeshIndex candidate : neighbours[adjacent]) {
-                if (candidate != node && !std::binary_search(first.begin(), first.end(), candidate)) {
+            for (MeshIndex candidate : neighbours_[adjacent]) {
+                if (candidate != node && !std::binary_search(first.begin(), first.end(), candidate))
                     second.push_back(candidate);
-                }
             }
         }
         sort_unique(second);
-        layers.far[node] = faces_inside_layer(mesh, second, node_faces);
-    });
-    return layers;
-}
+        far_[node] = faces_inside_layer(mesh_, second, node_faces_);
+    }
+
+  public:
+    StraightLayers(MeshView mesh, bool fifth, bool on_demand)
+        : mesh_(mesh), fifth_(fifth), neighbours_(mesh.node_count), node_faces_(mesh.node_count),
+          near_(mesh.node_count), far_(fifth ? mesh.node_count : 0),
+          pending_(on_demand ? mesh.node_count : 0) {
+        for (MeshIndex cell = 0; cell < mesh.cell_count; ++cell) {
+            const auto nodes = mesh.cell_nodes(cell);
+            for (MeshIndex node : nodes)
+                for (MeshIndex other : nodes)
+                    if (other != node)
+                        neighbours_[node].push_back(other);
+        }
+        for (MeshIndex face = 0; face < mesh.face_count; ++face)
+            for (MeshIndex node : mesh.face_nodes(face))
+                node_faces_[node].push_back(face);
+        parallel_for(mesh.node_count, [&](MeshIndex n) { sort_unique(neighbours_[n]); });
+        // В обычном режиме все узлы нужны заранее. После заполнения оболочек
+        // освобождаем связность, чтобы не хранить её вместе с готовыми строками.
+        if (!on_demand) {
+            parallel_for(mesh.node_count, [&](MeshIndex n) { prepare(n); });
+            FaceLists().swap(neighbours_);
+            FaceLists().swap(node_faces_);
+        }
+    }
+
+    const NodeList& faces(MeshIndex node, bool far) {
+        // На структуре рёбра сразу получают опорные точки. Оболочка потребуется
+        // только при возврате к прямому шаблону, один раз на все рёбра данного узла.
+        if (!pending_.empty())
+            std::call_once(pending_[node], [&] { prepare(node); });
+        return far ? far_[node] : near_[node];
+    }
+};
 
 // Обе схемы пятого порядка берут разность интерполированных значений в двух пересечениях одного луча.
 void build_far_layer_slope(const RayPoint& far, unsigned side, double length, double tolerance,
@@ -210,29 +219,36 @@ void build_layer_stencil(const Mesh& mesh, const ReconstructionOptions& options,
                         const ReconstructionSchemeInfo& scheme, ReconstructionStencilData& data) {
     const ReconstructionGeometry geometry(mesh, options.relative_tolerance);
     const auto view = mesh.view();
-    const auto layers = build_layer_faces(view, scheme.layers == 2);
+    const CurvedStencil curves(mesh, options);
+    const bool fifth = scheme.layers == 2;
+    StraightLayers layers(view, fifth, options.geometry != StencilGeometry::Straight);
     build_edge_rows(data, [&](MeshIndex edge, ReconstructionStencilData& rows) {
         const MeshIndex endpoints[] = {view.edge_begin[edge], view.edge_end[edge]};
         const double length = geometry.edge_length(edge);
         const SparseRow central = {{endpoints[0], -1}, {endpoints[1], 1}}; // Q_j − Q_i.
         SideSupport support[2];
 
+        CurvedPoints points;
+        const bool use_curve = curves.points(edge, fifth, points);
         // Продлеваем ребро за каждый конец. Первый слой даёт ближнюю опору и наклон от узла к ней.
         for (unsigned side = 0; side < 2; ++side) {
             const MeshIndex node = endpoints[side];
             auto& s = support[side];
-            s.near_point = geometry.layer_hit(edge, side, layers.near[node]);
+            s.near_point =
+                use_curve ? points.near[side] : geometry.layer_hit(edge, side, layers.faces(node, false));
             if (!s.near_point.weights.empty())
                 s.near_slope = ray_derivative(node, s.near_point, length, side);
         }
         // Обе формулы пятого порядка требуют ближних опор с двух сторон и дальней опоры со своей стороны.
         if (scheme.layers == 2 && !support[0].near_slope.empty() && !support[1].near_slope.empty()) {
             for (unsigned side = 0; side < 2; ++side) {
-                const auto far = geometry.layer_hit(edge, side, layers.far[endpoints[side]]);
+                const auto far = use_curve
+                                     ? points.far[side]
+                                     : geometry.layer_hit(edge, side, layers.faces(endpoints[side], true));
                 build_far_layer_slope(far, side, length, options.relative_tolerance, support[side]);
             }
         }
-        append_stencil_sides(rows, geometry, options, scheme, edge, length, central, support);
+        append_stencil_sides(rows, geometry, options, scheme, edge, length, central, support, use_curve);
     });
 }
 }

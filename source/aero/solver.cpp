@@ -524,8 +524,21 @@ prepare_partition_operator(const RunSettings& run, const ReconstructionOptions& 
     if (run.steady()) world.local([&] { op->prepare_steady_steps(run.use_cuda, run.local_time_step, run.local_time_step_max_ratio); });
     Id downgraded = 0;
     if (needs_stencil) {
-        downgraded =
-            op->prepare_stencil(part, seam, boundaries.periodic_pairs, input.get(), requests, reconstruction);
+        auto options = reconstruction;
+        if (options.geometry == StencilGeometry::Pl || options.geometry == StencilGeometry::Auto) {
+            for (Id p=0;p<part.physical_patches;++p)
+                if (solid_wall(boundaries.patches.by_patch[p].type()))
+                    options.wall_labels.push_back(part.mesh.data().patch_names[p]);
+        }
+        double seconds = 0.;
+        {
+            WallTimer preparation(run.mpi_timing ? &seconds : nullptr);
+            downgraded = op->prepare_stencil(part, seam, boundaries.periodic_pairs, input.get(), requests, options);
+        }
+        if (run.mpi_timing) {
+            const double slowest = world.reduce_double(seconds, true);
+            if (!world.rank) std::cout << "Stencil preparation (s) = " << slowest << '\n';
+        }
     }
 #ifdef AERO_HAS_VISCOSITY
     op->prepare_viscosity(part,seam,frame,run);

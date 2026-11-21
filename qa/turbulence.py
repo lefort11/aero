@@ -1,5 +1,6 @@
 """Сверяет перенос SA, влияние турбулентной вязкости на газ и восстановление BDF2."""
 import math
+import shutil
 from pathlib import Path
 
 from mpi_common import mpi_parser, mpi_workspace
@@ -18,6 +19,39 @@ def configure(case, args, dimension=2, decompose=True):
     (case / "output.txt").write_text("[flow]\nfile=state.fields\nformat=binary\nlayout=global\n"
         f"every_time=.005\nvariables=rho,{velocity},p,E,nu_tilde,nut\n")
     return coords
+
+
+def jet_from_rest(case, args):
+    """Проверяет, что профиль free запускает струю и переносит SA в первый внутренний узел."""
+    case.mkdir()
+    coords = configure(case, args, dimension=3, decompose=False)
+    shutil.copyfile(Path(__file__).parent / "fixtures" / "jet_profile.dat", case / "jet.dat")
+    (case / "init.txt").write_text("initial_type=formula\nrho=1\np=.286301\nux=0\nuy=0\nuz=0\n")
+    (case / "bc.txt").write_text(
+        "[xmin]\nbc_type free\nprofile jet.dat\nprofile_center 0 .5 .5\nprofile_axis 1 0 0\n"
+        "superin profile\ninflow profile\noutflow base_p profile\n"
+        "[xmax,ymin,ymax,zmin,zmax]\nbc_type novisc_wall\n"
+    )
+    # Начальные скорость и рабочая вязкость нулевые. Давление в профиле совпадает
+    # с начальным по всему срезу, поэтому скачок давления сам по себе струю не создаёт.
+    options = ["main:final_time=.005", "main:upw_coeff=1", "gas:reynolds=1262900",
+               "turbulence:nut_nu_amb=0"]
+    axis = sorted((x, i) for i, (x, y, z) in enumerate(coords) if y == z == .5)
+    (_, inlet), (_, inside) = axis[:2]
+    reference = None
+    for backend in (("cpu", "gpu") if args.gpu else ("cpu",)):
+        field = solve(case, args, backend, gpu=backend == "gpu", options=options)
+        for name in ("ux", "nu_tilde"):
+            values = field[name]
+            assert values[inlet] > values[inside] > 0., (backend, name, values[inlet], values[inside])
+        if reference is not None:
+            delta = max_difference(reference, field)
+            assert delta < 1e-11, delta
+            for i in (inlet, inside):
+                assert math.isclose(reference["nu_tilde"][i], field["nu_tilde"][i], rel_tol=1e-9)
+        reference = field
+        print(f"OK jet from rest ({backend}), first interior node: "
+              f"ux={field['ux'][inside]:.8g}, nu_tilde={field['nu_tilde'][inside]:.8g}", flush=True)
 
 
 def shear(case, args):
@@ -362,8 +396,12 @@ if __name__=="__main__":
     parser.add_argument("--mpi",action="store_true")
     parser.add_argument("--gpu",action="store_true")
     parser.add_argument("--devices",default="0")
+    parser.add_argument("--jet-only", action="store_true", help="Run only the jet startup check")
     args=parser.parse_args()
     with mpi_workspace("turbulence-") as work:
+        jet_from_rest(Path(work)/"jet", args)
+        if args.jet_only:
+            raise SystemExit(0)
         ddes(Path(work)/"ddes",args)
         ddes_steady(Path(work)/"ddes-steady",args)
         ddes_warped(Path(work)/"ddes-warped",args)

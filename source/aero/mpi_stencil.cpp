@@ -1,4 +1,5 @@
 #include "mpi_stencil.h"
+#include "../reconstruction/curved_stencil.h"
 #include "mpi_periodic_detail.h"
 #include <numeric>
 
@@ -177,6 +178,115 @@ std::vector<Ref> support_states(const MeshPartition& part, const PeriodicPartiti
     return states;
 }
 
+// Привязываем каждую общую грань к процессам, содержащим её призмы.
+// Граница раздела MPI пропускает фронт нумерации так же, как внутренняя грань.
+std::vector<int> partition_layer_depths(const MeshPartition& part, const MeshPartition& halo,
+                                        const ReconstructionOptions& options, const Processes& w) {
+    detail::PrismLayers graph(part.mesh, options.wall_labels);
+    if (w.size == 1 && &part == &halo)
+        return graph.local_depths(part.mesh.view());
+    std::map<Id, std::vector<std::pair<int, Id>>> directory;
+    exchange(
+        w,
+        [&](Messages& out) {
+            const auto mesh = part.mesh.view();
+            // Только грани на стыках требуют обмена: обе призмы внутренней грани
+            // уже известны этому процессу, а у физической границы соседа нет.
+            for (Id i = 0; i < mesh.boundary_face_count; ++i) {
+                const Id f = mesh.boundary_faces[i];
+                if (mesh.boundary_patch[i] < part.physical_patches || graph.opposite[f].empty())
+                    continue;
+                const Id global = part.faces.at(f);
+                auto& packet = out[global % static_cast<Id>(w.size)];
+                put(packet, global);
+                put(packet, f);
+            }
+        },
+        [&](Reader& r, int rank) {
+            const Id global = r.id(), local = r.id();
+            directory[global].emplace_back(rank, local);
+        });
+    std::map<Id, std::vector<std::pair<int, Id>>> peers;
+    exchange(
+        w,
+        [&](Messages& out) {
+            for (const auto& group : directory)
+                for (const auto& a : group.second)
+                    for (const auto& b : group.second)
+                        if (a.first != b.first) {
+                            auto& packet = out[a.first];
+                            put(packet, a.second);
+                            put(packet, static_cast<Id>(b.first));
+                            put(packet, b.second);
+                        }
+        },
+        [&](Reader& r, int) {
+            const Id f = r.id(), rank = r.id(), remote = r.id();
+            peers[f].emplace_back(static_cast<int>(rank), remote);
+        });
+    const auto local = graph.local_depths(part.mesh.view(), [&](Ids& frontier) {
+        if (!w.sum(frontier.size()))
+            return false;
+        exchange(
+            w,
+            [&](Messages& out) {
+                for (Id f : frontier) {
+                    const auto found = peers.find(f);
+                    if (found != peers.end())
+                        for (const auto& p : found->second)
+                            put(out[p.first], p.second);
+                }
+            },
+            [&](Reader& r, int) { frontier.push_back(r.id()); });
+        return true;
+    });
+    // На стыке стенок узел может входить в несколько столбцов призм. Его
+    // владелец выбирает минимальный номер слоя среди всех копий, в том числе
+    // если в его собственную часть не попало ни одной пристенной призмы.
+    auto minimum = local;
+    exchange(
+        w,
+        [&](Messages& out) {
+            for (Id n = 0; n < local.size(); ++n) {
+                const int owner = part.node_owners[n];
+                if (local[n] < 0 || owner == w.rank)
+                    continue;
+                put(out[owner], part.nodes[n]);
+                put(out[owner], static_cast<Id>(local[n]));
+            }
+        },
+        [&](Reader& r, int) {
+            const Id n = index_of(part.nodes, r.id());
+            const int level = static_cast<int>(r.id());
+            if (minimum[n] < 0 || level < minimum[n])
+                minimum[n] = level;
+        });
+    // Для вспомогательных узлов шаблона запрашиваем окончательный номер у владельца.
+    std::vector<int> depth(halo.nodes.size(), -1);
+    Messages replies(w.size);
+    exchange(
+        w,
+        [&](Messages& out) {
+            for (Id n = 0; n < halo.nodes.size(); ++n) {
+                auto& packet = out[halo.node_owners[n]];
+                put(packet, n);
+                put(packet, halo.nodes[n]);
+            }
+        },
+        [&](Reader& r, int p) {
+            const Id slot = r.id(), n = index_of(part.nodes, r.id());
+            put(replies[p], slot);
+            put(replies[p], static_cast<Id>(minimum[n] + 1));
+        });
+    exchange(
+        w, [&](Messages& out) { out.swap(replies); },
+        [&](Reader& r, int) {
+            const Id slot = r.id();
+            depth[slot] = static_cast<int>(r.id()) - 1;
+        });
+    return depth;
+}
+
 Id find_edge(MeshView m, Id a, Id b) {
     const auto first = std::lower_bound(m.edge_begin, m.edge_begin + m.edge_count, a) - m.edge_begin;
     const auto last = std::upper_bound(m.edge_begin + first, m.edge_begin + m.edge_count, a) - m.edge_begin;
@@ -278,6 +388,10 @@ PartitionStencil prepare_partition_stencil(const MeshPartition& part, const Peri
         nodal = requests.inlet_nodes;
     const MeshPartition& halo = input ? support : part;
     const auto native_states = input ? support_states(part, seam, halo, w) : std::vector<Ref>();
+    const bool pl = options.geometry == StencilGeometry::Pl || options.geometry == StencilGeometry::Auto;
+    std::vector<int> depth;
+    if (pl && w.sum(options.wall_labels.size()))
+        depth = partition_layer_depths(part, halo, options, w);
     PartitionStencil result;
     result.mp5 = {options.scheme == ReconstructionScheme::Mp5, options.scheme == ReconstructionScheme::MPWENO5,
                   options.mpweno_ad_corr, options.mp5_alpha};
@@ -305,7 +419,22 @@ PartitionStencil prepare_partition_stencil(const MeshPartition& part, const Peri
             field.swap(image_field);
         }
         const Mesh& geometry = seam ? lifted : halo.mesh;
-        const auto prepared = prepare_reconstruction(geometry, options);
+        auto local_options = options;
+        if (!depth.empty() && seam) {
+            // Поле периодического образа ссылается на представителя. Номер
+            // пристенного слоя переносим и на все его геометрические копии.
+            std::vector<int> compact(input ? states.size() : ids.size(), -1);
+            for (Id n = 0; n < depth.size(); ++n)
+                if (depth[n] >= 0) {
+                    auto& level = compact[input ? numbering.at(native_states[n]) : seam->node_dof[n]];
+                    if (level < 0 || depth[n] < level)
+                        level = depth[n];
+                }
+            for (Id slot : field)
+                local_options.node_layers.push_back(compact[slot]);
+        } else
+            local_options.node_layers.swap(depth);
+        const auto prepared = prepare_reconstruction(geometry, local_options);
         const auto& src = prepared.data();
         // Строки геометрии используют номера вершин вспомогательной сетки. Солверу нужны смещения в массиве состояний.
         std::map<Ref, Id> extra;

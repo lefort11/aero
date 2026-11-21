@@ -12,6 +12,21 @@
 #include <stdexcept>
 
 namespace aero {
+std::string local_date_time(std::time_t timestamp) {
+    std::tm local{};
+#ifdef _WIN32
+    if (localtime_s(&local, &timestamp) == 0)
+#else
+    if (localtime_r(&timestamp, &local))
+#endif
+    {
+        std::ostringstream out;
+        out << std::put_time(&local, "%Y-%m-%d %H:%M:%S");
+        return out.str();
+    }
+    return "unavailable";
+}
+
 // Накапливает взвешенные квадраты приращений в масштабе наибольшего из них, чтобы избежать переполнения.
 void FlowSummary::add_squares(long double scale, long double weight) {
     if (scale == 0)
@@ -155,13 +170,7 @@ void write_flow_summary(const FlowSummary& total, std::uint64_t step, double tim
     title << "STEP " << step;
     if (!details.scheme.empty()) title << "  |  " << details.scheme;
     table << std::left << std::setw(53) << title.str();
-    std::tm local{};
-#ifdef _WIN32
-    if (localtime_s(&local, &now) == 0)
-#else
-    if (localtime_r(&now, &local))
-#endif
-        table << std::put_time(&local, "%Y-%m-%d %H:%M:%S");
+    table << local_date_time(now);
     table << '\n' << std::string(72, '-') << '\n';
     if (details.max_local_step)
         table << "dt_min = " << std::scientific << std::setprecision(6) << dt
