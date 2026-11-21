@@ -188,7 +188,7 @@ void local_steady_cfl() {
     expected_gas = .5;
 #endif
     const FluxCfl coupled(grid,flux,volumes,owned,2,sa_rate);
-    LocalSteadySteps steps{coupled,1.,dt};
+    LocalSteadySteps steps{coupled,1.,{},dt};
     StepRange range;
     steps.init(range);
     steps(0,range);
@@ -201,6 +201,40 @@ void local_steady_cfl() {
     require(dt[0] == expected_gas && dt[1] == .25, "cap respects ownership");
     limit(1);
     require(dt[0] == .375 && dt[1] == .25, "cap only shortens excessive local steps");
+}
+// Старый газ хранится по номерам строк, новый — по номерам узлов сетки.
+// Берём строку 0 для узла 1: перепутанные индексы меняют и давление, и шаг.
+void adaptive_steady_step() {
+    double before[] = {1.,0.,0.,2.};
+    double after[] = {0.,0.,0.,0.,1.,0.,0.,2.};
+    AdaptiveStepChange step{};
+    step.old_field = before; step.field = after;
+    step.dim = 2; step.gamma = 2.; step.ceiling = 1.25; step.fraction = 1.;
+    const auto expect = [&](double target, const char* message) {
+        require(std::abs(step.next(0,1,2.)-target)<1.e-12,message);
+    };
+    expect(2.5,"rest allows bounded local growth");
+    after[7] = 2.08;
+    expect(1.,"pressure change restricts local pseudo-time");
+    after[7] = 2.; after[4] = 1.04;
+    expect(1.,"density change restricts local pseudo-time");
+    after[4] = 1.; after[5] = .024; after[6] = .032; after[7] = 2.+.5*.04*.04;
+    expect(2./std::sqrt(2.),"velocity change is scaled by sound speed");
+    after[5] = after[6] = 0.; after[7] = 2.;
+#ifdef AERO_HAS_TURBULENCE
+    double old_sa[] = {0.,0.}, new_sa[] = {0.,.02};
+    turbulence::View::Material material[2]{};
+    material[1].nu = .1;
+    step.old_sa = old_sa; step.sa = new_sa; step.material = material;
+    expect(1.,"SA uses molecular viscosity at zero working viscosity");
+    step.sa = nullptr;
+#endif
+    step.ceiling = 1.; step.fraction = .5;
+    expect(1.,"after retry the accepted shortened step is retained");
+    // У линеаризованных уравнений нулевые пульсации допустимы. Масштабы задаёт фон.
+    step.background.rho = 1.; step.background.p = 2.; step.background.sound = 2.;
+    before[0] = before[3] = after[4] = 0.; after[7] = .08;
+    expect(.5,"linear pressure perturbation is measured against background");
 }
 void trace_limiter_test() {
     // При γ = 2 в узле ρ = 2, u = (1,0), p = 4. Кандидат имеет ρ = 4, u = (3,2), p = 12.
@@ -691,6 +725,7 @@ int main(int argc, char** argv) {
     try {
         signed_surface_balance();
         local_steady_cfl();
+        adaptive_steady_step();
         basis_test();
         first_order_side_flux();
         trace_limiter_test();

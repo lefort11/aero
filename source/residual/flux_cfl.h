@@ -3,6 +3,7 @@
 #include "../parallel/kernel_math.h"
 #include "residual_detail.h"
 #include "../timestep/cfl_detail.h"
+#include "../timestep/adaptive_step.h"
 #include "../mesh/mesh_index.h"
 
 namespace aero {
@@ -63,6 +64,7 @@ struct LocalSteadySteps {
     using value_type = StepRange;
     FluxCfl gas;
     double courant;
+    AdaptiveStepChange change; // Пустое поле означает обычный шаг CFL.
     double* steps;         // Общий шаг газа и SA в нумерации узлов подобласти.
 
     AERO_HOST_DEVICE void init(StepRange& range) const { range = {max_finite_double, 0.}; }
@@ -72,7 +74,7 @@ struct LocalSteadySteps {
     }
     AERO_HOST_DEVICE void operator()(Index row, StepRange& range) const {
         const Index node = gas.owned ? gas.owned[row] : row;
-        double dt = gas.local(row, courant).dt;
+        double dt = change.field ? change.next(row,node,steps[node]) : gas.local(row,courant).dt;
         if (!(dt > 0. && dt < max_finite_double)) dt = -1.;
         steps[node] = dt;
         if (dt < range.minimum) range.minimum = dt;

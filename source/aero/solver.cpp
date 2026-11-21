@@ -20,6 +20,7 @@
 #include "../io/report.h"
 #include "../io/settings_text.h"
 #include <iomanip>
+#include <chrono>
 #include <cctype>
 #include <iostream>
 #include <limits>
@@ -164,7 +165,8 @@ public:
 
     // После принятия шага все ранги уже прочитали один набор команд. Меняем
     // только правило выбора dt: поле и накопленная пространственная матрица остаются пригодными.
-    void set_steady_steps(bool local, double max_ratio) {
+    void set_steady_steps(LocalStepMode local, double max_ratio) {
+        previous_norm_ = 0.;
         run_.local_time_step = local;
         run_.local_time_step_max_ratio = max_ratio;
         op_.set_steady_steps(local, max_ratio);
@@ -217,15 +219,21 @@ public:
     // Сохраняем все узлы, включая обменные. При отказе на поздней стадии
     // SSPRK3 или итерации Ньютона возвращаемся именно к началу шага.
     bool attempt(const TimeStep& step, SolverTimings& timing) {
-        if (!run_.stabilization.active()) {
-            advance(step, timing);
-            return true;
-        }
-        world_.local([&] { op_.copy_backup(fields_.current, backup_, false); });
+        if (run_.stabilization.active())
+            world_.local([&] { op_.copy_backup(fields_.current, backup_, false); });
         try {
             advance(step, timing);
             return true;
+        } catch (const implicit::LinearSolveFailure& e) {
+            if (run_.local_time_step != LocalStepMode::Auto) throw implicit_error(step,e);
+            op_.retry_auto_step(step.dt);
+            accepted_fluxes_ = false;
+            if (!world_.rank)
+                std::cout << "RETRY step " << step.number << " | " << e.what()
+                          << " | dt_min " << step.dt << " -> " << .5*step.dt << std::endl;
+            return false;
         } catch (const RejectedGasState&) {
+            if (run_.local_time_step == LocalStepMode::Auto) op_.reset_auto_history();
             world_.local([&] { op_.copy_backup(fields_.current, backup_, true); });
             if (run_.stabilization.local_order()) {
                 op_.set_low_order(marks_);
@@ -265,7 +273,7 @@ public:
         // Старые recovery заканчиваются списками узлов. Дописываем режим только
         // после ручной команды, чтобы в остальных случаях действовал текущий implicit.txt.
         if (runtime_steady_steps_) {
-            out << " local_time_step " << (run_.local_time_step ? "on" : "off") << ' ';
+            out << " local_time_step " << local_step_name(run_.local_time_step) << ' ';
             if (run_.local_time_step_max_ratio) out << run_.local_time_step_max_ratio;
             else out << "off";
         }
@@ -332,10 +340,32 @@ public:
                                        std::function<void()>([&] { validate_stage(); }) : std::function<void()>());
             // Критерий Ньютона проверен по потокам принятого поля. До следующего CFL поле сохраняется.
             accepted_fluxes_ = true;
+        } catch (const implicit::LinearSolveFailure&) {
+            throw; // Обработчик попытки решает, можно ли повторить шаг.
         } catch (const std::exception& e) {
-            throw std::runtime_error(std::string(run_.implicit_settings.second_order ? "BDF2 step " : "BDF1 step ") + std::to_string(step.number) + ": " + e.what());
+            throw implicit_error(step,e);
         }
         if (step.reporting) world_.local([&] { finish_report(step); });
+    }
+
+    // Один и тот же запрет роста нужен всем разделам. Норма и число итераций
+    // глобальные. На ведущем процессе измеряем время между принятыми состояниями.
+    void observe_steady(double norm) {
+        if (run_.local_time_step != LocalStepMode::Auto) return;
+        const auto now = std::chrono::steady_clock::now();
+        bool hold = false;
+        if (previous_norm_ > 0. && norm > 0.) {
+            const double seconds = std::chrono::duration<double>(now - previous_time_).count();
+            if (seconds > 0.) {
+                const double speed = std::log(previous_norm_/norm)/seconds;
+                hold = !world_.rank && newton_.linear_iterations > previous_work_ && speed < previous_speed_;
+                previous_speed_ = speed;
+            }
+        }
+        previous_norm_ = norm;
+        previous_time_ = now;
+        previous_work_ = newton_.linear_iterations;
+        op_.limit_auto_growth(world_.size==1 ? hold : world_.sum(hold ? 1 : 0) != 0);
     }
 
     // Даже процесс без собственных узлов участвует в сборе общей сводки.
@@ -369,6 +399,11 @@ public:
     }
 
 private:
+    std::runtime_error implicit_error(const TimeStep& step, const std::exception& error) const {
+        return std::runtime_error(std::string(run_.implicit_settings.second_order ? "BDF2 step " : "BDF1 step ")
+                                  + std::to_string(step.number) + ": " + error.what());
+    }
+
     // Сохраняем энергию перед первой стадией и измеряем её изменение после последней.
     // В MPI обе операции выполняются внутри уже существующей синхронизации стадии.
     void capture_report(const TimeStep& step) {
@@ -470,6 +505,9 @@ private:
     AdaptiveCourant courant_;
     std::vector<double> backup_, marks_; // Принятый слой и постоянные до сброса метки узлов.
     bool accepted_fluxes_ = false; // После чтения начального поля потоки ещё предстоит вычислить.
+    double previous_norm_ = 0., previous_speed_ = 0.; // Скорость убывания log невязки в секунду.
+    unsigned previous_work_ = 0; // Суммарное число итераций линейного решателя на предыдущем шаге.
+    std::chrono::steady_clock::time_point previous_time_;
     implicit::NewtonResult newton_{};    // Итог последнего принятого неявного шага.
     explicit_detail::Stages stages_;     // Коэффициенты и число стадий схемы по времени.
     std::unique_ptr<Report> report_; // Измерения на узлах этого процесса.
@@ -647,8 +685,13 @@ void integrate_partition(const RunSettings& run, const Processes& world, unsigne
     operations.cfl_step = [&](bool first_order_start, SolverTimings& timing) {
         return stepper.prepare_first_stage(first_order_start, timing);
     };
-    if (run.steady())
-        operations.steady_residual = [&] { return op.steady_residual(fields.current, fields.initial); };
+    if (run.steady()) {
+        operations.steady_residual = [&] {
+            const double norm = op.steady_residual(fields.current, fields.initial);
+            stepper.observe_steady(norm);
+            return norm;
+        };
+    }
     bool sample_time=false, write_rotation=false, write_sa=false;
     for (const auto& zone:run.output_zones) for (const auto& name:zone.variables) {
         sample_time |= diagnostic::needs_time(name);

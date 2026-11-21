@@ -1,6 +1,7 @@
 #ifndef AERO_IO_SETTINGS_TEXT_H
 #define AERO_IO_SETTINGS_TEXT_H
 
+#include "../timestep/local_step_mode.h"
 #include <cctype>
 #include <fstream>
 #include <cmath>
@@ -27,11 +28,12 @@ inline std::string lower_value(std::string value) {
 }
 
 // Для implicit.txt и control.txt разбираем режим и предел шага одинаково.
-inline bool parse_local_time_step(const std::string& text, const std::string& where) {
+inline LocalStepMode parse_local_time_step(const std::string& text, const std::string& where) {
     const auto value = lower_value(text);
-    if (value == "on") return true;
-    if (value == "off") return false;
-    throw std::invalid_argument(where + ": expected on or off");
+    if (value == "on") return LocalStepMode::On;
+    if (value == "off") return LocalStepMode::Off;
+    if (value == "auto") return LocalStepMode::Auto;
+    throw std::invalid_argument(where + ": expected on, off or auto");
 }
 inline double parse_local_step_ratio(const std::string& text, const std::string& where) {
     if (lower_value(text) == "off") return 0.;

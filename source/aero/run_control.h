@@ -9,7 +9,8 @@ class Processes;
 struct RunControl {
     Stabilization limits;
     double cfl, upwind, hybrid;
-    bool steady, local_time_step;
+    bool steady;
+    LocalStepMode local_time_step;
     double local_time_step_max_ratio;
     bool change_steady_steps = false; // Применяем обе настройки вместе после принятия шага.
     bool reset = false, stop = false, change_cfl = false;

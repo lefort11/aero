@@ -116,8 +116,8 @@ void show_settings(const RunSettings& r) {
     std::cout << ")\nreport_every = " << r.report_every << '\n';
     if (r.prophecy_every_step) std::cout << "prophecy_every_step = " << r.prophecy_every_step << '\n';
     if (r.steady())
-        std::cout << "local_time_step = " << (r.local_time_step ? "on" : "off") << "\nsteady_criterion = " << (r.steady_absolute ? "absolute" : "relative") << "\nsteady_tol = " << r.steady_tol << "\nsteady_max_steps = " << r.steady_max_steps << '\n';
-    if (r.local_time_step) {
+        std::cout << "local_time_step = " << local_step_name(r.local_time_step) << "\nsteady_criterion = " << (r.steady_absolute ? "absolute" : "relative") << "\nsteady_tol = " << r.steady_tol << "\nsteady_max_steps = " << r.steady_max_steps << '\n';
+    if (r.local_time_step != LocalStepMode::Off) {
         std::cout << "local_time_step_max_ratio = ";
         if (r.local_time_step_max_ratio) std::cout << r.local_time_step_max_ratio;
         else std::cout << "off";

@@ -201,32 +201,53 @@ void validate_cell_boundary(const MeshData& d, std::size_t cell) {
         fail("Polygon has disconnected contours");
 }
 
+// Равные строки имеют одинаковый минимальный номер, в том числе после
+// перестановки элементов. Они всегда попадают в одну группу. Группы
+// можно проверять независимо, без блокировки общего множества ключей.
+template<class Key>
+void check_unique_rows(const MeshCsr& csr, const Key& key, const char* duplicate) {
+    const auto count = rows(csr);
+    if (!count) return;
+    std::vector<std::vector<std::size_t>> groups(1 + (count - 1) / 1024);
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto begin = csr.indices.begin() + csr.offsets[i];
+        const auto end = csr.indices.begin() + csr.offsets[i + 1];
+        // Пустая строка попадёт в штатную проверку числа вершин или граней.
+        const Index minimum = begin == end ? 0 : *std::min_element(begin, end);
+        groups[minimum % groups.size()].push_back(i);
+    }
+    parallel_for(groups.size(), [&](std::size_t g) {
+        std::set<std::vector<Index>> seen;
+        for (const auto row : groups[g])
+            if (!seen.insert(key(row)).second) fail(duplicate);
+    }, 2);
+}
+
 // Одна геометрическая грань имеет один номер, даже при обратном обходе или другом начале цикла.
 void validate_unique_faces(const MeshData& d) {
-    const auto face_count = rows(d.face_nodes);
-    std::set<std::vector<Index>> face_keys;
-    for (std::size_t f = 0; f < face_count; ++f) {
+    check_unique_rows(d.face_nodes, [&](std::size_t f) {
         const Index count = d.face_nodes.offsets[f + 1] - d.face_nodes.offsets[f];
         if ((d.dimension < 3 && count != d.dimension) || (d.dimension == 3 && count < 3))
             fail("Face vertex count is invalid for the mesh dimension");
         sorted_row(d.face_nodes, f);
-        if (!face_keys.insert(canonical_face(d.face_nodes, f)).second)
-            fail("Duplicate face cycle; shared faces must use one face ID");
-    }
+        return canonical_face(d.face_nodes, f);
+    }, "Duplicate face cycle; shared faces must use one face ID");
 }
 
 // Считает, сколько ячеек используют каждую грань. На общей грани знаки двух ячеек взаимно уничтожаются.
 std::vector<unsigned char> count_incident_cells(const MeshData& d) {
     const auto face_count = rows(d.face_nodes), cell_count = rows(d.cell_faces);
-    std::set<std::vector<Index>> cell_keys;
     std::vector<unsigned char> incidence(face_count, 0);
     std::vector<int> orientation_sum(face_count, 0);
-    for (std::size_t c = 0; c < cell_count; ++c) {
+    check_unique_rows(d.cell_faces, [&](std::size_t c) {
         const Index count = d.cell_faces.offsets[c + 1] - d.cell_faces.offsets[c];
         if ((d.dimension == 1 && count != 2) || count < d.dimension + 1)
             fail("Cell face count is invalid for the mesh dimension");
-        if (!cell_keys.insert(sorted_row(d.cell_faces, c)).second)
-            fail("Duplicate cell");
+        return sorted_row(d.cell_faces, c);
+    }, "Duplicate cell");
+    // Внутренняя грань встречается в двух ячейках. Накапливаем её
+    // ориентированную сумму за один линейный проход без атомарных операций.
+    for (std::size_t c = 0; c < cell_count; ++c) {
         for (Index k = d.cell_faces.offsets[c]; k < d.cell_faces.offsets[c + 1]; ++k) {
             const Index f = d.cell_faces.indices[k];
             const int sign = d.cell_face_orientation[k];
@@ -272,8 +293,11 @@ void validate_exterior_faces(const MeshData& d, const std::vector<unsigned char>
 void validate_topology(const MeshData& d) {
     validate_unique_faces(d);
     const auto incidence = count_incident_cells(d);
-    for (std::size_t cell = 0; cell < rows(d.cell_faces); ++cell)
+    // Проверка оболочки использует только грани данной ячейки и локальные
+    // рабочие массивы. Все ячейки читают одну и ту же неизменяемую сетку.
+    parallel_for(rows(d.cell_faces), [&](std::size_t cell) {
         validate_cell_boundary(d, cell);
+    });
     validate_exterior_faces(d, incidence);
 }
 

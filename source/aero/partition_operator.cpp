@@ -784,15 +784,39 @@ bool PartitionOperator::assemble_fluxes(const std::vector<double>& u, const std:
     return true;
 }
 
-void PartitionOperator::set_steady_steps(bool local, double max_ratio) {
-    steady_steps_->local = local;
+void PartitionOperator::reset_auto_history() {
+    accepted_field_ = nullptr;
+    previous_cfl_ = retry_dt_ = 0.;
+    retries_ = 0;
+    recovered_step_ = hold_growth_ = false;
+}
+
+void PartitionOperator::retry_auto_step(double failed_dt) {
+    // У BDF газ уже восстановлен из U_n. SA имеет собственную копию начала этого шага.
+#ifdef AERO_HAS_TURBULENCE
+    if (sa_active()) {
+        sa_dt_ = 0.;
+        sa_prediction_pending_ = false;
+        world_.local([&] { sa_apply(sa_step(),turbulence::Operation::RestoreStart); });
+        sa_exchange();
+    }
+#endif
+    gas_current_ = false;
+    if (++retries_ > 12) throw std::runtime_error("Auto LTS: BiCGSTAB failed after 12 step reductions");
+    retry_dt_ = .5 * failed_dt;
+}
+
+void PartitionOperator::set_steady_steps(LocalStepMode mode, double max_ratio) {
+    reset_auto_history();
+    step_mode_ = mode;
+    steady_steps_->local = mode != LocalStepMode::Off;
     steady_steps_->max_ratio = max_ratio;
 }
 
-void PartitionOperator::prepare_steady_steps(bool gpu, bool local, double max_ratio) {
+void PartitionOperator::prepare_steady_steps(bool gpu, LocalStepMode mode, double max_ratio) {
     // Адрес описания остаётся постоянным для газа, SA и матрицы на всех шагах.
     steady_steps_.reset(new SteadyNodeSteps);
-    set_steady_steps(local, max_ratio);
+    set_steady_steps(mode, max_ratio);
     if (!gpu) {
         host_steps_.resize(grid_.nodes);
         steady_steps_->values = host_steps_.data();
@@ -815,10 +839,32 @@ residual_detail::FluxCfl PartitionOperator::cfl_grid() const {
 }
 
 double PartitionOperator::prepare_local_steps(double cfl) {
+    // После отказа значения в узловом массиве остаются прежними. Отношение
+    // dt/minimum_step_ в интеграторе уменьшит сразу все строки газа и SA.
+    if (retry_dt_ > 0.) return retry_dt_;
+    const bool adapting = step_mode_ == LocalStepMode::Auto && previous_cfl_ > 0.;
     residual_detail::StepRange range{max_finite_double, 0.};
     world_.local([&] {
         if (owned.empty()) return;
-        const residual_detail::LocalSteadySteps steps{cfl_grid(), cfl, steady_steps_->values};
+        AdaptiveStepChange change{};
+        if (adapting) {
+            change.old_field = bdf_->start_field();
+            change.field = accepted_field_;
+            change.dim = grid_.dim;
+            change.gamma = grid_.options.gamma;
+            change.background = grid_.options.background;
+            change.fraction = accepted_fraction_ * (cfl / previous_cfl_);
+            change.ceiling = hold_growth_ || recovered_step_ ? 1. : 1.25;
+#ifdef AERO_HAS_TURBULENCE
+            if (sa_active()) {
+                const auto sa = sa_step().transport.sa;
+                change.old_sa = sa.old;
+                change.sa = sa.w;
+                change.material = sa.nodal_material;
+            }
+#endif
+        }
+        const residual_detail::LocalSteadySteps steps{cfl_grid(), cfl, change, steady_steps_->values};
 #ifdef AERO_WITH_KOKKOS_GPU
         if (gpu_) {
             if (const char* error = device_work::aero_device_local_steps(steps, &range))
@@ -835,7 +881,7 @@ double PartitionOperator::prepare_local_steps(double cfl) {
         throw std::domain_error("Invalid local steady time step");
     // Минимум уже учитывает и газ, и SA на всех процессах. Ограничиваем поле один
     // раз перед Ньютоном: матрица, невязка и перенос SA затем читают один шаг узла.
-    if (steady_steps_->max_ratio >= 1. && minimum_step_ <= max_finite_double / steady_steps_->max_ratio) {
+    if (!adapting && steady_steps_->max_ratio >= 1. && minimum_step_ <= max_finite_double / steady_steps_->max_ratio) {
         const double ceiling = minimum_step_ * steady_steps_->max_ratio;
         if (maximum_step_ > ceiling) {
             world_.local([&] {
@@ -852,6 +898,7 @@ double PartitionOperator::prepare_local_steps(double cfl) {
             maximum_step_ = ceiling; // В report попадает фактически применённый максимум.
         }
     }
+    current_step_cfl_ = cfl;
     return minimum_step_;
 }
 
@@ -1005,6 +1052,14 @@ implicit::NewtonResult PartitionOperator::advance_bdf(std::vector<double>& state
         sa_previous_dt_=sa_bdf2_?dt:0.; sa_dt_=0.;
     }
 #endif
+    if (step_mode_ == LocalStepMode::Auto) {
+        accepted_field_ = fields.state;
+        previous_cfl_ = current_step_cfl_;
+        accepted_fraction_ = dt_or_fraction;
+        recovered_step_ = retries_ > 0 || result.linear_iterations >= 100;
+        retries_ = 0;
+        retry_dt_ = 0.;
+    }
     return result;
 }
 

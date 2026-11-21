@@ -868,6 +868,12 @@ void register_invalid_topology() {
     invalid("duplicate boundary face", [](MeshData& d) { d.boundary_faces[0] = 1; });
     invalid("duplicate face after rotation", [](MeshData& d) { append_face(d, {2, 1, 0}); });
     invalid("duplicate face after reversal", [](MeshData& d) { append_face(d, {1, 2, 0}); });
+    add("duplicate face across parallel work groups", [] {
+        MeshData d = polygon(2050);
+        // Повтор первой грани в конце таблицы; направление обхода обратное.
+        append_face(d, {1, 0});
+        rejects([&] { Mesh mesh(d); }, "Duplicate face cycle");
+    });
     invalid("orphan face", [](MeshData& d) { append_face(d, {0, 1, 17}); });
     invalid("empty patch name", [](MeshData& d) { d.patch_names[0].clear(); });
     invalid("duplicate patch name", [](MeshData& d) { d.patch_names[1] = d.patch_names[0]; });

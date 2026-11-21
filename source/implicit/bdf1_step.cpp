@@ -181,6 +181,8 @@ BdfStep::BdfStep(const residual_detail::Geometry& host, const residual_detail::G
     : storage_(new Storage(host, active, device, part)) {}
 BdfStep::~BdfStep() = default;
 
+const double* BdfStep::start_field() const { return storage_->start; }
+
 void BdfStep::export_history(BdfHistory& history) const {
     const auto& s = *storage_;
     history.dt = s.previous_dt;
@@ -281,7 +283,7 @@ NewtonResult BdfStep::advance(double* state, const double* initial, const double
         // Критерий сходимости всегда отсчитывается от принятого U_n, в том
         // числе если предиктор сразу дал хорошее начальное приближение.
         s.begin_matrix_step(settings);
-        unsigned assemblies = 0;
+        unsigned assemblies = 0, linear_iterations = 0;
         double norm = initial_norm;
         if (!std::isfinite(norm)) throw std::domain_error("BDF: nonfinite nonlinear residual");
         bool viscous = false;
@@ -315,19 +317,20 @@ NewtonResult BdfStep::advance(double* state, const double* initial, const double
                 if (settings.second_order) std::swap(s.previous, s.start);
                 s.previous_dt = settings.second_order ? dt : 0.;
                 if (s.cached && !s.grid.options.background.active()) ++s.accepted_since_build;
-                return {iteration, relative, assemblies};
+                return {iteration, relative, linear_iterations, assemblies};
             }
             // Диагональ пространственной части берётся из баланса потоков. Временной
             // вклад a*V/dt добавляется при сборке системы для текущей поправки.
             if (!spatial_predictor || iteration != 0)
                 assemblies += s.prepare_matrix(state, initial, volumes, dt / leading, settings, iteration);
             const auto result = s.linear.solve_with_rhs_norm(s.rhs, s.correction, tolerance, norm);
+            linear_iterations += result.iterations;
             if (result.status != LinearStatus::Converged) {
                 std::ostringstream message;
                 message << "BiCGSTAB " << (result.status == LinearStatus::Breakdown ? "breakdown" : "iteration limit")
                         << " at Newton iteration " << iteration + 1 << ", linear relative residual = "
                         << result.residual_norm / norm;
-                throw std::runtime_error(message.str());
+                throw LinearSolveFailure(message.str());
             }
             update(NewtonUpdate::AddCorrection);
             // Для нового поля снова вычисляем физические потоки. Только по ним

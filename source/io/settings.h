@@ -1,6 +1,7 @@
 #ifndef AERO_IO_SETTINGS_H
 #define AERO_IO_SETTINGS_H
 #include "output_settings.h"
+#include "../timestep/local_step_mode.h"
 #include "../parallel/modules.h"
 #ifdef AERO_HAS_VISCOSITY
 #include "../viscosity/settings.h"
@@ -53,7 +54,7 @@ struct RunSettings {
     implicit::NewtonSettings implicit_settings; // Допуски и предел итераций из implicit.txt для неявных схем.
     bool steady_absolute = false;         // Сравнивать норму напрямую или относительно начального поля.
     double local_time_step_max_ratio = 4.; // Предел dt_i/dt_min в steady. Ноль отключает ограничение.
-    bool local_time_step = false; // Свой псевдошаг CFL в каждом узле при установлении.
+    LocalStepMode local_time_step = LocalStepMode::Off; // Свой псевдошаг CFL в каждом узле при установлении.
     double steady_tol = 1.e-6;            // Порог в единицах выбранного критерия.
     unsigned steady_max_steps = 10000;    // Предел числа псевдошагов с начала расчёта, включая восстановленные шаги.
     bool steady() const { return time_scheme == "steady"; }

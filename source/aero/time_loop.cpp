@@ -210,7 +210,7 @@ void integrate_time(const RunSettings& run, const Processes& world, OutputSchedu
         if (stopped) std::cout << "STOP: final fields and recovery saved at step " << number << std::endl;
         else if (steady)
             std::cout << "Steady state converged, " << criterion_name << " spatial residual = " << criterion << '\n';
-        std::cout << "Completed " << number << (run.local_time_step ? " steps. Accumulated minimum pseudo-time step = " :
+        std::cout << "Completed " << number << (run.local_time_step != LocalStepMode::Off ? " steps. Accumulated minimum pseudo-time step = " :
                                                steady ? " steps. Pseudo-time = " : " steps. Final time = ")
                   << time << '\n';
     }

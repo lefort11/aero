@@ -241,7 +241,7 @@ struct Transport {
 enum class Operation {
     Residual,
     Explicit,
-    SaveStart,
+    SaveStart, RestoreStart,
     SaveBackup,
     RestoreBackup,
     CommitHistory,
@@ -317,6 +317,9 @@ struct Step {
             break;
         case Operation::SaveStart:
             s.old[i] = s.w[i];
+            break;
+        case Operation::RestoreStart:
+            s.w[i] = s.old[i];
             break;
         case Operation::SaveBackup:
             s.backup[i] = s.w[i];

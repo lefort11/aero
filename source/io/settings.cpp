@@ -338,8 +338,8 @@ RunSettings read_run_settings(const RunDirectories& directories) {
         if (settings.contains("local_time_step")) {
             const auto entry = settings.take("local_time_step");
             run.local_time_step = parse_local_time_step(entry.value, entry.where);
-            if (run.local_time_step && !run.steady())
-                throw std::invalid_argument("implicit.txt: local_time_step=on requires time_scheme=steady");
+            if (run.local_time_step != LocalStepMode::Off && !run.steady())
+                throw std::invalid_argument("implicit.txt: local_time_step requires time_scheme=steady");
         }
         if (settings.contains("local_time_step_max_ratio")) {
             const auto entry = settings.take("local_time_step_max_ratio");

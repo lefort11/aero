@@ -1,4 +1,6 @@
 #include "mpi_stencil.h"
+#include "../parallel/parallel_for.h"
+#include <limits>
 #include "../reconstruction/curved_stencil.h"
 #include "mpi_periodic_detail.h"
 #include <numeric>
@@ -355,6 +357,70 @@ MeshPartition build_stencil_support(const MeshPartition& part, const PeriodicPar
     return support;
 }
 
+// Каждое ребро выбирает исходные строки для своих двух сторон. По их длинам
+// заранее выделяем непересекающиеся участки в общих массивах узлов и весов.
+class RowTransfer {
+    using Indices = std::vector<ReconstructionIndex>;
+    PartitionStencil::Rows& dst_;
+    const Indices &offsets_, &nodes_;
+    const std::vector<double>& weights_;
+    Indices source_; // Номер исходной строки для каждой строки приёмника.
+public:
+    RowTransfer(PartitionStencil::Rows& dst, const Indices& offsets, const Indices& nodes,
+                const std::vector<double>& weights)
+        : dst_(dst), offsets_(offsets), nodes_(nodes), weights_(weights),
+          source_(dst.offsets.empty() ? 0 : dst.offsets.size() - 1) {}
+    void select(Id row, Id dst) {
+        source_[dst] = row;
+        dst_.offsets[dst + 1] = offsets_[row + 1] - offsets_[row];
+    }
+    void copy(const Ids& field) {
+        if (source_.empty()) return;
+        auto& offsets = dst_.offsets;
+        std::partial_sum(offsets.begin(), offsets.end(), offsets.begin());
+        dst_.nodes.resize(offsets.back());
+        dst_.weights.resize(offsets.back());
+        parallel_for(source_.size(), [&](std::size_t row) {
+            const auto out = offsets[row], count = offsets[row + 1] - out;
+            if (!count) return;
+            const auto in = offsets_[source_[row]];
+            std::copy_n(weights_.data() + in, count, dst_.weights.data() + out);
+            // На целой сетке номера вершин уже совпадают с номерами состояний.
+            if (field.empty())
+                std::copy_n(nodes_.data() + in, count, dst_.nodes.data() + out);
+            else
+                for (Id k = 0; k < count; ++k)
+                    dst_.nodes[out + k] = field[nodes_[in + k]];
+        });
+    }
+};
+
+// Каждый используемый узел получает один номер на подобласть. Удалённые
+// узлы, не вошедшие ни в один шаблон, не увеличивают объём обмена MPI.
+void assign_import_slots(PartitionStencil& result, const std::vector<Ref>& states, const Ids& ids, int rank) {
+    const Id unused = std::numeric_limits<Id>::max();
+    Ids slots(states.size(), unused);
+    for (auto* rows : {&result.linear, &result.slopes})
+        for (const auto state : rows->nodes)
+            slots[state] = 0;
+    for (Id i = 0; i < states.size(); ++i) {
+        if (slots[i] == unused) continue;
+        const auto& node = states[i];
+        const auto it = std::lower_bound(ids.begin(), ids.end(), node.key.first);
+        if (it != ids.end() && *it == node.key.first) {
+            slots[i] = static_cast<Id>(it - ids.begin());
+        } else {
+            if (node.rank == rank) throw MeshError("MPI stencil: missing owned state");
+            slots[i] = ids.size() + result.extra_nodes.size();
+            result.extra_nodes.emplace_back(node.key.first, node.rank);
+        }
+    }
+    for (auto* rows : {&result.linear, &result.slopes})
+        parallel_for(rows->nodes.size(), [&](std::size_t k) {
+            rows->nodes[k] = slots[rows->nodes[k]];
+        });
+}
+
 // Линейной схеме нужны две строки на ребро. В WENO каждая сторона может иметь четыре строки наклонов.
 void allocate_stencil_rows(PartitionStencil& result, Id surfaces, bool weno) {
     const Id rows_per_edge = weno ? 8 : 2;
@@ -437,59 +503,41 @@ PartitionStencil prepare_partition_stencil(const MeshPartition& part, const Peri
         const auto prepared = prepare_reconstruction(geometry, local_options);
         const auto& src = prepared.data();
         // Строки геометрии используют номера вершин вспомогательной сетки. Солверу нужны смещения в массиве состояний.
-        std::map<Ref, Id> extra;
-        const auto slot = [&](Id vertex) -> Id {
-            // У целой сетки нумерация уже окончательная, в том числе для периодических образов.
-            if (!input)
-                return seam ? field[vertex] : vertex;
-            const Ref n = states[field[vertex]];
-            const auto it = std::lower_bound(ids.begin(), ids.end(), n.key.first);
-            if (it != ids.end() && *it == n.key.first)
-                return static_cast<Id>(it - ids.begin());
-            if (n.rank == w.rank)
-                throw MeshError("MPI stencil: missing owned state");
-            const auto add = extra.emplace(n, ids.size() + extra.size());
-            if (add.second)
-                result.extra_nodes.emplace_back(n.key.first, n.rank);
-            return add.first->second;
-        };
-        using Indices = std::vector<ReconstructionIndex>;
-        const auto copy_row = [&](Id row, Id dst, const Indices& offsets, const Indices& nodes,
-                                  const std::vector<double>& weights, PartitionStencil::Rows& out) {
-            for (Id k = offsets[row]; k < offsets[row + 1]; ++k) {
-                out.nodes.push_back(slot(nodes[k]));
-                out.weights.push_back(weights[k]);
-            }
-            // Пока храним длину строки; префиксная сумма после обхода превратит её в смещение CSR.
-            out.offsets[dst + 1] = offsets[row + 1] - offsets[row];
-        };
-        for (const auto& e : computed) {
-            const Id i = index_of(originals, e.original.first), j = index_of(originals, e.original.second);
-            const Id edge = find_edge(geometry.view(), i, j);
+        RowTransfer linear(result.linear, src.offsets, src.nodes, src.weights);
+        RowTransfer slopes(result.slopes, src.slope_offsets, src.slope_nodes, src.slope_weights);
+        std::vector<unsigned char> missing(computed.size(), 0);
+        parallel_for(computed.size(), [&](std::size_t k) {
+            const auto& e = computed[k];
+            // Для целой сетки без склейки номера исходных рёбер уже известны.
+            const Id edge = !input && !seam ? e.surface : find_edge(geometry.view(),
+                    index_of(originals, e.original.first), index_of(originals, e.original.second));
             const bool first = nodal.count(ids[e.begin]) || nodal.count(ids[e.end]);
             result.nodal_traces[e.surface] = first;
             for (Id side = 0; side < 2; ++side) {
                 const Id row = 2 * edge + side, dst = 2 * e.surface + side;
                 const Id endpoint = side ? e.end : e.begin;
-                if (slot(src.row_owner[row]) != endpoint)
+                const Id vertex = src.row_owner[row];
+                const Id owner = (input || seam) ? field[vertex] : vertex;
+                if (input ? states[owner].key.first != ids[endpoint] : owner != endpoint)
                     throw MeshError("MPI stencil: endpoint mismatch");
                 result.row_owner[dst] = endpoint;
                 if (!src.complete[row])
-                    ++result.incomplete;
+                    ++missing[k];
                 if (first)
                     continue;
                 if (weno && src.weno_order[row]) {
                     result.weno_order[dst] = src.weno_order[row];
                     result.epsilon_scale[dst] = src.weno_epsilon_scale[row];
-                    for (Id k = 0; k < 4; ++k)
-                        copy_row(4 * row + k, 4 * dst + k, src.slope_offsets, src.slope_nodes,
-                                 src.slope_weights, result.slopes);
+                    for (Id j = 0; j < 4; ++j)
+                        slopes.select(4 * row + j, 4 * dst + j);
                 } else
-                    copy_row(row, dst, src.offsets, src.nodes, src.weights, result.linear);
+                    linear.select(row, dst);
             }
-        }
-        for (auto* rows : {&result.linear, &result.slopes})
-            std::partial_sum(rows->offsets.begin(), rows->offsets.end(), rows->offsets.begin());
+        });
+        result.incomplete = std::accumulate(missing.begin(), missing.end(), Id(0));
+        linear.copy(field);
+        slopes.copy(field);
+        if (input) assign_import_slots(result, states, ids, w.rank);
     });
     return result;
 }

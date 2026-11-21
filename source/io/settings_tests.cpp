@@ -109,8 +109,9 @@ void arguments() {
 
 // Загружаем поставляемые с проектом шаблоны тем же путём, которым пользуется солвер.
 void templates_case() {
-    const char* args[] = {"aero", "--input=templates", "--output=./results"};
-    const auto run = read_run_settings(parse_run_arguments(3, args));
+    // Берём сетку с периодикой x и четырьмя метками, входящую в штатный комплект QA.
+    const char* args[] = {"aero", "--input=templates", "--output=./results", "main:mesh=../qa/cases/momentum_2d/grid.mesh"};
+    const auto run = read_run_settings(parse_run_arguments(4, args));
     require(run.output_zones.size() == 2 && run.output_zones[0].every_steps == 100 &&
                 run.output_zones[1].every_time == 0.05 && run.output_zones[1].multi,
             "template output zones");
@@ -171,7 +172,7 @@ void output_zones(const CaseFiles& files) {
     files.write("output.txt", latest + series);
     const auto zones = files.load().output_zones;
     require(output_filename(zones[1], 1000000) == "p_1000000.fields", "wide step number");
-    const auto mesh = Mesh::read("examples/tecplot/demo_2d.mesh");
+    const auto mesh = Mesh::read("qa/cases/momentum_2d/grid.mesh");
     const auto bounds = read_case_boundaries("templates/bc.txt", mesh.data());
     PeriodicDomain domain(mesh, bounds.periodic_pairs);
     const auto grid = domain.view();
@@ -236,7 +237,7 @@ void output_zones(const CaseFiles& files) {
     invalid_zone.variables = {"uz"};
     rejects([&] { ScheduledOutput bad({invalid_zone}, files.dir, mesh, 1.4); }, "dimension");
     for (unsigned d : {1u, 3u}) {
-        const auto other = Mesh::read("examples/tecplot/demo_" + std::to_string(d) + "d.mesh");
+        const auto other = Mesh::read(d == 1 ? "qa/cases/pulse_1d/grid.mesh" : "qa/cases/wave_3d/grid.mesh");
         auto zone = zones.front();
         zone.variables = {d == 1 ? "ux" : "uz", "p"};
         zone.format = FieldFormat::Binary;
@@ -401,9 +402,14 @@ void main_and_cuda(const CaseFiles& files) {
     require(second.second_order && second.roe && second.csgs && second.simplified_jacobian,"BDF2 controls");
     directories.overrides["implicit"]["local_time_step"] = "on";
     rejects([&] { read_run_settings(directories); }, "local_time_step");
+    directories.overrides["implicit"]["local_time_step"] = "auto";
+    rejects([&] { read_run_settings(directories); }, "local_time_step");
+    directories.overrides["implicit"]["local_time_step"] = "on";
     directories.overrides["main"]["time_scheme"] = "steady";
-    require(read_run_settings(directories).local_time_step, "local time stepping in steady");
+    require(read_run_settings(directories).local_time_step == LocalStepMode::On, "local time stepping in steady");
     require(read_run_settings(directories).local_time_step_max_ratio == 4., "default local step ratio");
+    directories.overrides["implicit"]["local_time_step"] = "auto";
+    require(read_run_settings(directories).local_time_step == LocalStepMode::Auto, "adaptive steady step");
     auto& ratio = directories.overrides["implicit"]["local_time_step_max_ratio"];
     ratio = "1";
     require(read_run_settings(directories).local_time_step_max_ratio == 1., "uniform local steps");
@@ -425,7 +431,7 @@ void main_and_cuda(const CaseFiles& files) {
     require(read_run_settings(directories).implicit_settings.jacobian_update_every == 1, "one assembly in simplified Newton");
     directories.overrides["implicit"].erase("simplified_newton");
     require(steady.steady() && steady.uses_implicit_time() && !steady.implicit_settings.second_order &&
-            !steady.local_time_step && !steady.steady_absolute && steady.steady_tol == 1.e-6 && steady.steady_max_steps == 10000 &&
+            steady.local_time_step == LocalStepMode::Off && !steady.steady_absolute && steady.steady_tol == 1.e-6 && steady.steady_max_steps == 10000 &&
             steady.implicit_settings.jacobian_update_every == 3, "steady default controls");
     directories.overrides["implicit"]["steady_criterion"] = "absolute";
     directories.overrides["implicit"]["steady_tol"] = "10";
@@ -433,7 +439,7 @@ void main_and_cuda(const CaseFiles& files) {
     directories.overrides["implicit"].erase("steady_criterion");
     directories.overrides["implicit"].erase("steady_tol");
     for (const auto& bad : std::vector<std::pair<std::string, std::string>>{
-         {"local_time_step","auto"}, {"local_time_step_max_ratio","0.9"}, {"local_time_step_max_ratio","nan"}, {"steady_criterion","unknown"}, {"steady_tol","1"}, {"steady_max_steps","0"},
+         {"local_time_step","adaptive"}, {"local_time_step_max_ratio","0.9"}, {"local_time_step_max_ratio","nan"}, {"steady_criterion","unknown"}, {"steady_tol","1"}, {"steady_max_steps","0"},
          {"jacobian_update_every","-2"}, {"simplified_newton","maybe"}, {"simplified_jacobian","maybe"}, {"solver","gmres"}, {"jacobian_flux","unknown"}, {"preconditioner","unknown"},
          {"solver_tol","0"}, {"newton_tol","1"}, {"newton_max_iter","0"}, {"newton_max_iter","2.5"}}) {
         directories.overrides["implicit"][bad.first] = bad.second;
@@ -545,7 +551,7 @@ void boundaries(const CaseFiles& files) {
 
 // Проверяем начальные поля из снимка вместе с привязкой к сетке.
 void initial_snapshot(const CaseFiles& files) {
-    files.write("main.txt", "mesh=../../examples/tecplot/demo_1d.mesh\nreconstruction=first_order\n"
+    files.write("main.txt", "mesh=../../qa/cases/pulse_1d/grid.mesh\nreconstruction=first_order\n"
                             "time_scheme=euler\ncfl=1\nbackend=cpu\neuler_solver=lf\nfinal_time="
                             "1\nreconstruction_variables=characteristic");
     files.write("init.txt", "initial_type file\npath test.fields\nfield U");

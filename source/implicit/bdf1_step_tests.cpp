@@ -63,6 +63,31 @@ void test_bdf1_step(int device) {
         refresh();
         return solver.advance(state.data(), nullptr, volumes.data(), active_flux, dt, controls, refresh);
     };
+    // Имитируем отказ линейного решателя после изменения пробного поля.
+    // Повтор с половиной шага должен совпасть с отдельным расчётом того же шага.
+    {
+        BdfStep retried(host,active,device), direct(host,active,device);
+        auto trial_controls = controls;
+        trial_controls.second_order = false;
+        trial_controls.max_iterations = 1; // Отключает предиктор: refresh вызывается после поправки.
+        state.set(initial);
+        refresh();
+        bool rejected = false;
+        try {
+            retried.advance(state.data(),nullptr,volumes.data(),active_flux,dt,trial_controls,
+                            [] { throw LinearSolveFailure("test linear solve failure"); });
+        } catch (const LinearSolveFailure&) { rejected = true; }
+        require(rejected && state.read()==initial,"rollback restores initial gas at both nodes");
+        refresh();
+        retried.advance(state.data(),nullptr,volumes.data(),active_flux,.5*dt,trial_controls,refresh);
+        const auto repeated = state.read();
+        state.set(initial);
+        refresh();
+        direct.advance(state.data(),nullptr,volumes.data(),active_flux,.5*dt,trial_controls,refresh);
+        require(state.read()==repeated,"retry matches direct half step");
+        state.set(initial);
+        refresh();
+    }
     // Одной поправки мало для заданного допуска. Поле и история всё равно должны
     // перейти на следующий слой, а отчёт должен вернуть реально достигнутую невязку.
     controls.max_iterations = 1;

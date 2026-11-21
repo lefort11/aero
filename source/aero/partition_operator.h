@@ -1,6 +1,7 @@
 #ifndef AERO_PARTITION_OPERATOR_H
 #define AERO_PARTITION_OPERATOR_H
 #include "partition_transfers.h"
+#include "../timestep/local_step_mode.h"
 #include "mpi_stencil.h"
 #include "../io/diagnostic_fields.h"
 #include "solver_timings.h"
@@ -86,8 +87,12 @@ public:
                          SolverTimings& timing, bool trial = false);
     // Находит допустимый шаг по собственным узлам и берёт минимум по всем процессам.
     double cfl_step(double cfl);
-    void prepare_steady_steps(bool gpu, bool local, double max_ratio);
-    void set_steady_steps(bool local, double max_ratio);
+    // После отказа повторяем ту же попытку с половиной фактически использованного шага.
+    void retry_auto_step(double failed_dt);
+    void limit_auto_growth(bool hold) { hold_growth_ = hold; }
+    void reset_auto_history();
+    void prepare_steady_steps(bool gpu, LocalStepMode mode, double max_ratio);
+    void set_steady_steps(LocalStepMode mode, double max_ratio);
     double largest_step(double accepted_minimum) const {
         return steady_steps_ && steady_steps_->local ? (accepted_minimum / minimum_step_) * maximum_step_ : 0.;
     }
@@ -157,6 +162,12 @@ private:
     double prepare_local_steps(double cfl);
     std::unique_ptr<SteadyNodeSteps> steady_steps_; // Для steady резервируем память сразу, даже при старте с общего шага.
     std::vector<double> host_steps_; // При работе на GPU массив входит в общую раскладку карты.
+    LocalStepMode step_mode_ = LocalStepMode::Off;
+    const double* accepted_field_ = nullptr; // Поле после принятого шага на активном устройстве.
+    double current_step_cfl_ = 0.; // CFL, с которым предложен шаг до ограничения расписанием.
+    double accepted_fraction_ = 1., previous_cfl_ = 0., retry_dt_ = 0.;
+    unsigned retries_ = 0; // Сбрасывается только после успешного шага или переключения режима.
+    bool hold_growth_ = false, recovered_step_ = false;
     double minimum_step_ = 0., maximum_step_ = 0.; // Диапазон до ограничения расписанием.
     bool need_pressure_rate_ = false; // Резервируем рабочую память только при заказе dp_dt.
     std::unique_ptr<PartitionTransfers> pressure_exchange_; // Передаёт dp/dt от владельцев узлов.
