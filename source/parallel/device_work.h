@@ -9,6 +9,7 @@
 // Возвращаемое сообщение живёт до следующего вызова на этом потоке CPU. nullptr означает успех.
 #ifdef AERO_HAS_TURBULENCE
 #include "../turbulence/transport.h"
+#include "../turbulence/convection.h"
 #endif
 namespace aero {
 namespace device_work {
@@ -18,6 +19,7 @@ AERO_DEVICE_ENTRY const char* aero_device_pressure_rate(const partition_detail::
 AERO_DEVICE_ENTRY const char* aero_device_sample(const diagnostic::Sample&,Index count);
 #ifdef AERO_HAS_TURBULENCE
 AERO_DEVICE_ENTRY const char* aero_device_sa_step(const turbulence::Step&, turbulence::Operation);
+AERO_DEVICE_ENTRY const char* aero_device_sa_convection(const turbulence::SaEdgeConvection&, MeshIndex);
 AERO_DEVICE_ENTRY const char* aero_device_sa_norm(const turbulence::Step&, turbulence::Norm, bool, double*);
 #endif
 #ifdef AERO_HAS_VISCOSITY

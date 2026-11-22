@@ -1,4 +1,6 @@
 #include "bc_test_case.h"
+#include "linear_boundary.h"
+#include "../implicit/boundary_jacobian.h"
 #include "../../qa/test_checks.h"
 
 #include <algorithm>
@@ -46,7 +48,7 @@ void run(BcTestCase t, const std::string& label) {
     got.flux[0] = 123;
     const BoundaryStatus status =
         boundary_flux(t.dimension, t.config, patches.free_rules.data(), t.current,
-                      t.initial_available ? t.initial : nullptr, t.area, t.gamma, &got);
+                      t.initial_available ? t.initial : nullptr, t.area, t.gamma, &got, t.profile_data());
     require(status == t.expected_status, label + " status");
     if (status == BoundaryStatus::Success) {
         require(got.components == t.dimension + 2, label + " components");
@@ -74,6 +76,15 @@ void free_case(BcTestCase t, double rho, double p, double un, const std::string&
 void error(BcTestCase t, BoundaryStatus s) {
     t.expected_status = s;
     run(t, "invalid input");
+}
+// При заданном reference_state поток постоянен по всем переменным узла во всех трёх режимах.
+void fixed_flux(BcTestCase t, double rho, double p, double un) {
+    free_case(t, rho, p, un, "flux from all reference components");
+    double block[25];
+    require(implicit::boundary_detail::block(t.dimension, t.config, patches.free_rules.data(),
+            t.current, nullptr, t.area, t.gamma, block, t.profile_data()), "reference inlet Jacobian");
+    for (unsigned i = 0; i < (t.dimension + 2) * (t.dimension + 2); ++i)
+        require(block[i] == 0., "fixed inlet must have zero Jacobian");
 }
 // Одну и ту же строку superin можно сочетать с любыми дозвуковыми правилами.
 std::string free_block(const std::string& superin, const std::string& inflow, const std::string& outflow) {
@@ -138,14 +149,105 @@ void dimension(unsigned d) {
     t.area[0] = t.area[1] = 0;
     error(t, BoundaryStatus::InvalidArgument);
 }
+
+void linear_reference() {
+    BoundaryPatches local;
+    PeriodicPair pair;
+    std::istringstream input(free_block("reference_state", "reference_state", "reference_state") + "\nreference_state rho=-.1 p=-.25 ux=.2");
+    const auto patch = read_boundary(input, 1, local, pair, true);
+    const double normal[] = {1.}, inside[] = {1., 2., 3.}, ref[] = {-.1, .2, -.25};
+    LinearBackground gas;
+    gas.rho = gas.sound = 1.;
+    for (double speed : {-2., -.5, .5, 2.}) {
+        gas.velocity[0] = speed;
+        LinearFace face(gas, 1, normal);
+        double expected[3];
+        face.physical(speed >= gas.sound ? inside : ref, expected);
+        EulerFluxResult flux{};
+        require(linear_boundary_flux(face, patch, local.free_rules.data(), inside, nullptr, false, flux), "linear reference_state");
+        for (unsigned i = 0; i < 3; ++i) require(flux.flux[i] == expected[i], "linear reference_state flux");
+    }
+}
+
+// Сверяем каждый столбец якобиана с изменением именно того потока, который получает узел.
+void check_derivative(const BcTestCase& t) {
+    const unsigned n = t.dimension+2;
+    const auto* rules = patches.free_rules.data();
+    const auto* init = t.initial_available ? t.initial : nullptr;
+    double block[25];
+    require(implicit::boundary_detail::block(t.dimension,t.config,rules,t.current,init,t.area,t.gamma,block,t.profile_data()), "boundary derivative");
+    for (unsigned j=0; j<n; ++j) {
+        double left[5]{}, right[5]{};
+        std::copy_n(t.current,n,left);
+        std::copy_n(t.current,n,right);
+        const double h = 1.e-6;
+        left[j] -= h;
+        right[j] += h;
+        EulerFluxResult a{}, b{};
+        for (auto side : {0,1}) {
+            require(boundary_flux(t.dimension,t.config,rules,side ? right : left,init,t.area,t.gamma,
+                                  side ? &b : &a,t.profile_data()) == BoundaryStatus::Success, "perturbed boundary flux");
+        }
+        for (unsigned i=0;i<n;++i)
+            require(std::fabs((b.flux[i]-a.flux[i])/(2*h)-block[i*n+j])<2.e-6, "boundary Jacobian difference");
+    }
+}
+
+void partial_profiles() {
+    const auto constant = free_block("p_interior","p_interior","p_interior")+"\nreference_state rho=2 ux=-1.5";
+    for (double u : {-3.,-.5,.5}) {
+        auto t = fixture(1, constant, u);
+        free_case(t,2,2,-1.5,"interior pressure");
+        check_derivative(t);
+    }
+    const auto inlet = free_block("initial","in_char","base_p");
+    auto t = fixture(1,inlet+"\nreference_state rho=2 p=4 ux=-1.5",-.5);
+    const double cb = 2.25;
+    for (auto base : {ProfileFallback::Full,ProfileFallback::Initial,ProfileFallback::Interior,ProfileFallback::Reference}) {
+        if (base != ProfileFallback::Full) {
+            t.profile.columns=Radius|Axial;
+            t.profile.fallback=base;
+            t.profile.gas.velocity[0]=-1.5;
+            t.profile.direction[0]=1.;
+            t.initial_available=true;
+            state(1,2,4,0,t.initial);
+        }
+        const double rho = (base == ProfileFallback::Interior ? 1. : 2.) * (cb/2.)*(cb/2.);
+        free_case(t,rho,rho*cb*cb/2.,-1.,"characteristic inlet");
+        check_derivative(t);
+    }
+}
 }
 void test_periodic(bool require_gpu);
 int main(int argc, char** argv) {
     try {
         for (unsigned d = 1; d <= 3; ++d)
             dimension(d);
+        linear_reference();
+        partial_profiles();
         // В этом газе c=2. Разные цели выявляют ошибку на любой из трёх точных границ режимов.
         const auto at_threshold = free_block("ux=-6", "base_p initial", "base_u initial");
+        fixed_flux(fixture(1, free_block("reference_state rho=2 p=4 ux=-2", "base_p", "base_u"), 0), 2, 4, -2);
+        fixed_flux(fixture(3, free_block("reference_state rho=2 p=3 ux=-2.72 uy=-2.96 uz=-.3",
+                                          "base_p", "base_u"), 0), 2, 3, -4);
+        free_case(fixture(2, free_block("reference_state rho=2 p=3 ux=8 uy=-6", "base_u", "base_p"), .6),
+                  1, 2, .6, "tangential reference speed does not impose inlet");
+        auto jet = fixture(1, free_block("reference_state", "profile", "base_p profile"), 0);
+        double sample[5] = {};
+        state(1, 2, 3, -2, sample);
+        require(euler_state(1, sample, jet.gamma, &jet.profile.gas) == EulerStatus::Success, "profile gas");
+        fixed_flux(jet, 2, 3, -2);
+        const auto open = free_block("initial", "reference_state", "reference_state") + "\nreference_state rho=2 p=3 ux=.28 uy=1.04";
+        for (double speed : {-.6, 0., .6}) fixed_flux(fixture(2, open, speed), 2, 3, 1.);
+        free_case(fixture(2, open, 3.), 1, 2, 3., "supersonic outlet ignores subsonic reference_state");
+        const auto mixed = free_block("initial", "base_p", "reference_state") + "\nreference_state rho=2 p=3 ux=1";
+        free_case(fixture(1, mixed, -.6), 1, 2, -.6, "reference_state outlet does not change ordinary inlet");
+        auto profiled = fixture(1, free_block("profile", "reference_state", "reference_state"), .4);
+        for (double speed : {-.8, .8}) {
+            state(1, 2, 3, speed, sample);
+            require(euler_state(1, sample, profiled.gamma, &profiled.profile.gas) == EulerStatus::Success, "profile gas");
+            fixed_flux(profiled, 2, 3, speed);
+        }
         free_case(fixture(1, at_threshold, -2), 1, 2, -6, "negative sonic equality selects superin");
         free_case(fixture(1, at_threshold, 2), 1, 2, 2, "positive sonic equality uses interior");
         auto stopped = fixture(1, free_block("initial", "base_p initial", "base_u"), 0);
@@ -162,8 +264,10 @@ int main(int argc, char** argv) {
                  "bc_type free\nsuperin\ninflow base_p", valid + "\nsuperin", valid + "\ninflow base_u",
                  valid + "\noutflow base_p", "bc_type superout", "bc_type superin", "bc_type wall\nsuperin",
                  "bc_type wall\ninflow base_u", "bc_type free\ninflow superin\noutflow base_u",
+                 free_block("", "in_char profile", "base_p"), free_block("", "base_p", "in_char"),
                  free_block("", "base_u", "superout"), free_block("uz=1", "base_p", "base_u"),
                  free_block("rho=0", "base_p", "base_u"), free_block("p=2 p=1", "base_p", "base_u"),
+                 free_block("reference_state rho=1 p=1 ux=-2", "base_p", "base_u"),
                  free_block("", "base_u nan", "base_p"), "bc_type wall\nbc_type wall"}) {
             try {
                 parse(s, 2);

@@ -61,7 +61,7 @@ public:
             input_ = decoded_.get();
             bytes(magic, sizeof magic);
             if (std::memcmp(magic, "AEROMSHB", 8) != 0)
-                fail("LZMA mesh must contain native binary v2");
+                fail("LZMA mesh must contain native binary mesh data");
         }
         if (std::memcmp(magic, "AEROMESH", 8) == 0)
             text_ = true;
@@ -69,8 +69,9 @@ public:
             text_ = false;
         else
             fail("Unrecognized mesh signature");
-        if (u64() != 2)
-            fail("Unsupported mesh format version; expected face-based version 2");
+        version_ = u64();
+        if (version_ != mesh_format::legacy_version && version_ != mesh_format::current_version)
+            fail("Unsupported mesh format version; expected 2 or 3");
         if (text_)
             block("TEXT");
     }
@@ -78,6 +79,23 @@ public:
     void block(const char* expected) {
         if (text_ && token() != expected)
             fail(std::string("Expected block: ") + expected);
+    }
+
+    // В v2 между COUNTS и X было ещё одно число. Сохраняем его биты для
+    // проверки старых файлов полей. В v3 сразу за счётчиками идут координаты.
+    std::uint64_t read_fingerprint_word() {
+        if (text_) {
+            // В тексте можно удалить устаревшую строку вручную. Если следующим
+            // идёт X, оставляем его в потоке для обычного чтения координат.
+            skip_space();
+            if (input_->peek() != 'L')
+                return mesh_format::default_fingerprint_word;
+        } else if (version_ == mesh_format::current_version) {
+            // В бинарном потоке нет названий секций. Их расположение задаёт версия.
+            return mesh_format::default_fingerprint_word;
+        }
+        block("LENGTH_SCALE_TO_METERS");
+        return number_codec::real_bits(real());
     }
 
     std::uint64_t u64() {
@@ -114,6 +132,18 @@ public:
         if (!(number >> result) || number.peek() != std::char_traits<char>::eof())
             fail("Invalid floating-point value");
         return result;
+    }
+
+    // В native v2 числа занимают восемь байтов. На little-endian машине
+    // массив уже имеет файловое представление: читаем его одним блоком.
+    template<class T, class ReadOne>
+    void array(const char* name, std::vector<T>& values, ReadOne one) {
+        block(name);
+        if (!text_ && (sizeof(T) == 1 || number_codec::native_little_endian)) {
+            bytes(reinterpret_cast<char*>(values.data()), values.size() * sizeof(T));
+        } else {
+            for (auto& value : values) value = (this->*one)();
+        }
     }
 
     // Проверяем предел контейнера и общий бюджет до выделения памяти из размеров файла.
@@ -205,6 +235,7 @@ private:
     MeshReadLimits limits_;
     Budget budget_;
     bool text_ = false;
+    std::uint64_t version_; // Определяет расположение координат в потоке.
 };
 
 }

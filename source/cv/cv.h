@@ -28,9 +28,10 @@ struct CvBoundary {
 struct CvView {
     unsigned dimension;
     MeshIndex node_count, edge_count, boundary_count;
-    const double* volumes;      // Объём в единицах м^dimension.
-    const CvVector* edge_areas; // Площадь в м^(dimension−1), направлена от edge_begin к edge_end.
+    const double* volumes;      // Контрольный объём в единицах длины сетки в степени dimension.
+    const CvVector* edge_areas; // Вектор площадки в тех же единицах в степени dimension−1, от начала ребра к концу.
     const CvBoundary* boundary; // Элемент на каждую пару из внешней грани и примыкающего узла.
+    const double* min_heights;  // Минимальная высота исходных ячеек, примыкающих к узлу, в единицах сетки.
 };
 
 class MedianDual {
@@ -45,6 +46,7 @@ private:
     unsigned dimension_;
     // Длина, площадь или объём доли узла в зависимости от размерности сетки.
     std::vector<double> volumes_;
+    std::vector<double> min_heights_;
     // Интегральная нормаль внутренней площадки, ориентированной по ребру.
     std::vector<CvVector> edge_areas_;
     // Внешняя площадка для каждой пары «грань–узел».

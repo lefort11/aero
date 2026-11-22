@@ -82,7 +82,11 @@ bool prepare_case_geometry(RunSettings& run, const MeshPartition& partition, con
         select_single_device(run);
     }
     world.local([&] {
-        geometry.boundaries = read_case_boundaries(run.boundary_path, physical, run.background.active(), &run.input_warnings);
+        const BoundaryTemperature temperature{{run.gamma, run.mach, run.reference_phi, run.reference_theta},
+                                               run.background.rho, run.background.p,
+                                               {run.background.velocity[0],run.background.velocity[1],run.background.velocity[2]}};
+        geometry.boundaries = read_case_boundaries(run.boundary_path, physical, run.background.active(),
+                                                   &run.input_warnings, temperature);
         if (single && run.directories.interactive) {
             std::cout << "Accepted boundary settings\n" << settings_text(run.boundary_path);
         }

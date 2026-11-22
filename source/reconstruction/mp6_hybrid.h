@@ -18,19 +18,19 @@ AERO_HOST_DEVICE inline MeanLimit face_mean_limit(unsigned component, unsigned w
 constexpr double mean_tolerance = 1.e-8;
 
 // Какую долю среднего сдвига допускает эта характеристика при выборе общего веса ребра.
-// Для значимых сдвигов сохраняем исходное отношение. Вблизи нуля нормируем
-// только запрещённую часть на фиксированный масштаб, поэтому деления на малый dS нет.
-AERO_HOST_DEVICE inline double mean_weight(double ds, double low, double high) {
+// Для сдвига крупнее scale берём разрешённую долю. Для меньшего сдвига вычитаем
+// только запрещённую часть, отнесённую к scale. Обе формулы совпадают на границе.
+AERO_HOST_DEVICE inline double mean_weight(double ds, double low, double high, double scale = mean_tolerance) {
     if (ds == 0. || (ds >= low && ds <= high))
         return 1.;
     const double limit = ds < low ? low : high;
     const double magnitude = ::fabs(ds);
-    if (magnitude >= mean_tolerance)
+    if (magnitude >= scale)
         return ::fmax(0., ::fmin(1., limit * inverse_value(ds)));
 
     // Ограничение может уменьшать сдвиг только в сторону нуля.
     const double allowed = ::fmax(0., ::fmin(magnitude, ds > 0. ? limit : -limit));
-    return 1. - (magnitude - allowed) / mean_tolerance;
+    return 1. - (magnitude - allowed) / scale;
 }
 // Первый проход сохраняет допустимые интервалы двух связанных мод.
 // Второй проход уже знает общий для ребра коэффициент ограничения среднего наклона.
@@ -83,10 +83,9 @@ struct Correction {
     AERO_HOST_DEVICE void apply(MeanLimit limit, double weight, double &left, double &right) const {
         const bool independent = limit == MeanLimit::Transverse;
         const double proposed = independent ? ds : weight * ds;
-        // Общий вес смягчён только для малых сдвигов. Каждая такая компонента по-прежнему
-        // обязана выдержать местное ограничение, прежде чем мы выберем разностную моду.
-        const double s = independent || ::fabs(ds) < mean_tolerance
-                       ? ::fmax(smin, ::fmin(smax, proposed)) : proposed;
+        // Малый сдвиг слабо влияет на соседние компоненты. Для него самого
+        // обязательно местное ограничение, прежде чем выберем разностную поправку.
+        const double s = ::fmax(smin, ::fmin(smax, proposed));
         if (dd == 0 && ds == s && s >= smin && s <= smax) {
             left += s;
             right += s;
@@ -153,14 +152,31 @@ AERO_HOST_DEVICE inline void reconstruct(const double (*slopes)[capacity], unsig
                                          double h, double *left, double *right) {
     Correction corrections[capacity];
     double weight = 1;
+    double shared_scale = mean_tolerance;
     for (unsigned k = 0; k < width; ++k) {
         const double c = slopes[0][k], l = slopes[1][k], r = slopes[2][k], fl = slopes[3][k], fr = slopes[4][k];
         const double t = prepare_wave<weno, anchored>(fl, l, c, r, fr, settings, h, corrections[k], left[k], right[k]);
-        weight = ::fmin(weight, t);
+        if (width > 1) {
+            // Общий коэффициент будет умножен на сдвиги акустики и энтропии.
+            // Наибольший из них задаёт масштаб влияния одной компоненты на другую.
+            if (face_mean_limit(k, width) == MeanLimit::Shared)
+                shared_scale = ::fmax(shared_scale, ::fabs(corrections[k].ds));
+        } else {
+            weight = ::fmin(weight, t);
+        }
         // Исходное приращение уже выражено в осях грани. Возвращаем только
         // добавку: вызывающий код повернёт её обратно и прибавит к исходному приращению.
         if (anchored)
             left[k] = right[k] = 0.;
+    }
+    if (width > 1) {
+        // Если маленькой компоненте запрещён сдвиг величины e, она уменьшит
+        // общий сдвиг на другой компоненте не более чем на e. Её собственный
+        // допустимый интервал выдерживаем в apply, в том числе на поперечных скоростях.
+        for (unsigned k = 0; k < width; ++k) {
+            const Correction& q = corrections[k];
+            weight = ::fmin(weight, mean_weight(q.ds, q.smin, q.smax, shared_scale));
+        }
     }
     for (unsigned k = 0; k < width; ++k)
         corrections[k].apply(face_mean_limit(k, width), weight, left[k], right[k]);

@@ -17,8 +17,9 @@ public:
     Recovery(const RunSettings& run, const Processes& world, std::uint64_t count, unsigned dimension,
              std::string mesh_sha256, const std::vector<OwnedNode>& nodes);
     ~Recovery();
-    // Сначала пробует указанный или новейший слот. При успешной проверке устанавливает время и номер шага.
-    void restore(std::vector<double>& state, std::vector<double>& initial);
+    // При --recover продолжает расчёт из выходного каталога. При заданном initial_file
+    // читает текущие газ и SA в качестве начальных полей нового расчёта, со своим отсчётом времени.
+    void restore(std::vector<double>& state, std::vector<double>& initial, const std::string& initial_file = {});
     // Записывает данные владельцев в другой слот и завершает запись проверенным заголовком.
     void save(std::uint64_t step, double time, const std::vector<double>& state,
               const std::vector<double>& initial);

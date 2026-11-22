@@ -250,42 +250,13 @@ struct AnotherFixture {
         put("bctopo.msh", "2 0 1 1\n2 1 3 2\n2 3 2 3\n2 2 0 4\n");
         put("label.txt", "# Boundary names\n1 bottom\n2 right\n3 top\n4 left\n");
     }
-    static std::string unhex(const std::string& hex) {
-        std::string out;
-        for (std::size_t i = 0; i < hex.size(); i += 2) {
-            const auto digit = [](char c) -> unsigned {
-                return c <= '9' ? static_cast<unsigned>(c - '0') : static_cast<unsigned>(c - 'A' + 10);
-            };
-            out.push_back(static_cast<char>(digit(hex[i]) * 16 + digit(hex[i + 1])));
-        }
-        return out;
-    }
-    // Независимые потоки LZMA созданы 7-Zip. Первый блок размером 13 байт разрезает
-    // как вещественные координаты double, так и 32-битные индексы связности.
-    static std::string encoded(const std::string& name) {
-        if (name == "coordinate.msb")
-            return unhex(
-                "1800000008000000F9040000140000000D0000005D001000000D0000000000000000006C7E4E000025000000B300"
-                "00005D00100000B30000000000000000006D9C4D8253CC8FF2397A000DC6D29CD243A73369A000");
-        if (name == "topo.msb")
-            return unhex("0800000004000000F2040000190000000D0000005D001000000D000000000000000000687EBF0A82AD1"
-                         "B4FB0001C000000130000005D001000001300000000000000000067FF81078960FD2DD4E77D73F8");
-        return unhex("1E00000004000000F2040000190000000D0000005D001000000D000000000000000000687EFF0984FE10E2A"
-                     "5C0360000006B0000005D001000006B00000000000000000067FEC10A87474B8B7571435E6894DDCE22E708"
-                     "E22BBA815D8D5594F77391B263273309E2096B00");
-    }
-    void hex(bool binary) {
-        put("mesh.txt", std::string("Name cube\nNumCoords 3\nNn 8\nNt 1\nNFaceBC 6\nMeshFormat ") +
-                            (binary ? "1" : "0") + "\nBufferZoneType no\nNnBase -1\nNtBase -1\n");
+    void hex() {
+        put("mesh.txt", "Name cube\nNumCoords 3\nNn 8\nNt 1\nNFaceBC 6\nMeshFormat 0\n"
+                        "BufferZoneType no\nNnBase -1\nNtBase -1\n");
         put("label.txt", "1\n# aliases are not boundary-condition types\n1 wall WALL # comment\n");
-        if (binary)
-            for (const char* name : {"coordinate.msb", "topo.msb", "bctopo.msb"})
-                put(name, encoded(name));
-        else {
-            put("coordinate.msh", "0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n");
-            put("topo.msh", "0 1 2 3 4 5 6 7\n");
-            put("bctopo.msh", "0 2 3 1 1\n4 5 7 6 1\n0 1 5 4 1\n1 3 7 5 1\n3 2 6 7 1\n2 0 4 6 1\n");
-        }
+        put("coordinate.msh", "0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n");
+        put("topo.msh", "0 1 2 3 4 5 6 7\n");
+        put("bctopo.msh", "0 2 3 1 1\n4 5 7 6 1\n0 1 5 4 1\n1 3 7 5 1\n3 2 6 7 1\n2 0 4 6 1\n");
     }
 };
 // Проверяем, что импортированная сетка переживает сохранение и повторную загрузку.
@@ -453,20 +424,18 @@ void register_another_meshes() {
             require(via_header.data().face_nodes.indices == m.data().face_nodes.indices, "Header path");
         }
     });
-    add("another text and MSB 3D tensor hex", [] {
-        for (bool binary : {false, true}) {
-            AnotherFixture f;
-            f.hex(binary);
-            Mesh m = read_another(f.path);
-            require(m.view().dimension == 3 && m.cell(0).node_count() == 8 && m.cell(0).face_count() == 6 &&
-                        m.cell(0).edge_count() == 12,
-                    "Hex topology");
-            require(m.node(2).x() == 0 && m.node(2).y() == 1 && m.node(4).z() == 1,
-                    "Interleaved coordinates");
-            require(m.data().patch_names == std::vector<std::string>({"wall"}), "Canonical label");
-            require(m.view().boundary_face_count == 6, "All six faces mapped");
-            roundtrip(m);
-        }
+    add("another text 3D tensor hex", [] {
+        AnotherFixture f;
+        f.hex();
+        Mesh m = read_another(f.path);
+        require(m.view().dimension == 3 && m.cell(0).node_count() == 8 && m.cell(0).face_count() == 6 &&
+                    m.cell(0).edge_count() == 12,
+                "Hex topology");
+        require(m.node(2).x() == 0 && m.node(2).y() == 1 && m.node(4).z() == 1,
+                "Interleaved coordinates");
+        require(m.data().patch_names == std::vector<std::string>({"wall"}), "Canonical label");
+        require(m.view().boundary_face_count == 6, "All six faces mapped");
+        roundtrip(m);
     });
     add("another 2D concave polygon", [] {
         AnotherFixture f;
@@ -506,7 +475,7 @@ void register_another_meshes() {
     });
 }
 
-// Повреждённые заголовки, сжатые блоки и недопустимые связи сетки another.
+// Проверяем формат входа, целостность текстовых массивов и связи сетки another.
 void register_another_errors() {
     add("another rejects truncated or extra text arrays", [] {
         for (const char* name : {"coordinate.msh", "topo.msh", "bctopo.msh"}) {
@@ -523,29 +492,17 @@ void register_another_errors() {
             rejects([&] { read_another(f.path); });
         }
     });
-    add("another rejects every truncated MSB prefix", [] {
-        for (const char* name : {"coordinate.msb", "topo.msb", "bctopo.msb"}) {
+    add("another rejects binary format before opening arrays", [] {
+        for (const char* format : {"binary", "1"}) {
             AnotherFixture f;
-            f.hex(true);
-            const std::string data = AnotherFixture::encoded(name);
-            for (std::size_t n = 0; n < data.size(); ++n) {
-                f.put(name, data.substr(0, n));
-                rejects([&] { read_another(f.path); });
-            }
-            f.put(name, data + "x");
-            rejects([&] { read_another(f.path); });
-        }
-    });
-    add("another rejects corrupt MSB headers and blocks", [] {
-        AnotherFixture f;
-        f.hex(true);
-        const std::string good = AnotherFixture::encoded("coordinate.msb");
-        for (std::size_t offset : {std::size_t(0), std::size_t(4), std::size_t(8), std::size_t(12),
-                                   std::size_t(16), std::size_t(20), std::size_t(25)}) {
-            std::string bad = good;
-            bad[offset] = static_cast<char>(255);
-            f.put("coordinate.msb", bad);
-            rejects([&] { read_another(f.path); });
+            f.put("mesh.txt", std::string("MeshFormat ") + format + "\n");
+            Temp output;
+            const char* argv[] = {"mesh_converter", f.path.c_str(), output.path.c_str()};
+            std::ostringstream out, err;
+            require(run_cli(3, argv, out, err) != 0 &&
+                    err.str().find("only text .msh input is supported") != std::string::npos,
+                    "Binary another input must be rejected by its descriptor");
+            require(!std::ifstream(output.path.c_str()).good(), "Rejected conversion created an output file");
         }
     });
     add("another rejects invalid text metadata and connectivity", [] {
@@ -584,17 +541,28 @@ void register_another_errors() {
 
 // Проверки параметров конвертера, распознавания каталогов и формата вывода.
 void register_converter_cli() {
-    add("another CLI directory auto-detection and scale", [] {
+    add("another CLI directory detection and output encoding", [] {
         AnotherFixture f;
-        f.hex(true);
-        for (bool explicit_format : {false, true}) {
+        f.hex();
+        Options options;
+        const Mesh reference = read_another(f.path, options);
+        for (const char* format : {"text", "binary"}) {
             Temp output;
-            const char* argv[] = {"mesh_converter", f.path.c_str(), output.path.c_str(), "--scale", "0.001",
-                                  "--from",         "another"};
+            const char* argv[] = {"mesh_converter", f.path.c_str(), output.path.c_str(),
+                                  "--format", format, "--from", "another"};
+            const bool binary = std::string(format) == "binary";
             std::ostringstream out, err;
-            require(run_cli(explicit_format ? 7 : 5, argv, out, err) == 0, "CLI conversion: " + err.str());
-            Mesh m = Mesh::read(output.path);
-            require(m.data().length_scale_to_meters == 0.001 && m.cell(0).node_count() == 8, "CLI result");
+            require(run_cli(binary ? 7 : 5, argv, out, err) == 0, "CLI conversion: " + err.str());
+            // Сверяем весь файл, включая кодировку, координаты, связность и метки.
+            std::ostringstream expected(std::ios::out | std::ios::binary);
+            reference.write(expected, binary ? MeshFormat::Binary : MeshFormat::Text);
+            std::ifstream file(output.path.c_str(), std::ios::binary);
+            std::ostringstream actual;
+            actual << file.rdbuf();
+            require(actual.str() == expected.str(), "Wrong output encoding or mesh data");
+            const Mesh loaded = Mesh::read(output.path);
+            require(loaded.cell(0).node_count() == 8,
+                    "Reload converted another mesh");
         }
     });
     add("CLI LZMA output", [] {
@@ -642,7 +610,7 @@ void register_converter_cli() {
             require(run_cli(2, argv, out, err) == 0 && err.str().empty(), "Help exit/stream");
             require(out.str().find("--base N") != std::string::npos &&
                         out.str().find("--zone N") != std::string::npos &&
-                        out.str().find("--scale VALUE") != std::string::npos &&
+                        out.str().find("--scale") == std::string::npos &&
                         out.str().find("--unmarked NAME") != std::string::npos,
                     "Option descriptions");
         }
@@ -751,13 +719,12 @@ void register_gmsh() {
         s = replace(s, "1 7 0 ", "2 7 8 0 ");
         rejects([&] { gmsh(s); });
     });
-    add("Gmsh scale and strict unmarked boundaries", [] {
+    add("Gmsh coordinates and strict unmarked boundaries", [] {
         std::string s = simple(4, {0, 1, 0, 0}, {0, 0, 1, 0}, {0, 0, 0, 1});
         Options opt;
-        opt.length_scale_to_meters = 0.001;
         std::istringstream in(s);
         Mesh m = read_gmsh(in, opt);
-        require(m.data().length_scale_to_meters == 0.001 && m.node(1).x() == 1, "Scale metadata");
+        require(m.node(1).x() == 1, "Original coordinate");
         opt.unmarked_name.clear();
         std::istringstream bad(s);
         rejects([&] { read_gmsh(bad, opt); });

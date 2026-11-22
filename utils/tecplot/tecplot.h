@@ -18,7 +18,7 @@ struct Options {
     Options() : threads(0) {}
 };
 bool openmp_available() noexcept;
-// Пишет двоичный Tecplot 360 PLT v112 младшим байтом вперёд, координаты в метрах.
+// Пишет двоичный Tecplot 360 PLT v112 младшим байтом вперёд, координаты в единицах сетки.
 // До записи сверяет SHA-256, размеры и конечность значений. Описание приведено в README.txt.
 void write(std::ostream& output, const Mesh& mesh, const FieldSnapshot& fields,
            const Options& options = Options());

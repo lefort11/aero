@@ -68,9 +68,11 @@ std::size_t component_offset(unsigned component) {
     return state_start + sizeof(double) * component;
 }
 
-void decode_node(const OwnedNode& n, const char* row, unsigned width, std::vector<double>& state,
-                 std::vector<double>& initial, implicit::BdfHistory& history, ScalarHistory* scalar, diagnostic::Moments* samples) {
-    if (!intact(row, record_size(width,history.dt>0.,scalar!=nullptr,samples!=nullptr)) || read_word(row) != n.id)
+void decode_node(const OwnedNode& n, const char* row, unsigned width, unsigned stride, bool saved_history,
+                 std::vector<double>& state, std::vector<double>* initial, implicit::BdfHistory& history,
+                 ScalarHistory* scalar, diagnostic::Moments* samples) {
+    // CRC всегда охватывает всю запись, даже если для нового запуска берём только последний слой.
+    if (!intact(row, stride) || read_word(row) != n.id)
         throw std::runtime_error("recovery: damaged record at node " + std::to_string(n.id));
     if (read_word(row + id_bytes) != n.representative)
         throw std::runtime_error("recovery: incompatible periodic mapping at node " + std::to_string(n.id));
@@ -78,7 +80,7 @@ void decode_node(const OwnedNode& n, const char* row, unsigned width, std::vecto
     if (n.id != n.representative)
         return;
     if(scalar) {
-        const unsigned first=(history.dt>0.?3u:2u)*width;
+        const unsigned first=(saved_history ? 3u : 2u)*width;
         scalar->current[n.slot]=read_real(row+component_offset(first));
         if(history.dt>0.) scalar->previous[n.slot]=read_real(row+component_offset(first+1));
     }
@@ -90,7 +92,7 @@ void decode_node(const OwnedNode& n, const char* row, unsigned width, std::vecto
     const auto begin = n.slot * width;
     for (unsigned k = 0; k < width; ++k) {
         state[begin + k] = read_real(row + component_offset(k));
-        initial[begin + k] = read_real(row + component_offset(width + k));
+        if (initial) (*initial)[begin + k] = read_real(row + component_offset(width + k));
         if (history.dt>0.) history.previous[begin+k] = read_real(row+component_offset(2*width+k));
     }
 }
@@ -284,8 +286,12 @@ std::string Recovery::path(int slot) const {
 bool Recovery::due(Id accepted) const {
     return accepted > 0 && run_.recovery_every_steps && accepted % run_.recovery_every_steps == 0;
 }
-void Recovery::restore(std::vector<double>& state, std::vector<double>& initial) {
-    const int requested = run_.directories.recovery_slot;
+void Recovery::restore(std::vector<double>& state, std::vector<double>& initial, const std::string& initial_file) {
+    const bool new_run = !initial_file.empty();
+    const int requested = new_run ? 0 : run_.directories.recovery_slot;
+    // Для начального поля читаем ровно указанный файл. Для продолжения сохраняем выбор
+    // новейшего исправного слота и возможность отката к предыдущей контрольной точке.
+    const std::string files[] = {new_run ? initial_file : path(0), path(1)};
     std::string adaptive[2];
     Id steps[2] = {};
     int valid[2] = {}; // У целого заголовка номер шага может быть нулевым.
@@ -296,16 +302,16 @@ void Recovery::restore(std::vector<double>& state, std::vector<double>& initial)
         for (int s = 0; s < 2; ++s) {
             if (requested >= 0 && s != requested)
                 continue;
-            if (!exists(path(s)))
+            if (!exists(files[s]))
                 continue;
             try {
-                std::ifstream in(path(s), std::ios::binary);
+                std::ifstream in(files[s], std::ios::binary);
                 const auto h = read_header(in, count_, width_, run_.gamma, hash_, saved_dt[s], adaptive[s], scalar!=nullptr);
                 steps[s] = read_word(&h[header_step]);
                 times[s] = read_real(&h[header_time]);
                 valid[s] = h[7]>='5'?2:1;
             } catch (const std::exception& e) {
-                std::cerr << path(s) << ": " << e.what() << '\n';
+                std::cerr << files[s] << ": " << e.what() << '\n';
             }
         }
     });
@@ -318,36 +324,50 @@ void Recovery::restore(std::vector<double>& state, std::vector<double>& initial)
             continue;
         try {
             if (!world_.rank)
-                std::cout << "Reading recovery file " << path(s) << "..." << std::endl;
-            has_samples=valid[s]==2;
-            history.dt=saved_dt[s];
+                std::cout << "Reading recovery file " << files[s] << "..." << std::endl;
+            const bool saved_history = saved_dt[s] > 0.;
+            const bool saved_samples = valid[s] == 2;
+            // В новом расчёте газ записываем прямо в начальное поле. Старые средние,
+            // исходное поле RANS и предыдущий слой BDF пропускаем без выделения памяти.
+            auto& gas = new_run ? initial : state;
+            has_samples = !new_run && saved_samples;
+            history.dt = new_run ? 0. : saved_dt[s];
             world_.local([&] {
-                samples.resize(has_samples?state.size()/width_:0);
-                history.previous.resize(history.dt>0. ? state.size() : 0);
+                samples.resize(has_samples ? gas.size()/width_ : 0);
+                history.previous.resize(history.dt > 0. ? gas.size() : 0);
                 if(scalar) {
-                    scalar->current.resize(state.size()/width_);
+                    scalar->current.resize(gas.size()/width_);
                     scalar->previous.resize(history.previous.size()/width_);
                 }
             });
-            const unsigned stride = record_size(width_,history.dt>0.,scalar!=nullptr,has_samples);
+            const unsigned stride = record_size(width_,saved_history,scalar!=nullptr,saved_samples);
             const auto decode = [&](const OwnedNode& n, char* row, std::size_t) {
-                decode_node(n, row, width_, state, initial, history, scalar.get(),has_samples?samples.data():nullptr);
+                decode_node(n, row, width_, stride, saved_history, gas, new_run ? nullptr : &initial,
+                            history, scalar.get(), has_samples ? samples.data() : nullptr);
             };
-            indexed_io::transfer(world_, path(s), indexed_io::Access::Read, stride, nodes_, {records_start(history.dt>0.)},
+            indexed_io::transfer(world_, files[s], indexed_io::Access::Read, stride, nodes_, {records_start(saved_history)},
                                  decode);
             // Перед выдачей восстановленного состояния проверяем, что заголовок всё ещё указывает на выбранный завершённый шаг.
             world_.local([&] {
                 if (world_.rank)
                     return;
-                std::ifstream in(path(s), std::ios::binary);
-                const auto h = read_header(in, count_, width_, run_.gamma, hash_, saved_dt[s], adaptive[s], scalar!=nullptr);
-                require(saved_dt[s]==history.dt && read_word(&h[header_step]) == steps[s] && read_real(&h[header_time]) == times[s],
+                std::ifstream in(files[s], std::ios::binary);
+                double confirmed_dt = 0.;
+                const auto h = read_header(in, count_, width_, run_.gamma, hash_, confirmed_dt, adaptive[s], scalar!=nullptr);
+                require(confirmed_dt == saved_dt[s] && (h[7] >= '5') == saved_samples &&
+                        read_word(&h[header_step]) == steps[s] && read_real(&h[header_time]) == times[s],
                         "checkpoint changed during read");
             });
         } catch (const std::exception& e) {
             if (!world_.rank)
-                std::cerr << path(s) << ": " << e.what() << '\n';
+                std::cerr << files[s] << ": " << e.what() << '\n';
             continue;
+        }
+        if (new_run) {
+            if (!world_.rank)
+                std::cout << "Initialized from checkpoint step " << steps[s] << " at time " << times[s]
+                          << ". Starting a new run at step 0, time 0." << std::endl;
+            return;
         }
         stabilization_state.swap(adaptive[s]);
         world_.broadcast(stabilization_state, 0);
@@ -366,7 +386,7 @@ void Recovery::restore(std::vector<double>& state, std::vector<double>& initial)
         step = steps[s];
         require(run_.steady() || time <= run_.final_time, "final_time precedes the saved time");
         if (!world_.rank)
-            std::cout << "Recovered step " << step << " at time " << time << " from " << path(s) << std::endl;
+            std::cout << "Recovered step " << step << " at time " << time << " from " << files[s] << std::endl;
         if (!run_.output_zones.empty()) {
             const std::string prefix = run_.directories.output + "/resumed-" + std::to_string(step) + "-";
             Id number = 0;
@@ -380,7 +400,7 @@ void Recovery::restore(std::vector<double>& state, std::vector<double>& initial)
         return;
     }
     throw std::runtime_error("recovery: no valid checkpoint in " +
-                             (requested >= 0 ? path(requested) : run_.directories.output));
+                             (requested >= 0 ? files[requested] : run_.directories.output));
 }
 void Recovery::save(Id accepted, double t, const std::vector<double>& state,
                     const std::vector<double>& initial) {

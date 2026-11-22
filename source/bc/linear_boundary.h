@@ -6,7 +6,7 @@ namespace aero {
 namespace bc_detail {
 // На сверхзвуковом входе правило может назначить каждую компоненту независимо.
 // В матрице производная константы или начального поля по текущему полю равна нулю.
-AERO_HOST_DEVICE inline bool linear_inlet(unsigned dim, const SupersonicInflow& rule,
+AERO_HOST_DEVICE inline bool linear_inlet(unsigned dim, const PrescribedState& rule,
                                           const double* initial, bool homogeneous, double* q) {
     if (rule.use_initial && !homogeneous && !initial)
         return false;
@@ -68,7 +68,29 @@ AERO_HOST_DEVICE inline bool linear_boundary_flux(const LinearFace& face, Bounda
         // Знак фоновой нормальной скорости и число Маха выбирают режим один раз
         // для данного направления. На сверхзвуковом выходе берём все значения изнутри.
         const auto regime = bc_detail::free_regime(face.transport, face.gas.sound);
-        if (regime == bc_detail::FreeRegime::SuperIn) {
+        const auto source = bc_detail::boundary_source(regime, *rules);
+        if (takes_reference(source)) {
+            if (rules->external_base == ProfileFallback::Initial) {
+                if (!initial && !homogeneous) return false;
+                for (unsigned k=0; k<d+2; ++k) q[k] = homogeneous ? 0. : initial[k];
+            } else if (rules->external_base != ProfileFallback::Interior &&
+                       !bc_detail::linear_inlet(d, rules->reference, initial, homogeneous, q)) return false;
+            if (source == BoundarySource::InteriorPressure) q[d+1] = inside[d+1];
+            if (source == BoundarySource::ExternalScalar) {
+                BoundaryRule pressure{BoundaryMode::Pressure, BoundarySource::Constant, q[d+1]};
+                for (unsigned j=0;j<d+2;++j) q[j]=inside[j];
+                if (!bc_detail::linear_subsonic(face,pressure,initial,false,q)) return false;
+            }
+            if (source == BoundarySource::Characteristic) {
+                // В опорном состоянии заменяем только исходящий инвариант u'_n + p'/(rho0*c0).
+                const double z = face.gas.rho * face.gas.sound;
+                const double du = .5 * (euler_detail::dot(d, inside+1, face.normal) -
+                    euler_detail::dot(d, q+1, face.normal) + (inside[d+1]-q[d+1])/z);
+                q[0] += du * face.gas.rho / face.gas.sound;
+                q[d+1] += z * du;
+                for (unsigned k=0; k<d; ++k) q[k+1] += du*face.normal[k];
+            }
+        } else if (regime == bc_detail::FreeRegime::SuperIn) {
             if (!bc_detail::linear_inlet(d, rules->superin, initial, homogeneous, q)) return false;
         } else if (regime != bc_detail::FreeRegime::SuperOut) {
             const auto& rule = regime == bc_detail::FreeRegime::In ? rules->inflow : rules->outflow;

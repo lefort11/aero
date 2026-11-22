@@ -352,6 +352,11 @@ void sa_residual(const Execution& exec,const turbulence::Step& step) {
     default: sa_rows<3,same_gas>(exec,step.transport,step.keep_gas); break;
     }
 }
+const char* aero_device_sa_convection(const turbulence::SaEdgeConvection& edges,MeshIndex count) {
+    return on_device(nullptr,[&](const Execution& exec){
+        for_indices(exec,"Aero: reconstructed SA convection",count,edges);
+    });
+}
 const char* aero_device_sa_step(const turbulence::Step& input,turbulence::Operation op) {
     const auto step=input;
     return on_device(nullptr,[&](const Execution& exec){

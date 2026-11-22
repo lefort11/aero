@@ -1,6 +1,6 @@
 # Проверки границ используют ту же реализацию потока и ту же геометрию площадок, что и солвер.
 BC_DIR := source/bc
-BC_HEADERS := source/parallel/kernel_math.h $(BC_DIR)/bc.h source/eulersolver/euler.h
+BC_HEADERS := source/parallel/kernel_math.h $(BC_DIR)/bc.h source/eulersolver/euler.h source/io/freestream.h
 BC_TEST_HEADERS := $(BC_HEADERS) $(BC_DIR)/bc_test_case.h
 BC_LIB := $(BUILD)/libaero_bc.a
 PERIODIC_HEADERS := $(BC_DIR)/periodic.h $(CV_HEADERS) $(RECONSTRUCTION_HEADERS)
@@ -50,3 +50,4 @@ bc-cuda-test:
 	./$(BIN)/bc_tests_cuda1$(EXE) --require-cuda
 $(BC_DEBUG): source/io/settings_text.h
 $(BC_TEST) $(BC_DEBUG): qa/test_checks.h
+$(BC_TEST) $(BC_DEBUG): source/implicit/boundary_jacobian.h source/implicit/edge_jacobian.h

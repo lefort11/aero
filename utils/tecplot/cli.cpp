@@ -39,12 +39,12 @@ bool same_file(const char* input, const char* output) {
 }
 void usage(std::ostream& out) {
     out << "Usage: fields_to_tecplot MESH [FIELDS] OUTPUT.plt [--threads N]\n\n"
-           "  MESH        Native AEROMESH v2: text, binary or LZMA.\n"
+           "  MESH        Native AEROMESH v2/v3: text, binary or LZMA.\n"
            "  FIELDS      Optional AEROFIELDS v1: text, binary or LZMA.\n"
            "  OUTPUT.plt  Binary Tecplot file with geometry and any supplied fields.\n"
            "  --threads N Positive thread count (default: OpenMP runtime settings).\n"
            "  -h, --help  Show this help.\n\n"
-           "Mesh SHA-256 must match. Coordinates are exported in meters.\n"
+           "Mesh SHA-256 must match. Coordinates use the original mesh units.\n"
            "A successful export replaces an existing output file.\n"
            "OpenMP: "
         << (openmp_available() ? "enabled" : "disabled (one thread)") << "\n";

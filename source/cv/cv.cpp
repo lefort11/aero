@@ -26,10 +26,9 @@ struct Geometry {
     MeshView mesh;
     MeshIndex cell;
     V delta(MeshIndex a, MeshIndex b) const {
-        return V{mesh.x[a] - mesh.x[b], mesh.y[a] - mesh.y[b], mesh.z[a] - mesh.z[b]} *
-               mesh.length_scale_to_meters;
+        return {mesh.x[a] - mesh.x[b], mesh.y[a] - mesh.y[b], mesh.z[a] - mesh.z[b]};
     }
-    // Смещение среднего положения вершин относительно первой вершины, в метрах.
+    // Смещение среднего положения вершин относительно первой вершины в единицах сетки.
     V center(MeshIndexSpan nodes) const {
         V sum = {};
         for (MeshIndex id : nodes)
@@ -76,7 +75,7 @@ struct Contribution {
 const MeshIndex no_boundary = std::numeric_limits<MeshIndex>::max();
 
 // В одном измерении граница между двумя узлами проходит через середину отрезка.
-void split_segment(const Geometry& g, MeshCell cell, const std::vector<MeshIndex>& boundary_start,
+double split_segment(const Geometry& g, MeshCell cell, const std::vector<MeshIndex>& boundary_start,
                    std::vector<CvBoundary>& boundary, std::vector<Contribution>& parts) {
     const MeshView& m = g.mesh;
     const MeshIndex e = cell.edge_id(0), a = m.edge_begin[e], b = m.edge_end[e];
@@ -92,17 +91,32 @@ void split_segment(const Geometry& g, MeshCell cell, const std::vector<MeshIndex
         if (boundary_start[f] != no_boundary)
             boundary[boundary_start[f]].area = area * (m.face_nodes(f)[0] == a ? -1 : 1);
     }
+    return length;
+}
+
+// Ширина ячейки вдоль нормали к грани. На симплексе это обычная высота,
+// на прямоугольнике или параллелепипеде — расстояние до противоположной грани.
+double normal_width(const Geometry& g, MeshIndexSpan vertices, MeshIndex origin, V area) {
+    const double length = area.length();
+    g.require(length > 0 && std::isfinite(length), "invalid face normal for CFL");
+    const V unit = {area.x / length, area.y / length, area.z / length};
+    double low = 0., high = 0.;
+    for (MeshIndex node : vertices) {
+        const double projection = g.delta(node, origin).dot(unit);
+        low = std::min(low, projection);
+        high = std::max(high, projection);
+    }
+    return high - low;
 }
 
 // Делит ячейку на доли узлов. Внешняя грань принадлежит ровно одной ячейке,
 // поэтому её площадки можно заполнять сразу даже при параллельном обходе.
-void collect_cell_contributions(const MeshView& m, MeshIndex id, const std::vector<MeshIndex>& boundary_start,
+double collect_cell_contributions(const MeshView& m, MeshIndex id, const std::vector<MeshIndex>& boundary_start,
                                 std::vector<CvBoundary>& boundary, std::vector<Contribution>& parts) {
     const Geometry g = {m, id};
     const MeshCell cell = m.cell(id);
     if (m.dimension == 1) {
-        split_segment(g, cell, boundary_start, boundary, parts);
-        return;
+        return split_segment(g, cell, boundary_start, boundary, parts);
     }
     const MeshIndex origin = cell.node_id(0);
     const V center = g.center(cell.node_ids());
@@ -111,12 +125,13 @@ void collect_cell_contributions(const MeshView& m, MeshIndex id, const std::vect
         normal = polygon_normal(g, cell, center);
         check_plane(g, cell.node_ids(), normal);
     }
+    double height = std::numeric_limits<double>::max();
     for (MeshIndex k = 0; k < cell.face_count(); ++k) {
         const MeshFace face = cell.face(k);
         const MeshIndex start = boundary_start[face.id()];
         const int sign = cell.face_orientation(k);
         const MeshIndexSpan nodes = face.node_ids();
-        V face_center = {};
+        V face_center = {}, face_area = {};
         if (m.dimension == 3) {
             // Вершины могут лежать на разных высотах. Каждое ребро вместе с общим
             // средним положением вершин образует свой треугольник поверхности.
@@ -140,6 +155,7 @@ void collect_cell_contributions(const MeshView& m, MeshIndex id, const std::vect
             }
             // Две равные части по сторонам двойственной площадки принадлежат концам одного ребра.
             const double share = dual_area.dot(edge) / (2 * m.dimension);
+            face_area = face_area + exterior;
             g.require(share > 0 && std::isfinite(share), "non-positive or non-finite median subcell");
             parts.push_back({a, b, e, share, dual_area * (a == m.edge_begin[e] ? 1 : -1)});
             if (start != no_boundary) {
@@ -147,13 +163,17 @@ void collect_cell_contributions(const MeshView& m, MeshIndex id, const std::vect
                 boundary[start + next].area = boundary[start + next].area + exterior;
             }
         }
+        height = std::min(height, normal_width(g, cell.node_ids(), nodes[0], face_area));
     }
+    g.require(height > 0 && std::isfinite(height), "invalid cell height for CFL");
+    return height;
 }
 }
 
 MedianDual::MedianDual(const Mesh& mesh) : dimension_(mesh.data().dimension) {
     const MeshView m = mesh.view();
     volumes_.resize(m.node_count);
+    min_heights_.assign(m.node_count, std::numeric_limits<double>::max());
     edge_areas_.resize(m.edge_count);
     std::vector<MeshIndex> boundary_start(m.face_count, no_boundary);
     for (MeshIndex b = 0; b < m.boundary_face_count; ++b) {
@@ -166,21 +186,26 @@ MedianDual::MedianDual(const Mesh& mesh) : dimension_(mesh.data().dimension) {
     // Номер потока не влияет на округление; пакет ограничивает временную память.
     const MeshIndex batch = 1024;
     std::vector<std::vector<Contribution>> parts(std::min(batch, m.cell_count));
+    std::vector<double> heights(parts.size());
     for (MeshIndex first = 0; first < m.cell_count;) {
         const MeshIndex size = std::min(batch, m.cell_count - first);
         parallel_for(
             size,
             [&](MeshIndex i) {
                 parts[i].clear();
-                collect_cell_contributions(m, first + i, boundary_start, boundary_, parts[i]);
+                heights[i] = collect_cell_contributions(m, first + i, boundary_start, boundary_, parts[i]);
             },
             128);
-        for (MeshIndex i = 0; i < size; ++i)
+        for (MeshIndex i = 0; i < size; ++i) {
+            // Высота нужна на каждом шаге CFL, но на неподвижной сетке её вычисляем только здесь.
+            for (MeshIndex node : m.cell_nodes(first + i))
+                min_heights_[node] = std::min(min_heights_[node], heights[i]);
             for (const auto& v : parts[i]) {
                 volumes_[v.a] += v.volume;
                 volumes_[v.b] += v.volume;
                 edge_areas_[v.edge] = edge_areas_[v.edge] + v.area;
             }
+        }
         first += size;
     }
     parallel_for(m.node_count, [&](MeshIndex i) {
@@ -217,6 +242,6 @@ MedianDual::MedianDual(const Mesh& mesh) : dimension_(mesh.data().dimension) {
 }
 CvView MedianDual::view() const noexcept {
     return {dimension_,      volumes_.size(),    edge_areas_.size(), boundary_.size(),
-            volumes_.data(), edge_areas_.data(), boundary_.data()};
+            volumes_.data(), edge_areas_.data(), boundary_.data(), min_heights_.data()};
 }
 }

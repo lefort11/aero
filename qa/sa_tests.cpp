@@ -1,8 +1,45 @@
 #include "../source/turbulence/transport.h"
+#include "../source/turbulence/convection.h"
 #include "test_checks.h"
 #include <iostream>
 #include <vector>
 using namespace aero::turbulence;
+// У одного ребра задаём разные приращения слева и справа. Смена знака расхода
+// должна выбрать другую сторону, в том числе при локальном понижении порядка.
+void test_sa_convection() {
+    using aero::ReconstructionIndex;
+    const ReconstructionIndex offsets[] = {0,2,4}, nodes[] = {0,1,0,1}, owners[] = {0,1};
+    const double weights[] = {-1,1,-.5,.5};
+    aero::ReconstructionStencilView stencil{};
+    stencil.edge_count = 1;
+    stencil.node_count = 2;
+    stencil.offsets = offsets;
+    stencil.nodes = nodes;
+    stencil.weights = weights;
+    stencil.row_owner = owners;
+    double w[] = {4,6};
+    aero::residual_detail::Surface face{};
+    face.end = 1;
+    aero::EulerFluxResult gas{};
+    double result = 0.;
+    const SaEdgeConvection edge{stencil,&face,nullptr,&gas,w,&result,1.,0.};
+    const auto flux = [&](double mass, unsigned char mask) {
+        gas.flux[0] = mass;
+        face.use_nodal_traces = mask;
+        edge(0);
+        return result;
+    };
+    aero_test::require(flux(2.,0)==2. && flux(-2.,0)==1., "SA upwind side and orientation");
+    aero_test::require(flux(2.,2)==0. && flux(-2.,2)==1., "SA first order on the left");
+    aero_test::require(flux(2.,4)==2. && flux(-2.,4)==0., "SA first order on the right");
+    aero_test::require(flux(2.,1)==0. && flux(-2.,1)==0., "SA open boundary nodal stencil");
+    w[0] = w[1];
+    aero_test::require(flux(2.,0)==0. && flux(-2.,0)==0., "constant SA field");
+    w[0] = 0.;
+    aero_test::require(flux(2.,0)==0., "no SA outflow from an empty donor");
+    w[0] = .125;
+    aero_test::require(flux(2.,0)==.25, "bound on additional outflow");
+}
 // Несимметричный градиент с сингулярными числами 3, 2, 1; ось вихря совпадает с z.
 void test_sigma() {
     FilterCell box{};
@@ -223,6 +260,7 @@ int main() {
         aero_test::require(extrapolated_viscosity(1.,.75,1.)==1.,"implicit SA increasing extrapolation");
         aero_test::require(extrapolated_viscosity(.1,-.5,-1.)==.1,"implicit SA positive branch");
         test_sa_line();
+        test_sa_convection();
         test_sigma();
         test_ddes();
         for (unsigned k=0;k<=20000;++k) {

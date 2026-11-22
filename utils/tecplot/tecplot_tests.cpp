@@ -368,6 +368,7 @@ void check_fields(const Mesh& mesh, const FieldSnapshot& snapshot, const PltRead
     const auto& z = reader.zones[0];
     require(z.time == snapshot.time && z.auxiliary.at("Aero.Step") == "123", "Time and step");
     require(z.auxiliary.at("Aero.MeshSHA256") == snapshot.mesh_sha256, "Fingerprint metadata");
+    require(!z.auxiliary.count("Aero.CoordinateUnits"), "Raw coordinates have no declared physical units");
     std::size_t variable = 3;
     for (const Field& field : snapshot.fields)
         for (std::size_t component = 0; component < field.components.size(); ++component, ++variable) {
@@ -387,7 +388,7 @@ void check_fields(const Mesh& mesh, const FieldSnapshot& snapshot, const PltRead
                 require(reader.zones[0].passive[variable] == 1, "Inactive field not interpolated on volume");
         }
     for (std::size_t i = 0; i < mesh.data().x.size(); ++i)
-        require(z.data[0][i] == mesh.data().x[i] * mesh.data().length_scale_to_meters, "Coordinate units");
+        require(z.data[0][i] == mesh.data().x[i], "Coordinate units");
 }
 // Проверки топологии зон и значений полей с разным расположением.
 void register_zones() {
@@ -457,9 +458,8 @@ void register_zones() {
         PltReader scalar(bytes);
         require(scalar.zones[0].locations[3] == 1 && scalar.zones[0].data[3][0] == 101325, "Cell scalar");
     });
-    add("coordinate scale long UTF-8 names and metadata", [] {
+    add("coordinates long UTF-8 names and metadata", [] {
         MeshData d = polygon().data();
-        d.length_scale_to_meters = 0.001;
         const Mesh mesh(d);
         auto data = fields(mesh);
         data.fields[0].name = std::string(160, 'a') + u8"крыло";
@@ -583,9 +583,8 @@ void register_cli() {
         rejects([&] { tecplot::write(out, mesh, data, options); });
         changed = mesh.data();
         changed.x[1] = std::numeric_limits<double>::max();
-        changed.length_scale_to_meters = 2;
-        Mesh overflow(changed);
-        rejects([&] { export_bytes(overflow, fields(overflow)); });
+        const Mesh large(changed);
+        check_fields(large, fields(large), PltReader(export_bytes(large, fields(large))));
     });
     add("existing outputs inputs and failed streams are protected", [] {
         const Mesh mesh = line();

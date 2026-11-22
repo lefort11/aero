@@ -11,15 +11,14 @@ void usage(std::ostream& out) {
     out << "Usage: mesh_converter INPUT OUTPUT [OPTIONS]\n"
            "\n"
            "Arguments:\n"
-           "  INPUT   Input mesh: Gmsh (.msh), CGNS (.cgns), another directory/mesh.txt.\n"
-           "  OUTPUT  Output mesh path: AEROMESH v2.\n"
+           "  INPUT   Input mesh: Gmsh (.msh), CGNS (.cgns), another directory/mesh.txt (text .msh arrays).\n"
+           "  OUTPUT  Output mesh path: AEROMESH v3.\n"
            "\n"
            "Options:\n"
            "  --from gmsh|cgns|another  Input format (default: infer from path).\n"
            "  --format text|binary|lzma  Output encoding (default: binary).\n"
            "  --base N               CGNS base index, starting at 1.\n"
            "  --zone N               CGNS zone index, starting at 1.\n"
-           "  --scale VALUE          Meters per coordinate unit (default: 1).\n"
            "  --unmarked NAME        Name for unmarked boundaries (default: unmarked).\n"
            "  -h, --help             Show this help.\n"
            "\n"
@@ -101,12 +100,7 @@ int aero::converter::run_cli(int argc, const char* const* argv, std::ostream& ou
                 options.zone = index(value);
             else if (flag == "--unmarked")
                 options.unmarked_name = value;
-            else if (flag == "--scale") {
-                std::istringstream in(value);
-                in.imbue(std::locale::classic());
-                if (!(in >> options.length_scale_to_meters) || in.peek() != std::char_traits<char>::eof())
-                    throw aero::MeshError("Invalid coordinate scale");
-            } else
+            else
                 throw aero::MeshError("Unknown option: " + flag);
         }
         if (from.empty())

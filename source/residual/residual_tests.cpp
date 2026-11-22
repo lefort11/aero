@@ -201,6 +201,29 @@ void local_steady_cfl() {
     require(dt[0] == expected_gas && dt[1] == .25, "cap respects ownership");
     limit(1);
     require(dt[0] == .375 && dt[1] == .25, "cap only shortens excessive local steps");
+
+    // Самый быстрый узел и наименьшая высота находятся в разных местах.
+    // Первый узел ограничивает газ, второй — SA; нумерация владельцев обратная.
+    grid.dim = 2;
+    EulerState gas[2]{};
+    gas[0].density = gas[1].density = 1.;
+    gas[0].velocity[0] = 3.; gas[0].velocity[1] = 4.;
+    gas[0].sound_speed = gas[1].sound_speed = 1.;
+    grid.packed.gas = gas;
+    const double heights[] = {4., 1.};
+    const FluxCfl height_cfl(grid,flux,volumes,owned,2,sa_rate,heights);
+    const double convective_rate = 6. / heights[0];
+    const double viscous_rate = 1. / expected_gas - 1.;
+    near(height_cfl.local(1, .5).dt, .5 / (convective_rate + viscous_rate));
+    near(cpu_flux_cfl(height_cfl,.5), .125);
+
+    // Для Linear скорость распространения определяется фоном при любых пульсациях.
+    grid.packed.gas = nullptr;
+    grid.options.background.rho = 1.;
+    grid.options.background.velocity[1] = -3.;
+    grid.options.background.sound = 2.;
+    const FluxCfl linear(grid,flux,volumes,owned,2,nullptr,heights);
+    near(linear.local(0,.5).dt, .1);
 }
 // Старый газ хранится по номерам строк, новый — по номерам узлов сетки.
 // Берём строку 0 для узла 1: перепутанные индексы меняют и давление, и шаг.
@@ -469,8 +492,8 @@ void edge_modes(int device) {
             }
     }
 }
-// Первая компонента полностью запрещает общую поправку. Вектор импульса
-// должен получить ровно свою проекцию на касательную плоскость.
+// Плотности запрещён сдвиг 1. По правилу общего веса это может убрать
+// не более единицы из нормальной поправки. Касательная поправка независима.
 void oblique_mp_limit() {
     for (unsigned d : {2u, 3u}) {
         const double normal[3] = {d == 2 ? .6 : 2./3., d == 2 ? .8 : 1./3., d == 2 ? 0. : 2./3.};
@@ -489,11 +512,12 @@ void oblique_mp_limit() {
             if (weno) residual_detail::correct_cartesian_pair<true>(axes, slopes, settings, 1., left, right);
             else residual_detail::correct_cartesian_pair<false>(axes, slopes, settings, 1., left, right);
             const double normal_part = euler_detail::dot(d, momentum, normal);
+            const double shared = 1. - 1. / std::max(1., std::abs(normal_part));
             for (const double* side : {left, right}) {
                 near(side[0], 0.);
-                near(side[d+1], 0.);
+                near(side[d+1], shared);
                 for (unsigned j = 0; j < d; ++j)
-                    near(side[1+j], momentum[j] - normal[j]*normal_part);
+                    near(side[1+j], momentum[j] - (1.-shared)*normal[j]*normal_part);
             }
         }
     }

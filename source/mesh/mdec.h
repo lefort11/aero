@@ -63,7 +63,6 @@ public:
     // Идентификатор исходной сетки. Пуст для старых архивов без этого поля.
     std::string mesh_sha256;
     unsigned dimension;
-    double scale;
     // Исходные числа узлов, граней и ячеек, до разбиения.
     std::array<Id, 3> counts;
     Id boundaries, leaves;

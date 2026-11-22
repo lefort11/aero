@@ -422,6 +422,33 @@ void assign_import_slots(PartitionStencil& result, const std::vector<Ref>& state
 }
 
 // Линейной схеме нужны две строки на ребро. В WENO каждая сторона может иметь четыре строки наклонов.
+// Передаёт солверу готовую реконструкцию целой сетки без перенумерации узлов.
+void take_native_stencil(PartitionStencil& result, ReconstructionStencilData src,
+                         const StencilRequests& requests, const Ids& ids, Id surfaces, bool weno) {
+    // На целой сетке нумерация рёбер и узлов уже совпадает с нумерацией солвера.
+    // Передаём готовые массивы без второй копии всех строк интерполяции.
+    result.incomplete = std::count(src.complete.begin(), src.complete.end(), 0);
+    result.linear = {std::move(src.offsets), std::move(src.nodes), std::move(src.weights)};
+    if (weno) result.slopes = {std::move(src.slope_offsets), std::move(src.slope_nodes), std::move(src.slope_weights)};
+    result.row_owner.swap(src.row_owner);
+    result.weno_order.swap(src.weno_order);
+    result.epsilon_scale.swap(src.weno_epsilon_scale);
+    result.nodal_traces.resize(surfaces);
+    std::vector<unsigned char> inlet(ids.size());
+    // Обходим только узлы открытой границы. В таблице целой сетки глобальный
+    // номер обычно совпадает с позицией; для иной нумерации ищем его в ids.
+    for (Id n : requests.inlet_nodes)
+        inlet[n < ids.size() && ids[n] == n ? n : index_of(ids, n)] = 1;
+    parallel_for(requests.edges.size(), [&](Id k) {
+        const auto& e = requests.edges[k];
+        if (!inlet[e.begin] && !inlet[e.end]) return;
+        result.nodal_traces[e.surface] = 1;
+        if (weno) {
+            result.weno_order[2*e.surface] = result.weno_order[2*e.surface+1] = 0;
+        }
+    });
+}
+
 void allocate_stencil_rows(PartitionStencil& result, Id surfaces, bool weno) {
     const Id rows_per_edge = weno ? 8 : 2;
     if (surfaces > (result.linear.offsets.max_size() - 1) / rows_per_edge)
@@ -462,9 +489,10 @@ PartitionStencil prepare_partition_stencil(const MeshPartition& part, const Peri
     result.mp5 = {options.scheme == ReconstructionScheme::Mp5, options.scheme == ReconstructionScheme::MPWENO5,
                   options.mpweno_ad_corr, options.mp5_alpha};
     w.local([&] {
-        allocate_stencil_rows(result, surfaces, weno);
-        if (computed.empty())
+        if (computed.empty()) {
+            allocate_stencil_rows(result, surfaces, weno);
             return;
+        }
         const auto& originals = halo.nodes;
         Ids field;
         std::map<Ref, Id> numbering;
@@ -486,6 +514,7 @@ PartitionStencil prepare_partition_stencil(const MeshPartition& part, const Peri
         }
         const Mesh& geometry = seam ? lifted : halo.mesh;
         auto local_options = options;
+        local_options.solver_rows_only = true;
         if (!depth.empty() && seam) {
             // Поле периодического образа ссылается на представителя. Номер
             // пристенного слоя переносим и на все его геометрические копии.
@@ -500,7 +529,12 @@ PartitionStencil prepare_partition_stencil(const MeshPartition& part, const Peri
                 local_options.node_layers.push_back(compact[slot]);
         } else
             local_options.node_layers.swap(depth);
-        const auto prepared = prepare_reconstruction(geometry, local_options);
+        auto prepared = prepare_reconstruction(geometry, local_options);
+        if (w.size == 1 && !input && !seam) {
+            take_native_stencil(result, std::move(prepared).release_data(), requests, ids, surfaces, weno);
+            return;
+        }
+        allocate_stencil_rows(result, surfaces, weno);
         const auto& src = prepared.data();
         // Строки геометрии используют номера вершин вспомогательной сетки. Солверу нужны смещения в массиве состояний.
         RowTransfer linear(result.linear, src.offsets, src.nodes, src.weights);

@@ -44,8 +44,8 @@ def check_gpu_weights(log, archive, devices):
         raise AssertionError((scores, plan))
     # Сверяем разрез с независимой суммой работы по записям каталога листьев.
     data = archive.read_bytes()
-    (leaves,) = struct.unpack_from("<Q", data, 80)
-    (directory,) = struct.unpack_from("<Q", data, 112)
+    (leaves,) = struct.unpack_from("<Q", data, 72)
+    (directory,) = struct.unpack_from("<Q", data, 104)
     work = [0]
     for leaf in range(leaves):
         raw, nodes = struct.unpack_from("<QQ", data, directory + 48 * leaf + 16)

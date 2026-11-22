@@ -103,7 +103,6 @@ static int orientation(const Nodes& stored, const Nodes& current) {
 // Собирает единую сетку AEROMESH из элементов внешнего формата, сохраняя масштаб входных координат.
 Builder::Builder(unsigned dim, const Options& options) : options_(options) {
     data.dimension = dim;
-    data.length_scale_to_meters = options.length_scale_to_meters;
 }
 void Builder::cell(const Faces& faces) {
     for (std::size_t i = 0; i < faces.size(); ++i) {

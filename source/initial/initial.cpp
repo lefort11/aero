@@ -1,4 +1,5 @@
 #include "initial.h"
+#include "../io/freestream.h"
 #include "../parallel/parallel_for.h"
 #include "../bc/periodic.h"
 #include "../io/expression.h"
@@ -112,27 +113,12 @@ std::vector<std::string> primitives(unsigned d) {
 // Однородный поток задаём в осях компонент импульса. Азимут отсчитывается от x к y,
 // угол возвышения — от плоскости xy к z. Оба входных угла заданы в градусах.
 std::vector<double> freestream(Settings& settings, unsigned d, double gamma, double mach) {
-    if (!(mach > 0. && std::isfinite(mach)))
-        throw std::invalid_argument("initial_type freestream requires gas.txt:mach > 0");
     const auto angle = [&](const char* name) {
         if (!settings.entries.count(name)) return 0.;
         const auto s = take(settings, name);
         return settings_detail::finite_real(s.value, s.where + ": " + name);
     };
-    const double degrees = std::acos(-1.) / 180.;
-    const double phi = std::remainder(angle("phi"), 360.) * degrees;
-    const double elevation = angle("theta");
-    if (std::abs(elevation) > 90. || (d < 3 && elevation != 0.))
-        throw std::invalid_argument("init.txt: theta must be in [-90,90] and zero below 3D");
-    const double theta = elevation * degrees;
-    const double velocity[] = {std::cos(theta)*std::cos(phi), std::cos(theta)*std::sin(phi), std::sin(theta)};
-    if (d == 1 && std::abs(velocity[1]) > 1.e-14)
-        throw std::invalid_argument("init.txt: phi must be a multiple of 180 degrees in 1D");
-    // При rho_inf = |u_inf| = 1 из a_inf^2 = gamma*p_inf/rho_inf получаем давление.
-    std::vector<double> q(d + 2, 1.);
-    std::copy_n(velocity, d, q.begin() + 1);
-    q.back() = 1. / mach / gamma / mach;
-    return q;
+    return FreestreamGas{gamma, mach, angle("phi"), angle("theta")}.primitive(d);
 }
 
 // Преобразует примитивные переменные одного узла в консервативные прямо на месте.
@@ -278,7 +264,8 @@ void check_periodic_initial(const double* ref, const double* q, unsigned width, 
 }
 std::vector<double> read_initial(const Mesh& mesh, double gamma, std::istream& input,
                                  const std::string& directory, const PeriodicView* seam,
-                                 const FieldNodeSelection* selection, const LinearBackground& background, std::vector<std::string>* warnings, double mach) {
+                                 const FieldNodeSelection* selection, const LinearBackground& background, std::vector<std::string>* warnings,
+                                 double mach, std::string* recovery_path) {
     if (!(gamma > 1 && std::isfinite(gamma)))
         throw std::invalid_argument("initial: invalid gamma");
     const auto m = mesh.view();
@@ -287,6 +274,15 @@ std::vector<double> read_initial(const Mesh& mesh, double gamma, std::istream& i
     const auto names = primitives(d);
     Settings settings = read_settings(input, "init.txt");
     const std::string type = single(take(settings, "initial_type"));
+    if (recovery_path) recovery_path->clear();
+    if (type == "recovery") {
+        // Записи recovery адресуются глобальными номерами. Их прочитает общий
+        // загрузчик солвера, когда известны владельцы узлов и периодические пары.
+        if (!recovery_path) throw std::invalid_argument("initial_type recovery requires the solver checkpoint reader");
+        *recovery_path = resolve(directory, single(take(settings, "path")));
+        finish_settings(settings, warnings);
+        return {};
+    }
     std::vector<Expression> expressions;
     NodalSnapshot file;
     std::vector<double> uniform;

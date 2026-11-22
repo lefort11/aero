@@ -1,11 +1,7 @@
 #include "converter.h"
 #include "detail.h"
-#include "../../third_party/lzma/LzmaDec.h"
 #include <algorithm>
 #include <cctype>
-#include <cmath>
-#include <cstdlib>
-#include <cstring>
 #include <fstream>
 #include <limits>
 #include <locale>
@@ -91,58 +87,15 @@ U64 bounded(U64 n) {
         throw MeshError("another: array count exceeds converter limit");
     return n;
 }
-U64 little(const unsigned char* p, unsigned size) {
-    U64 v = 0;
-    for (unsigned k = 0; k < size; ++k)
-        v |= static_cast<U64>(p[k]) << (8 * k);
-    return v;
-}
-void* allocate(ISzAllocPtr, std::size_t size) {
-    return std::malloc(size);
-}
-void release(ISzAllocPtr, void* p) {
-    std::free(p);
-}
-
-// Заголовок .msb содержит число значений, ширину в байтах и код типа (1266 — int32, 1273 — float64).
-// Далее идут независимые блоки: размер сжатых данных uint32, исходный размер uint32, поток LZMA-alone.
-// Граница блока может проходить внутри числа. Целые записаны младшим байтом вперёд.
-class Array {
+// Координаты и связность читаем из текстовых .msh по одному значению.
+class TextArray {
 public:
-    Array(const std::string& path, bool binary, unsigned width)
-        : in_(path.c_str(), std::ios::binary), binary_(binary), width_(width), remaining_(0), declared_(0),
-          pos_(0) {
+    explicit TextArray(const std::string& path) : in_(path.c_str()) {
         if (!in_)
             throw MeshError("another: cannot open " + path);
-        if (binary_) {
-            declared_ = u32();
-            const U64 stored_width = u32(), type = u32();
-            bounded(declared_);
-            if (stored_width != width || type != (width == 8 ? 1273u : 1266u))
-                throw MeshError("another: unsupported MSB scalar encoding");
-            remaining_ = declared_ * width;
-        }
     }
-    U64 declared() const { return declared_; }
-    U64 integer() {
-        if (!binary_)
-            return number(token());
-        unsigned char b[4];
-        bytes(b, 4);
-        U64 v = little(b, 4);
-        if (v > 2147483647ULL)
-            throw MeshError("another: negative/invalid node index");
-        return v;
-    }
+    U64 integer() { return number(token()); }
     double real() {
-        if (binary_) {
-            unsigned char b[8];
-            bytes(b, 8);
-            const U64 bits = little(b, 8);
-            double d;
-            std::memcpy(&d, &bits, 8);
-            return d;
-        }
         std::istringstream value(token());
         value.imbue(std::locale::classic());
         double d;
@@ -151,25 +104,14 @@ public:
         return d;
     }
     void finish() {
-        if (binary_) {
-            if (remaining_ || pos_ != buffer_.size() || in_.peek() != std::char_traits<char>::eof())
-                throw MeshError("another: incorrect MSB length/trailing data");
-        } else {
-            std::string t;
-            if (next(t))
-                throw MeshError("another: trailing array data");
-        }
+        std::string extra;
+        if (next(extra))
+            throw MeshError("another: trailing array data");
         if (in_.bad())
             throw MeshError("another: array read failed");
     }
 
 private:
-    U64 u32() {
-        unsigned char b[4];
-        if (!in_.read(reinterpret_cast<char*>(b), 4))
-            throw MeshError("another: truncated MSB header");
-        return little(b, 4);
-    }
     bool next(std::string& t) {
         while (!(row_ >> t)) {
             std::string line;
@@ -188,43 +130,7 @@ private:
             throw MeshError("another: truncated text array");
         return t;
     }
-    void block() {
-        const U64 packed = u32(), unpacked = u32();
-        if (packed < 13 || packed > 64 * 1024 * 1024 || !unpacked || unpacked > 64 * 1024 * 1024 ||
-            unpacked > remaining_)
-            throw MeshError("another: invalid MSB block lengths");
-        std::vector<unsigned char> encoded(static_cast<std::size_t>(packed));
-        if (!in_.read(reinterpret_cast<char*>(encoded.data()), static_cast<std::streamsize>(packed)))
-            throw MeshError("another: truncated compressed block");
-        if (little(encoded.data() + 5, 8) != unpacked || little(encoded.data() + 1, 4) > 64 * 1024 * 1024)
-            throw MeshError("another: invalid LZMA header");
-        buffer_.resize(static_cast<std::size_t>(unpacked));
-        pos_ = 0;
-        SizeT dest = buffer_.size(), source = encoded.size() - 13;
-        ELzmaStatus status = LZMA_STATUS_NOT_SPECIFIED;
-        const ISzAlloc allocator = {allocate, release};
-        const SRes code = LzmaDecode(buffer_.data(), &dest, encoded.data() + 13, &source, encoded.data(), 5,
-                                     LZMA_FINISH_END, &status, &allocator);
-        if (code != SZ_OK || dest != unpacked || source != encoded.size() - 13 ||
-            (status != LZMA_STATUS_FINISHED_WITH_MARK && status != LZMA_STATUS_MAYBE_FINISHED_WITHOUT_MARK))
-            throw MeshError("another: corrupt LZMA block");
-    }
-    void bytes(unsigned char* out, unsigned n) {
-        if (n > remaining_)
-            throw MeshError("another: truncated scalar array");
-        for (unsigned i = 0; i < n; ++i) {
-            if (pos_ == buffer_.size())
-                block();
-            out[i] = buffer_[pos_++];
-            --remaining_;
-        }
-    }
     std::ifstream in_;
-    bool binary_;
-    unsigned width_;
-    U64 remaining_, declared_;
-    std::vector<unsigned char> buffer_;
-    std::size_t pos_;
     std::istringstream row_;
 };
 std::map<U64, std::string> labels(const std::string& path) {
@@ -259,14 +165,12 @@ std::map<U64, std::string> labels(const std::string& path) {
 }
 
 // Для двумерной сетки третью координату оставляем нулевой.
-void read_coordinates(detail::Builder& builder, const std::string& dir, bool binary, U64 dim,
+void read_coordinates(detail::Builder& builder, const std::string& dir, U64 dim,
                       U64 nodes_count) {
     builder.data.x.resize(static_cast<std::size_t>(nodes_count));
     builder.data.y.resize(static_cast<std::size_t>(nodes_count));
     builder.data.z.resize(static_cast<std::size_t>(nodes_count), 0);
-    Array coordinates(join(dir, binary ? "coordinate.msb" : "coordinate.msh"), binary, 8);
-    if (binary && coordinates.declared() != nodes_count * dim)
-        throw MeshError("another: coordinate count mismatch");
+    TextArray coordinates(join(dir, "coordinate.msh"));
     for (std::size_t i = 0; i < nodes_count; ++i) {
         builder.data.x[i] = coordinates.real();
         builder.data.y[i] = coordinates.real();
@@ -277,12 +181,10 @@ void read_coordinates(detail::Builder& builder, const std::string& dir, bool bin
 }
 
 // Гибридная запись начинается числом вершин, регулярная использует фиксированную ширину.
-void read_cells(detail::Builder& builder, const std::string& dir, bool binary, bool hybrid, U64 dim,
+void read_cells(detail::Builder& builder, const std::string& dir, bool hybrid, U64 dim,
                 U64 nodes_count, U64 cells_count) {
-    Array topology(join(dir, binary ? "topo.msb" : "topo.msh"), binary, 4);
+    TextArray topology(join(dir, "topo.msh"));
     const U64 fixed = dim == 2 ? 4 : 8;
-    if (binary && !hybrid && topology.declared() != cells_count * fixed)
-        throw MeshError("another: cell connectivity count mismatch");
     for (U64 cell = 0; cell < cells_count; ++cell) {
         const U64 n = hybrid ? topology.integer() : fixed;
         if (n < 3 || n > 1000000 || n > nodes_count)
@@ -319,13 +221,11 @@ void read_cells(detail::Builder& builder, const std::string& dir, bool binary, b
 }
 
 // Отдельная таблица связывает набор узлов внешней грани с числовой меткой и её именем.
-void read_boundaries(detail::Builder& builder, const std::string& dir, bool binary, bool hybrid, U64 dim,
+void read_boundaries(detail::Builder& builder, const std::string& dir, bool hybrid, U64 dim,
                      U64 nodes_count, U64 boundary_count) {
     const std::map<U64, std::string> names =
         boundary_count ? labels(join(dir, "label.txt")) : std::map<U64, std::string>();
-    Array boundary(join(dir, binary ? "bctopo.msb" : "bctopo.msh"), binary, 4);
-    if (binary && !hybrid && boundary.declared() != boundary_count * (dim == 2 ? 3 : 5))
-        throw MeshError("another: boundary connectivity count mismatch");
+    TextArray boundary(join(dir, "bctopo.msh"));
     std::set<detail::Nodes> seen;
     for (U64 f = 0; f < boundary_count; ++f) {
         const U64 n = hybrid ? boundary.integer() : (dim == 2 ? 2 : 4);
@@ -352,6 +252,10 @@ void read_boundaries(detail::Builder& builder, const std::string& dir, bool bina
 Mesh read_another(const std::string& input, const Options& options) {
     const std::string dir = directory(input);
     const Header h = header(join(dir, "mesh.txt"));
+    // Отказываем по заголовку до выделения памяти и открытия массивов сетки.
+    const std::string format = lower(get(h, "meshformat"));
+    if (format != "text" && format != "0")
+        throw MeshError("another: only text .msh input is supported (MeshFormat text or 0)");
     const U64 dim = number(get(h, "numcoords"));
     if (dim != 2 && dim != 3)
         throw MeshError("another: only 2D and 3D meshes are supported");
@@ -369,19 +273,15 @@ Mesh read_another(const std::string& input, const Options& options) {
     if ((buffer != h.end() && lower(buffer->second) != "no") || exists(join(dir, "periodic03.msh")) ||
         exists(join(dir, "periodic03.msb")))
         throw MeshError("another: buffer/periodic meshes are not supported; use the ordinary _ntte mesh");
-    const std::string fmt = lower(get(h, "meshformat"));
-    const bool binary = fmt == "binary" || fmt == "1";
-    if (!binary && fmt != "text" && fmt != "0")
-        throw MeshError("another: unsupported MeshFormat");
     const auto type = h.find("meshtype");
     const bool hybrid = type != h.end() && lower(type->second) == "hybrid";
     if (type != h.end() && !hybrid && lower(type->second) != "hex" && lower(type->second) != "hexa" &&
         lower(type->second) != "quad")
         throw MeshError("another: unsupported MeshType");
     detail::Builder builder(static_cast<unsigned>(dim), options);
-    read_coordinates(builder, dir, binary, dim, nn);
-    read_cells(builder, dir, binary, hybrid, dim, nn, ne);
-    read_boundaries(builder, dir, binary, hybrid, dim, nn, nb);
+    read_coordinates(builder, dir, dim, nn);
+    read_cells(builder, dir, hybrid, dim, nn, ne);
+    read_boundaries(builder, dir, hybrid, dim, nn, nb);
     // У исходной сетки каждая внешняя грань должна иметь метку. Отсутствующую метку считаем ошибкой.
     Mesh result = builder.finish();
     if (result.view().boundary_face_count != nb)

@@ -3,6 +3,11 @@
 #include <cstring>
 #include <limits>
 #include <stdexcept>
+#if defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))
+#include <cpuid.h>
+#include <immintrin.h>
+#define AERO_X86_SHA256
+#endif
 
 namespace aero {
 namespace io_detail {
@@ -19,6 +24,45 @@ const std::uint32_t constants[64] = {
     0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
     0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2};
+#ifdef AERO_X86_SHA256
+bool has_sha_instructions() {
+    unsigned a,b,c,d;
+    return __get_cpuid(1,&a,&b,&c,&d) && (c & bit_SSSE3) && (c & bit_SSE4_1) &&
+           __get_cpuid_count(7,0,&a,&b,&c,&d) && (b & (1u << 29));
+}
+// На процессорах с SHA-NI четыре раунда обрабатывают те же слова по стандарту SHA-256.
+// Состояние остаётся в регистрах между соседними 64-байтовыми блоками сетки.
+__attribute__((target("sha,ssse3,sse4.1")))
+void sha_blocks(std::uint32_t* state, const unsigned char* data, std::size_t blocks) {
+    const __m128i reverse = _mm_setr_epi8(3,2,1,0,7,6,5,4,11,10,9,8,15,14,13,12);
+    const auto abcd = _mm_shuffle_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(state)),0xb1);
+    const auto efgh = _mm_shuffle_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(state+4)),0x1b);
+    auto abef = _mm_alignr_epi8(abcd,efgh,8);
+    auto cdgh = _mm_blend_epi16(efgh,abcd,0xf0);
+    for (std::size_t block = 0; block < blocks; ++block, data += 64) {
+        const auto old_abef = abef, old_cdgh = cdgh;
+        __m128i words[4];
+        for (unsigned group = 0; group < 16; ++group) {
+            const unsigned k = group % 4;
+            if (group < 4) {
+                words[k] = _mm_shuffle_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(data+16*k)),reverse);
+            } else {
+                const auto tail = words[(k+3)%4];
+                const auto first = _mm_sha256msg1_epu32(words[k],words[(k+1)%4]);
+                words[k] = _mm_sha256msg2_epu32(_mm_add_epi32(first,_mm_alignr_epi8(tail,words[(k+2)%4],4)),tail);
+            }
+            const auto wk = _mm_add_epi32(words[k],_mm_loadu_si128(reinterpret_cast<const __m128i*>(constants+4*group)));
+            cdgh = _mm_sha256rnds2_epu32(cdgh,abef,wk);
+            abef = _mm_sha256rnds2_epu32(abef,cdgh,_mm_shuffle_epi32(wk,0x0e));
+        }
+        abef = _mm_add_epi32(abef,old_abef);
+        cdgh = _mm_add_epi32(cdgh,old_cdgh);
+    }
+    const auto first = _mm_shuffle_epi32(abef,0x1b), second = _mm_shuffle_epi32(cdgh,0xb1);
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(state),_mm_blend_epi16(first,second,0xf0));
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(state+4),_mm_alignr_epi8(second,first,8));
+}
+#endif
 }
 Sha256Buffer::Sha256Buffer()
     : state_{0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19},
@@ -66,6 +110,18 @@ void Sha256Buffer::append(const unsigned char* data, std::size_t size) {
         throw std::length_error("SHA-256 input too long");
     bytes_ += size;
     while (size) {
+        if (!used_ && size >= 64) {
+            const std::size_t blocks = size / 64;
+#ifdef AERO_X86_SHA256
+            static const bool accelerated = has_sha_instructions();
+            if (accelerated) sha_blocks(state_,data,blocks);
+            else
+#endif
+                for (std::size_t i=0; i<blocks; ++i) transform(data+64*i);
+            data += blocks*64;
+            size -= blocks*64;
+            continue;
+        }
         const std::size_t count = std::min(size, 64 - used_);
         std::memcpy(block_ + used_, data, count);
         used_ += count;

@@ -67,9 +67,8 @@ void reference(std::istream& in, std::vector<Ref>& refs, Id kind, Id id) {
 void check(const std::string& path, const Mesh& mesh, bool compressed) {
     const auto m = mesh.view();
     auto f = input(path);
-    require(bytes(f, 8) == "AERODEC1" && read_word(f) == 4, "Magic/version mismatch");
-    require(read_word(f) == static_cast<Id>(compressed) && read_word(f) == m.dimension &&
-                read_real(f) == m.length_scale_to_meters,
+    require(bytes(f, 8) == "AERODEC1" && read_word(f) == 5, "Magic/version mismatch");
+    require(read_word(f) == static_cast<Id>(compressed) && read_word(f) == m.dimension,
             "Mesh header mismatch");
     for (Id n : {m.node_count, m.face_count, m.cell_count, m.boundary_face_count, m.patch_count})
         require(read_word(f) == n, "Mesh count mismatch");
@@ -257,7 +256,7 @@ void check(const std::string& path, const Mesh& mesh, bool compressed) {
     rows(far, read_word(f));
     io_detail::Sha256Buffer hash;
     std::ostream canonical(&hash);
-    mesh.write(canonical, MeshFormat::Binary);
+    mesh.write_fingerprint_payload(canonical);
     require(bytes(f, 64) == hash.hex_digest(), "Incorrect source mesh fingerprint");
     require(f.tellg() == position(payload), "Incorrect halo directory length");
 }
@@ -266,8 +265,9 @@ void tests() {
     temp.create(".");
     Options o;
     o.memory = 2048;
+    const char* fixtures[] = {"pulse_1d", "shear_jump_2d", "wave_3d"};
     for (unsigned d = 1; d <= 3; ++d) {
-        const auto mesh = Mesh::read("examples/tecplot/demo_" + std::to_string(d) + "d.mesh");
+        const auto mesh = Mesh::read(std::string("qa/cases/") + fixtures[d-1] + "/grid.mesh");
         o.source = temp.path + "/source";
         mesh.write(o.source, d == 1 ? MeshFormat::Text : (d == 2 ? MeshFormat::Binary : MeshFormat::Lzma));
         o.compress = d == 3;
@@ -280,7 +280,7 @@ void tests() {
         make_archive(o, temp.path, 3);
         require(contents(o.target) == original, "Archive depends on process count");
     }
-    const auto line = Mesh::read("examples/tecplot/demo_1d.mesh");
+    const auto line = Mesh::read("qa/cases/pulse_1d/grid.mesh");
     line.write(o.source, MeshFormat::Binary);
     o.compress = false;
     o.leaf_bytes = none;
@@ -289,9 +289,9 @@ void tests() {
     check(o.target, line, false);
     {
         auto f = input(o.target);
-        f.seekg(80);
+        f.seekg(72);
         const Id leaves = read_word(f);
-        f.seekg(112);
+        f.seekg(104);
         const Id index = read_word(f), nodes = line.view().node_count;
         require(leaves >= o.target_ranks, "Future solver rank hint ignored");
         for (Id i = 0; i < leaves; ++i) {
@@ -306,8 +306,8 @@ void tests() {
     make_archive(o, temp.path, 3);
     {
         auto f = input(o.target);
-        f.seekg(80);
-        require(read_word(f) == 0 && read_word(f) == 0 && read_word(f) == none && file_size(o.target) == 248,
+        f.seekg(72);
+        require(read_word(f) == 0 && read_word(f) == 0 && read_word(f) == none && file_size(o.target) == 240,
                 "Invalid empty archive");
     }
     auto truncated = output(o.source);

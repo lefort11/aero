@@ -23,5 +23,13 @@ unsigned create_resume_directory(const std::string& prefix);
 std::string settings_text(const std::string& path);
 void stage(const char* name);
 void done();
+// Сообщение видно до первого чтения. В MPI прогресс печатает только процесс 0.
+// При ошибке управления до done() не доходит.
+template<class Load> auto read_mesh_with_report(int rank, const Load& load) -> decltype(load()) {
+    if (!rank) stage("Reading mesh");
+    auto mesh = load();
+    if (!rank) done();
+    return mesh;
+}
 }
 #endif

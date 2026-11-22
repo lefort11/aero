@@ -130,14 +130,19 @@ def check_output(reference, out, ranks, count, dim, names, empty=False):
 def cut_balance(path, coords, cut, reverse, scheme):
     """Проверяет баланс переноса в окрестности разреза между разделами."""
     dt = stamp(path)[1]
-    left, right = (len(coords) - 2, len(coords) - 1) if reverse else (0, 1)
-    expected_dt = 0.25 * (coords[right][0] - coords[left][0]) / (2 * math.sqrt(1.4))
-    if not close(dt, expected_dt):
-        raise AssertionError(f"First CFL step: {dt} vs {expected_dt}")
-    f = read_snapshot(path, len(coords), 1, dt, ("rho", "ux", "p", "E"))
+    # В начальном разрыве скорость нулевая. Для каждого отрезка берём большую
+    # из двух скоростей звука, в том числе на стыке левого и правого состояний.
     states = [(1.0, 1.0), (0.125, 0.1)]
     if reverse:
         states.reverse()
+    sounds = [math.sqrt(1.4 * p / rho) for rho, p in states]
+    expected_dt = min(
+        .25 * (coords[i + 1][0] - coords[i][0]) / max(sounds[i > cut], sounds[i + 1 > cut])
+        for i in range(len(coords) - 1)
+    )
+    if not close(dt, expected_dt):
+        raise AssertionError(f"First CFL step: {dt} vs {expected_dt}")
+    f = read_snapshot(path, len(coords), 1, dt, ("rho", "ux", "p", "E"))
     # При потоке первого порядка на каждой стадии влияние распространяется ещё на один узел в обе стороны.
     depth = 3 if scheme == "ssprk3" else 1
     rates = [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
@@ -461,7 +466,7 @@ def main():
             devices = tuple(map(int, args.devices.split(","))) if args.devices else ()
             for simplified in (False, True):
                 label = "frozen" if simplified else "full"
-                verify(root, f"sod-cut-{label}", "sod_1d", 1, .002, "conservative", "lf", *programs,
+                verify(root, f"sod-cut-{label}", "sod_1d", 1, .004, "conservative", "lf", *programs,
                        cut=True, simplified=simplified, devices=devices,
                        matrix_test=args.matrix_test.resolve() if args.matrix_test and not simplified else None)
             verify(root, "weno-roe", "sod_1d", 1, .005, "characteristic", "roe", *programs,
@@ -472,9 +477,9 @@ def main():
             verify(root, "one-leaf", "sod_1d", 1, .002, "conservative", "lf", *programs,
                    empty=True, devices=devices)
             return
-        verify(root, "sod-cut", "sod_1d", 1, 0.002, "conservative", "roe", *programs, cut=True)
+        verify(root, "sod-cut", "sod_1d", 1, 0.004, "conservative", "roe", *programs, cut=True)
         verify(
-            root, "sod-cut-reversed", "sod_1d", 1, 0.002, "flux", "lf", *programs, cut=True, reverse=True
+            root, "sod-cut-reversed", "sod_1d", 1, 0.004, "flux", "lf", *programs, cut=True, reverse=True
         )
         verify(root, "sod", "sod_1d", 1, 0.12, "conservative", "roe", *programs)
         verify(root, "tilted", "shear_jump_2d", 2, 0.015, "characteristic", "lf", *programs)

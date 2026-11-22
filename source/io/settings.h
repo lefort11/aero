@@ -67,11 +67,13 @@ struct RunSettings {
     double upw_coeff; // Доля диссипации LF/Roe и доля EBR при смешивании с центральной реконструкцией.
     Stabilization stabilization; // Управление откатом шага и локальным порядком.
     double cfl;                           // Число Куранта для шага по времени.
+    bool cell_height_cfl = true;          // Шаг по высоте ячейки; false включает сумму по площадкам.
     std::uint64_t control_every = 16; // Интервал проверки control.txt в принятых шагах. Ноль отключает управление.
     double t_fo = 0.; // До этого времени (псевдовремени для steady) весь расчёт идёт с первым порядком по пространству.
     bool first_order_start(double time) const { return time < t_fo && reconstruction != "first_order"; }
     double final_time;                    // Физическое время окончания расчёта.
     double mach = 0.; // Число Маха набегающего потока при единичном масштабе скорости.
+    double reference_phi = 0., reference_theta = 0.; // Направление reference_state из gas.txt, в градусах.
     double gamma;                         // Отношение теплоёмкостей идеального газа.
     double trace_ratio_min,
         trace_ratio_max;                  // Границы отношения восстановленной плотности и давления к узловым.

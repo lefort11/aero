@@ -61,21 +61,27 @@ AERO_HOST_DEVICE inline bool block(unsigned d, BoundaryConfig patch, const FreeB
         const double* current, const double* initial, const double* area, double gamma, double* matrix,
         const ProfileState* profile = nullptr) {
     double normal[3];
-    EulerState gas, boundary;
+    EulerState gas, boundary, ref{};
     if (euler_unit_direction(d, area, normal) != EulerStatus::Success ||
         euler_state(d, current, gamma, &gas) != EulerStatus::Success)
         return false;
     const double un = euler_detail::dot(d, gas.velocity, normal);
-    auto regime = bc_detail::free_regime(un, gas.sound_speed);
+    bc_detail::FreeRegime regime = bc_detail::FreeRegime::Out;
     const bool wall = solid_wall(patch.type());
     const auto* rules = patch.rules(table);
-    if (profile) {
-        if (bc_detail::profile_state(d,profile->gas,gas,normal,un,gamma,boundary,regime)!=BoundaryStatus::Success) return false;
-    } else if (!wall && (!rules || bc_detail::free_boundary_state(d, *rules, gas, normal, un, gamma, initial,
-                                                            boundary) != BoundaryStatus::Success))
+    if (!wall && (!rules || bc_detail::free_boundary_state(d, *rules, gas, normal, un, gamma, initial,
+                                                            boundary, regime, profile, &ref) != BoundaryStatus::Success))
         return false;
 
     const unsigned width = d + 2;
+    const auto source = wall ? BoundarySource::Current : bc_detail::boundary_source(regime, *rules);
+    const bool variable_profile = profile && profile->partial_gas() && profile->fallback == ProfileFallback::Interior;
+    const bool prescribed = source == BoundarySource::Reference || (source == BoundarySource::Profile && regime == bc_detail::FreeRegime::SuperIn);
+    if (prescribed && !variable_profile) {
+        // Весь поток задан внешними данными. Ни одна его компонента не зависит от состояния узла.
+        for (unsigned i = 0; i < width * width; ++i) matrix[i] = 0.;
+        return true;
+    }
     const double kinetic = .5 * euler_detail::dot(d, gas.velocity, gas.velocity);
     const double volume_flux = wall ? 0. : euler_detail::dot(d, boundary.velocity, area);
     const double boundary_kinetic = wall ? 0. : .5 * euler_detail::dot(d, boundary.velocity, boundary.velocity);
@@ -91,17 +97,36 @@ AERO_HOST_DEVICE inline bool block(unsigned d, BoundaryConfig patch, const FreeB
         } else {
             for (unsigned k = 0; k < d; ++k)
                 v.velocity[k] = edge_detail::velocity_column(col,k,gas);
-            if (profile && regime == bc_detail::FreeRegime::SuperIn) v = Variation{};
-            else if (profile && regime == bc_detail::FreeRegime::In) {
+            Variation ext{};
+            if (variable_profile) {
+                // Только пропущенные в таблице величины зависят от внутреннего узла.
+                ext.rho = (profile->columns & ProfileRho) ? 0. : v.rho;
+                ext.p = (profile->columns & ProfileP) ? 0. : v.p;
+                profile->missing_velocity(d,v.velocity,ext.velocity);
+            }
+            if (prescribed || source == BoundarySource::InteriorPressure) {
+                if (source == BoundarySource::InteriorPressure) ext.p = v.p;
+                v = ext;
+            } else if ((source == BoundarySource::Profile || source == BoundarySource::Characteristic) &&
+                       regime == bc_detail::FreeRegime::In) {
                 // Только J+ зависит от внутреннего состояния. Остальные заданные
                 // характеристики и выбранный режим фиксированы при дифференцировании.
                 const double dc = .5*gas.sound_speed*(v.p/gas.pressure-v.rho/gas.density);
-                const double du = .5*euler_detail::dot(d,v.velocity,normal)+dc/(gamma-1.);
+                const double dref_un = euler_detail::dot(d,ext.velocity,normal);
+                const double dref_c = variable_profile ? .5*ref.sound_speed*(ext.p/ref.pressure-ext.rho/ref.density) : 0.;
+                const double du = .5*(euler_detail::dot(d,v.velocity,normal)+dref_un)+(dc-dref_c)/(gamma-1.);
                 const double cb = ::sqrt(gamma*boundary.pressure/boundary.density);
-                v.rho = boundary.density*du/cb;
-                v.p = gamma*boundary.pressure*du/cb;
-                for (unsigned k=0;k<d;++k) v.velocity[k]=du*normal[k];
-            } else apply_rule(d, regime, *rules, gas, boundary, normal, gamma, v);
+                const double dcb = .5*(gamma-1.)*(du-dref_un)+dref_c;
+                const double ds = variable_profile ? ext.rho/ref.density-2.*dref_c/((gamma-1.)*ref.sound_speed) : 0.;
+                v.rho = boundary.density*(2.*dcb/((gamma-1.)*cb)+ds);
+                v.p = boundary.pressure*(v.rho/boundary.density+2.*dcb/cb);
+                for (unsigned k=0;k<d;++k) v.velocity[k]=ext.velocity[k]+(du-dref_un)*normal[k];
+            } else {
+                // base_p с внутренним давлением даёт тождественное граничное состояние.
+                const bool same_pressure = variable_profile && !(profile->columns & ProfileP) &&
+                    (source == BoundarySource::ExternalScalar || source == BoundarySource::Profile);
+                if (!same_pressure) apply_rule(d, regime, *rules, gas, boundary, normal, gamma, v);
+            }
             // Правило произведения для расхода массы, импульса и потока полной энтальпии.
             const double dq = euler_detail::dot(d, v.velocity, area);
             const double dm = v.rho * volume_flux + boundary.density * dq;

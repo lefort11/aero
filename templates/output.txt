@@ -18,7 +18,7 @@
 # format — binary (по умолчанию), text или lzma.
 # layout — local (по умолчанию, отдельные файлы рангов) или global
 # (общий файл в исходной нумерации). Для общего вывода MPI используйте
-# layout = global, format = binary и сетку .mdec версии 4.
+# layout = global, format = binary и сетку .mdec версии 4 или новее.
 
 [latest]
 file = latest.fields

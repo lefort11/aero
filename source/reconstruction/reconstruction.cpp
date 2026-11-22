@@ -52,7 +52,7 @@ ReconstructionIndex ReconstructionStencil::incomplete_sides() const {
 // Одна точка входа для обычной сетки, периодического покрытия и локальной сетки MPI.
 ReconstructionStencil prepare_reconstruction(const Mesh& mesh, const ReconstructionOptions& options) {
     const auto scheme = reconstruction_scheme(options.scheme);
-    mesh.validate();
+    // Mesh проверяет топологию при создании и предоставляет связность только для чтения.
     if (uses_slope_rows(scheme.family) &&
         (!(options.weno_epsilon > 0) || !std::isfinite(options.weno_epsilon))) {
         throw ReconstructionError("WENO epsilon must be positive and finite");

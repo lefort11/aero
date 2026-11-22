@@ -30,7 +30,6 @@ void append(MeshCsr& csr, const std::vector<Id>& list) {
 Mesh line(unsigned repeats) {
     MeshData d;
     d.dimension = 1;
-    d.length_scale_to_meters = .125;
     d.patch_names = {"left", "right"};
     const unsigned N = 6 * repeats;
     for (unsigned i = 0; i <= N; ++i) {
@@ -61,7 +60,8 @@ void line_test(bool require_gpu) {
     PeriodicDomain domain(original, {parse("patch left\npair right\ntranslation 6 0 0")});
     const auto view = domain.view();
     require(view.node_count == 6 && view.edge_count == 6 && !view.boundary_count, "periodic line shape");
-    near(view.volumes[0], .125);
+    // На шве складываются половины двух соседних отрезков длиной 1.125 и 0.875.
+    near(view.volumes[0], 0.5 * (1.125 + 0.875));
     std::vector<double> field = {.3, -.8, .7, 1.1, .9, -.2}, long_field(19);
     for (size_t i = 0; i < long_field.size(); ++i)
         long_field[i] = field[i % 6];

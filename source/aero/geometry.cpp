@@ -11,12 +11,12 @@
 namespace aero {
 void export_case_geometry(const RunSettings& run, const Processes& world, bool archive) {
     const auto layout = plan_partition(run, world);
-    MeshPartition partition;
-    if (archive) {
-        partition = load_partition(run.mesh_path, world, nullptr, layout);
-    } else {
-        partition.mesh = Mesh::read(run.mesh_path);
-    }
+    auto partition = read_mesh_with_report(world.rank, [&] {
+        if (archive) return load_partition(run.mesh_path, world, nullptr, layout);
+        MeshPartition local;
+        local.mesh = Mesh::read(run.mesh_path);
+        return local;
+    });
 
     std::unique_ptr<MedianDual> dual;
     world.local([&] { dual.reset(new MedianDual(partition.mesh)); });

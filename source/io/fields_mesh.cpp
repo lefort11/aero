@@ -22,7 +22,7 @@ std::string FieldSnapshot::mesh_fingerprint(const Mesh& mesh) {
     io_detail::Sha256Buffer buffer;
     std::ostream out(&buffer);
     out.exceptions(std::ios::badbit | std::ios::failbit);
-    mesh.write(out, MeshFormat::Binary);
+    mesh.write_fingerprint_payload(out);
     return buffer.hex_digest();
 }
 

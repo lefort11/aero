@@ -102,10 +102,9 @@ struct Zone {
 struct Plan {
     int threads;
     std::string mesh_sha256;
-    std::array<std::vector<double>, 3> coordinates;
     std::vector<Variable> variables;
     std::vector<Zone> zones;
-    // Копирование запрещено: указатели переменных ссылаются на собственные координаты и заимствованные поля.
+    // Копирование запрещено: указатели переменных ссылаются на данные исходной сетки и снимка.
     Plan(const Plan&) = delete;
     Plan& operator=(const Plan&) = delete;
     Plan(const Mesh& mesh, const FieldSnapshot* snapshot, const Options& options)
@@ -136,29 +135,13 @@ struct Plan {
     }
 
 private:
-    // Координаты записываются первыми тремя переменными. В файле Tecplot единица длины — метр.
+    // Сетка и снимок живут до конца экспорта. Tecplot читает координаты прямо
+    // из исходных массивов, поэтому копия трёх полей размера всей сетки не нужна.
     void add_coordinates(const MeshData& d, I32 nodes) {
-        for (auto& array : coordinates)
-            array.resize(static_cast<std::size_t>(nodes));
-        int invalid = 0;
-#ifdef _OPENMP
-#pragma omp parallel for num_threads(threads) schedule(static) reduction(| : invalid) if (nodes > 2048)
-#endif
-        for (I64 i = 0; i < nodes; ++i) {
-            const std::size_t n = static_cast<std::size_t>(i);
-            coordinates[0][n] = d.x[n] * d.length_scale_to_meters;
-            coordinates[1][n] = d.y[n] * d.length_scale_to_meters;
-            coordinates[2][n] = d.z[n] * d.length_scale_to_meters;
-            for (unsigned axis = 0; axis < 3; ++axis)
-                if (!std::isfinite(coordinates[axis][n]))
-                    invalid = 1;
-        }
-        if (invalid)
-            fail("Coordinates overflow after conversion to meters");
         const char* names[] = {"X", "Y", "Z"};
+        const double* coordinates[] = {d.x.data(), d.y.data(), d.z.data()};
         for (unsigned axis = 0; axis < 3; ++axis) {
-            Variable v = {names[axis], nullptr, 0, coordinates[axis].data(), static_cast<std::size_t>(nodes),
-                          0,           0};
+            Variable v = {names[axis], nullptr, 0, coordinates[axis], static_cast<std::size_t>(nodes), 0, 0};
             variables.push_back(v);
         }
     }
@@ -455,7 +438,6 @@ void write_zone_header(Writer& writer, const Plan& plan, const FieldSnapshot* sn
     if (snapshot)
         writer.aux("Aero.Step", std::to_string(snapshot->step));
     writer.aux("Aero.SourceLocation", location(z.source));
-    writer.aux("Aero.CoordinateUnits", "m");
     writer.i32(0);
 }
 

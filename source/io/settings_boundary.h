@@ -11,6 +11,7 @@ struct CaseBoundaries {
     BoundaryPatches patches; // Метки и отдельный массив условий free.
     std::vector<PeriodicPair> periodic_pairs;
 };
-CaseBoundaries read_case_boundaries(const std::string& path, const MeshData& mesh, bool linear = false, std::vector<std::string>* warnings = nullptr);
+CaseBoundaries read_case_boundaries(const std::string& path, const MeshData& mesh, bool linear = false,
+                                   std::vector<std::string>* warnings = nullptr, BoundaryTemperature temperature = {});
 }
 #endif

@@ -15,6 +15,7 @@ struct Transport {
     MeshIndex cell_count, edges;
     unsigned dim;
     const EulerFluxResult *flux;
+    const double* convection_correction; // Один ориентированный поток на внутреннее ребро, nullptr при первом порядке.
     const ProfileState* profiles; // Входное nu_tilde на физических площадках.
     const double *volume;
     const MeshIndex *owned;
@@ -177,11 +178,27 @@ struct Transport {
             if (edge) jump = sa.w[j] - w;
             else if (incoming > 0.) {
                 const auto index = orientation.face()-edges;
-                const double inlet = profiles && profiles[index].gas.density>0. ? profiles[index].nutilde : sa.ambient;
+                double inlet = sa.ambient;
+                if (profiles && profiles[index].present()) {
+                    const auto& sample = profiles[index];
+                    if (!sample.columns || (sample.columns & NuTilde)) inlet = sample.nutilde;
+                    else if (sample.fallback == ProfileFallback::Interior) continue; // inlet=w: и разность, и её производная равны нулю.
+                    else if (sample.fallback == ProfileFallback::Initial && sa.inverse_distance[i] < 0.) inlet = 0.;
+                }
                 jump = inlet-w;
             }
             advection += incoming * jump;
             diagonal += incoming;
+            if (convection_correction && edge) {
+                // Владелец ребра вычислил добавочный поток один раз. После смены
+                // нормали два узла получают противоположные вклады в перенос rho*nu_tilde.
+                const double outward = orientation.outward_flux(convection_correction[orientation.face()]) * inverse_density;
+                advection -= outward;
+                // При явном шаге учитываем дополнительный отбор из узла в ограничении CFL.
+                // На входящей грани неотрицательность уже обеспечивает неотрицательное значение на грани.
+                if (!reuse_gas && !save_rotation && incoming == 0. && outward > 0. && w > 0.)
+                    diagonal += outward / w;
+            }
             double jump_u[3]{};
             if (!reuse_gas && edge)
                 for (unsigned n=0;n<d;++n) jump_u[n]=gas_nodes[j].velocity[n]-gas.velocity[n];

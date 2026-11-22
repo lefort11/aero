@@ -16,6 +16,13 @@ namespace aero {
 
 enum class MeshFormat { Text, Binary, Lzma };
 
+namespace mesh_format {
+constexpr std::uint64_t legacy_version = 2, current_version = 3;
+// Формат полей фиксирует SHA-256 потока v2. Для новой сетки его служебное
+// слово равно представлению числа 1.0 в IEEE-754; геометрия его не использует.
+constexpr std::uint64_t default_fingerprint_word = 0x3ff0000000000000ULL;
+}
+
 class MeshError : public std::runtime_error {
 public:
     explicit MeshError(const std::string& message) : std::runtime_error(message) {}
@@ -33,7 +40,6 @@ struct MeshCsr {
 struct MeshData {
     // Топологическая размерность равна 1, 2 или 3. Координаты всегда хранятся по трём осям.
     unsigned dimension;
-    double length_scale_to_meters; // Метров на единицу исходных координат.
     std::vector<double> x, y, z;
     // Грань в 1D — вершина, в 2D — направленное ребро, в 3D — циклически упорядоченный многоугольник.
     MeshCsr face_nodes;
@@ -47,7 +53,7 @@ struct MeshData {
     std::vector<MeshIndex> boundary_patch;
     // Здесь хранятся имена участков. Физические условия и периодические пары задаются в постановке.
     std::vector<std::string> patch_names;
-    MeshData() : dimension(3), length_scale_to_meters(1.0) {}
+    MeshData() : dimension(3) {}
 };
 
 struct MeshIndexSpan {
@@ -79,7 +85,6 @@ class MeshCell;
 struct MeshView {
     unsigned dimension;
     MeshIndex node_count, face_count, cell_count, edge_count, boundary_face_count, patch_count;
-    double length_scale_to_meters; // Метров на единицу исходных координат.
     const double* x;
     const double* y;
     const double* z;
@@ -152,7 +157,7 @@ protected:
 class MeshNode : public MeshEntity {
 public:
     AERO_HOST_DEVICE MeshNode(MeshView view, MeshIndex id) : MeshEntity(view, id) {}
-    // Исходные координаты до умножения на length_scale_to_meters.
+    // Координаты в единицах файла сетки.
     AERO_HOST_DEVICE double x() const noexcept { return view_.x[id_]; }
     AERO_HOST_DEVICE double y() const noexcept { return view_.y[id_]; }
     AERO_HOST_DEVICE double z() const noexcept { return view_.z[id_]; }
@@ -225,17 +230,17 @@ struct MeshReadLimits {
         : max_payload_bytes(bytes), max_name_bytes(name_bytes) {}
 };
 
-// Формат сетки версии 2. При чтении сигнатура различает текст, двоичные данные и двоичные блоки AEROLZMA.
+// Формат сетки версии 3. При чтении сигнатура различает текст, двоичные данные и двоичные блоки AEROLZMA.
 // Версия 1 отклоняется. Контейнер LZMA описан в source/io/README.txt.
 //
-// Текст начинается с «AEROMESH 2 TEXT». Далее идут DIMENSION, COUNTS, LENGTH_SCALE_TO_METERS, X, Y, Z,
+// Текст начинается с «AEROMESH 3 TEXT». Далее идут DIMENSION, COUNTS, X, Y, Z,
 // FACE_OFFSETS, FACE_NODES, CELL_OFFSETS, CELL_FACES, CELL_ORIENTATIONS, BOUNDARY_FACES, BOUNDARY_PATCH, PATCH_NAMES, END.
 // COUNTS перечисляет узлы, грани, записи «грань–узел», ячейки, записи «ячейка–грань», внешние грани и участки.
 // Длина массива смещений равна числу строк плюс один. Номера с нуля, размерность 1–3, массивов координат всегда три.
-// Совместимость с трёхмерной версией 2 сохраняется. Токены разделяют пробелами, дробную часть — точкой.
+// Чтение файлов v2 сохраняется во всех размерностях. Токены разделяют пробелами, дробную часть — точкой.
 // Имена заключают в двойные кавычки. Обратная косая черта экранирует кавычку или другую обратную косую черту.
 //
-// Двоичный поток начинается с восьми байтов AEROMSHB и uint64 со значением 2. Далее те же данные без меток и END.
+// Двоичный поток начинается с восьми байтов AEROMSHB и uint64 со значением 3. Далее те же данные без меток и END.
 // Целые числа записываются как uint64 младшим байтом вперёд. Для ориентации один байт: 0x01 (+1) или 0xff (−1).
 // Вещественные числа — IEEE-754 binary64 младшим байтом вперёд. Имя содержит длину uint64 и байты UTF-8 без завершающего нуля.
 // Имена непустые и уникальные, управляющие символы ASCII запрещены. Лишние данные в конце файла вызывают ошибку.
@@ -245,7 +250,7 @@ struct MeshReadLimits {
 // хотя бы из трёх рёбер, он может быть вогнутым. В 3D требуется связная замкнутая ориентированная поверхность.
 // У грани одна или две ячейки. Две соседние ячейки используют противоположные знаки. Каждая внешняя грань входит в список один раз.
 // Число вершин многоугольника и граней многогранника произвольно. Повторы граней и ячеек, повтор вершины,
-// грани без ячеек и неполная граница отклоняются. На этом этапе проверяются конечность координат и положительный масштаб.
+// грани без ячеек и неполная граница отклоняются. На этом этапе проверяется конечность координат.
 // Плоскостность, длины, площади, объёмы, пересечения и наложения одной проверкой топологии установить нельзя.
 class Mesh {
 public:
@@ -270,11 +275,23 @@ public:
     // При ошибке записи часть выходного файла уже может находиться на диске.
     void write(const std::string& path, MeshFormat format = MeshFormat::Binary) const;
     void write(std::ostream& output, MeshFormat format = MeshFormat::Binary) const;
+    // Подаёт канонические байты в SHA-256 полей и recovery, включая старые файлы.
+    void write_fingerprint_payload(std::ostream& output) const;
 
 private:
+    // Нумерует рёбра по возрастанию пары номеров их концов.
     void build_edges();
+    void build_line_edges(); // В 1D концы определяются двумя точечными гранями ячейки.
+    // Делит рёбра по меньшему узлу и возвращает начала этих групп в edge_end_.
+    std::vector<MeshIndex> group_edges_by_node();
+    // Записывает для каждой грани номера уже построенных рёбер её контура.
+    void number_face_edges(const std::vector<MeshIndex>& node_offsets);
+    // Собирает уникальные узлы и рёбра одной ячейки по контурам её граней.
+    void collect_cell_connectivity(MeshIndex cell, std::vector<MeshIndex>& nodes, std::vector<MeshIndex>& edges) const;
     void build_cell_connectivity();
     MeshData data_;
+    // Только для совпадения SHA-256 со снимками, ранее записанными на исходной сетке v2.
+    std::uint64_t fingerprint_word_ = mesh_format::default_fingerprint_word;
     std::vector<MeshIndex> edge_begin_, edge_end_, face_edge_offsets_, face_edge_indices_;
     MeshCsr cell_nodes_, cell_edges_;
 };

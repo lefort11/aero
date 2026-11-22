@@ -6,5 +6,4 @@ Source files are unmodified:
   LzmaEnc.h, LzmaEnc.c, LzFind.h, LzFind.c, LzHash.h,
   CpuArch.h, CpuArch.c, 7zWindows.h
 
-Built once in the shared aero_io library for native mesh I/O and converter
-another MSB decoding. No installed 7-Zip program is required.
+Built once in the shared aero_io library for native mesh I/O. No installed 7-Zip program is required.

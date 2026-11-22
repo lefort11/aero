@@ -116,8 +116,8 @@ Archive::Archive(const std::string& path) : file_(path.c_str(), std::ios::binary
     check(flags <= 1 && dim >= 1 && dim <= 3, "invalid flags or dimension");
     compressed_ = flags != 0;
     dimension = static_cast<unsigned>(dim);
-    scale = number_codec::real_from_bits(read(file_));
-    check(std::isfinite(scale) && scale > 0, "invalid length scale");
+    if (version_ < 5)
+        read(file_); // Пропускаем старое поле единиц длины. Координаты записаны в узловых записях.
     for (auto& n : counts)
         n = read(file_);
     boundaries = read(file_);
@@ -125,11 +125,12 @@ Archive::Archive(const std::string& path) : file_(path.c_str(), std::ios::binary
     leaves = read(file_);
     entries_ = read(file_);
     root_ = read(file_);
-    check(read(file_) == archive_format::header_bytes, "invalid patch table offset");
+    const Id header = archive_format::header_size(version_);
+    check(read(file_) == header, "invalid patch table offset");
     index_ = read(file_);
     tree_ = read(file_);
     payload_ = read(file_);
-    check(index_ >= archive_format::header_bytes && names <= (index_ - archive_format::header_bytes) / 8 &&
+    check(index_ >= header && names <= (index_ - header) / 8 &&
               boundaries <= counts[Face],
           "invalid patch table");
     check(entries_ == (leaves ? mul(2, leaves) - 1 : 0) && root_ == (leaves ? entries_ - 1 : absent),
@@ -155,7 +156,7 @@ Archive::Archive(const std::string& path) : file_(path.c_str(), std::ios::binary
 
 // Таблица имён занимает точный диапазон между заголовком и началом индекса листьев.
 void Archive::read_patch_names(Id names) {
-    Id pos = archive_format::header_bytes;
+    Id pos = archive_format::header_size(version_);
     for (Id i = 0; i < names; ++i) {
         check(index_ - pos >= 8, "truncated patch table");
         const Id n = read(file_);

@@ -205,18 +205,16 @@ void register_mesh_identity() {
             }
         }
     });
-    add("mesh mismatch includes geometry scale names topology and counts", [] {
+    add("mesh mismatch includes geometry names topology and counts", [] {
         const Mesh original = mesh(2);
         const FieldSnapshot s(original);
-        for (unsigned change = 0; change < 4; ++change) {
+        for (unsigned change = 0; change < 3; ++change) {
             MeshData d = original.data();
             if (change == 0)
                 d.x[0] += 0.01;
             if (change == 1)
-                d.length_scale_to_meters = 0.001;
-            if (change == 2)
                 d.patch_names[0] = "other";
-            if (change == 3)
+            if (change == 2)
                 std::swap(d.face_nodes.indices[0], d.face_nodes.indices[1]), d.cell_face_orientation[0] = -1;
             rejects([&] { s.check_mesh(Mesh(d)); }, "SHA-256");
         }

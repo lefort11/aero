@@ -224,7 +224,7 @@ MeshData adjacent_polygons() {
 }
 
 bool same(const MeshData& a, const MeshData& b) {
-    return a.dimension == b.dimension && a.length_scale_to_meters == b.length_scale_to_meters && a.x == b.x &&
+    return a.dimension == b.dimension && a.x == b.x &&
            a.y == b.y && a.z == b.z && a.face_nodes.offsets == b.face_nodes.offsets &&
            a.face_nodes.indices == b.face_nodes.indices && a.cell_faces.offsets == b.cell_faces.offsets &&
            a.cell_faces.indices == b.cell_faces.indices &&
@@ -395,7 +395,7 @@ void register_compressed_mesh() {
         std::ostream out(&buffer);
         out << encode(Mesh(tetrahedron()), MeshFormat::Text);
         buffer.finish();
-        rejects([&] { decode(bytes.str()); }, "binary v2");
+        rejects([&] { decode(bytes.str()); }, "native binary");
         std::ostringstream failed;
         failed.setstate(std::ios::badbit);
         rejects([&] { Mesh(tetrahedron()).write(failed, MeshFormat::Lzma); });
@@ -805,7 +805,6 @@ void register_polyhedra() {
             d.x[0] = std::nextafter(0.1, 1.0);
             d.y[0] = -0.0;
             d.z[0] = std::numeric_limits<double>::denorm_min();
-            d.length_scale_to_meters = 0.001;
             d.patch_names[0] = u8"крыло \"левое\" \\ wing";
             Mesh mesh(d);
             const Mesh loaded = decode(encode(mesh, format));
@@ -842,7 +841,6 @@ void register_invalid_topology() {
     invalid("coordinate array sizes", [](MeshData& d) { d.y.pop_back(); });
     invalid("infinite coordinate", [](MeshData& d) { d.x[0] = std::numeric_limits<double>::infinity(); });
     invalid("NaN coordinate", [](MeshData& d) { d.z[0] = std::numeric_limits<double>::quiet_NaN(); });
-    invalid("invalid length scale", [](MeshData& d) { d.length_scale_to_meters = 0; });
     invalid("missing face offsets", [](MeshData& d) { d.face_nodes.offsets.clear(); });
     invalid("missing cell offsets", [](MeshData& d) { d.cell_faces.offsets.clear(); });
     invalid("first CSR offset", [](MeshData& d) { d.face_nodes.offsets[0] = 1; });
@@ -931,11 +929,13 @@ void register_invalid_topology() {
 void register_mesh_format() {
     add("handwritten text fixture", [] {
         const std::string bytes = "AEROMESH 2 TEXT\nDIMENSION 3\nCOUNTS 4 4 12 1 4 4 1\n"
-                                  "LENGTH_SCALE_TO_METERS 1\nX 0 1 0 0\nY 0 0 1 0\nZ 0 0 0 1\n"
+                                  "LENGTH_SCALE_TO_METERS 0.001\nX 0 1 0 0\nY 0 0 1 0\nZ 0 0 0 1\n"
                                   "FACE_OFFSETS 0 3 6 9 12\nFACE_NODES 0 2 1 0 1 3 1 2 3 2 0 3\n"
                                   "CELL_OFFSETS 0 4\nCELL_FACES 0 1 2 3\nCELL_ORIENTATIONS +1 1 1 1\n"
                                   "BOUNDARY_FACES 0 1 2 3\nBOUNDARY_PATCH 0 0 0 0\nPATCH_NAMES \"wing\"\nEND";
         require(same(tetrahedron(), decode(bytes).data()), "Independent text fixture");
+        require(same(tetrahedron(), decode(replace_once(bytes, "LENGTH_SCALE_TO_METERS 0.001\n", "")).data()),
+                "Legacy text with the obsolete line removed");
     });
     add("independent empty binary fixture", [] {
         std::string bytes = "AEROMSHB";
@@ -943,22 +943,42 @@ void register_mesh_format() {
             for (unsigned i = 0; i < 8; ++i)
                 bytes.push_back(static_cast<char>((n >> (8 * i)) & 255));
         };
-        u64(2);
+        u64(3);
         u64(3);
         for (unsigned i = 0; i < 7; ++i)
             u64(0);
-        u64(0x3ff0000000000000ULL);
         u64(0);
         u64(0);
-        require(bytes.size() == 104 && same(MeshData(), decode(bytes).data()), "Binary layout");
+        require(bytes.size() == 96 && same(MeshData(), decode(bytes).data()), "Binary layout");
         require(bytes == encode(Mesh(), MeshFormat::Binary), "Unexpected empty serialization");
+    });
+    add("legacy binary and LZMA preserve raw coordinates and old field fingerprint", [] {
+        const Mesh mesh(tetrahedron());
+        const auto current = encode(mesh, MeshFormat::Binary);
+        // Самостоятельно строим заголовок v2. После 80 байт идёт IEEE-754 число 0.001.
+        std::string legacy = current;
+        legacy[8] = 2;
+        legacy.insert(80, "\xfc\xa9\xf1\xd2\x4d\x62\x50\x3f", 8);
+        std::ostringstream compressed;
+        io::LzmaOutputBuffer buffer(compressed);
+        std::ostream payload(&buffer);
+        payload.write(legacy.data(), static_cast<std::streamsize>(legacy.size()));
+        buffer.finish();
+        for (const auto& bytes : {legacy, compressed.str()}) {
+            const Mesh loaded = decode(bytes);
+            require(same(mesh.data(), loaded.data()), "Legacy scale affected coordinates");
+            require(encode(loaded, MeshFormat::Binary) == current, "Unexpected metadata in new mesh");
+            std::ostringstream canonical;
+            loaded.write_fingerprint_payload(canonical);
+            require(canonical.str() == legacy, "Legacy snapshot fingerprint changed");
+        }
     });
     add("text rejects bad headers, tokens, connectivity and signs", [] {
         const std::string good = encode(Mesh(tetrahedron()), MeshFormat::Text);
         const std::vector<std::pair<std::string, std::string>> changes = {
             {"AEROMESH", "BADMAGIC"},
-            {"2 TEXT", "1 TEXT"},
-            {"2 TEXT", "3 TEXT"},
+            {"3 TEXT", "1 TEXT"},
+            {"3 TEXT", "4 TEXT"},
             {"TEXT", "ASCII"},
             {"DIMENSION\n3", "DIMENSION\n2"},
             {"COUNTS\n4", "COUNTS\n-4"},
@@ -986,9 +1006,9 @@ void register_mesh_format() {
         bytes = good;
         std::fill(bytes.begin() + 24, bytes.begin() + 32, static_cast<char>(255));
         rejects([&] { decode(bytes); });
-        // Заголовок занимает 88 байт, координаты 96, таблицы граней 40 + 96, таблицы ячеек 16 + 32.
+        // Заголовок занимает 80 байт, координаты 96, таблицы граней 40 + 96, таблицы ячеек 16 + 32.
         bytes = good;
-        bytes[368] = 0;
+        bytes[360] = 0;
         rejects([&] { decode(bytes); }, "orientation");
         bytes = good;
         std::fill(bytes.end() - 12, bytes.end() - 4, static_cast<char>(255));
@@ -999,7 +1019,7 @@ void register_mesh_format() {
         std::reverse(d.face_nodes.indices.begin(), d.face_nodes.indices.begin() + 3);
         d.cell_face_orientation[0] = -1;
         const std::string bytes = encode(Mesh(d), MeshFormat::Binary);
-        require(static_cast<unsigned char>(bytes[368]) == 255, "Negative sign must be 0xff");
+        require(static_cast<unsigned char>(bytes[360]) == 255, "Negative sign must be 0xff");
         require(same(d, decode(bytes).data()), "Negative orientation round trip");
     });
     add("locale and formatting do not affect text I/O", [] {

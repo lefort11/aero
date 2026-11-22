@@ -42,8 +42,7 @@ def sparse_line(mesh, count):
     ]
     with mesh.open("w") as f:
         f.write(
-            f"AEROMESH 2 TEXT\nDIMENSION 1\nCOUNTS {count} {count} {count} {count-1} {2*(count-1)} 2 2\n"
-            "LENGTH_SCALE_TO_METERS 1\n"
+            f"AEROMESH 3 TEXT\nDIMENSION 1\nCOUNTS {count} {count} {count} {count-1} {2*(count-1)} 2 2\n"
         )
         for name, values in blocks:
             f.write(name + "\n" + " ".join(map(str, values)) + "\n")
@@ -87,22 +86,31 @@ def compare(expected, actual):
 def legacy_archive(current, target, version=1):
     """Строит из проверочного архива образ прежней версии для проверки совместимости."""
     data = bytearray(current.read_bytes())
-    leaves, branches = struct.unpack_from("<QQ", data, 80)
-    index, tree, payload = struct.unpack_from("<QQQ", data, 112)
-    old_payload = tree + 112 * branches
-    if version == 2:
-        nodes = struct.unpack_from("<Q", data, 40)[0]
-        stars, halo = struct.unpack_from("<QQ", data, old_payload)
-        old_payload += 16 + 8 * (nodes + 1 + 2 * leaves + 1) + 16 * (stars + halo)
-    if version == 3:
-        old_payload = payload - 64  # v4 adds the native mesh SHA-256 before the payload
-    del data[old_payload:payload]
+    # В старом заголовке перед счётчиком узлов было дополнительное вещественное
+    # поле. Увеличиваем все абсолютные адреса каталога и листьев на его размер.
+    leaves, branches = struct.unpack_from("<QQ", data, 72)
+    names, index, tree, payload = struct.unpack_from("<QQQQ", data, 96)
+    directory = tree + 112 * branches
+    if version == 1:
+        keep = directory
+    elif version == 2:
+        nodes = struct.unpack_from("<Q", data, 32)[0]
+        stars, halo = struct.unpack_from("<QQ", data, directory)
+        keep = directory + 16 + 8 * (nodes + 1 + 2 * leaves + 1) + 16 * (stars + halo)
+    elif version == 3:
+        keep = payload - 64
+    elif version == 4:
+        keep = payload
+    else:
+        raise ValueError("Expected a legacy archive version 1 through 4")
+    del data[keep:payload]
+    data[32:32] = struct.pack("<d", 1.)
     struct.pack_into("<Q", data, 8, version)
-    struct.pack_into("<Q", data, 128, old_payload)
+    struct.pack_into("<QQQQ", data, 104, names + 8, index + 8, tree + 8, keep + 8)
     for i in range(leaves):
-        pos = index + 48 * i
+        pos = index + 8 + 48 * i
         offset = struct.unpack_from("<Q", data, pos)[0]
-        struct.pack_into("<Q", data, pos, offset - (payload - old_payload))
+        struct.pack_into("<Q", data, pos, offset + 8 - (payload - keep))
     target.write_bytes(data)
 
 
@@ -123,7 +131,12 @@ def verify_case(work, case, aero, meshdec, launcher):
         words[words.index("LENGTH_SCALE_TO_METERS") + 1] = "0.375"
         native.write_text(" ".join(words))
     out = params / "results"
-    command = [aero, f"--input={params}", f"--output={out}"]
+    def solver_command(directory, ranks=1):
+        """У каждого независимого расчёта свой каталог полей и recovery."""
+        mpi = [launcher, "-n", ranks] if ranks > 1 else []
+        return [*mpi, aero, f"--input={params}", f"--output={directory}"]
+
+    command = solver_command(out)
     run(command + ["--geometry-only"])
     reference, _ = geometry(out, 1)
     if case == "pulse_1d":
@@ -149,19 +162,26 @@ def verify_case(work, case, aero, meshdec, launcher):
         if (out / "final.fields").read_bytes() != reference_fields:
             raise AssertionError("Serial solve from archive differs from native periodic solve")
         print("OK single-process periodic SSPRK3 field output")
+        # Архив v4 хранит SHA-256 и старое слово масштаба. Проверяем смещения
+        # каталога на двух процессах, пока исходная сетка отсутствует.
+        legacy_archive(archive, params / "v4.mdec", 4)
+        run([launcher, "-n", 2, *command, "--geometry-only", "main:mesh=v4.mdec"])
+        old_geometry, _ = geometry(out, 2)
+        compare(reference, old_geometry)
         legacy_archive(archive, params / "old.mdec")
         original = settings.read_text()
         legacy = original.replace("grid.mdec", "old.mdec")
         settings.write_text(legacy)
-        run(command)
-        if (out / "final.fields").read_bytes() != reference_fields:
+        legacy_output = params / "legacy-serial"
+        run(solver_command(legacy_output))
+        if (legacy_output / "final.fields").read_bytes() != reference_fields:
             raise AssertionError("Legacy serial fields differ")
         mpi = [launcher, "-n", 2, *command]
         run(mpi + ["--geometry-only"])
         result, _ = geometry(out, 2)
         compare(reference, result)
         settings.write_text(re.sub(r"(?m)^reconstruction\s*=.*", "reconstruction = first_order", legacy))
-        run(mpi)
+        run(solver_command(params / "legacy-first-order", 2))
         for scheme in ("ebr3", "weno3", "weno5"):
             settings.write_text(
                 re.sub(r"(?m)^reconstruction\s*=.*", "reconstruction = " + scheme, legacy)
@@ -172,7 +192,7 @@ def verify_case(work, case, aero, meshdec, launcher):
         v2 = original.replace("grid.mdec", "v2.mdec")
         for scheme in ("ebr3", "weno3"):
             settings.write_text(re.sub(r"(?m)^reconstruction\s*=.*", "reconstruction = " + scheme, v2))
-            run(mpi)
+            run(solver_command(params / ("v2-" + scheme), 2))
         for scheme in ("ebr5", "weno5"):
             settings.write_text(re.sub(r"(?m)^reconstruction\s*=.*", "reconstruction = " + scheme, v2))
             if "far halo index" not in run(mpi, success=False):
@@ -189,7 +209,7 @@ def verify_case(work, case, aero, meshdec, launcher):
     if case == "wave_3d":
         # Неверные границы каталога и ссылки должны вызвать согласованный отказ всех процессов.
         data = bytearray(archive.read_bytes())
-        payload = struct.unpack_from("<Q", data, 128)[0]
+        payload = struct.unpack_from("<Q", data, 120)[0]
         if struct.unpack_from("<Q", data, payload)[0] != 0:
             raise AssertionError("Expected a vertex at start of Morton order")
         first_id = struct.unpack_from("<Q", data, payload + 8)[0]
@@ -205,12 +225,12 @@ def verify_case(work, case, aero, meshdec, launcher):
         error = run([launcher, "-n", 4, *command, "--geometry-only"], success=False)
         if "nonexistent leaf" not in error:
             raise AssertionError(error)
-        tree = struct.unpack_from("<Q", data, 120)[0]
-        branches = struct.unpack_from("<Q", data, 88)[0]
+        tree = struct.unpack_from("<Q", data, 112)[0]
+        branches = struct.unpack_from("<Q", data, 80)[0]
         directory = tree + 112 * branches
         star_links, halo_links = struct.unpack_from("<QQ", data, directory)
-        leaves = struct.unpack_from("<Q", data, 80)[0]
-        node_count = struct.unpack_from("<Q", data, 40)[0]
+        leaves = struct.unpack_from("<Q", data, 72)[0]
+        node_count = struct.unpack_from("<Q", data, 32)[0]
         offsets = directory + 16 + 8 * (node_count + 1) + 16 * star_links
         struct.pack_into("<Q", data, payload + 48, original_link)
         first_end = struct.unpack_from("<Q", data, offsets + 8)[0]

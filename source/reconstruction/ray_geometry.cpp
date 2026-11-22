@@ -24,12 +24,45 @@ Coordinate cross(Coordinate a, Coordinate b) {
 }
 typedef std::array<MeshIndex, 3> Triangle;
 struct Surface {
-    Coordinate normal;
-    std::vector<Triangle> triangles;
-    // Для неплоской грани третьей вершиной каждого треугольника служит
-    // общий центр. Его значение интерполируем поровну по узлам контура.
-    std::vector<MeshIndex> center_nodes;
-    Coordinate center;
+    Coordinate normal;         // Нормаль к плоскому контуру.
+    MeshIndexSpan contour;     // Вершины грани в порядке обхода. Память принадлежит сетке.
+    bool uses_center = false;  // На неплоской грани соединяем каждое ребро с общим центром.
+    Coordinate center{};       // Среднее координат вершин неплоской грани.
+
+    Surface(Coordinate unit_normal, MeshIndexSpan vertices) : normal(unit_normal), contour(vertices) {}
+
+    // При отсечении уха сохраняем те же три вершины в том же порядке.
+    // Для треугольной и четырёхугольной грани хватает шести номеров внутри контура.
+    void add_triangle(std::size_t i, std::size_t a, std::size_t b, std::size_t c) {
+        if (contour.size <= 4) {
+            corners_[3*i] = static_cast<unsigned char>(a);
+            corners_[3*i+1] = static_cast<unsigned char>(b);
+            corners_[3*i+2] = static_cast<unsigned char>(c);
+        } else {
+            triangles_.push_back({{contour[a], contour[b], contour[c]}});
+        }
+    }
+
+    // Объём ячейки и пересечение луча обходят одно и то же разбиение.
+    // У неплоской грани номер mesh.node_count обозначает геометрический центр.
+    template<class Visit> void visit_triangles(MeshIndex center_id, Visit visit) const {
+        if (uses_center) {
+            for (MeshIndex i = 0; i < contour.size; ++i)
+                visit(Triangle{{contour[i], contour[(i+1) % contour.size], center_id}});
+        } else if (contour.size <= 4) {
+            for (MeshIndex i = 0; i < contour.size - 2; ++i) {
+                const auto* corner = corners_.data() + 3*i;
+                visit(Triangle{{contour[corner[0]], contour[corner[1]], contour[corner[2]]}});
+            }
+        } else {
+            for (const auto& triangle : triangles_) visit(triangle);
+        }
+    }
+
+    Surface() = default;
+private:
+    std::array<unsigned char,6> corners_{}; // До двух треугольников на обычной плоской грани.
+    std::vector<Triangle> triangles_;       // Разбиение плоского многоугольника с пятью и более вершинами.
 };
 
 double turn(Coordinate a, Coordinate b, Coordinate c, Coordinate normal) {
@@ -37,8 +70,8 @@ double turn(Coordinate a, Coordinate b, Coordinate c, Coordinate normal) {
 }
 
 // Переносим начало в вершину грани и приводим координаты к её масштабу.
-std::vector<Coordinate> normalized_polygon(MeshView mesh, const std::vector<MeshIndex>& ids) {
-    if (ids.size() < 3) {
+void normalize_polygon(MeshView mesh, MeshIndexSpan ids, std::vector<Coordinate>& p) {
+    if (ids.size < 3) {
         throw ReconstructionError("Polygon has fewer than three nodes");
     }
     const Coordinate origin = mesh.coordinate(ids[0]);
@@ -49,12 +82,11 @@ std::vector<Coordinate> normalized_polygon(MeshView mesh, const std::vector<Mesh
     if (!(scale > 0) || !std::isfinite(scale)) {
         throw ReconstructionError("Degenerate polygon scale");
     }
-    std::vector<Coordinate> p;
-    p.reserve(ids.size());
+    p.clear();
+    p.reserve(ids.size);
     for (MeshIndex id : ids) {
         p.push_back((mesh.coordinate(id) - origin) / scale);
     }
-    return p;
 }
 
 // Самопересечение или касание несмежных рёбер делает интерполяцию по грани неоднозначной.
@@ -87,12 +119,11 @@ void validate_polygon(const std::vector<Coordinate>& p, Coordinate normal, doubl
 }
 
 // Отрезаем выпуклые треугольники по порядку вершин, пока в контуре не останутся три точки.
-std::vector<Triangle> clip_ears(const std::vector<Coordinate>& p, const std::vector<MeshIndex>& ids, Coordinate normal,
-                                double eps) {
+void clip_ears(const std::vector<Coordinate>& p, Surface& surface, double eps, std::vector<std::size_t>& active) {
     const auto n = p.size();
-    std::vector<Triangle> triangles;
-    triangles.reserve(n - 2);
-    std::vector<std::size_t> active;
+    const Coordinate normal = surface.normal;
+    active.clear();
+    active.reserve(n);
     for (std::size_t i = 0; i < n; ++i) {
         active.push_back(i);
     }
@@ -117,7 +148,7 @@ std::vector<Triangle> clip_ears(const std::vector<Coordinate>& p, const std::vec
             if (contains) {
                 continue;
             }
-            triangles.push_back(Triangle{{ids[a], ids[b], ids[c]}});
+            surface.add_triangle(n - active.size(), a, b, c);
             active.erase(active.begin() + static_cast<std::ptrdiff_t>(j));
             clipped = true;
             break;
@@ -129,13 +160,16 @@ std::vector<Triangle> clip_ears(const std::vector<Coordinate>& p, const std::vec
     if (turn(p[active[0]], p[active[1]], p[active[2]], normal) <= eps) {
         throw ReconstructionError("Degenerate final polygon triangle");
     }
-    triangles.push_back(Triangle{{ids[active[0]], ids[active[1]], ids[active[2]]}});
-    return triangles;
+    surface.add_triangle(n - 3, active[0], active[1], active[2]);
 }
 
 // Треугольники нужны только для пересечения луча с гранью. Исходная связность сетки сохраняется.
-Surface triangulate(MeshView mesh, const std::vector<MeshIndex>& ids, double eps) {
-    const auto points = normalized_polygon(mesh, ids);
+Surface triangulate(MeshView mesh, MeshIndexSpan ids, double eps) {
+    // Рабочие массивы нужны лишь во время обработки текущей грани. У каждого
+    // потока свои буферы, в готовую сетку переносятся только треугольники и опоры.
+    thread_local std::vector<Coordinate> points;
+    thread_local std::vector<std::size_t> active;
+    normalize_polygon(mesh, ids, points);
     Coordinate area{};
     for (std::size_t i = 0; i < points.size(); ++i) {
         area = area + cross(points[i], points[(i + 1) % points.size()]);
@@ -146,7 +180,7 @@ Surface triangulate(MeshView mesh, const std::vector<MeshIndex>& ids, double eps
     }
     const Coordinate normal = area / magnitude;
     validate_polygon(points, normal, eps);
-    Surface surface = {normal, {}, {}, {}};
+    Surface surface(normal, ids);
     for (Coordinate point : points) {
         if (std::abs(dot(point, normal)) <= eps)
             continue;
@@ -155,17 +189,15 @@ Surface triangulate(MeshView mesh, const std::vector<MeshIndex>& ids, double eps
 
         // Центр совпадает с центром разбиения в MedianDual. Суммируем
         // смещения относительно одного узла для сеток с большим сдвигом.
-        const Coordinate origin = mesh.coordinate(ids.front());
+        const Coordinate origin = mesh.coordinate(ids[0]);
         Coordinate sum{};
         for (MeshIndex node : ids)
             sum = sum + (mesh.coordinate(node) - origin);
-        surface.center = origin + sum / static_cast<double>(ids.size());
-        surface.center_nodes = ids;
-        for (std::size_t j = 0; j < ids.size(); ++j)
-            surface.triangles.push_back({{ids[j], ids[(j + 1) % ids.size()], mesh.node_count}});
+        surface.center = origin + sum / static_cast<double>(ids.size);
+        surface.uses_center = true;
         return surface;
     }
-    surface.triangles = clip_ears(points, ids, normal, eps);
+    clip_ears(points, surface, eps, active);
     return surface;
 }
 
@@ -250,7 +282,7 @@ public:
     // В 3D веса пересечения — барицентрические координаты на одном треугольнике грани.
     void test_triangle(MeshView mesh, const Triangle& tri, const Surface& surface, int orientation) {
         const Coordinate a = mesh.coordinate(tri[0]) - origin_;
-        const Coordinate b = mesh.coordinate(tri[1]) - origin_, c = (surface.center_nodes.empty() ? mesh.coordinate(tri[2]) : surface.center) - origin_;
+        const Coordinate b = mesh.coordinate(tri[1]) - origin_, c = (surface.uses_center ? surface.center : mesh.coordinate(tri[2])) - origin_;
         // Локальный масштаб сохраняет смысл допуска для больших и маленьких ячеек.
         const double scale = (std::max)(coordinate_length(b - a), coordinate_length(c - a));
         const Coordinate e1 = (b - a) / scale, e2 = (c - a) / scale, r = a / scale;
@@ -275,11 +307,11 @@ public:
         }
         // Знак определителя задаёт направление пересечения именно этого треугольника.
         if (consider(distance, det * orientation < 0,
-                     {{tri[0], 1 - u - v}, {tri[1], u}, {tri[2], v}}) && !surface.center_nodes.empty()) {
+                     {{tri[0], 1 - u - v}, {tri[1], u}, {tri[2], v}}) && surface.uses_center) {
             // Заменяем вес вспомогательного центра вкладами реальных узлов.
             best_.weights.erase(tri[2]);
-            const double share = v / static_cast<double>(surface.center_nodes.size());
-            for (MeshIndex node : surface.center_nodes)
+            const double share = v / static_cast<double>(surface.contour.size);
+            for (MeshIndex node : surface.contour)
                 best_.weights[node] += share;
         }
     }
@@ -342,9 +374,9 @@ detail::RayPoint outer_point(MeshView mesh, MeshIndex node, Coordinate direction
                 search.test_segment(mesh, face, cell_normals[entry.cell], entry.orientation);
             } else {
                 const auto& surface = faces[entry.face];
-                for (const auto& triangle : surface.triangles) {
+                surface.visit_triangles(mesh.node_count, [&](const Triangle& triangle) {
                     search.test_triangle(mesh, triangle, surface, entry.orientation);
-                }
+                });
             }
         }
     };
@@ -373,8 +405,7 @@ struct detail::ReconstructionGeometry::Impl {
         }
         if (m.dimension == 3) {
             parallel_for(m.face_count, [&](MeshIndex face) {
-                const auto nodes = m.face_nodes(face);
-                faces[face] = triangulate(m, std::vector<MeshIndex>(nodes.begin(), nodes.end()), eps);
+                faces[face] = triangulate(m, m.face_nodes(face), eps);
             });
         }
         for (MeshIndex index = 0; index < m.cell_count; ++index) {
@@ -390,8 +421,12 @@ struct detail::ReconstructionGeometry::Impl {
         if (m.dimension >= 2) {
             parallel_for(m.cell_count, [&](MeshIndex index) {
                 const auto cell = m.cell(index);
-                if (m.dimension == 2) normals[index] = triangulate(m, cell_cycle(cell), eps).normal;
-                else check_cell_volume(cell);
+                if (m.dimension == 2) {
+                    const auto cycle = cell_cycle(cell);
+                    normals[index] = triangulate(m, {cycle.data(), cycle.size()}, eps).normal;
+                } else {
+                    check_cell_volume(cell);
+                }
             });
         }
         for (MeshIndex i = 0; i < m.boundary_face_count; ++i)
@@ -414,12 +449,12 @@ struct detail::ReconstructionGeometry::Impl {
         double volume6 = 0;
         for (MeshIndex k = 0; k < cell.face_count(); ++k) {
             const Surface& surface = faces[cell.face_id(k)];
-            for (const Triangle& t : surface.triangles) {
-                const Coordinate third = surface.center_nodes.empty() ? m.coordinate(t[2]) : surface.center;
+            surface.visit_triangles(m.node_count, [&](const Triangle& t) {
+                const Coordinate third = surface.uses_center ? surface.center : m.coordinate(t[2]);
                 volume6 += cell.face_orientation(k) *
                            dot((m.coordinate(t[0]) - origin) / scale,
                                cross((m.coordinate(t[1]) - origin) / scale, (third - origin) / scale));
-            }
+            });
         }
         if (!(volume6 > eps)) {
             throw ReconstructionError("Inverted or degenerate 3D cell");

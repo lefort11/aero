@@ -46,7 +46,7 @@ const char* test_flux(void* stream, const BcTestCase* cases, size_t count, const
             result.flux[0] = 123;
             BoundaryStatus status =
                 boundary_flux(t.dimension, t.config, rules, t.current, t.initial_available ? t.initial : nullptr,
-                              t.area, t.gamma, &result);
+                              t.area, t.gamma, &result, t.profile_data());
             bool ok = status == t.expected_status;
             if (status == BoundaryStatus::Success) {
                 ok = ok && result.components == t.dimension + 2 &&

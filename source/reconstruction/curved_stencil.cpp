@@ -1,4 +1,5 @@
 #include "curved_stencil.h"
+#include "../mesh/node_incidence.h"
 #include "../parallel/parallel_for.h"
 #include <algorithm>
 #include <cmath>
@@ -101,66 +102,78 @@ std::vector<int> PrismLayers::local_depths(MeshView m, const Sync& sync) const {
     return depth;
 }
 
-CurvedStencil::CurvedStencil(const Mesh& mesh, const ReconstructionOptions& o)
+CurvedStencil::CurvedStencil(const Mesh& mesh, const ReconstructionOptions& o, const NodeIncidence* cells)
     : mesh_(mesh.view()), cosine_(std::cos(o.max_turn_degrees * std::acos(-1.) / 180.)) {
     if (!(o.max_turn_degrees > 0. && o.max_turn_degrees < 90.))
         throw ReconstructionError("Invalid stencil_max_angle");
-    if (o.geometry == StencilGeometry::Ijk || o.geometry == StencilGeometry::Auto)
-        prepare_ijk();
+    if (o.geometry == StencilGeometry::Ijk || o.geometry == StencilGeometry::Auto) {
+        if (cells) prepare_ijk(*cells);
+        else prepare_ijk(NodeIncidence(mesh_.node_count, mesh_.cell_count,
+                                       [&](Id e) { return mesh_.cell_nodes(e); }));
+    }
     if (o.geometry == StencilGeometry::Pl || o.geometry == StencilGeometry::Auto)
         prepare_pl(mesh, o);
 }
 
-void CurvedStencil::prepare_ijk() {
-    const auto m = mesh_;
-    std::vector<char> regular(m.node_count, 1);
-    for (Id c = 0; c < m.cell_count; ++c) {
-        if (!structured_cell(m, c))
-            for (Id n : m.cell_nodes(c))
-                regular[n] = 0;
-    }
-    // Если все узлы принадлежат хотя бы одной неструктурированной ячейке,
-    // продолжать линии IJK негде. На призматической сетке сразу переходим к PL.
-    if (std::find(regular.begin(), regular.end(), 1) == regular.end()) return;
-    std::vector<List> cells(m.edge_count);
-    for (Id c = 0; c < m.cell_count; ++c)
-        for (Id e : m.cell_edges(c))
-            if (regular[m.edge_begin[e]] || regular[m.edge_end[e]]) cells[e].push_back(c);
+namespace {
+// У регулярного узла в 3D до шести направлений. Один бит обозначает одно
+// из этих рёбер; таблица целиком принадлежит потоку, который обрабатывает узел.
+struct IjkNode {
+    Id edges[6];               // Рёбра, инцидентные центральному узлу.
+    unsigned degree = 0;       // Сколько направлений действительно найдено.
+    unsigned excluded[6] = {}; // Запрещённые продолжения для каждого направления.
 
-    // В структурированной области в узле сходятся до двух рёбер каждого
-    // направления. Размер звезды известен, выделять список на каждый узел не нужно.
-    std::vector<std::array<Id, 6>> edges(m.node_count);
-    std::vector<unsigned char> degree(m.node_count, 0);
-    for (Id e = 0; e < m.edge_count; ++e) {
-        for (Id n : {m.edge_begin[e], m.edge_end[e]}) {
-            if (!regular[n]) continue;
-            if (degree[n] == 2 * m.dimension) regular[n] = 0;
-            else edges[n][degree[n]++] = e;
+    // Если встретили неструктурированную ячейку или лишнее ребро, используем прямой шаблон.
+    bool collect(MeshView m, Id n, MeshIndexSpan cells, const std::vector<unsigned char>& structured) {
+        for (Id c : cells) {
+            if (!structured[c]) return false;
+            for (Id e : m.cell_edges(c)) {
+                if (m.edge_begin[e] != n && m.edge_end[e] != n) continue;
+                if (std::find(edges, edges + degree, e) != edges + degree) continue;
+                if (degree == 2 * m.dimension) return false;
+                edges[degree++] = e;
+            }
+        }
+        return true;
+    }
+
+    // Продолжение координатной линии выходит из всех ячеек исходного ребра.
+    // Исключаем соседние вершины, которые лежат внутри данной ячейки.
+    void exclude_cell(MeshView m, Id n, Id c) {
+        unsigned present = 0;
+        for (unsigned j = 0; j < degree; ++j)
+            if (contains(m.cell_nodes(c), other(m, edges[j], n))) present |= 1u << j;
+        const auto cell_edges = m.cell_edges(c);
+        for (unsigned j = 0; j < degree; ++j)
+            if (std::binary_search(cell_edges.begin(), cell_edges.end(), edges[j])) excluded[j] |= present;
+    }
+
+    // У ребра отдельная запись на каждый конец. Потоки для двух соседних узлов
+    // могут одновременно записать продолжения в противоположные стороны.
+    void save(MeshView m, Id n, std::vector<std::array<Id,2>>& next) const {
+        for (unsigned j = 0; j < degree; ++j) {
+            // Продолжение однозначно, когда остался ровно один сосед вне всех ячеек ребра.
+            const unsigned candidates = ((1u << degree) - 1u) & ~excluded[j];
+            if (!candidates || (candidates & (candidates - 1u))) continue;
+            for (unsigned k = 0; k < degree; ++k)
+                if (candidates == (1u << k)) next[edges[j]][m.edge_end[edges[j]] == n] = edges[k];
         }
     }
+};
+}
+
+void CurvedStencil::prepare_ijk(const NodeIncidence& incident) {
+    const auto m = mesh_;
+    std::vector<unsigned char> structured(m.cell_count);
+    parallel_for(m.cell_count, [&](Id c) { structured[c] = structured_cell(m, c); });
+    if (std::find(structured.begin(), structured.end(), 1) == structured.end()) return;
     next_.resize(m.edge_count, {{m.edge_count, m.edge_count}});
-    parallel_for(m.edge_count, [&](Id e) {
-        for (unsigned side = 0; side < 2; ++side) {
-            const Id n = side ? m.edge_end[e] : m.edge_begin[e];
-            if (!regular[n])
-                continue;
-            Id candidate = m.edge_count;
-            for (unsigned i = 0; i < degree[n]; ++i) {
-                const Id next = edges[n][i];
-                // Поперечное ребро лежит с исходным в общей ячейке. Продолжение
-                // координатной линии — единственное оставшееся ребро звезды узла.
-                const Id opposite = other(m, next, n);
-                if (std::any_of(cells[e].begin(), cells[e].end(),
-                                [&](Id c) { return contains(m.cell_nodes(c), opposite); }))
-                    continue;
-                if (candidate != m.edge_count) {
-                    candidate = m.edge_count;
-                    break;
-                }
-                candidate = next;
-            }
-            next_[e][side] = candidate;
-        }
+    parallel_for(m.node_count, [&](Id n) {
+        const auto cells = incident[n];
+        IjkNode node;
+        if (!node.collect(m, n, cells, structured)) return;
+        for (Id c : cells) node.exclude_cell(m, n, c);
+        node.save(m, n, next_);
     });
 }
 

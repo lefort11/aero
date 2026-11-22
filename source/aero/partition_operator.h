@@ -27,7 +27,7 @@ public:
     // Строит локальные поверхности, определяет владельцев потоков и готовит геометрию оператора.
     PartitionOperator(const MeshPartition& part, CvView cv, const PeriodicPartition* periodic,
                       const BoundaryPatches& patches, ResidualOptions options, const ResidualFrame& frame,
-                      const Processes& world, StencilRequests* requests, bool cuda);
+                      const Processes& world, StencilRequests* requests, bool cuda, bool cell_height_cfl);
     // Число узлов состояния с учётом удалённых узлов шаблонов реконструкции.
     Id state_nodes() const;
     // Средние нужны только при заказе пульсаций. Раскладка GPU учитывает их размер.
@@ -53,7 +53,7 @@ public:
                            const RunSettings&);
 #ifdef AERO_HAS_TURBULENCE
     void prepare_sa(const MeshPartition&,const PeriodicPartition*,const BoundaryPatches&,
-                    const std::vector<PeriodicPair>&,const turbulence::Settings&,bool gpu,bool implicit,bool steady);
+                    const std::vector<PeriodicPair>&,const turbulence::Settings&,bool gpu,bool implicit,bool steady,bool has_stencil);
     std::vector<double> sa_output(const std::vector<double>& state);
     void sa_checkpoint(std::vector<double>& current,std::vector<double>& previous,bool restore,double previous_dt);
 #endif
@@ -149,9 +149,15 @@ private:
     void sa_apply(const turbulence::Step&, turbulence::Operation) const;
     double sa_max(const turbulence::Step&, turbulence::Norm,bool refresh=false) const;
     void sa_exchange();
+    // Пересчитывает поправку при каждом изменении газа или рабочей вязкости, затем передаёт её соседу.
+    void prepare_sa_convection(const turbulence::Step&) const;
     void evaluate_sa(const std::vector<double>& state,SolverTimings& timing,bool rates_ready=false,bool rows_ready=false);
     void solve_sa_stage(const std::vector<double>& state,bool rates_ready,bool rows_ready);
     std::unique_ptr<PartitionTransfers> turbulence_exchange_; // Те же владельцы узлов, один скаляр на запись.
+    std::unique_ptr<PartitionTransfers> sa_edge_exchange_; // Одна поправка на общее ребро MPI.
+    bool sa_high_order_ = false;
+    std::vector<double> host_sa_correction_; // Хранилище потока для CPU.
+    double* sa_correction_ = nullptr; // Адрес на активном исполнителе, включая GPU.
     double sa_dt_ = 0., sa_previous_dt_ = 0., sa_target_ = 0., sa_tol_ = 0.;
     unsigned sa_iterations_ = 0;
     bool sa_lines_ = false; // Один выбор пробной поправки на всех MPI-процессах.
@@ -175,10 +181,12 @@ private:
     std::vector<diagnostic::Moments> moments_; // На CPU хранит средние в расчётной нумерации.
 #ifdef AERO_WITH_KOKKOS_GPU
     double* device_pressure_rate_ = nullptr; // По одному double на собственный узел.
+    const double* device_heights_ = nullptr; // Высоты загружаются один раз при подготовке GPU.
     diagnostic::Moments* device_moments_ = nullptr; // Владельцем памяти остаётся PartitionGpu.
 #endif
     unsigned width_;           // Число консервативных переменных в одном узле.
     const double* volumes_;    // Объёмы контрольных ячеек в расчётной нумерации.
+    const double* heights_;    // Наименьшая высота у узла; nullptr для CFL по площадкам.
     const std::vector<Id>&
         ids_; // Исходный номер каждого локального узла или его периодического представителя.
     const std::vector<int>& owners_;                 // MPI-процесс, отвечающий за каждый узел.

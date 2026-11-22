@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstring>
 #include <map>
+#include <numeric>
 #include <set>
 
 namespace aero {
@@ -27,7 +28,7 @@ Element describe(const MeshPartition& part, const PeriodicPartition* seam, const
         const Coordinate dx = mesh.coordinate(node) - origin;
         for (unsigned m = 0; m < mesh.dimension; ++m) {
             const auto a = frame.axis[m];
-            e.position[k][m] = (a.x*dx[0] + a.y*dx[1] + a.z*dx[2]) * mesh.length_scale_to_meters;
+            e.position[k][m] = a.x*dx[0] + a.y*dx[1] + a.z*dx[2];
         }
     }
     for (auto edge : mesh.cell_edges(local)) {
@@ -39,6 +40,76 @@ Element describe(const MeshPartition& part, const PeriodicPartition* seam, const
     return e;
 }
 
+Cell prepare_cell(GradientBuilder& gradients, const Element& e, unsigned dim, double gamma, double prandtl,
+                  std::vector<PairMetric>& metrics, MeanGradient* mean = nullptr) {
+    Cell cell{};
+    cell.count = e.count;
+    cell.inverse_count = 1. / e.count;
+    gradients.prepare(e, dim, gamma, prandtl, cell, metrics, mean);
+    return cell;
+}
+
+}
+
+// Обрабатываем независимые диапазоны элементов. Ограничение в 64 блока
+// сохраняет кэш одинаковых форм внутри каждого диапазона и ограничивает память.
+void Aes::prepare_local_cells(const MeshPartition& part, const PeriodicPartition* seam,
+                              const ResidualFrame& frame, const Locate& locate) {
+    const auto mesh = part.mesh.view();
+    // Все узлы принадлежат этому процессу. Подготавливаем отображение один раз,
+    // в том числе для периодической сетки с несколькими копиями одного узла.
+    std::vector<MeshIndex> slots(mesh.node_count);
+    for (MeshIndex n = 0; n < mesh.node_count; ++n) {
+        const MeshIndex global = seam ? seam->ids[seam->node_dof[n]] : part.nodes[n];
+        slots[n] = locate(global,0);
+    }
+    const MeshIndex blocks = std::min<MeshIndex>(64, (mesh.cell_count + 511) / 512);
+    std::vector<std::vector<PairMetric>> pairs(blocks);
+    cells_.resize(mesh.cell_count);
+    parallel_for(blocks, [&](MeshIndex b) {
+        // Каждый блок имеет собственный кэш повторяющихся форм. Поэтому сборка
+        // интегралов по элементам не блокирует остальные потоки.
+        GradientBuilder cache;
+        for (MeshIndex c = mesh.cell_count*b/blocks; c < mesh.cell_count*(b+1)/blocks; ++c) {
+            const Element e = describe(part,seam,frame,c);
+            auto& cell = cells_[c];
+            cell = prepare_cell(cache,e,mesh.dimension,op_.law.gamma,op_.law.prandtl,pairs[b]);
+            const auto nodes = mesh.cell_nodes(c);
+            for (unsigned i = 0; i < cell.count; ++i) cell.node[i] = slots[nodes[i]];
+        }
+    }, 2);
+    merge_cell_metrics(pairs);
+}
+
+void Aes::merge_cell_metrics(std::vector<std::vector<PairMetric>>& pairs) {
+    const MeshIndex blocks = pairs.size();
+    // Сумма длин предыдущих блоков даёт адрес первой пары данного блока.
+    std::vector<MeshIndex> base(blocks + 1);
+    for (MeshIndex b = 0; b < blocks; ++b) base[b+1] = base[b] + pairs[b].size();
+    metrics_.resize(base.back());
+    parallel_for(blocks, [&](MeshIndex b) {
+        std::copy(pairs[b].begin(), pairs[b].end(), metrics_.begin() + base[b]);
+        for (MeshIndex c = cells_.size()*b/blocks; c < cells_.size()*(b+1)/blocks; ++c)
+            cells_[c].first_pair += base[b];
+    }, 2);
+}
+
+void Aes::index_local_vertices() {
+    // Формируем строки в исходном порядке ячеек: порядок сложения вязкой невязки сохраняется.
+    offsets_.assign(op_.row_count+1,0);
+    for (auto& cell : cells_) {
+        cell.first_vertex = op_.vertex_count;
+        op_.vertex_count += cell.count;
+        op_.neighbour_count += cell.count*(cell.count-1);
+        for (unsigned i = 0; i < cell.count; ++i) ++offsets_[cell.node[i]+1];
+    }
+    std::partial_sum(offsets_.begin(),offsets_.end(),offsets_.begin());
+    incidence_.resize(offsets_.back());
+    auto next = offsets_;
+    for (MeshIndex c = 0; c < cells_.size(); ++c) {
+        const auto& cell = cells_[c];
+        for (unsigned i = 0; i < cell.count; ++i) incidence_[next[cell.node[i]]++] = 8*c+i;
+    }
 }
 
 void Aes::prepare(const MeshPartition& part, const PeriodicPartition* seam, const ResidualFrame& frame,
@@ -50,7 +121,11 @@ void Aes::prepare(const MeshPartition& part, const PeriodicPartition* seam, cons
     op_.law = {gamma,gamma*mach*mach,1./settings.reynolds,settings.prandtl,
                settings.law == "sutherland" ? settings.sutherland_s/settings.t_amb : 0.};
     std::vector<std::vector<MeshIndex>> by_node;
-    world.local([&] { by_node.resize(rows); });
+    bool parallel_cells = world.size == 1 && mesh.cell_count >= 8192;
+#ifdef AERO_HAS_TURBULENCE
+    parallel_cells = parallel_cells && !op_.computes_les();
+#endif
+    if (!parallel_cells) world.local([&] { by_node.resize(rows); });
     GradientBuilder gradients;
 #ifdef AERO_HAS_TURBULENCE
     // Индекс первой геометрической пары AES уже служит точным ключом формы:
@@ -58,15 +133,12 @@ void Aes::prepare(const MeshPartition& part, const PeriodicPartition* seam, cons
     std::map<MeshIndex,MeshIndex> filter_by_shape;
 #endif
     const auto add = [&](const Element& e) {
-        Cell cell{};
-        cell.count = e.count;
-        cell.inverse_count = 1. / e.count;
         MeanGradient* requested=nullptr;
 #ifdef AERO_HAS_TURBULENCE
         MeanGradient mean{};
         if (op_.computes_les()) requested=&mean;
 #endif
-        gradients.prepare(e,mesh.dimension,gamma,op_.law.prandtl,cell,metrics_,requested);
+        Cell cell = prepare_cell(gradients,e,mesh.dimension,gamma,op_.law.prandtl,metrics_,requested);
 #ifdef AERO_HAS_TURBULENCE
         if (requested) {
             auto shape=filter_by_shape.emplace(cell.first_pair,filters_.size());
@@ -118,7 +190,10 @@ void Aes::prepare(const MeshPartition& part, const PeriodicPartition* seam, cons
         cells_.push_back(cell);
     };
 
-    if (world.size == 1) {
+    if (parallel_cells) {
+        prepare_local_cells(part,seam,frame,locate);
+        index_local_vertices();
+    } else if (world.size == 1) {
         for (MeshIndex i = 0; i < mesh.cell_count; ++i) add(describe(part,seam,frame,i));
     } else {
         Processes::Messages send;
@@ -149,7 +224,7 @@ void Aes::prepare(const MeshPartition& part, const PeriodicPartition* seam, cons
         });
     }
     world.local([&] {
-        offsets_.push_back(0);
+        if (!parallel_cells) offsets_.push_back(0);
         for (const auto& row : by_node) {
             incidence_.insert(incidence_.end(),row.begin(),row.end());
             offsets_.push_back(incidence_.size());

@@ -1,4 +1,4 @@
-Конвертер Gmsh / CGNS / another -> AEROMESH v2
+Конвертер Gmsh / CGNS / another -> AEROMESH v3
 ===================================
 
 Утилита работает на CPU, использует C++11 и не требует CUDA.
@@ -12,7 +12,7 @@ CGNS/HDF5 подключаются только к конвертеру, не к
   bin/mesh_converter.exe input.cgns output.mesh --base 1 --zone 2
   bin/mesh_converter.exe path/to/me1_ntte output.mesh
   bin/mesh_converter.exe path/to/me1_ntte/mesh.txt output.mesh --format text
-  bin/mesh_converter.exe path/to/MESH output.mesh --from another
+  bin/mesh_converter.exe path/to/MESH output-bin.mesh --from another --format binary
   bin/mesh_converter.exe --help
 
 Первые два аргумента обязательны: INPUT (входная сетка), OUTPUT (выходной путь).
@@ -21,7 +21,7 @@ CGNS/HDF5 подключаются только к конвертеру, не к
 
 Формат входа определяется по .msh/.cgns, каталогу с mesh.txt или пути mesh.txt;
 либо задаётся через --from gmsh|cgns|another.
-Выход: text, binary или lzma (сжатая бинарная сетка v2), по умолчанию binary.
+Выход: text, binary или lzma (сжатая бинарная сетка v3), по умолчанию binary.
 LZMA подключена через общую библиотеку aero_io; описание: source/io/README.txt.
 Существующий выходной файл не перезаписывается. Вход полностью читается и
 проверяется до открытия выходного файла. Ошибка возвращает код 1.
@@ -36,8 +36,7 @@ LZMA подключена через общую библиотеку aero_io; о
 - Внешние грани без меток получают имя unmarked. Меняется через
   --unmarked NAME. В библиотечном API пустой Options::unmarked_name
   запрещает немаркированные внешние грани.
-- Координаты не пересчитываются; --scale задаёт length_scale_to_meters.
-  По умолчанию 1. Единицы из метаданных CGNS автоматически не определяются.
+- В файл записываются координаты узлов исходной сетки.
 - Одна грань хранится один раз, её ориентация задаётся относительно элемента.
   Вход должен иметь согласованную ориентацию элементов. Конвертер не
   исправляет инвертированные/вырожденные элементы и не проверяет пересечения.
@@ -46,8 +45,8 @@ LZMA подключена через общую библиотеку aero_io; о
 Поддерживаемые входы:
 another:
   Обычная 2D/3D сетка: mesh.txt, coordinate.msh, topo.msh, bctopo.msh,
-  label.txt. Для MeshFormat=binary/1 читаются соответствующие .msb;
-  для MeshFormat=text/0 читаются текстовые .msh. Кодировка имён: UTF-8.
+  label.txt. В mesh.txt указывается MeshFormat text или MeshFormat 0.
+  Координаты и обе таблицы связности читаются из текстовых .msh. Кодировка имён — UTF-8.
   Идентификаторы узлов начинаются с нуля. Координаты записаны по узлам:
   x y или x y z. NumCoords задаёт размерность.
   Размеры: Num_Node / Num_Elem / Num_BndFace либо Nn / Nt / NFaceBC.
@@ -67,13 +66,6 @@ another:
   Внешние грани должны быть перечислены полностью, без повторов; каждому
   используемому ID нужно имя. Неполная граница вызывает ошибку.
   Варианты *_per, буферные зоны и периодические соответствия пока отклоняются.
-  MSB: little-endian uint32 count,width,type; type=1266 для int32 и 1273
-  для float64. Далее блоки [packed_size, decoded_size, LZMA-alone stream].
-  Поддерживаются блоки с разрывом посередине скалярного значения. Иные
-  варианты двоичной упаковки отклоняются. Декодер 7-Zip включён в исходники;
-  внешняя программа 7z при запуске конвертера не нужна.
-  Проверено на me1/me2/me3 TEXT HYBRID (2D) и полной однородной BINARY-сетке
-  JetUnderexp (3D гексы). Остальные формы покрыты искусственными тестами.
 
 Gmsh:
   MSH 2.2 и 4.1, ASCII и binary, оба порядка байтов, data-size=8.
@@ -152,7 +144,7 @@ Visual Studio:
   topology.cpp     общая сборка топологии и меток
   gmsh.cpp         чтение MSH
   cgns.cpp         адаптер CGNS, отключаемый при сборке
-  another.cpp     чтение каталогов another TEXT/MSB
+  another.cpp     чтение текстовых сеток another
   main.cpp         точка входа
   cli.h, cli.cpp   разбор командной строки и справка
   converter_tests.cpp  модульные и интеграционные тесты

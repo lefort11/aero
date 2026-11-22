@@ -234,12 +234,16 @@ int main(int argc, char** argv) {
     try {
         const bool required = argc == 2 && std::string(argv[1]) == "--require-cuda";
         verify(line_mesh(), 6, {.125, 1, 2.875, 2});
+        const MedianDual line{Mesh(line_mesh())};
+        const double widths[] = {.25, .25, 1.75, 4.};
+        for (unsigned i = 0; i < 4; ++i) near(line.view().min_heights[i], widths[i]);
         // Для ребра (0,1), идущего вдоль X, вектор площади двойственной грани равен (1/3, 1/3).
         MeshData triangle = polygon(3);
         triangle.x = {10, 12, 10};
         triangle.y = {20, 20, 21};
         verify(triangle, 1, {1. / 3, 1. / 3, 1. / 3});
         const MedianDual skew{Mesh(triangle)};
+        near(skew.view().min_heights[0], 2. / std::sqrt(5.));
         near(skew.view().edge_areas[0].x, 1. / 3);
         near(skew.view().edge_areas[0].y, 1. / 3);
         MeshData cells = adjacent_polygons();
@@ -247,10 +251,13 @@ int main(int argc, char** argv) {
         cells.patch_names.push_back("wing");
         verify(cells, 1.5, {.25, 5. / 12, 5. / 12, .25, 1. / 6});
         MeshData pentagon = polygon(5);
-        pentagon.length_scale_to_meters = 2;
-        verify(pentagon, 10 * std::sin(2 * std::acos(-1.) / 5));
+        verify(pentagon, 2.5 * std::sin(2 * std::acos(-1.) / 5));
         verify(adjacent_tetrahedra(), 1. / 3, {1. / 12, 1. / 12, 1. / 12, 1. / 24, 1. / 24});
         verify(mixed(), 5. / 3);
+        const MedianDual solids{Mesh(mixed())};
+        near(solids.view().min_heights[0], 1. / std::sqrt(3.));   // Тетраэдр.
+        near(solids.view().min_heights[4], 1.);                   // Куб.
+        near(solids.view().min_heights[12], 1. / std::sqrt(2.)); // Треугольная призма.
         // Поднимаем один угол единичного гекса. Средняя высота верхней
         // грани растёт на 1/8, настолько же увеличивается объём под ней.
         MeshData warped = mixed();

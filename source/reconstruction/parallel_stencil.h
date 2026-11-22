@@ -39,7 +39,9 @@ inline void append_edge_rows(ReconstructionStencilData& to, const Reconstruction
 template <class Build> void build_edge_rows(ReconstructionStencilData& data, const Build& build) {
 #ifdef _OPENMP
     if (data.edge_count >= 256) {
-        const ReconstructionIndex chunk = 32, batch = 32 * chunk;
+        // Короткие участки дают много барьеров и тысячи мелких расширений массивов.
+        // На большой сетке за одно распределение потокам отдаём до 65536 рёбер.
+        const ReconstructionIndex chunk = data.edge_count < 8192 ? 32 : 256, batch = 256 * chunk;
         for (ReconstructionIndex start = 0; start < data.edge_count;) {
             const auto size = std::min(batch, data.edge_count - start);
             std::vector<ReconstructionStencilData> parts(

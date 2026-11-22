@@ -370,6 +370,8 @@ RunSettings read_run_settings(const RunDirectories& directories) {
     auto& stable = run.stabilization;
     if (main.contains("stabilization"))
         stable.mode = choice(main.take("stabilization"), {"off", "cfl", "low", "on"});
+    if (main.contains("cfl_method"))
+        run.cell_height_cfl = choice(main.take("cfl_method"), {"height", "spectral"}) == "height";
     if (!stable.active() || main.contains("cfl")) {
         const auto entry = main.take("cfl");
         run.cfl = finite_number(entry);
@@ -443,6 +445,8 @@ RunSettings read_run_settings(const RunDirectories& directories) {
                 if (run.turbulence.ddes && model.contains("c_des"))
                     run.turbulence.c_des=number(model.take("c_des"),false);
                 choice(lowercase(model.take("rans_eq")), {"sa"});
+                if (model.contains("sa_high_order"))
+                    run.turbulence.high_order = choice(lowercase(model.take("sa_high_order")), {"on","off"}) == "on";
                 run.turbulence.nut_nu_amb = number(model.take("nut_nu_amb"), true);
             }
             if (model.contains("pr_t")) run.turbulence.prandtl = number(model.take("pr_t"), false);
@@ -459,6 +463,8 @@ RunSettings read_run_settings(const RunDirectories& directories) {
     if (run.gamma <= 1)
         throw std::invalid_argument(gamma.where + ": expected gamma > 1");
     if (gas.contains("mach")) run.mach = number(gas.take("mach"), false);
+    if (gas.contains("phi")) run.reference_phi = finite_number(gas.take("phi"));
+    if (gas.contains("theta")) run.reference_theta = finite_number(gas.take("theta"));
 #ifdef AERO_HAS_VISCOSITY
     read_viscosity_parameters(gas, run.viscosity);
     if (run.viscosity.law != "off" && !run.mach) throw std::invalid_argument("gas.txt: missing mach");

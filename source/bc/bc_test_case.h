@@ -8,6 +8,10 @@ struct BcTestCase {
     unsigned dimension;
     bool initial_available;
     double current[5], initial[5], area[3], gamma;
+    ProfileState profile;
+    AERO_HOST_DEVICE const ProfileState* profile_data() const {
+        return profile.present() ? &profile : nullptr;
+    }
     // При ошибочном входе достаточно сравнить код и убедиться, что результат не перезаписан.
     BoundaryStatus expected_status;
     EulerFluxResult expected;

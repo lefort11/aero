@@ -19,11 +19,12 @@ void check_periodic_initial(const double* reference, const double* copy, unsigne
 // для Linear — пульсации плотности, скорости и давления.
 // Относительные пути из настроек отсчитываются от directory. Периодическое отображение
 // позволяет склеить копии узлов и проверить согласованность их начальных состояний.
+// Для режима recovery возвращает пустой вектор и передаёт путь солверу через recovery_path.
 std::vector<double> read_initial(const Mesh& mesh, double gamma, std::istream& settings,
                                  const std::string& directory = ".", const PeriodicView* periodic = nullptr,
                                  const FieldNodeSelection* selection = nullptr,
                                  const LinearBackground& background = {}, std::vector<std::string>* warnings = nullptr,
-                                 double mach = 0.);
+                                 double mach = 0., std::string* recovery_path = nullptr);
 
 // Возвращает эталонные rho, ux, uy, uz, p, E в порядке переданных локальных номеров узлов.
 std::vector<std::array<double, 6>> read_exact_fields(const Mesh&, double gamma, std::istream&,

@@ -184,7 +184,7 @@ std::vector<double> wall_distances(const MeshPartition &part, const PeriodicPart
             double best = std::numeric_limits<double>::infinity();
             for (auto s : shifts)
                 best = tree.nearest(0, mesh.coordinate(i) + s, best);
-            inv[i] = best == 0. ? -1. : 1. / (std::sqrt(best) * mesh.length_scale_to_meters);
+            inv[i] = best == 0. ? -1. : 1. / std::sqrt(best);
         });
         if (!seam) return;
         for (MeshIndex i = 0; i < mesh.node_count; ++i) {

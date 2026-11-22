@@ -125,7 +125,6 @@ MeshPartition assemble(const Archive& archive, const Records& records, const Lea
                        const Addresses& nodes, const Addresses& faces, const Addresses& cells) {
     MeshData d;
     d.dimension = archive.dimension;
-    d.length_scale_to_meters = archive.scale;
     d.patch_names = archive.patches;
     MeshPartition result;
     result.mesh_sha256 = archive.mesh_sha256;

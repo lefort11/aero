@@ -83,7 +83,12 @@ def contact_trace(scheme, values, h, cfl):
                     13/12*(center-near)**2 + .25*(center+near)**2,
                     13/12*(opposite-center)**2 + .25*(opposite-3*center)**2)
             if abs(beta[0]-beta[2]) >= min(beta):
-                # Эталон работает с тремя независимыми весами без общего произведения знаменателей.
+                # Независимая нормировка по величине наибольшего индикатора.
+                # На постоянном поле все три полинома возвращают одну константу.
+                if max(beta) == 0:
+                    return c
+                peak = max(beta)
+                beta = tuple(v/peak for v in beta)
                 eps = 1e-40
                 tau = abs(.5*(beta[0]+beta[2])-beta[1])
                 variation = math.sqrt(sum((beta[i]-beta[(i+1)%3])**2 for i in range(3)))
@@ -96,7 +101,7 @@ def contact_trace(scheme, values, h, cfl):
                            *factors[(i+1)%3]*factors[(i+2)%3]
                            for i,(w,v) in enumerate(zip((.1,.6,.3),beta))]
                 slopes = ((5*near-2*far)/3,(near+2*center)/3,(4*center-opposite)/3)
-                delta = sum(w*v for w,v in zip(weights,slopes))/(sum(weights)+eps)
+                delta = sum(w*v for w,v in zip(weights,slopes))/sum(weights)
                 trace = c+.5*delta
             acceptable = min(0,bound) <= delta <= max(0,bound)
         else:

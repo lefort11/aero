@@ -15,7 +15,7 @@ struct Options {
 // Сводка исходной сетки, необходимая при построении временных таблиц и каталога архива.
 struct Header {
     Id dimension, nodes, faces, face_entries, cells, cell_entries, boundaries, patches;
-    double scale, low[3], high[3];
+    double low[3], high[3];
 };
 // Ключ пространственной сортировки и размер будущей записи узла, грани или ячейки.
 struct Entity {

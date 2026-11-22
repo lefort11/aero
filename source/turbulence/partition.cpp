@@ -1,5 +1,6 @@
 #include "../aero/partition_operator.h"
 #include "../parallel/parallel_for.h"
+#include "convection.h"
 #ifdef AERO_WITH_KOKKOS_GPU
 #include "../parallel/device_work.h"
 #include "../parallel/device_check.h"
@@ -10,13 +11,18 @@ using turbulence::Norm;
 using turbulence::Operation;
 void PartitionOperator::prepare_sa(const MeshPartition &part, const PeriodicPartition *periodic,
                                    const BoundaryPatches &patches, const std::vector<PeriodicPair> &pairs,
-                                   const turbulence::Settings &settings, bool gpu, bool implicit, bool steady) {
+                                   const turbulence::Settings &settings, bool gpu, bool implicit, bool steady, bool has_stencil) {
     sa_implicit_time_ = implicit;
+    sa_high_order_ = settings.high_order && has_stencil;
     aes_->turbulence_field.distance =
         turbulence::wall_distances(part, periodic, patches, pairs, world_, state_nodes());
     // Для RANS на стационарном шаге можно один раз построить линии по геометрии сетки.
     const bool use_lines = steady && !settings.ddes;
     world_.local([&] {
+        if (sa_high_order_ && !gpu) {
+            host_sa_correction_.resize(grid_.edges);
+            sa_correction_ = host_sa_correction_.data();
+        }
         aes_->prepare_sa_faces(grid_, !gpu);
         aes_->prepare_turbulence(settings, !gpu, implicit, use_lines ? &owned : nullptr);
     });
@@ -27,6 +33,7 @@ turbulence::Step PartitionOperator::sa_step() const {
     auto &t = s.transport;
     auto aes = aes_->view();
     t.flux = flux_.data();
+    t.convection_correction = first_order_start ? nullptr : sa_correction_;
     t.profiles = grid_.patches.profiles;
     t.volume = volumes_;
     t.owned = world_.size == 1 ? nullptr : owned.data();
@@ -175,6 +182,34 @@ void PartitionOperator::sa_exchange() {
     if (turbulence_exchange_)
         turbulence_exchange_->transfer(world_, {1, sa_step().transport.sa.w, nullptr}, device());
 }
+
+void PartitionOperator::prepare_sa_convection(const turbulence::Step& step) const {
+    if (!sa_high_order_ || first_order_start) return;
+    // Список начинается со своих внутренних рёбер. Физические границы в конце
+    // списка сохраняют заданный входной профиль и узловое значение на выходе.
+    const auto count = compute_.size() - (grid_.faces - grid_.edges);
+    world_.local([&] {
+        const auto* geometry = &grid_;
+        const auto* computed = world_.size == 1 ? nullptr : compute_.data();
+#ifdef AERO_WITH_KOKKOS_GPU
+        if (gpu_) {
+            geometry = &gpu_->active_grid().geometry;
+            computed = gpu_->active_grid().computed;
+        }
+#endif
+        const turbulence::SaEdgeConvection edge{geometry->stencil,geometry->surfaces,computed,
+            step.transport.flux,step.transport.sa.w,sa_correction_,geometry->options.upw_coeff,geometry->options.mp6_hybrid};
+#ifdef AERO_WITH_KOKKOS_GPU
+        if (gpu_) {
+            device_work::check(device_work::aero_device_sa_convection(edge,count));
+            return;
+        }
+#endif
+        parallel_for(count,edge);
+    });
+    // Все ранги участвуют, в том числе ранг без собственных рёбер.
+    if (sa_edge_exchange_) sa_edge_exchange_->transfer(world_,{1,sa_correction_,nullptr},device());
+}
 // При включённых замерах отделяем ядра SA от асинхронной сборки газового потока.
 void PartitionOperator::evaluate_sa(const std::vector<double> &state, SolverTimings &timing, bool rates_ready, bool rows_ready) {
     auto *seconds = timing.counter(SolverTimings::SaTransport);
@@ -193,11 +228,14 @@ void PartitionOperator::solve_sa_stage(const std::vector<double> &state, bool ra
     // Для явной стадии достаточно пространственной невязки. В BDF уточняем рабочую
     // вязкость при фиксированном газе до проверки полной невязки нового слоя.
     auto s = sa_step();
-    if (!rates_ready)
+    if (!rates_ready) {
+        prepare_sa_convection(s);
         world_.local([&] { sa_apply(s, Operation::Residual); });
+    }
     if (!sa_dt_)
         return;
     const auto residual_norm = [&](bool refresh) {
+        if (refresh) prepare_sa_convection(s);
         const double value = sa_max(s, Norm::Bdf, refresh);
         if (!s.extrapolate && !std::isfinite(value))
             throw std::runtime_error("SA: nonfinite implicit transport residual");

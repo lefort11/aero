@@ -21,7 +21,6 @@ endif
 CONVERTER_SOURCES := $(CONVERTER_SOURCE)/topology.cpp $(CONVERTER_SOURCE)/gmsh.cpp $(CONVERTER_SOURCE)/cgns.cpp $(CONVERTER_SOURCE)/another.cpp $(CONVERTER_SOURCE)/cli.cpp
 CONVERTER_HEADERS := $(CONVERTER_SOURCE)/converter.h $(CONVERTER_SOURCE)/detail.h $(CONVERTER_SOURCE)/cli.h $(MESH_HEADERS)
 CONVERTER_OBJECTS := $(patsubst $(CONVERTER_SOURCE)/%.cpp,$(BUILD)/converter_%_$(WITH_CGNS).o,$(CONVERTER_SOURCES))
-$(BUILD)/converter_another_$(WITH_CGNS).o: $(wildcard $(LZMA_SOURCE)/*.h)
 $(BUILD)/converter_cgns_$(WITH_CGNS).o $(BUILD)/converter_converter_tests_$(WITH_CGNS).o: $(CGNS_BUILD_DEPS)
 
 $(BUILD)/converter_%_$(WITH_CGNS).o: $(CONVERTER_SOURCE)/%.cpp $(CONVERTER_HEADERS) | $(BUILD)

@@ -7,6 +7,15 @@
 #include <string>
 
 namespace aero {
+double BoundaryTemperature::density(double pressure, double temperature, bool linear) const {
+    const double scale = gas.gamma * gas.mach * gas.mach;
+    if (!(scale > 0.) || !std::isfinite(scale)) throw std::invalid_argument("reference_state T requires a positive mach in gas.txt");
+    if (!linear && !(temperature > 0.)) throw std::invalid_argument("reference_state T must be positive");
+    const double rho = linear ? background_rho/background_p * (pressure - background_rho*temperature/scale)
+                              : scale * pressure / temperature;
+    if (!std::isfinite(rho) || (!linear && !(rho > 0.))) throw std::invalid_argument("invalid density from reference_state p and T");
+    return rho;
+}
 namespace {
 using Tokens = std::vector<std::string>;
 
@@ -15,13 +24,10 @@ double number(const std::string& token) {
     return settings_detail::finite_real(token, "boundary value " + token);
 }
 
-// После superin разрешены начальное состояние и независимые замены его компонент.
-SupersonicInflow read_supersonic_inflow(const Tokens& words, unsigned dimension, bool linear) {
-    SupersonicInflow rule = {};
-    if (words.size() == 2 && words[1] == "profile") { rule.profile = true; return rule; }
-    rule.use_initial = words.size() > 1 && words[1] == "initial";
+// Общий синтаксис компонент для опорного состояния и замен в обычном superin.
+void read_components(const Tokens& words, size_t first, unsigned dimension, bool linear, PrescribedState& rule) {
     const char* fields[] = {"rho", "p", "ux", "uy", "uz"};
-    for (size_t i = rule.use_initial ? 2 : 1; i < words.size(); ++i) {
+    for (size_t i = first; i < words.size(); ++i) {
         const auto equals = words[i].find('=');
         const auto name = words[i].substr(0, equals);
         // В 1D допустима только ux, в 2D добавляется uy, в 3D также uz.
@@ -29,13 +35,12 @@ SupersonicInflow read_supersonic_inflow(const Tokens& words, unsigned dimension,
         while (field < 2 + dimension && name != fields[field])
             ++field;
         if (equals == std::string::npos || field == 2 + dimension || (rule.mask & (1u << field)))
-            throw std::invalid_argument("invalid or repeated superin field: " + words[i]);
+            throw std::invalid_argument("invalid or repeated boundary field: " + words[i]);
         rule.primitive[field] = number(words[i].substr(equals + 1));
         if (!linear && field < 2 && rule.primitive[field] <= 0)
             throw std::invalid_argument("expected positive " + name);
         rule.mask |= 1u << field; // Остальные компоненты солвер возьмёт из выбранного состояния.
     }
-    return rule;
 }
 
 // Оба дозвуковых режима используют один синтаксис и одну проверку численного значения.
@@ -44,6 +49,14 @@ BoundaryRule read_subsonic_rule(const Tokens& words, bool linear) {
         throw std::invalid_argument("expected " + words[0] + " base_p|base_u|base_rho [initial|number]");
     const auto& name = words[1];
     BoundaryRule rule = {};
+    if (name == "p_interior" && words.size() == 2) { rule.source = BoundarySource::InteriorPressure; return rule; }
+    if (name == "in_char") {
+        if (words[0] != "inflow" || words.size() != 2)
+            throw std::invalid_argument("expected 'inflow in_char' without additional arguments");
+        rule.source = BoundarySource::Characteristic;
+        return rule;
+    }
+    if ((name == "reference_state" || name == "external") && words.size() == 2) { rule.source = BoundarySource::Reference; return rule; }
     if (name == "profile" && words.size()==2 && words[0]=="inflow") { rule.source=BoundarySource::Profile; return rule; }
     if (name == "base_p")
         rule.mode = BoundaryMode::Pressure;
@@ -57,6 +70,7 @@ BoundaryRule read_subsonic_rule(const Tokens& words, bool linear) {
     // Без аргумента используем значение величины непосредственно внутри границы.
     if (words.size() == 2)
         rule.source = BoundarySource::Current;
+    else if (words[2] == "external" && rule.mode == BoundaryMode::Pressure) rule.source = BoundarySource::ExternalScalar;
     else if (words[2] == "profile") rule.source = BoundarySource::Profile;
     else if (words[2] == "initial")
         rule.source = BoundarySource::Initial;
@@ -85,6 +99,7 @@ BoundaryType read_type(const Tokens& words) {
 
 // Промежуточное состояние одной секции позволяет задавать строки в любом порядке.
 struct BoundarySection {
+    BoundaryTemperature temperature{};
     BoundaryType type = BoundaryType::Wall;   // Тип, прочитанный из bc_type.
     std::unique_ptr<FreeBoundaryRules> rules; // Создаётся при первой строке superin, inflow или outflow.
     PeriodicPair periodic{};                  // Имена и перенос, если метка периодическая.
@@ -99,14 +114,47 @@ struct BoundarySection {
         return *rules;
     }
 
+    // reference_state задаётся один раз на всю секцию независимо от числа использующих его режимов.
+    void read_reference(const Tokens& words, size_t first, unsigned dimension, bool linear) {
+        auto& reference = free_rules().reference;
+        if (reference.mask) throw std::invalid_argument("repeated reference_state state");
+        Tokens components;
+        bool has_temperature = false;
+        double theta = 0.;
+        for (size_t i = first; i < words.size(); ++i) {
+            if (words[i].compare(0, 2, "T=") != 0) { components.push_back(words[i]); continue; }
+            if (has_temperature) throw std::invalid_argument("repeated reference_state T");
+            theta = number(words[i].substr(2));
+            has_temperature = true;
+        }
+        read_components(components, 0, dimension, linear, reference);
+        if (has_temperature) {
+            if ((reference.mask & 3u) != 2u) throw std::invalid_argument("reference_state T requires p and replaces rho");
+            reference.primitive[0] = temperature.density(reference.primitive[1], theta, linear);
+            reference.mask |= 1u;
+        }
+        if (!reference.mask) throw std::invalid_argument("empty reference_state state");
+    }
+
     // Назначает единственную строку секции. Дубликаты являются ошибкой даже при одинаковых значениях.
     void read_line(const Tokens& words, unsigned dimension, bool linear) {
         const auto& key = words.front();
         if (key == "bc_type" && !has_type) {
             type = read_type(words);
             has_type = true;
+        } else if (key == "reference_state") {
+            read_reference(words, 1, dimension, linear);
         } else if (key == "superin" && !has_superin) {
-            free_rules().superin = read_supersonic_inflow(words, dimension, linear);
+            auto& inlet = free_rules().superin;
+            if (words.size() == 2 && words[1] == "profile") inlet.source = BoundarySource::Profile;
+            else if (words.size() == 2 && words[1] == "p_interior") inlet.source = BoundarySource::InteriorPressure;
+            else if ((words.size() > 1 && words[1] == "reference_state") || (words.size() == 2 && words[1] == "external")) {
+                inlet.source = BoundarySource::Reference;
+                if (words.size() > 2) read_reference(words, 2, dimension, linear);
+            } else {
+                inlet.use_initial = words.size() > 1 && words[1] == "initial";
+                read_components(words, inlet.use_initial ? 2 : 1, dimension, linear, inlet);
+            }
             has_superin = true;
         } else if (key == "inflow" && !has_inflow) {
             free_rules().inflow = read_subsonic_rule(words, linear);
@@ -128,7 +176,7 @@ struct BoundarySection {
     }
 
     // Проверяем комплектность после последней строки, когда известны тип и все параметры.
-    void validate() const {
+    void validate(unsigned dimension) const {
         if (!has_type)
             throw std::invalid_argument("missing bc_type");
         if (type == BoundaryType::Free) {
@@ -138,7 +186,17 @@ struct BoundarySection {
                 throw std::invalid_argument("free boundary is missing inflow");
             if (!has_outflow)
                 throw std::invalid_argument("free boundary is missing outflow");
-        } else if (has_superin || has_inflow || has_outflow) {
+            if (rules->reference.mask) {
+                unsigned needed = (1u << (dimension + 2)) - 1;
+                const auto needs_pressure = [](BoundarySource s) {
+                    return takes_reference(s) && s != BoundarySource::InteriorPressure;
+                };
+                if (!needs_pressure(rules->superin.source) && !needs_pressure(rules->inflow.source) && !needs_pressure(rules->outflow.source))
+                    needed &= ~2u;
+                if ((rules->reference.mask & needed) != needed)
+                    throw std::invalid_argument("incomplete explicit reference_state: specify density, velocity components and required pressure");
+            }
+        } else if (rules) {
             throw std::invalid_argument("superin, inflow and outflow require bc_type free");
         }
         if (type == BoundaryType::Periodic) {
@@ -155,10 +213,11 @@ struct BoundarySection {
 
 // Читает одну секцию bc.txt и возвращает разобранную пару вызывающему коду.
 BoundaryConfig read_boundary(std::istream& input, unsigned dimension, BoundaryPatches& patches,
-                             PeriodicPair& periodic, bool linear) {
+                             PeriodicPair& periodic, bool linear, BoundaryTemperature temperature) {
     if (dimension < 1 || dimension > 3)
         throw std::invalid_argument("invalid boundary dimension");
     BoundarySection section;
+    section.temperature = temperature;
     std::string line;
     size_t row = 0;
     while (std::getline(input, line)) {
@@ -178,7 +237,7 @@ BoundaryConfig read_boundary(std::istream& input, unsigned dimension, BoundaryPa
     }
     if (input.bad() || !input.eof())
         throw std::runtime_error("boundary settings read failed");
-    section.validate();
+    section.validate(dimension);
     periodic = section.periodic;
     // Стенка и периодическая пара занимают только запись метки. Для них комплект правил не создаётся.
     if (section.type == BoundaryType::Free)

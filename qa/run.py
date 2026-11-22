@@ -49,7 +49,7 @@ def nodes(mesh, dim):
     """Извлекает координаты узлов тестовой сетки в порядке исходных номеров."""
     words = mesh.read_text(encoding="ascii").split()
     count = int(words[words.index("COUNTS") + 1])
-    if count < 1 or words[:5] != ["AEROMESH", "2", "TEXT", "DIMENSION", str(dim)]:
+    if count < 1 or words[0] != "AEROMESH" or words[1] not in ("2", "3") or words[2:5] != ["TEXT", "DIMENSION", str(dim)]:
         raise ValueError(f"Unexpected mesh header in {mesh}")
     coords = []
     for axis in "XYZ":

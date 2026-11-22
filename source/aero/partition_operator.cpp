@@ -24,9 +24,11 @@ using residual_detail::Surface;
 PartitionOperator::PartitionOperator(const MeshPartition& part, CvView cv, const PeriodicPartition* periodic,
                                      const BoundaryPatches& patches, ResidualOptions options,
                                      const ResidualFrame& frame, const Processes& world,
-                                     StencilRequests* requests, bool cuda)
+                                     StencilRequests* requests, bool cuda, bool cell_height_cfl)
     : nodes_(world.size, cv.dimension + 2), edges_(world.size, cv.dimension + 3), width_(cv.dimension + 2),
-      volumes_(periodic ? periodic->volumes.data() : cv.volumes), ids_(periodic ? periodic->ids : part.nodes),
+      volumes_(periodic ? periodic->volumes.data() : cv.volumes),
+      heights_(cell_height_cfl ? (periodic ? periodic->min_heights.data() : cv.min_heights) : nullptr),
+      ids_(periodic ? periodic->ids : part.nodes),
       owners_(periodic ? periodic->owners : part.node_owners), world_(world) {
     const auto mesh = part.mesh.view();
     for (Id node = 0; node < ids_.size(); ++node) {
@@ -62,39 +64,58 @@ PartitionOperator::PartitionOperator(const MeshPartition& part, CvView cv, const
 void PartitionOperator::add_edge_surfaces(MeshView mesh, CvView cv, const PeriodicPartition* periodic,
                                           const ResidualFrame& frame, StencilRequests* requests) {
     const Id count = periodic ? periodic->edges.size() : mesh.edge_count;
-    for (Id edge = 0; edge < count; ++edge) {
+    const bool local = world_.size == 1;
+    if (local) {
+        // На одном процессе номер ребра уже является номером поверхности.
+        // Оставляем место и для границы, чтобы её добавление не копировало весь массив рёбер.
+        const Id boundary = periodic ? periodic->boundary.size() : cv.boundary_count;
+        surfaces_.reserve(count + boundary);
+        compute_.reserve(count + boundary);
+        surfaces_.resize(count);
+        compute_.resize(count);
+        if (requests) requests->edges.resize(count);
+    }
+    const auto prepare_edge = [&](Id edge) {
         const Id begin = periodic ? periodic->edges[edge].begin : mesh.edge_begin[edge];
         const Id end = periodic ? periodic->edges[edge].end : mesh.edge_end[edge];
         const int sender = owners_[begin];
         const int receiver = owners_[end];
         if (sender != world_.rank && receiver != world_.rank) {
-            continue;
+            return;
         }
 
-        const Id index = surfaces_.size();
+        const Id index = local ? edge : surfaces_.size();
         Surface surface{};
         surface.begin = begin;
         surface.end = end;
         surface.use_nodal_traces = true;
         const auto& area = periodic ? periodic->edges[edge].area : cv.edge_areas[edge];
         residual_detail::project_surface(surface, area, mesh.dimension, frame);
-        surfaces_.push_back(surface);
+        if (local) surfaces_[index] = surface;
+        else surfaces_.push_back(surface);
 
         // Поток вычисляется ровно один раз на владельце начала ребра.
         if (sender != world_.rank) {
             edges_.imports[sender].push_back(index);
-            continue;
+            return;
         }
-        compute_.push_back(index);
+        if (local) compute_[index] = index;
+        else compute_.push_back(index);
         if (requests) {
             const auto original =
                 periodic ? periodic->edges[edge].original : std::make_pair(ids_[begin], ids_[end]);
-            requests->edges.push_back({index, begin, end, original});
+            const StencilEdge request{index, begin, end, original};
+            if (local) requests->edges[index] = request;
+            else requests->edges.push_back(request);
         }
         if (receiver != sender) {
             edges_.exports[receiver].push_back(index);
         }
-    }
+    };
+    // На целой сетке каждый поток пишет в свою готовую позицию. При обмене
+    // через MPI компактные списки соседей заполняются в прежнем порядке.
+    if (local) parallel_for(count, prepare_edge);
+    else for (Id edge = 0; edge < count; ++edge) prepare_edge(edge);
 }
 
 void PartitionOperator::add_boundary_surfaces(CvView cv, const PeriodicPartition* periodic,
@@ -263,9 +284,10 @@ Id PartitionOperator::prepare_stencil(const MeshPartition& part, const PeriodicP
                                       const StencilRequests& requests, const ReconstructionOptions& options) {
     stencil_ = prepare_partition_stencil(part, seam, pairs, input, requests, grid_.edges, options, world_);
     world_.local([&] {
-        for (const auto& edge : requests.edges) {
+        parallel_for(requests.edges.size(), [&](Id i) {
+            const auto& edge = requests.edges[i];
             surfaces_[edge.surface].use_nodal_traces = stencil_.nodal_traces[edge.surface] != 0;
-        }
+        });
         for (Id j = 0; j < stencil_.extra_nodes.size(); ++j) {
             nodes_.imports[stencil_.extra_nodes[j].second].push_back(ids_.size() + j);
         }
@@ -287,17 +309,22 @@ void PartitionOperator::prepare_viscosity(const MeshPartition& part, const Perio
     // Периодический сосед может находиться вне конвективного шаблона. Включаем его
     // в уже существующий обмен полями, один раз для всех элементов этого процесса.
     std::map<Id,Id> slots;
+    // На целой сетке глобальный номер обычно совпадает с локальным.
+    // Проверяем это один раз, до обхода всех вершин вязких элементов.
+    bool direct = world_.size == 1 && !seam && stencil_.extra_nodes.empty();
+    for (Id i = 0; direct && i < ids_.size(); ++i) direct = ids_[i] == i;
     world_.local([&] {
         aes_.reset(new viscosity::Aes);
 #ifdef AERO_HAS_TURBULENCE
         aes_->configure_les(run.turbulence,settings.prandtl,run.use_cuda,
                             world_.size==1 && !run.uses_implicit_time());
 #endif
-        for (Id i = 0; i < ids_.size(); ++i) slots.emplace(ids_[i],i);
+        if (!direct) for (Id i = 0; i < ids_.size(); ++i) slots.emplace(ids_[i],i);
         for (Id k = 0; k < stencil_.extra_nodes.size(); ++k)
             slots.emplace(stencil_.extra_nodes[k].first,ids_.size()+k);
     });
     const auto locate = [&](Id global, int owner) {
+        if (direct) return global;
         const auto inserted = slots.emplace(global,state_nodes());
         const Id local = inserted.first->second;
         if (inserted.second) {
@@ -392,6 +419,10 @@ void PartitionOperator::connect(bool cuda, bool implicit_time) {
             turbulence_exchange_.reset(new PartitionTransfers(nodes_,1));
             turbulence_exchange_->allocate(cuda);
         }
+        if (sa_high_order_) {
+            sa_edge_exchange_.reset(new PartitionTransfers(edges_,1));
+            sa_edge_exchange_->allocate(cuda);
+        }
 #endif
         if (implicit_time) {
             derivative_exchange_.reset(new PartitionTransfers(edges_, 2 * width_ * width_));
@@ -407,6 +438,7 @@ void PartitionOperator::layout_gpu(bool compact_buffer) {
     gpu_->set_viscosity(aes_.get());
 #endif
     gpu_->layout(grid_, compute_, owned, volumes_, state_nodes(), compact_buffer, world_.size == 1);
+    if (heights_) device_heights_ = gpu_->layout_node_scalars(grid_.nodes, heights_);
     if (need_pressure_rate_) device_pressure_rate_ = gpu_->layout_node_scalars(owned.size());
     if (steady_steps_) steady_steps_->values = gpu_->layout_node_scalars(grid_.nodes);
     if (track_time_) device_moments_ = gpu_->layout_moments(grid_.nodes);
@@ -414,6 +446,8 @@ void PartitionOperator::layout_gpu(bool compact_buffer) {
     edges_.prepare_gpu(*gpu_);
 #ifdef AERO_HAS_TURBULENCE
     if(turbulence_exchange_) turbulence_exchange_->prepare_gpu(*gpu_);
+    if (sa_high_order_) sa_correction_ = gpu_->layout_node_scalars(grid_.edges);
+    if (sa_edge_exchange_) sa_edge_exchange_->prepare_gpu(*gpu_);
 #endif
     if (derivative_exchange_) {
         derivative_exchange_->prepare_gpu(*gpu_);
@@ -823,7 +857,7 @@ void PartitionOperator::prepare_steady_steps(bool gpu, LocalStepMode mode, doubl
     }
 }
 
-// Для общего и локального шага читаем один буфер площадок и те же вязкие оценки.
+// Для общего и локального шага используем те же геометрию, газ и вязкие ограничения.
 residual_detail::FluxCfl PartitionOperator::cfl_grid() const {
     const double* sa_rate = nullptr;
 #ifdef AERO_HAS_TURBULENCE
@@ -832,10 +866,10 @@ residual_detail::FluxCfl PartitionOperator::cfl_grid() const {
 #ifdef AERO_WITH_KOKKOS_GPU
     if (gpu_) {
         const auto& g = gpu_->active_grid();
-        return {g.geometry, g.flux, g.volumes, g.owned, g.owned_count, sa_rate};
+        return {g.geometry, g.flux, g.volumes, g.owned, g.owned_count, sa_rate, device_heights_};
     }
 #endif
-    return {grid_, flux_.data(), volumes_, world_.size == 1 ? nullptr : owned.data(), owned.size(), sa_rate};
+    return {grid_, flux_.data(), volumes_, world_.size == 1 ? nullptr : owned.data(), owned.size(), sa_rate, heights_};
 }
 
 double PartitionOperator::prepare_local_steps(double cfl) {

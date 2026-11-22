@@ -171,7 +171,6 @@ Id write_catalog(const std::string& dir, const std::string& staged, bool compres
     word(out, archive_format::current_version);
     word(out, compress ? 1 : 0);
     word(out, h.dimension);
-    real(out, h.scale);
     word(out, h.nodes);
     word(out, h.faces);
     word(out, h.cells);

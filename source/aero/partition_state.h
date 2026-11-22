@@ -10,6 +10,7 @@ struct RunSettings;
 struct PartitionState {
     std::vector<double> initial; // Исходные значения, в том числе опорное состояние для границ.
     std::vector<double> current; // Текущее решение на CPU, а при CUDA — его копия для ввода и вывода.
+    std::string initial_checkpoint; // Путь из init.txt для нового расчёта с готового поля.
 
     // Готовит память для восстановления или читает начальное поле в нумерации решателя.
     void prepare(const RunSettings& run, const MeshPartition& part, const PeriodicPartition* seam,

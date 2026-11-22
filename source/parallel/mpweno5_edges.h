@@ -79,9 +79,7 @@ struct WeightQueue {
         const mpweno5::Polynomials values = {polynomial[0][slot], polynomial[1][slot], polynomial[2][slot]};
         // Индикаторы этого задания больше никому не нужны. Его ответ занимает
         // первую ячейку той же записи и остаётся в общей памяти блока.
-        beta[0][slot] = indicators.regular()
-            ? mpweno5::weighted_value<mpweno5::WeightRange::ScaledProducts>(indicators, values, correction)
-            : mpweno5::weighted_value<mpweno5::WeightRange::DividedWeights>(indicators, values, correction);
+        beta[0][slot] = mpweno5::weighted_value(indicators, values, correction);
     }
 
     // После общего барьера ответ забирает тот поток, который поставил сторону в очередь.

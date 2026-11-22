@@ -36,6 +36,27 @@ void add(const std::string& name, std::function<void()> operation) {
     tests.push_back({name, operation});
 }
 
+template<bool weno> void check_weak_transverse_mp6() {
+    const Mp5Settings settings{!weno, weno, weno, 4.};
+    double slopes[5][5] = {{.4}, {.3}, {.7}, {-.1}, {1.}};
+    double base_l[5], base_r[5];
+    mp6::reconstruct<weno>(slopes,5,settings,.6,base_l,base_r);
+    for (double signal : {-1.e-12, 1.e-12}) {
+        // У обеих сторон нулевой допустимый интервал для поперечной компоненты.
+        // Для MP5 два дальних наклона по 12*signal обнуляют также линейный
+        // полином (0.8*signal - 12*signal/15) при досрочном принятии.
+        slopes[0][3] = signal;
+        slopes[3][3] = slopes[4][3] = weno ? 0. : 12.*signal;
+        double left[5], right[5];
+        mp6::reconstruct<weno>(slopes,5,settings,.6,left,right);
+        near(left[3], 0., 1.e-27);
+        near(right[3], 0., 1.e-27);
+        require(std::abs(left[0]-base_l[0]) <= 2.*std::abs(signal) &&
+                std::abs(right[0]-base_r[0]) <= 2.*std::abs(signal),
+                "Weak transverse perturbation amplified in acoustic reconstruction");
+    }
+}
+
 // Обход всех рёбер организует тест. Так сравниваем результат для всей сетки, вызывая рабочую функцию для каждой стороны.
 struct TestResult {
     std::vector<double> left_increment2, right_increment2;
@@ -625,6 +646,23 @@ void register_side_access() {
 
 // Проверки весов WENO и выбора опорных точек на луче.
 void register_weno_formulas() {
+    add("MPWENO5 nonlinear weights preserve weak signals at either sign", [] {
+        // Левая сторона этого шаблона использует WENO. Уменьшение амплитуды
+        // должно уменьшать приращение во столько же раз при любом знаке поля.
+        for (bool correction : {false, true}) {
+            const double expected = correction ? .39057843304740597 : .38263893305467572;
+            for (double a : {1.e-140, -1.e-12, 1.e-4, 1., 1.e100}) {
+                double left, right;
+                mpweno5::pair(-.1*a, .3*a, .4*a, .7*a, a, 1., correction, left, right);
+                near(left/a, expected, 2.e-14);
+                near(right/a, .48, 2.e-14);
+            }
+            // Любая нормированная сумма одинаковых кандидатов даёт сам кандидат,
+            // включая случай двух совершенно гладких подшаблонов.
+            for (double beta : {1.e-300, 1.e-12, 1.e200})
+                near(mpweno5::weighted_value({0., 0., beta}, {.75,.75,.75}, correction), .75);
+        }
+    });
     add("MPWENO5 standalone reconstruction, independent left and right weights", [] {
         // У центрального ребра пять последовательных наклонов: −0.1, 0.3, 0.4, 0.7, 1.
         // Левая сторона выбирает нелинейные веса, правая — линейный полином.
@@ -1694,6 +1732,8 @@ int main(int argc, char** argv) {
         near(mp6::mean_weight(-.75*eps, -.25*eps, 0.), .5);
         near(mp6::mean_weight(2.*eps, 0., .25*eps), .125);
     });
+    add("MP5-MP6 weak transverse perturbation at an acoustic component", check_weak_transverse_mp6<false>);
+    add("MPWENO5-MP6 weak transverse perturbation at an acoustic component", check_weak_transverse_mp6<true>);
     add("MP6 includes the early MP5 increment on its own side", [] {
         const Mp5Settings settings{true, false, false, 4.};
         // Центральный и оба ближних наклона равны нулю. Полный интервал каждой

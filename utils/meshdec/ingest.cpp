@@ -11,7 +11,7 @@ class Reader : public mesh_input::Reader {
 public:
     Reader(std::istream& in, const MeshReadLimits& limits) : mesh_input::Reader(in, limits), out_(&hash_) {
         out_.write("AEROMSHB", 8);
-        word(out_, 2);
+        word(out_, mesh_format::legacy_version);
     }
     Id u64() {
         const Id v = mesh_input::Reader::u64();
@@ -35,6 +35,8 @@ public:
         return v;
     }
     std::string digest() const { return hash_.hex_digest(); }
+    // В архив попадает тот же идентификатор сетки, который вычисляет солвер.
+    void hash_coordinate_header() { word(out_, read_fingerprint_word()); }
 
 private:
     io_detail::Sha256Buffer hash_;
@@ -137,9 +139,7 @@ void unpack(const Options& options, const std::string& dir) {
     h.cell_entries = r.u64();
     h.boundaries = r.u64();
     h.patches = r.u64();
-    r.block("LENGTH_SCALE_TO_METERS");
-    h.scale = r.real();
-    require(std::isfinite(h.scale) && h.scale > 0, "Invalid mesh length scale");
+    r.hash_coordinate_header();
     const char* axes[] = {"X", "Y", "Z"};
     for (unsigned axis = 0; axis < 3; ++axis) {
         r.block(axes[axis]);

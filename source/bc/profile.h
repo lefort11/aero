@@ -12,8 +12,15 @@ inline void append_boundary_profile(std::vector<ProfileState>& samples, const Bo
     if (patches.profiles.empty()) return;
     samples.emplace_back(ProfileState{});
     const auto* rules = patches.by_patch[piece.patch].rules(patches.free_rules.data());
-    if (!rules || !rules->superin.profile) return;
-    const auto& profile = patches.profiles.at(rules-patches.free_rules.data());
+    if (!rules) return;
+    const auto index = static_cast<std::size_t>(rules-patches.free_rules.data());
+    if (index >= patches.profiles.size()) return;
+    const auto& profile = patches.profiles[index];
+    if (profile.rows.empty() && profile.columns != Radius) return;
+    auto& ref = samples.back();
+    ref.columns = profile.columns;
+    ref.fallback = profile.fallback;
+    if (profile.rows.empty()) return;
     Coordinate radial = piece.point-profile.center;
     double along = 0.;
     for (unsigned k=0;k<3;++k) along += radial[k]*profile.axis[k];
@@ -32,6 +39,22 @@ inline void append_boundary_profile(std::vector<ProfileState>& samples, const Bo
     Coordinate v{};
     for (unsigned k=0;k<3;++k) v[k]=ux*profile.axis[k]+(radius>0. ? ur*(radial[k]/radius) : 0.);
     velocity={v[0],v[1],v[2]};
+    ref.nutilde=interpolate(&ProfileRow::nutilde);
+    if (ref.partial_gas()) {
+        // Сохраняем заданные компоненты. Недостающие появятся при выборе опорного состояния.
+        ref.gas.density = interpolate(&ProfileRow::density);
+        ref.gas.pressure = interpolate(&ProfileRow::pressure);
+        Coordinate direction{};
+        if (profile.columns & Axial) direction = profile.axis;
+        else if ((profile.columns & Radial) && radius>0.)
+            for (unsigned j=0;j<3;++j) direction[j] = radial[j]/radius;
+        const CvVector projected{direction[0], direction[1], direction[2]};
+        for (unsigned k=0;k<dim;++k) {
+            ref.gas.velocity[k] = velocity.dot(axes[k]);
+            ref.direction[k] = projected.dot(axes[k]);
+        }
+        return;
+    }
     // Проецируем мировую скорость в базис, в котором солвер хранит импульс.
     double u[5]={};
     u[0]=interpolate(&ProfileRow::density);
@@ -41,9 +64,7 @@ inline void append_boundary_profile(std::vector<ProfileState>& samples, const Bo
         u[k+1]=u[0]*speed;
         u[dim+1]+=.5*u[k+1]*speed;
     }
-    auto& ref = samples.back();
     if (euler_state(dim,u,gamma,&ref.gas)!=EulerStatus::Success)
         throw std::invalid_argument("Invalid interpolated boundary profile");
-    ref.nutilde=interpolate(&ProfileRow::nutilde);
 }
 }

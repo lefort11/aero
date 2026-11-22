@@ -560,7 +560,7 @@ prepare_partition_operator(const RunSettings& run, const ReconstructionOptions& 
         physics.retry_nonphysical = run.stabilization.active();
         physics.background = run.background;
         op.reset(new PartitionOperator(part, geometry.dual->view(), seam, boundaries.patches, physics, frame,
-                                       world, needs_stencil ? &requests : nullptr, run.use_cuda));
+                                       world, needs_stencil ? &requests : nullptr, run.use_cuda, run.cell_height_cfl));
     });
     for (const auto& zone:run.output_zones) for (const auto& name:zone.variables) {
         if (diagnostic::needs_time(name)) op->enable_time_samples();
@@ -601,7 +601,7 @@ prepare_partition_operator(const RunSettings& run, const ReconstructionOptions& 
         {
             WallTimer timer(run.mpi_timing ? &seconds : nullptr);
             op->prepare_sa(part,seam,boundaries.patches,boundaries.periodic_pairs,run.turbulence,
-                           run.use_cuda,run.uses_implicit_time(),run.steady());
+                           run.use_cuda,run.uses_implicit_time(),run.steady(),needs_stencil);
         }
         if (single) done();
         if (run.mpi_timing) {
@@ -793,9 +793,10 @@ int run_partition(RunSettings run, const ReconstructionOptions& reconstruction, 
     std::unique_ptr<PartitionInput> input;
     const bool single = world.size == 1;
     // Для распределённой реконструкции сохраняем данные архива до сборки удалённых шаблонов.
-    auto part = archive
-                    ? load_partition(run.mesh_path, world, reconstruct && !single ? &input : nullptr, layout)
-                    : whole_mesh(run.mesh_path);
+    auto part = read_mesh_with_report(world.rank, [&] {
+        return archive ? load_partition(run.mesh_path, world, reconstruct && !single ? &input : nullptr, layout)
+                       : whole_mesh(run.mesh_path);
+    });
     const auto mesh = part.mesh.view();
     const unsigned width = mesh.dimension + 2;
     CaseGeometry geometry;
@@ -844,11 +845,10 @@ int run_partition(RunSettings run, const ReconstructionOptions& reconstruction, 
     });
 
     // Контрольная точка хранит только собственные узлы. Соседние значения восстанавливаем обменом.
-    if (run.directories.recover) {
-        recovery.restore(fields.current, fields.initial);
-        if (!single) {
-            op->halo_host(fields.current);
-        }
+    const bool read_checkpoint = run.directories.recover || !fields.initial_checkpoint.empty();
+    if (read_checkpoint) {
+        recovery.restore(fields.current, fields.initial, fields.initial_checkpoint);
+        if (!single && run.directories.recover) op->halo_host(fields.current);
     }
     if (!single) {
         op->halo_host(fields.initial);
@@ -894,7 +894,7 @@ int run_partition(RunSettings run, const ReconstructionOptions& reconstruction, 
             op->implicit_step().import_history(recovery.history);
         }
 #ifdef AERO_HAS_TURBULENCE
-        if(run.directories.recover && recovery.scalar)
+        if (read_checkpoint && recovery.scalar)
             op->sa_checkpoint(recovery.scalar->current,recovery.scalar->previous,true,recovery.history.dt);
 #endif
         recovery.history = implicit::BdfHistory{};

@@ -28,14 +28,42 @@ struct FluxCfl {
     const MeshIndex* owned;
     Index count;
     const double* sa_rate; // Диагональ переноса SA, в единицах обратного времени.
+    const double* heights; // Минимум высот исходных ячеек вокруг узла.
+    const EulerState* gas; // Уже вычисленные при сборке потоков узловые состояния Euler.
+    unsigned dimension;
+    double linear_speed;   // Для Linear скорость определяется однородным фоном.
     FluxCfl(const Geometry& grid, const EulerFluxResult* flux, const double* node_volumes,
-            const MeshIndex* owned_nodes, Index rows, const double* transport_rate = nullptr)
+            const MeshIndex* owned_nodes, Index rows, const double* transport_rate = nullptr,
+            const double* node_heights = nullptr)
         : offsets(grid.offsets), speeds{grid.incidence, grid.surfaces, flux},
 #ifdef AERO_HAS_VISCOSITY
           diffusion(grid.options.diffusion),
 #endif
           volumes(node_volumes),
-          owned(owned_nodes), count(rows), sa_rate(transport_rate) {}
+          owned(owned_nodes), count(rows), sa_rate(transport_rate), heights(node_heights),
+          gas(grid.packed.gas), dimension(grid.dim), linear_speed(0.) {
+        const auto& background = grid.options.background;
+        if (background.active())
+            linear_speed = wave_speed(dimension, background.velocity, background.sound);
+    }
+    AERO_HOST_DEVICE static double wave_speed(unsigned dim, const double* velocity, double sound) {
+        return ::sqrt(euler_detail::dot(dim, velocity, velocity)) + sound;
+    }
+    // min по ячейкам h / max(|u|+c) равен min по узлам h_min / (|u|+c).
+    // Поэтому каждый шаг читает одну высоту на узел, без повторного обхода ячеек.
+    AERO_HOST_DEVICE CflStep height_step(Index i, double courant, double viscous_rate) const {
+        double speed = linear_speed;
+        if (gas) {
+            if (!(gas[i].density > 0.)) return {-1., i};
+            speed = wave_speed(dimension, gas[i].velocity, gas[i].sound_speed);
+        }
+        if (!(speed > 0. && speed <= max_finite_double &&
+              viscous_rate >= 0. && viscous_rate <= max_finite_double)) return {-1., i};
+        // Вязкая часть уже собрана как сумма по площадкам; переводим её в обратное время.
+        const double rate = speed / heights[i] + (0.5 * viscous_rate) / volumes[i];
+        const double dt = courant / rate;
+        return {dt > 0. && dt <= max_finite_double ? dt : -1., i};
+    }
     AERO_HOST_DEVICE CflStep local(Index k, double courant) const {
         const Index i = owned ? owned[k] : k;
         const double volume = volumes[i];
@@ -46,7 +74,8 @@ struct FluxCfl {
 #ifdef AERO_HAS_VISCOSITY
         if (diffusion) viscous_rate = diffusion[i].cfl_rate;
 #endif
-        const auto gas_step = cfl_detail::local(offsets, volume, courant, i, speeds, viscous_rate);
+        const auto gas_step = heights ? height_step(i, courant, viscous_rate)
+                                      : cfl_detail::local(offsets, volume, courant, i, speeds, viscous_rate);
         if (!sa_rate) return gas_step;
         // Ограничения газа и SA действуют на один шаг. Сравниваем их до
         // редукции, чтобы одного обхода узлов и одного минимума MPI хватило для обоих.

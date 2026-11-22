@@ -21,15 +21,17 @@ def configure(case, args, dimension=2, decompose=True):
     return coords
 
 
-def jet_from_rest(case, args):
+def jet_from_rest(case, args, fixed_reference=False):
     """Проверяет, что профиль free запускает струю и переносит SA в первый внутренний узел."""
     case.mkdir()
     coords = configure(case, args, dimension=3, decompose=False)
     shutil.copyfile(Path(__file__).parent / "fixtures" / "jet_profile.dat", case / "jet.dat")
     (case / "init.txt").write_text("initial_type=formula\nrho=1\np=.286301\nux=0\nuy=0\nuz=0\n")
+    rules = ("superin reference_state\ninflow reference_state\noutflow reference_state" if fixed_reference
+             else "superin profile\ninflow profile\noutflow base_p profile")
     (case / "bc.txt").write_text(
         "[xmin]\nbc_type free\nprofile jet.dat\nprofile_center 0 .5 .5\nprofile_axis 1 0 0\n"
-        "superin profile\ninflow profile\noutflow base_p profile\n"
+        f"{rules}\n"
         "[xmax,ymin,ymax,zmin,zmax]\nbc_type novisc_wall\n"
     )
     # Начальные скорость и рабочая вязкость нулевые. Давление в профиле совпадает
@@ -50,8 +52,32 @@ def jet_from_rest(case, args):
             for i in (inlet, inside):
                 assert math.isclose(reference["nu_tilde"][i], field["nu_tilde"][i], rel_tol=1e-9)
         reference = field
-        print(f"OK jet from rest ({backend}), first interior node: "
+        print(f"OK {case.name} from rest ({backend}), first interior node: "
               f"ux={field['ux'][inside]:.8g}, nu_tilde={field['nu_tilde'][inside]:.8g}", flush=True)
+
+
+def partial_jet(case, args):
+    """Сверяем три источника пропущенных столбцов и два способа задать набегающий газ."""
+    case.mkdir()
+    configure(case, args, dimension=3, decompose=False)
+    (case / "init.txt").write_text("initial_type=formula\nrho=.8\np=2\nux=.1\nuy=.02\nuz=0\n")
+    (case / "jet.dat").write_text("R_yz u_x\n0 .75\n.5 .1\n")
+    prefix = "[xmin]\nbc_type free\n"
+    rules = "\nsuperin external\ninflow in_char\noutflow base_p external\n[xmax,ymin,ymax,zmin,zmax]\nbc_type novisc_wall\n"
+    options = ["main:final_time=.005","gas:phi=90","gas:theta=30"]
+    explicit = "reference_state T=1 p=2.857142857142857 ux=0 uy=.8660254037844386 uz=.5\n"
+    auto = None
+    for name, source in (("auto","external = reference_state\nprofile = jet.dat"),
+                         ("explicit",explicit+"profile_ref jet.dat"), ("initial","profile_init jet.dat"),
+                         ("interior","profile_interior jet.dat")):
+        (case / "bc.txt").write_text(prefix+source+rules)
+        cpu = solve(case,args,name,options=options)
+        if name == "auto": auto = cpu
+        if name == "explicit": assert max_difference(auto,cpu) < 1e-12
+        if args.gpu:
+            gpu = solve(case,args,name+"-gpu",gpu=True,options=options)
+            assert max_difference(cpu,gpu) < 1e-11
+    print("OK partial jet profiles and automatic reference_state from gas.txt",flush=True)
 
 
 def shear(case, args):
@@ -171,6 +197,54 @@ def sigma(case, args):
     assert max(wall["nut"]) > 0. and all(wall["nut"][i]==0. for i,(_,y,_) in enumerate(coords) if y in (0.,1.))
     compare_backends(case,args,"sigma-wall",wall,options)
     print("OK LES Sigma, six scales, SLA switch, wall and viscous flux",flush=True)
+
+
+def rans_to_ddes(case, args):
+    """Начальный слой DDES должен совпадать с последним слоем RANS, включая рабочую вязкость."""
+    case.mkdir()
+    configure(case, args, dimension=3)
+    init = case / "init.txt"
+    init.write_text("initial_type=formula\nrho=1\np=2\nux=.2*sin(2*pi*y)\nuy=.1*sin(2*pi*x)\nuz=0\n")
+    zones = case / "output.txt"
+    zones.write_text("[flow]\nfile=state.fields\nformat=binary\nlayout=global\n"
+                     "every_time=.005\nvariables=primary,turbulence,ux_prime\n")
+    # Два шага BDF2 дают в файле предыдущий слой и ненулевое среднее по времени.
+    common = ["main:time_scheme=bdf2", "gas:reynolds=100"]
+    donor = solve(case, args, "RANS output", options=common + ["main:final_time=.01"])
+    assert max(donor["nu_tilde"]) > min(donor["nu_tilde"])
+    assert max(map(abs, donor["ux_prime"])) > 0.
+    checkpoint = case / "RANS output/recovery-0.bin"
+    original = checkpoint.read_bytes()
+    init.write_text('initial_type = recovery\npath = "RANS output/recovery-0.bin"\n')
+    (case / "turbulence.txt").write_text("model=DDES\nrans_eq=SA\nsubgridscale=vol\nnut_nu_amb=.21\npr_t=.9\n")
+    # На нулевом слое сравниваем все узлы. Изменение фоновой вязкости выявляет
+    # ошибку, при которой DDES заново заполняет nu_tilde набегающим значением.
+    options = common + ["turbulence:nut_nu_amb=.03", "main:final_time=0"]
+    start = solve(case, args, "ddes-zero", options=options)
+    expected = dict(donor, ux_prime=(0.,) * len(donor["ux_prime"]))
+    assert max_difference(expected, start) == 0.
+    assert binary_snapshot(case / "ddes-zero/state.fields")[0][3:] == (0, 0.)
+    compare_backends(case, args, "ddes-zero", expected, options)
+
+    # Первый шаг BDF2 без предыдущего слоя должен совпасть с BDF1.
+    zones.write_text(zones.read_text().replace("every_time=.005", "every_time=.0001"))
+    first = ["gas:reynolds=100", "main:final_time=.0001", "turbulence:nut_nu_amb=.03"]
+    bdf1 = solve(case, args, "first-bdf1", options=first + ["main:time_scheme=bdf1"])
+    bdf2_options = first + ["main:time_scheme=bdf2"]
+    bdf2 = solve(case, args, "first-bdf2", options=bdf2_options)
+    assert max_difference(bdf1, bdf2) < 1e-12
+    compare_backends(case, args, "first-bdf2", bdf2, bdf2_options)
+    assert checkpoint.read_bytes() == original
+
+    # Продолжение DDES берёт собственное время и историю даже после удаления ссылки на RANS.
+    two_steps = common + ["turbulence:nut_nu_amb=.03", "main:final_time=.0002"]
+    full = solve(case, args, "two-steps", options=two_steps)
+    init.unlink()
+    output = case / "first-bdf2"
+    run([args.aero.resolve(), f"--input={case}", f"--output={output}", "--recover", *two_steps])
+    stamp, resumed = binary_snapshot(next(output.glob("resumed-*/state.fields")))
+    assert stamp[3:] == (2, .0002) and max_difference(full, resumed) < 1e-12
+    print("OK RANS checkpoint to DDES: gas and nu_tilde, fresh time averages and BDF history", flush=True)
 
 
 def ddes(case,args):
@@ -400,8 +474,11 @@ if __name__=="__main__":
     args=parser.parse_args()
     with mpi_workspace("turbulence-") as work:
         jet_from_rest(Path(work)/"jet", args)
+        jet_from_rest(Path(work)/"jet-reference_state", args, fixed_reference=True)
+        partial_jet(Path(work)/"partial", args)
         if args.jet_only:
             raise SystemExit(0)
+        rans_to_ddes(Path(work)/"rans-to-ddes", args)
         ddes(Path(work)/"ddes",args)
         ddes_steady(Path(work)/"ddes-steady",args)
         ddes_warped(Path(work)/"ddes-warped",args)

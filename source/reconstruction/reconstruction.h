@@ -175,6 +175,7 @@ void aero_reconstruction_device_view(void* state, aero::ReconstructionStencilVie
 
 #if !defined(AERO_RECONSTRUCTION_KERNEL_ONLY)
 #include "scheme.h"
+#include "../parallel/small_weight_row.h"
 #include "../mesh/mesh.h"
 #include <memory>
 #include <map>
@@ -194,6 +195,7 @@ struct ReconstructionOptions {
     double relative_tolerance;
     bool mpweno_ad_corr = true; // Добавлять chi_boost к нелинейным весам MPWENO5.
     double mp5_alpha = 4; // По умолчанию 4. Для явной схемы солвер учитывает CFL.
+    bool solver_rows_only = false; // В рабочем шаблоне храним только строки, читаемые потоком.
     // Параметр ε для квадратов разделённых разностей WENO в единицах сетки.
     double weno_epsilon;
     // В строгом режиме понижение порядка относительно запрошенной схемы считается ошибкой.
@@ -236,6 +238,7 @@ struct ReconstructionStencilData {
 class ReconstructionStencil {
 public:
     const ReconstructionStencilData& data() const { return data_; }
+    ReconstructionStencilData release_data() && { return std::move(data_); }
     ReconstructionStencilView view() const;
     ReconstructionIndex incomplete_sides() const;
 
@@ -247,7 +250,7 @@ private:
 
 // Общие геометрические операции подготовки EBR и WENO. Координаты и топология должны существовать всё время работы помощника.
 namespace detail {
-typedef std::map<ReconstructionIndex, double> SparseRow;
+using SparseRow = SmallWeightRow<ReconstructionIndex,8>;
 struct RayPoint {
     double distance;   // Расстояние от начала луча до пересечения.
     bool outward;      // Луч направлен наружу относительно грани.

@@ -71,10 +71,10 @@ def annulus(path, angles, layers, planes=1, hexahedra=False):
     def row(name, values):
         return name + " " + " ".join(map(str, values)) + "\n"
     labels = ['"inner"', '"outer"'] + (['"ends"'] if planes > 1 else [])
-    path.write_text("AEROMESH 2 TEXT\n" + row("DIMENSION", [dimension])
+    path.write_text("AEROMESH 3 TEXT\n" + row("DIMENSION", [dimension])
                     + row("COUNTS", (len(coordinates[0]), len(ids), len(faces), len(cell_offsets)-1,
                                      len(cells), len(boundary), len(labels)))
-                    + "LENGTH_SCALE_TO_METERS 1\n" + "".join(row(k,v) for k,v in zip("XYZ",coordinates))
+                    + "".join(row(k,v) for k,v in zip("XYZ",coordinates))
                     + row("FACE_OFFSETS",face_offsets) + row("FACE_NODES",faces)
                     + row("CELL_OFFSETS",cell_offsets) + row("CELL_FACES",cells)
                     + row("CELL_ORIENTATIONS",signs) + row("BOUNDARY_FACES",boundary)

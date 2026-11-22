@@ -1,4 +1,5 @@
 #include "mesh.h"
+#include "node_incidence.h"
 #include "../parallel/parallel_for.h"
 #include "mesh_reader.h"
 #include <memory>
@@ -109,7 +110,9 @@ struct EdgeUse {
 
 void validate_cell_shell(const MeshData& d, std::size_t cell) {
     const Index first = d.cell_faces.offsets[cell], last = d.cell_faces.offsets[cell + 1];
-    std::vector<EdgeUse> edges;
+    // Соседние ячейки одного потока переиспользуют память для проверки оболочки.
+    thread_local std::vector<EdgeUse> edges;
+    edges.clear();
     for (Index entry = first; entry < last; ++entry) {
         const Index face = d.cell_faces.indices[entry];
         const Index a = d.face_nodes.offsets[face], b = d.face_nodes.offsets[face + 1];
@@ -125,7 +128,9 @@ void validate_cell_shell(const MeshData& d, std::size_t cell) {
     std::sort(edges.begin(), edges.end());
     DisjointSet shell(static_cast<std::size_t>(last - first));
     typedef std::pair<std::size_t, std::size_t> Link;
-    std::map<Index, std::vector<Link>> vertex_links;
+    using VertexLink = std::pair<Index,Link>;
+    thread_local std::vector<VertexLink> vertex_links;
+    vertex_links.clear();
     for (std::size_t i = 0; i < edges.size();) {
         std::size_t end = i + 1;
         while (end < edges.size() && edges[end].edge == edges[i].edge)
@@ -136,23 +141,32 @@ void validate_cell_shell(const MeshData& d, std::size_t cell) {
             fail("Cell face orientations do not form a closed oriented surface");
         const Link link(edges[i].face, edges[i + 1].face);
         shell.join(link.first, link.second);
-        vertex_links[edges[i].edge.first].push_back(link);
-        vertex_links[edges[i].edge.second].push_back(link);
+        vertex_links.emplace_back(edges[i].edge.first,link);
+        vertex_links.emplace_back(edges[i].edge.second,link);
         i = end;
     }
     if (!shell.connected())
         fail("Cell boundary has disconnected shells");
     // Проверяем связность кольца вокруг вершины, чтобы обнаружить две оболочки, соединённые только этой вершиной.
-    for (const auto& vertex : vertex_links) {
+    std::sort(vertex_links.begin(),vertex_links.end());
+    for (auto begin=vertex_links.begin(); begin!=vertex_links.end();) {
+        const auto first_link=begin++;
+        while (begin!=vertex_links.end() && begin->first==first_link->first) ++begin;
+        // Проверка рёбер выше гарантирует степень два у каждой грани в кольце.
+        // Петля на одной грани невозможна (вершины грани различны). Поэтому
+        // два отдельных цикла требуют минимум четырёх связей в этой вершине.
+        if (begin-first_link<=3) continue;
         std::vector<std::size_t> incident;
-        for (const Link& link : vertex.second) {
+        for (auto it=first_link; it!=begin; ++it) {
+            const Link& link = it->second;
             incident.push_back(link.first);
             incident.push_back(link.second);
         }
         std::sort(incident.begin(), incident.end());
         incident.erase(std::unique(incident.begin(), incident.end()), incident.end());
         DisjointSet link_graph(incident.size());
-        for (const Link& link : vertex.second) {
+        for (auto it=first_link; it!=begin; ++it) {
+            const Link& link = it->second;
             const std::size_t a = static_cast<std::size_t>(
                 std::lower_bound(incident.begin(), incident.end(), link.first) - incident.begin());
             const std::size_t b = static_cast<std::size_t>(
@@ -303,7 +317,7 @@ void validate_topology(const MeshData& d) {
 
 class Writer {
 public:
-    Writer(std::ostream& output, MeshFormat format) : output_(output), text_(format == MeshFormat::Text) {
+    Writer(std::ostream& output, MeshFormat format, Index version) : output_(output), text_(format == MeshFormat::Text) {
         if (format != MeshFormat::Text && format != MeshFormat::Binary)
             fail("Unsupported mesh encoding");
         numeric_.imbue(std::locale::classic());
@@ -311,7 +325,7 @@ public:
         output_.write(text_ ? "AEROMESH" : "AEROMSHB", 8);
         if (text_)
             output_.put(' ');
-        u64(2);
+        u64(version);
         if (text_)
             literal("TEXT\n");
     }
@@ -341,6 +355,19 @@ public:
             u64(number_codec::real_bits(value));
         }
     }
+    // Запись крупными блоками применяется также при вычислении SHA-256 сетки.
+    // Для текста и машин с другим порядком байтов остаётся обычный кодек v2.
+    template<class T, class WriteOne>
+    void array(const char* name, const std::vector<T>& values, WriteOne one) {
+        block(name);
+        if (!text_ && (sizeof(T) == 1 || number_codec::native_little_endian)) {
+            if (!values.empty())
+                output_.write(reinterpret_cast<const char*>(values.data()),
+                              static_cast<std::streamsize>(values.size() * sizeof(T)));
+        } else {
+            for (T value : values) (this->*one)(value);
+        }
+    }
     void name(const std::string& value) {
         io::NativeFileCodec::write_string(output_,text_,value,'\n',fail,"Boundary name is too large to write");
     }
@@ -357,8 +384,9 @@ private:
     std::ostringstream numeric_;
 };
 
-void write_payload(const MeshData& d, std::ostream& output, MeshFormat format) {
-    Writer writer(output, format);
+void write_payload(const MeshData& d, std::ostream& output, MeshFormat format,
+                   const std::uint64_t* fingerprint_word = nullptr) {
+    Writer writer(output, format, fingerprint_word ? mesh_format::legacy_version : mesh_format::current_version);
     writer.block("DIMENSION");
     writer.u64(d.dimension);
     writer.block("COUNTS");
@@ -368,36 +396,21 @@ void write_payload(const MeshData& d, std::ostream& output, MeshFormat format) {
         d.patch_names.size()};
     for (const std::size_t count : counts)
         writer.u64(count);
-    writer.block("LENGTH_SCALE_TO_METERS");
-    writer.real(d.length_scale_to_meters);
-    writer.block("X");
-    for (const double value : d.x)
-        writer.real(value);
-    writer.block("Y");
-    for (const double value : d.y)
-        writer.real(value);
-    writer.block("Z");
-    for (const double value : d.z)
-        writer.real(value);
+    // Это слово требуется только хеширующему потоку формата полей v1.
+    if (fingerprint_word)
+        writer.u64(*fingerprint_word);
+    writer.array("X", d.x, &Writer::real);
+    writer.array("Y", d.y, &Writer::real);
+    writer.array("Z", d.z, &Writer::real);
     const auto write_csr = [&](const MeshCsr& csr, const char* offsets, const char* indices) {
-        writer.block(offsets);
-        for (const Index value : csr.offsets)
-            writer.u64(value);
-        writer.block(indices);
-        for (const Index value : csr.indices)
-            writer.u64(value);
+        writer.array(offsets, csr.offsets, &Writer::u64);
+        writer.array(indices, csr.indices, &Writer::u64);
     };
     write_csr(d.face_nodes, "FACE_OFFSETS", "FACE_NODES");
     write_csr(d.cell_faces, "CELL_OFFSETS", "CELL_FACES");
-    writer.block("CELL_ORIENTATIONS");
-    for (const std::int8_t value : d.cell_face_orientation)
-        writer.orientation(value);
-    writer.block("BOUNDARY_FACES");
-    for (const Index value : d.boundary_faces)
-        writer.u64(value);
-    writer.block("BOUNDARY_PATCH");
-    for (const Index value : d.boundary_patch)
-        writer.u64(value);
+    writer.array("CELL_ORIENTATIONS", d.cell_face_orientation, &Writer::orientation);
+    writer.array("BOUNDARY_FACES", d.boundary_faces, &Writer::u64);
+    writer.array("BOUNDARY_PATCH", d.boundary_patch, &Writer::u64);
     writer.block("PATCH_NAMES");
     for (const std::string& name : d.patch_names)
         writer.name(name);
@@ -413,73 +426,160 @@ Mesh::Mesh(MeshData data) : data_(std::move(data)) {
 }
 
 void Mesh::build_edges() {
-    std::vector<Edge> edges;
-    edges.reserve(data_.face_nodes.indices.size());
-    face_edge_offsets_.push_back(0);
-    for (std::size_t f = 0; f < rows(data_.face_nodes); ++f) {
-        const Index a = data_.face_nodes.offsets[f], b = data_.face_nodes.offsets[f + 1];
-        const Index end = data_.dimension == 1 ? a : (data_.dimension == 2 ? a + 1 : b);
-        for (Index k = a; k < end; ++k) {
-            const Index v = data_.face_nodes.indices[k], w = data_.face_nodes.indices[k + 1 == b ? a : k + 1];
-            edges.push_back(std::make_pair(std::min(v, w), std::max(v, w)));
-        }
-        face_edge_offsets_.push_back(edges.size());
-    }
-    const std::vector<Edge> face_edges = edges;
-    // В 1D рёбрами являются сами ячейки. Точечные грани рёбер не содержат.
     if (data_.dimension == 1) {
-        for (std::size_t c = 0; c < rows(data_.cell_faces); ++c) {
-            const Index k = data_.cell_faces.offsets[c];
-            const Index a = data_.face_nodes.indices[data_.face_nodes.offsets[data_.cell_faces.indices[k]]];
-            const Index b =
-                data_.face_nodes.indices[data_.face_nodes.offsets[data_.cell_faces.indices[k + 1]]];
-            edges.push_back(std::make_pair(std::min(a, b), std::max(a, b)));
-        }
+        build_line_edges();
+        return;
     }
-    std::sort(edges.begin(), edges.end());
-    edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
+    const auto node_offsets = group_edges_by_node();
+    number_face_edges(node_offsets);
+}
+
+void Mesh::build_line_edges() {
+    const auto m = view();
+    // В одном измерении каждая ячейка уже является отдельным ребром.
+    face_edge_offsets_.assign(m.face_count + 1,0);
+    std::vector<Edge> edges(m.cell_count);
+    parallel_for(m.cell_count, [&](Index c) {
+        const Index k = data_.cell_faces.offsets[c];
+        const Index a = data_.face_nodes.indices[data_.face_nodes.offsets[data_.cell_faces.indices[k]]];
+        const Index b =
+            data_.face_nodes.indices[data_.face_nodes.offsets[data_.cell_faces.indices[k + 1]]];
+        edges[c] = std::minmax(a,b);
+    });
+    std::sort(edges.begin(),edges.end());
+    edges.erase(std::unique(edges.begin(),edges.end()),edges.end());
     edge_begin_.resize(edges.size());
     edge_end_.resize(edges.size());
-    parallel_for(edges.size(), [&](std::size_t i) {
-        edge_begin_[i] = edges[i].first;
-        edge_end_[i] = edges[i].second;
-    });
-    face_edge_indices_.resize(face_edges.size());
-    parallel_for(face_edges.size(), [&](std::size_t i) {
-        face_edge_indices_[i] =
-            static_cast<Index>(std::lower_bound(edges.begin(), edges.end(), face_edges[i]) - edges.begin());
+    parallel_for(edges.size(), [&](Index e) { edge_begin_[e]=edges[e].first; edge_end_[e]=edges[e].second; });
+}
+
+namespace {
+// Примыкающее к узлу ребро ведёт к предыдущей или следующей вершине грани.
+// Возвращаем только большие номера: ребро будет включено ровно у одного из концов.
+void collect_edge_neighbours(MeshView m, Index n, MeshIndexSpan incident_faces, std::vector<Index>& neighbours) {
+    neighbours.clear();
+    for (Index f : incident_faces) {
+        const auto v = m.face_nodes(f);
+        const auto pos = std::find(v.begin(),v.end(),n)-v.begin();
+        const Index j = static_cast<Index>(pos);
+        const Index next = v[j+1 == v.size ? 0 : j+1];
+        if (next>n) neighbours.push_back(next);
+        if (v.size>2) {
+            const Index prev = v[j ? j-1 : v.size-1];
+            if (prev>n) neighbours.push_back(prev);
+        }
+    }
+    std::sort(neighbours.begin(),neighbours.end());
+    neighbours.erase(std::unique(neighbours.begin(), neighbours.end()), neighbours.end());
+}
+}
+
+std::vector<MeshIndex> Mesh::group_edges_by_node() {
+    const auto m = view();
+    // Ребро принадлежит меньшему из двух номеров. Каждый поток сортирует только
+    // соседей своей вершины, сохраняя исходную лексикографическую нумерацию рёбер.
+    const NodeIncidence faces(m.node_count,m.face_count,[&](Index f){ return m.face_nodes(f); });
+    const Index block_size = 1024, blocks = (m.node_count+block_size-1)/block_size;
+    std::vector<std::vector<Index>> parts(blocks);
+    std::vector<Index> offsets(m.node_count+1);
+    parallel_for(blocks, [&](Index b) {
+        std::vector<Index> neighbours;
+        for (Index n=b*block_size; n<std::min(m.node_count,(b+1)*block_size); ++n) {
+            collect_edge_neighbours(m, n, faces[n], neighbours);
+            offsets[n+1] = neighbours.size();
+            parts[b].insert(parts[b].end(),neighbours.begin(),neighbours.end());
+        }
+    },2);
+    std::partial_sum(offsets.begin(),offsets.end(),offsets.begin());
+    edge_begin_.resize(offsets.back());
+    edge_end_.resize(offsets.back());
+    parallel_for(blocks, [&](Index b) {
+        const Index first=b*block_size;
+        std::copy(parts[b].begin(),parts[b].end(),edge_end_.begin()+offsets[first]);
+        for (Index n=first; n<std::min(m.node_count,first+block_size); ++n)
+            std::fill(edge_begin_.begin()+offsets[n],edge_begin_.begin()+offsets[n+1],n);
+    },2);
+    return offsets;
+}
+
+void Mesh::number_face_edges(const std::vector<MeshIndex>& offsets) {
+    const auto m = view();
+    // В 3D на каждую вершину контура приходится одно ребро, в 2D грань сама является ребром.
+    if (m.dimension==3) face_edge_offsets_=data_.face_nodes.offsets;
+    else {
+        face_edge_offsets_.resize(m.face_count+1);
+        std::iota(face_edge_offsets_.begin(),face_edge_offsets_.end(),Index(0));
+    }
+    face_edge_indices_.resize(face_edge_offsets_.back());
+    parallel_for(m.face_count,[&](Index f) {
+        const auto v=m.face_nodes(f);
+        const Index begin=face_edge_offsets_[f], count=face_edge_offsets_[f+1]-begin;
+        for (Index j=0;j<count;++j) {
+            const Index a=v[j], b=v[j+1==v.size ? 0 : j+1], owner=std::min(a,b);
+            const auto found=std::lower_bound(edge_end_.begin()+offsets[owner],edge_end_.begin()+offsets[owner+1],std::max(a,b));
+            face_edge_indices_[begin+j]=static_cast<Index>(found-edge_end_.begin());
+        }
     });
 }
 
-void Mesh::build_cell_connectivity() {
-    // При загрузке строим производные CSR-таблицы по исходным граням.
-    // Вычислительные ядра затем обращаются к элементам за O(1) без выделения памяти.
-    for (std::size_t c = 0; c < rows(data_.cell_faces); ++c) {
-        std::vector<Index> nodes, edges;
-        for (Index k = data_.cell_faces.offsets[c]; k < data_.cell_faces.offsets[c + 1]; ++k) {
-            const Index f = data_.cell_faces.indices[k];
-            for (Index j = data_.face_nodes.offsets[f]; j < data_.face_nodes.offsets[f + 1]; ++j)
-                nodes.push_back(data_.face_nodes.indices[j]);
-            for (Index j = face_edge_offsets_[f]; j < face_edge_offsets_[f + 1]; ++j)
-                edges.push_back(face_edge_indices_[j]);
-        }
-        std::sort(nodes.begin(), nodes.end());
-        nodes.erase(std::unique(nodes.begin(), nodes.end()), nodes.end());
-        if (data_.dimension == 1) {
-            // Рёбра отсортированы лексикографически по упорядоченным парам номеров концов.
-            const auto first = std::lower_bound(edge_begin_.begin(), edge_begin_.end(), nodes[0]);
-            const auto last = std::upper_bound(first, edge_begin_.end(), nodes[0]);
-            const std::ptrdiff_t a = first - edge_begin_.begin(), b = last - edge_begin_.begin();
-            const auto edge = std::lower_bound(edge_end_.begin() + a, edge_end_.begin() + b, nodes[1]);
-            edges.push_back(static_cast<Index>(edge - edge_end_.begin()));
-        }
-        std::sort(edges.begin(), edges.end());
-        edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
-        cell_nodes_.indices.insert(cell_nodes_.indices.end(), nodes.begin(), nodes.end());
-        cell_nodes_.offsets.push_back(cell_nodes_.indices.size());
-        cell_edges_.indices.insert(cell_edges_.indices.end(), edges.begin(), edges.end());
-        cell_edges_.offsets.push_back(cell_edges_.indices.size());
+// Две грани одной ячейки могут содержать один узел или ребро. Сортировка
+// и удаление повторов задают одинаковую нумерацию при любом порядке обхода.
+void Mesh::collect_cell_connectivity(Index c, std::vector<Index>& nodes, std::vector<Index>& edges) const {
+    nodes.clear();
+    edges.clear();
+    for (Index k = data_.cell_faces.offsets[c]; k < data_.cell_faces.offsets[c + 1]; ++k) {
+        const Index f = data_.cell_faces.indices[k];
+        for (Index j = data_.face_nodes.offsets[f]; j < data_.face_nodes.offsets[f + 1]; ++j)
+            nodes.push_back(data_.face_nodes.indices[j]);
+        for (Index j = face_edge_offsets_[f]; j < face_edge_offsets_[f + 1]; ++j)
+            edges.push_back(face_edge_indices_[j]);
     }
+    std::sort(nodes.begin(), nodes.end());
+    nodes.erase(std::unique(nodes.begin(), nodes.end()), nodes.end());
+    if (data_.dimension == 1) {
+        // Рёбра отсортированы лексикографически по упорядоченным парам номеров концов.
+        const auto first = std::lower_bound(edge_begin_.begin(), edge_begin_.end(), nodes[0]);
+        const auto last = std::upper_bound(first, edge_begin_.end(), nodes[0]);
+        const std::ptrdiff_t a = first - edge_begin_.begin(), b = last - edge_begin_.begin();
+        const auto edge = std::lower_bound(edge_end_.begin() + a, edge_end_.begin() + b, nodes[1]);
+        edges.push_back(static_cast<Index>(edge - edge_end_.begin()));
+    }
+    std::sort(edges.begin(), edges.end());
+    edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
+}
+
+void Mesh::build_cell_connectivity() {
+    // Независимые блоки формируют строки в прежнем порядке. Один рабочий
+    // буфер блока обслуживает много ячеек, в том числе произвольные многогранники.
+    const Index count = rows(data_.cell_faces), block_size = 1024;
+    const Index blocks = (count + block_size - 1) / block_size;
+    struct Block { std::vector<Index> nodes, edges; };
+    std::vector<Block> parts(blocks);
+    cell_nodes_.offsets.resize(count + 1);
+    cell_edges_.offsets.resize(count + 1);
+    parallel_for(blocks, [&](Index part) {
+        auto& block = parts[part];
+        std::vector<Index> nodes, edges;
+        const Index end = std::min(count, (part + 1) * block_size);
+        for (Index c = part * block_size; c < end; ++c) {
+            collect_cell_connectivity(c, nodes, edges);
+            cell_nodes_.offsets[c+1] = nodes.size();
+            cell_edges_.offsets[c+1] = edges.size();
+            block.nodes.insert(block.nodes.end(), nodes.begin(), nodes.end());
+            block.edges.insert(block.edges.end(), edges.begin(), edges.end());
+        }
+    }, 2);
+    // Смещения разделяют готовые строки. Разные потоки пишут в непересекающиеся участки.
+    for (MeshCsr* table : {&cell_nodes_, &cell_edges_}) {
+        std::partial_sum(table->offsets.begin(), table->offsets.end(), table->offsets.begin());
+        table->indices.resize(table->offsets.back());
+    }
+    parallel_for(blocks, [&](Index part) {
+        const Index first = part * block_size;
+        const auto& block = parts[part];
+        std::copy(block.nodes.begin(), block.nodes.end(), cell_nodes_.indices.begin() + cell_nodes_.offsets[first]);
+        std::copy(block.edges.begin(), block.edges.end(), cell_edges_.indices.begin() + cell_edges_.offsets[first]);
+    }, 2);
 }
 
 MeshNode Mesh::node(MeshIndex id) const {
@@ -512,7 +612,6 @@ MeshView Mesh::view() const noexcept {
     v.edge_count = edge_begin_.size();
     v.boundary_face_count = data_.boundary_faces.size();
     v.patch_count = data_.patch_names.size();
-    v.length_scale_to_meters = data_.length_scale_to_meters;
     v.x = data_.x.data();
     v.y = data_.y.data();
     v.z = data_.z.data();
@@ -538,8 +637,6 @@ void Mesh::validate() const {
     const MeshData& d = data_;
     if (d.dimension < 1 || d.dimension > 3)
         fail("Mesh dimension must be 1, 2 or 3");
-    if (!std::isfinite(d.length_scale_to_meters) || d.length_scale_to_meters <= 0)
-        fail("Length scale must be finite and positive");
     if (d.x.size() != d.y.size() || d.x.size() != d.z.size())
         fail("Coordinate arrays have different sizes");
     parallel_for(d.x.size(), [&](std::size_t i) {
@@ -596,41 +693,27 @@ Mesh Mesh::read(std::istream& input, const MeshReadLimits& limits) try {
     reader.resize(d.boundary_faces, counts[5]);
     reader.resize(d.boundary_patch, counts[5]);
     reader.resize(d.patch_names, counts[6]);
-    reader.block("LENGTH_SCALE_TO_METERS");
-    d.length_scale_to_meters = reader.real();
-    reader.block("X");
-    for (double& value : d.x)
-        value = reader.real();
-    reader.block("Y");
-    for (double& value : d.y)
-        value = reader.real();
-    reader.block("Z");
-    for (double& value : d.z)
-        value = reader.real();
+    const auto fingerprint_word = reader.read_fingerprint_word();
+    using mesh_input::Reader;
+    reader.array("X", d.x, &Reader::real);
+    reader.array("Y", d.y, &Reader::real);
+    reader.array("Z", d.z, &Reader::real);
     const auto read_csr = [&](MeshCsr& csr, const char* offsets, const char* indices) {
-        reader.block(offsets);
-        for (Index& value : csr.offsets)
-            value = reader.u64();
-        reader.block(indices);
-        for (Index& value : csr.indices)
-            value = reader.u64();
+        reader.array(offsets, csr.offsets, &Reader::u64);
+        reader.array(indices, csr.indices, &Reader::u64);
     };
     read_csr(d.face_nodes, "FACE_OFFSETS", "FACE_NODES");
     read_csr(d.cell_faces, "CELL_OFFSETS", "CELL_FACES");
-    reader.block("CELL_ORIENTATIONS");
-    for (std::int8_t& value : d.cell_face_orientation)
-        value = reader.orientation();
-    reader.block("BOUNDARY_FACES");
-    for (Index& value : d.boundary_faces)
-        value = reader.u64();
-    reader.block("BOUNDARY_PATCH");
-    for (Index& value : d.boundary_patch)
-        value = reader.u64();
+    reader.array("CELL_ORIENTATIONS", d.cell_face_orientation, &Reader::orientation);
+    reader.array("BOUNDARY_FACES", d.boundary_faces, &Reader::u64);
+    reader.array("BOUNDARY_PATCH", d.boundary_patch, &Reader::u64);
     reader.block("PATCH_NAMES");
     for (std::string& name : d.patch_names)
         name = reader.name();
     reader.finish();
-    return Mesh(std::move(d));
+    Mesh mesh(std::move(d));
+    mesh.fingerprint_word_ = fingerprint_word;
+    return mesh;
 } catch (const io::CompressionError& error) {
     throw MeshError(error.what());
 }
@@ -654,7 +737,6 @@ void write_encoded(const MeshData& data, std::ostream& output, MeshFormat format
 }
 
 void Mesh::write(const std::string& path, MeshFormat format) const {
-    validate();
     if (format != MeshFormat::Text && format != MeshFormat::Binary && format != MeshFormat::Lzma)
         fail("Unsupported mesh encoding");
     if (path.find('\0') != std::string::npos)
@@ -669,8 +751,13 @@ void Mesh::write(const std::string& path, MeshFormat format) const {
 }
 
 void Mesh::write(std::ostream& output, MeshFormat format) const {
-    validate();
+    // Исходная связность проверена в конструкторе и доступна только для чтения.
+    // В частности, вычисление SHA-256 не требует новой проверки всех оболочек.
     write_encoded(data_, output, format);
+}
+
+void Mesh::write_fingerprint_payload(std::ostream& output) const {
+    write_payload(data_, output, MeshFormat::Binary, &fingerprint_word_);
 }
 
 } // namespace aero

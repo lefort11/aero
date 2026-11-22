@@ -13,6 +13,7 @@ struct Section {
     std::vector<std::string> patches;
     std::string pair, where, rules, profile_path;
     BoundaryProfile profile;
+    bool external_set = false;
     bool has_axis = false, has_center = false;
 };
 
@@ -42,7 +43,9 @@ void read_profile(Section& section, const std::string& bc_path) {
     auto input = open(path);
     std::string line;
     std::size_t row = 0;
-    bool header = false;
+    std::vector<unsigned> columns;
+    auto& mask = section.profile.columns;
+    mask = 0;
     while (std::getline(input,line)) {
         ++row;
         const auto where = path + ":" + std::to_string(row);
@@ -50,17 +53,25 @@ void read_profile(Section& section, const std::string& bc_path) {
         std::vector<std::string> words;
         for (std::string word; in >> word;) words.push_back(word);
         if (words.empty()) continue;
-        if (!header) {
-            if (words != std::vector<std::string>{"R_yz","ro","u_x","u_r","p","nutilde"})
-                throw std::invalid_argument(where + ": expected R_yz ro u_x u_r p nutilde");
-            header = true;
+        if (columns.empty()) {
+            const std::vector<std::string> names{"R_yz","ro","u_x","u_r","p","nutilde"};
+            for (const auto& word : words) {
+                const auto it = std::find(names.begin(), names.end(), word);
+                if (it == names.end()) throw std::invalid_argument(where + ": unknown profile column " + word);
+                const unsigned index = static_cast<unsigned>(it - names.begin());
+                if (mask & (1u << index)) throw std::invalid_argument(where + ": duplicate profile column " + word);
+                mask |= 1u << index;
+                columns.push_back(index);
+            }
+            if (!(mask & Radius) || mask == Radius) throw std::invalid_argument(where + ": expected R_yz and field columns");
             continue;
         }
-        if (words.size()!=6) throw std::invalid_argument(where + ": expected six values");
-        double v[6];
-        for (unsigned k=0;k<6;++k) v[k]=finite_real(words[k],where);
+        if (words.size()!=columns.size()) throw std::invalid_argument(where + ": row size differs from profile header");
+        double v[6]{};
+        for (size_t k=0;k<columns.size();++k) v[columns[k]]=finite_real(words[k],where);
         auto& rows = section.profile.rows;
-        if (v[0]<0. || (!rows.empty() && rows.back().radius>=v[0]) || v[1]<=0. || v[4]<=0. || v[5]<0.)
+        if (v[0]<0. || (!rows.empty() && rows.back().radius>=v[0]) || ((mask & ProfileRho) && v[1]<=0.) ||
+            ((mask & ProfileP) && v[4]<=0.) || v[5]<0.)
             throw std::invalid_argument(where + ": invalid radius, density, pressure or nutilde");
         rows.push_back({v[0],v[1],v[2],v[3],v[4],v[5]});
     }
@@ -70,11 +81,23 @@ void read_profile(Section& section, const std::string& bc_path) {
 // Разборщик условий одного участка принимает однословные имена. Подставляем локальные идентификаторы,
 // затем возвращаем точные имена участков из заголовков секций.
 void add_rule(Section& section, const std::string& line, const std::string& where) {
-    const auto split = line.find_first_of(" \t");
+    const auto split = line.find_first_of(" \t=");
     const std::string key = line.substr(0, split);
-    if (key == "profile") {
+    if (key == "profile" || key == "external" || key == "profile_ref" || key == "profile_init" || key == "profile_interior") {
+        std::string value = split == std::string::npos ? "" : trim(line.substr(split));
+        if (!value.empty() && value[0] == '=') value = trim(value.substr(1));
+        if (key != "profile") {
+            if (section.external_set) throw std::invalid_argument(where + ": repeated external source");
+            section.external_set = true;
+            const auto source = key == "external" ? value : key.substr(8);
+            if (source == "reference_state" || source == "ref") section.profile.fallback = ProfileFallback::Reference;
+            else if (source == "initial" || source == "init") section.profile.fallback = ProfileFallback::Initial;
+            else if (source == "interior") section.profile.fallback = ProfileFallback::Interior;
+            else throw std::invalid_argument(where + ": expected external = reference_state, initial or interior");
+            if (key == "external") return;
+        }
         if (split == std::string::npos || !section.profile_path.empty()) throw std::invalid_argument(where + ": expected one profile file");
-        section.profile_path = label(trim(line.substr(split)),where);
+        section.profile_path = label(value,where);
         return;
     }
     if (key == "profile_axis" || key == "profile_center") {
@@ -111,7 +134,8 @@ void add_rule(Section& section, const std::string& line, const std::string& wher
 }
 }
 
-CaseBoundaries read_case_boundaries(const std::string& path, const MeshData& mesh, bool linear, std::vector<std::string>* warnings) {
+CaseBoundaries read_case_boundaries(const std::string& path, const MeshData& mesh, bool linear,
+                                   std::vector<std::string>* warnings, BoundaryTemperature temperature) {
     auto input = settings_detail::open(path);
     CaseBoundaries result;
     result.patches.by_patch.resize(mesh.patch_names.size());
@@ -135,21 +159,43 @@ CaseBoundaries read_case_boundaries(const std::string& path, const MeshData& mes
         PeriodicPair pair{};
         BoundaryConfig config;
         try {
-            config = read_boundary(rules, mesh.dimension, result.patches, pair, linear);
+            config = read_boundary(rules, mesh.dimension, result.patches, pair, linear, temperature);
         } catch (const std::invalid_argument& e) {
             throw std::invalid_argument(section.where + " [" + section.patches.front() + "]: " + e.what());
         }
-        const auto* rule = config.rules(result.patches.free_rules.data());
-        const bool uses_profile = rule && (rule->superin.profile || rule->inflow.source==BoundarySource::Profile ||
-                                            rule->outflow.source==BoundarySource::Profile);
-        if (uses_profile || !section.profile_path.empty() || section.has_axis || section.has_center) {
-            if (linear || !rule || section.profile_path.empty() || !rule->superin.profile ||
-                rule->inflow.source!=BoundarySource::Profile || rule->outflow.source!=BoundarySource::Profile ||
-                rule->outflow.mode!=BoundaryMode::Pressure)
-                throw std::invalid_argument(section.where + ": Euler free profile requires profile FILE, superin profile, inflow profile and outflow base_p profile");
-            read_profile(section,path);
+        auto* rule = config.type() == BoundaryType::Free ? &result.patches.free_rules.back() : nullptr;
+        const bool table = !section.profile_path.empty();
+        const bool dynamic = section.profile.fallback == ProfileFallback::Interior || section.profile.fallback == ProfileFallback::Initial;
+        if (rule) rule->external_base = section.profile.fallback;
+        if (table || (dynamic && !linear) || section.has_axis || section.has_center) {
+            if (!rule || linear || (!table && (section.has_axis || section.has_center)))
+                throw std::invalid_argument(section.where + ": profile requires an Euler free boundary");
+            if (rule->outflow.source == BoundarySource::Profile && rule->outflow.mode != BoundaryMode::Pressure)
+                throw std::invalid_argument(section.where + ": profile outflow requires base_p profile or reference_state");
+            if (!rule->uses_reference() && (rule->superin.source != BoundarySource::Profile || rule->inflow.source != BoundarySource::Profile ||
+                                            rule->outflow.source != BoundarySource::Profile))
+                throw std::invalid_argument(section.where + ": incomplete free boundary profile rules");
+            if (table) read_profile(section,path);
+            else section.profile.columns = Radius; // Взятое целиком начальное или внутреннее состояние.
+            if (section.profile.fallback == ProfileFallback::Full) section.profile.fallback = ProfileFallback::Reference;
             result.patches.profiles.resize(result.patches.free_rules.size());
             result.patches.profiles.back() = std::move(section.profile);
+        } else if (rule && (rule->superin.source == BoundarySource::Profile || rule->inflow.source == BoundarySource::Profile ||
+                            rule->outflow.source == BoundarySource::Profile)) {
+            throw std::invalid_argument(section.where + ": missing profile file");
+        }
+        if (section.external_set && !rule) throw std::invalid_argument(section.where + ": external requires free");
+        // Полная таблица и динамические источники обходятся без набегающего газа.
+        const bool needs_ref = table ? !dynamic && (section.profile.columns & GasColumns) != GasColumns :
+                                       !dynamic && rule && rule->uses_reference();
+        if (needs_ref && rule && !rule->reference.mask) {
+            const auto q = temperature.gas.primitive(mesh.dimension);
+            auto& ref = rule->reference;
+            ref.mask = (1u << (mesh.dimension+2)) - 1;
+            ref.primitive[0] = q.front() - (linear ? temperature.background_rho : 0.);
+            ref.primitive[1] = q.back() - (linear ? temperature.background_p : 0.);
+            for (unsigned j=0;j<mesh.dimension;++j)
+                ref.primitive[2+j] = q[1+j] - (linear ? temperature.background_velocity[j] : 0.);
         }
         // Все метки free ссылаются на один уже разобранный комплект правил.
         for (const auto& patch : section.patches) assign(patch, config);
@@ -181,7 +227,8 @@ CaseBoundaries read_case_boundaries(const std::string& path, const MeshData& mes
                 throw std::invalid_argument(where + ": expected [mesh label] before rules");
             const auto key = line.substr(0, line.find_first_of(" \t="));
             if (warnings && key != "profile" && key != "profile_axis" && key != "profile_center" && key != "bc_type" && key != "pair" && key != "patch" && key != "translation" &&
-                key != "superin" && key != "inflow" && key != "outflow") {
+                key != "superin" && key != "inflow" && key != "outflow" && key != "reference_state" && key != "external" &&
+                key != "profile_ref" && key != "profile_interior" && key != "profile_init") {
                 warnings->push_back(where + ": unknown parameter " + key);
             } else add_rule(section, line, where);
         }

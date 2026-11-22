@@ -13,6 +13,8 @@ struct PeriodicPartition {
     std::vector<int> owners;
     // Сумма контрольных объёмов всех периодических копий соответствующего узла.
     std::vector<double> volumes;
+    // Для CFL берём наименьшую высоту со всех сторон периодического шва.
+    std::vector<double> min_heights;
     struct Edge {
         MeshIndex begin, end;
         CvVector area;

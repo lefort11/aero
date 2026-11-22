@@ -1,4 +1,5 @@
 #include "mpi_periodic_detail.h"
+#include <limits>
 
 namespace aero {
 using namespace periodic_mpi;
@@ -15,7 +16,7 @@ struct Member {
 struct Volume {
     Ref node;
     Id original;
-    double value;
+    double value, height;
 };
 struct Piece {
     Key order;
@@ -139,7 +140,7 @@ std::vector<Volume> collect_volumes(const MeshPartition& part, CvView cv, const 
         [&](Messages& out) {
             for (Id i = 0; i < nodes.size(); ++i)
                 if (part.node_owners[i] == w.rank) {
-                    const Volume v = {nodes[i], part.nodes[i], cv.volumes[i]};
+                    const Volume v = {nodes[i], part.nodes[i], cv.volumes[i], cv.min_heights[i]};
                     if (v.node.rank == w.rank)
                         volumes.push_back(v);
                     else {
@@ -147,10 +148,11 @@ std::vector<Volume> collect_volumes(const MeshPartition& part, CvView cv, const 
                         put(s, v.node);
                         put(s, v.original);
                         put_real(s, v.value);
+                        put_real(s, v.height);
                     }
                 }
         },
-        [&](Reader& r, int) { volumes.push_back({r.ref(), r.id(), r.real()}); });
+        [&](Reader& r, int) { volumes.push_back({r.ref(), r.id(), r.real(), r.real()}); });
     return volumes;
 }
 
@@ -230,11 +232,15 @@ PeriodicPartition partition_periodic(const MeshPartition& part, CvView cv,
         for (Ref n : nodes)
             grid.node_dof.push_back(local(n));
         grid.volumes.resize(grid.ids.size());
+        grid.min_heights.assign(grid.ids.size(), std::numeric_limits<double>::max());
         // Складываем вклады в порядке обычного расчёта независимо от очередности прихода сообщений.
         std::sort(volumes.begin(), volumes.end(),
                   [](const Volume& a, const Volume& b) { return a.original < b.original; });
-        for (const auto& v : volumes)
-            grid.volumes[local(v.node)] += v.value;
+        for (const auto& v : volumes) {
+            const Id node = local(v.node);
+            grid.volumes[node] += v.value;
+            grid.min_heights[node] = std::min(grid.min_heights[node], v.height);
+        }
         std::sort(edges.begin(), edges.end(),
                   [](const EdgeData& a, const EdgeData& b) { return a.key < b.key; });
         for (const auto& e : edges)

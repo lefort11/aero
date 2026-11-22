@@ -107,7 +107,9 @@ public:
     // Собирает только собственные узлы раздела для отчёта или многостадийного шага.
     void download_owned(std::vector<double>& compact) const;
     void download(std::vector<double>& state) const;
-    double* layout_node_scalars(MeshIndex count) { return storage_.allocate<double>(count); }
+    double* layout_node_scalars(MeshIndex count, const double* initial = nullptr) {
+        return storage_.allocate<double>(count, initial);
+    }
     diagnostic::Moments* layout_moments(MeshIndex count) { return storage_.allocate<diagnostic::Moments>(count); }
     void layout_linear_input(MeshIndex count) { krylov_input_ = storage_.allocate<double>(count); }
     double* expand_owned(const double* compact) const;

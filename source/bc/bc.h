@@ -12,7 +12,12 @@ AERO_HOST_DEVICE inline bool solid_wall(BoundaryType type) {
     return type==BoundaryType::Wall || type==BoundaryType::SlipWall;
 }
 enum class BoundaryMode { Pressure, NormalVelocity, Density };
-enum class BoundarySource { Current, Initial, Constant, Profile };
+enum class BoundarySource { Current, Initial, Constant, Profile, Reference, InteriorPressure, Characteristic, ExternalScalar };
+enum class ProfileFallback { Full, Reference, Interior, Initial };
+AERO_HOST_DEVICE inline bool takes_reference(BoundarySource source) {
+    return source == BoundarySource::Reference || source == BoundarySource::InteriorPressure ||
+           source == BoundarySource::Characteristic || source == BoundarySource::ExternalScalar;
+}
 
 // На дозвуковой границе задаётся одна величина. Остальные получаем из характеристик.
 struct BoundaryRule {
@@ -22,16 +27,23 @@ struct BoundaryRule {
 };
 
 // На сверхзвуковом входе все характеристики входят, поэтому задавать можно всё состояние.
-struct SupersonicInflow {
-    bool profile; // Полное состояние берётся из таблицы сопла.
+struct PrescribedState {
     bool use_initial;    // Брать за основу начальное состояние площадки вместо текущего.
     unsigned mask;       // Установленный бит отмечает явно заданную компоненту.
     double primitive[5]; // Значения по номерам битов: rho, p, ux, uy, uz.
+};
+struct SupersonicInflow : PrescribedState {
+    BoundarySource source; // Для reference_state сверхзвуковой вход определяется по скорости и звуку опорного газа.
 };
 struct FreeBoundaryRules {
     SupersonicInflow superin; // Полное состояние для сверхзвукового входа.
     BoundaryRule inflow;      // Дозвуковой вход.
     BoundaryRule outflow;     // Дозвуковой выход, включая нулевую нормальную скорость.
+    PrescribedState reference; // Общие rho, p и скорости reference_state. Нулевая маска означает, что чисел в секции нет.
+    bool uses_reference() const {
+        return takes_reference(superin.source) || takes_reference(inflow.source) || takes_reference(outflow.source);
+    }
+    ProfileFallback external_base; // Для Linear без таблицы: пульсации из настройки, начального или внутреннего поля.
 };
 // В сетке у метки хранится одно число. Только у free это индекс в массиве FreeBoundaryRules.
 // Отрицательные значения обозначают варианты стенки и периодическую метку.
@@ -59,9 +71,22 @@ public:
 };
 
 // Этот вид таблиц передаётся в вычислительные ядра и не владеет памятью.
+enum ProfileColumn : unsigned { Radius=1, ProfileRho=2, Axial=4, Radial=8, ProfileP=16, NuTilde=32,
+                                GasColumns=ProfileRho|Axial|Radial|ProfileP, AllColumns=Radius|GasColumns|NuTilde };
 struct ProfileState {
     EulerState gas; // Нулевая плотность означает обычную площадку без профиля.
     double nutilde;
+    unsigned columns; // Маска столбцов исходной таблицы; нуль допустим для заранее готового полного состояния.
+    ProfileFallback fallback;
+    double direction[3]; // Направление единственной заданной компоненты скорости в осях расчёта.
+    AERO_HOST_DEVICE bool present() const { return columns || gas.density > 0.; }
+    AERO_HOST_DEVICE bool partial_gas() const { return columns && (columns & GasColumns) != GasColumns; }
+    // Из внутреннего или начального вектора оставляем проекцию, которой нет в профиле.
+    AERO_HOST_DEVICE void missing_velocity(unsigned d, const double* velocity, double* missing) const {
+        const double along = euler_detail::dot(d, velocity, direction);
+        for (unsigned k=0; k<d; ++k)
+            missing[k] = (columns & (Axial|Radial)) == (Axial|Radial) ? 0. : velocity[k] - along*direction[k];
+    }
 };
 struct BoundaryPatchView {
     const BoundaryConfig* by_patch;             // Одна короткая запись на метку сетки.
@@ -70,7 +95,7 @@ struct BoundaryPatchView {
     const ProfileState* profiles; // По одной записи на физическую площадку.
     unsigned long long profile_count;
     AERO_HOST_DEVICE const ProfileState* profile(unsigned long long piece) const {
-        return profiles && profiles[piece].gas.density > 0. ? profiles + piece : nullptr;
+        return profiles && profiles[piece].present() ? profiles + piece : nullptr;
     } // Размеры двух массивов при передаче на GPU.
 };
 
@@ -94,7 +119,7 @@ AERO_HOST_DEVICE inline BoundaryStatus initial_state(unsigned d, const double* i
 }
 
 // На входе boundary уже содержит внутреннее состояние. Сначала выбираем основу, затем заменяем отмеченные поля.
-AERO_HOST_DEVICE inline BoundaryStatus apply_supersonic_inflow(unsigned d, const SupersonicInflow& rule,
+AERO_HOST_DEVICE inline BoundaryStatus apply_prescribed_state(unsigned d, const PrescribedState& rule,
                                                                const double* initial, double gamma,
                                                                EulerState& boundary) {
     if (rule.use_initial) {
@@ -191,6 +216,15 @@ AERO_HOST_DEVICE inline BoundaryStatus check_boundary_state(unsigned d, const Eu
 
 // Выбирает одно правило free для текущей площадки при каждом вычислении потока.
 enum class FreeRegime { SuperIn, In, Out, SuperOut };
+AERO_HOST_DEVICE inline BoundarySource boundary_source(FreeRegime regime, const FreeBoundaryRules& rules) {
+    if (regime == FreeRegime::In) return rules.inflow.source;
+    if (regime == FreeRegime::Out) return rules.outflow.source;
+    if (regime == FreeRegime::SuperIn) {
+        if (rules.superin.use_initial) return BoundarySource::Initial;
+        return rules.superin.source;
+    }
+    return BoundarySource::Current;
+}
 AERO_HOST_DEVICE inline FreeRegime free_regime(double un, double sound) {
     if (un >= sound)
         return FreeRegime::SuperOut;
@@ -199,13 +233,9 @@ AERO_HOST_DEVICE inline FreeRegime free_regime(double un, double sound) {
     return un < 0 ? FreeRegime::In : FreeRegime::Out;
 }
 
-// При пуске из покоя режим определяет скорость Роу между профилем и внутренним газом.
+// Восстанавливаем состояние из профиля в уже выбранном режиме.
 AERO_HOST_DEVICE inline BoundaryStatus profile_state(unsigned d, const EulerState& ref, const EulerState& inside,
-        const double* normal, double un, double gamma, EulerState& boundary, FreeRegime& regime) {
-    euler_detail::RoeAverage roe;
-    if (euler_detail::average_roe_state(d,inside,ref,normal,gamma,roe) != EulerStatus::Success)
-        return BoundaryStatus::InvalidState;
-    regime = free_regime(roe.normal_speed,roe.sound_speed);
+        const double* normal, double un, double gamma, EulerState& boundary, FreeRegime regime) {
     boundary = inside;
     if (regime == FreeRegime::SuperOut) return BoundaryStatus::Success;
     if (regime == FreeRegime::Out) {
@@ -226,13 +256,92 @@ AERO_HOST_DEVICE inline BoundaryStatus profile_state(unsigned d, const EulerStat
     return BoundaryStatus::Success;
 }
 
+// Заполняем пропуски в примитивных величинах, затем согласованно получаем звук и энтальпию для Роу.
+AERO_HOST_DEVICE inline BoundaryStatus complete_profile(unsigned d, const ProfileState& sample, const PrescribedState& fixed,
+        const EulerState& inside, const double* initial, double gamma, EulerState& gas) {
+    gas = inside;
+    BoundaryStatus status = BoundaryStatus::Success;
+    if (sample.fallback == ProfileFallback::Initial) status = initial_state(d, initial, gamma, gas);
+    if (sample.fallback == ProfileFallback::Reference) status = apply_prescribed_state(d,fixed,initial,gamma,gas);
+    if (status != BoundaryStatus::Success) return status;
+    double missing[3]{};
+    sample.missing_velocity(d, gas.velocity, missing);
+    for (unsigned k=0;k<d;++k) gas.velocity[k] = sample.gas.velocity[k] + missing[k];
+    if (sample.columns & ProfileRho) gas.density = sample.gas.density;
+    if (sample.columns & ProfileP) gas.pressure = sample.gas.pressure;
+    gas.sound_speed = ::sqrt(gamma*(gas.pressure/gas.density));
+    gas.density_root = ::sqrt(gas.density);
+    gas.enthalpy = gamma/(gamma-1.)*(gas.pressure/gas.density) + .5*euler_detail::dot(d,gas.velocity,gas.velocity);
+    return gas.sound_speed > 0. && euler_detail::finite(gas.enthalpy) ? BoundaryStatus::Success : BoundaryStatus::InvalidTarget;
+}
+
 AERO_HOST_DEVICE inline BoundaryStatus free_boundary_state(unsigned d, const FreeBoundaryRules& config,
                                                            const EulerState& inside, const double* normal,
                                                            double un, double gamma, const double* initial,
-                                                           EulerState& boundary) {
+                                                           EulerState& boundary, FreeRegime& regime,
+                                                           const ProfileState* profile, EulerState* used_profile=nullptr) {
     boundary = inside;
+    EulerState completed;
+    const EulerState* ref_gas = profile ? &profile->gas : nullptr;
+    if (profile && profile->partial_gas()) {
+        const auto status = complete_profile(d,*profile,config.reference,inside,initial,gamma,completed);
+        if (status != BoundaryStatus::Success) return status;
+        ref_gas = &completed;
+    }
+    if (ref_gas && used_profile) *used_profile = *ref_gas;
+    bool reference_inlet = false;
+    if (config.superin.source == BoundarySource::Reference) {
+        // Сравниваем проекцию скорости на наружную нормаль со звуком в том же опорном газе.
+        // Если все характеристики входят, даже при пуске из покоя задаём все компоненты reference_state.
+        const auto& rule = config.reference;
+        if (!rule.mask && !profile) return BoundaryStatus::InvalidTarget;
+        const double* velocity = ref_gas ? ref_gas->velocity : rule.primitive + 2;
+        const double c = ref_gas ? ref_gas->sound_speed : ::sqrt(gamma * (rule.primitive[1] / rule.primitive[0]));
+        if (!(c > 0.) || !euler_detail::finite(c)) return BoundaryStatus::InvalidTarget;
+        reference_inlet = euler_detail::dot(d, velocity, normal) <= -c;
+    }
+    if (reference_inlet) {
+        regime = FreeRegime::SuperIn;
+    } else if (profile) {
+        euler_detail::RoeAverage roe;
+        if (euler_detail::average_roe_state(d,inside,*ref_gas,normal,gamma,roe) != EulerStatus::Success)
+            return BoundaryStatus::InvalidState;
+        regime = free_regime(roe.normal_speed, roe.sound_speed);
+    } else {
+        regime = free_regime(un, inside.sound_speed);
+    }
+    // Для reference_state полное навязывание разрешено только проверкой выше. Если внутренний
+    // (или осреднённый по Роу) газ втекает быстрее звука, остаётся правило inflow.
+    if (config.superin.source == BoundarySource::Reference && !reference_inlet && regime == FreeRegime::SuperIn) regime = FreeRegime::In;
+    const auto source = boundary_source(regime, config);
+    if (takes_reference(source)) {
+        if (ref_gas) boundary = *ref_gas;
+        else {
+            if (!config.reference.mask) return BoundaryStatus::InvalidTarget;
+            const auto status = apply_prescribed_state(d, config.reference, initial, gamma, boundary);
+            if (status != BoundaryStatus::Success) return status;
+        }
+        if (source == BoundarySource::InteriorPressure) boundary.pressure = inside.pressure;
+        if (source == BoundarySource::ExternalScalar) {
+            auto rule = regime == FreeRegime::In ? config.inflow : config.outflow;
+            rule.value = scalar_target(d, rule.mode, boundary, normal);
+            rule.source = BoundarySource::Constant;
+            boundary = inside;
+            return apply_subsonic_rule(d,rule,inside,normal,un,gamma,initial,boundary);
+        }
+        if (source == BoundarySource::Characteristic) {
+            // То же J+ из области и те же входящие данные, что у дозвукового входа с профилем.
+            EulerState ref = boundary;
+            ref.sound_speed = ::sqrt(gamma * (ref.pressure / ref.density));
+            return profile_state(d, ref, inside, normal, un, gamma, boundary, regime);
+        }
+        return BoundaryStatus::Success;
+    }
+    if (source == BoundarySource::Profile) {
+        if (!profile) return BoundaryStatus::InvalidTarget;
+        return profile_state(d, *ref_gas, inside, normal, un, gamma, boundary, regime);
+    }
     // Нормаль направлена наружу. При u_n >= c все волны уходят, внутреннее состояние уже готово.
-    const FreeRegime regime = free_regime(un, inside.sound_speed);
     if (regime == FreeRegime::SuperOut)
         return BoundaryStatus::Success;
 
@@ -240,7 +349,7 @@ AERO_HOST_DEVICE inline BoundaryStatus free_boundary_state(unsigned d, const Fre
     BoundaryStatus status;
     if (supersonic_inflow) {
         // При u_n <= -c все волны приходят извне. Используем отдельное полное состояние входа.
-        status = apply_supersonic_inflow(d, config.superin, initial, gamma, boundary);
+        status = apply_prescribed_state(d, config.superin, initial, gamma, boundary);
     } else {
         // При |u_n| < c знак скорости выбирает дозвуковое правило. Нуль относится к выходу.
         const auto& rule = regime == FreeRegime::In ? config.inflow : config.outflow;
@@ -295,8 +404,8 @@ boundary_flux(unsigned d, BoundaryConfig patch, const FreeBoundaryRules* free_ru
             return BoundaryStatus::InvalidArgument;
         EulerState boundary;
         bc_detail::FreeRegime regime;
-        const auto status = profile ? bc_detail::profile_state(d,profile->gas,inside,normal,un,gamma,boundary,regime) : bc_detail::free_boundary_state(d, *patch.rules(free_rules), inside, normal, un,
-                                                           gamma, initial, boundary);
+        const auto status = bc_detail::free_boundary_state(d, *patch.rules(free_rules), inside, normal, un,
+                                                           gamma, initial, boundary, regime, profile);
         if (status != BoundaryStatus::Success)
             return status;
         bc_detail::open_boundary_flux(d, boundary, normal, area, gamma, flux);
@@ -315,6 +424,7 @@ boundary_flux(unsigned d, BoundaryConfig patch, const FreeBoundaryRules* free_ru
 }
 #if !defined(AERO_BC_KERNEL_ONLY)
 #include "../mesh/coordinate.h"
+#include "../io/freestream.h"
 #include <iosfwd>
 #include <vector>
 #include <string>
@@ -325,6 +435,8 @@ struct ProfileRow {
 };
 struct BoundaryProfile {
     Coordinate center{}, axis{{1,0,0}};
+    unsigned columns = AllColumns;
+    ProfileFallback fallback = ProfileFallback::Full;
     std::vector<ProfileRow> rows;
 };
 struct BoundaryPatches {
@@ -357,14 +469,21 @@ struct PeriodicPair {
     Coordinate translation; // Сдвиг от patch к pair в исходных единицах координат сетки.
 };
 // Читает условия одного участка. При ошибке в его описании выбрасывает std::invalid_argument.
+struct BoundaryTemperature {
+    FreestreamGas gas; // T/T_amb = gamma*M_inf^2*p/rho.
+    double background_rho, background_p; // Для пересчёта пульсации температуры в режиме Linear.
+    double background_velocity[3];
+    double density(double pressure, double temperature, bool linear) const;
+};
 // bc_type adiabatic_wall или bc_type novisc_wall
 // bc_type free требует три отдельные строки в любом порядке:
 // superin [initial] [rho=...] [p=...] [ux=...] [uy=...] [uz=...]
+// superin reference_state rho=... p=... ux=... [uy=...] [uz=...] либо superin reference_state с файлом профиля
 // inflow  base_p|base_u|base_rho [initial|число]
 // outflow base_p|base_u|base_rho [initial|число]
 BoundaryConfig read_boundary(std::istream& input, unsigned dimension, BoundaryPatches& patches);
 BoundaryConfig read_boundary(std::istream& input, unsigned dimension, BoundaryPatches& patches,
-                             PeriodicPair& periodic, bool linear = false);
+                             PeriodicPair& periodic, bool linear = false, BoundaryTemperature temperature = {});
 }
 #endif
 #endif

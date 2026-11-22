@@ -74,7 +74,8 @@ void show_settings(const RunSettings& r) {
                 << "\nreconstruction_variables = " << r.reconstruction_variables
               << "\neuler_solver = " << r.euler_solver << "\ntime_scheme = " << r.time_scheme
               << "\nupw_coeff = " << r.upw_coeff << "\ntrace_ratio_min = " << r.trace_ratio_min << "\ntrace_ratio_max = " << r.trace_ratio_max
-              << "\ngamma = " << r.gamma << "\ncfl = " << r.cfl;
+              << "\ngamma = " << r.gamma << "\ncfl = " << r.cfl
+              << "\ncfl_method = " << (r.cell_height_cfl ? "height" : "spectral");
 #ifdef AERO_HAS_VISCOSITY
     if (r.viscosity.law != "off") {
         const auto& v = r.viscosity;

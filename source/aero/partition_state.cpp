@@ -24,7 +24,13 @@ void PartitionState::prepare(const RunSettings& run, const MeshPartition& part, 
         throw std::runtime_error("Cannot open " + run.initial_path);
     }
     const auto* selected_nodes = world.size == 1 ? nullptr : &selection;
-    current = read_initial(part.mesh, run.gamma, input, run.directories.input, nullptr, selected_nodes, run.background, &run.input_warnings, run.mach);
+    current = read_initial(part.mesh, run.gamma, input, run.directories.input, nullptr, selected_nodes,
+                           run.background, &run.input_warnings, run.mach, &initial_checkpoint);
+    if (!initial_checkpoint.empty()) {
+        // Загрузчик recovery запишет представителей сразу в расчётной нумерации.
+        initial.resize(value_count);
+        return;
+    }
     if (!seam) {
         initial.swap(current); // Обычная сетка уже использует локальный порядок узлов.
     }
@@ -43,7 +49,7 @@ void PartitionState::prepare(const RunSettings& run, const MeshPartition& part, 
 }
 
 void PartitionState::start_from_initial(const MeshPartition& part, const PeriodicPartition* seam) {
-    if (seam) {
+    if (seam && initial_checkpoint.empty()) {
         const unsigned width = part.mesh.view().dimension + 2;
         for (MeshIndex node = 0; node < part.nodes.size(); ++node) {
             const auto slot = seam->node_dof[node];

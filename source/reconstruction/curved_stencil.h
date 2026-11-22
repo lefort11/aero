@@ -4,6 +4,7 @@
 #include <functional>
 
 namespace aero {
+class NodeIncidence;
 namespace detail {
 // В призме связываем основание с противоположным основанием. У гексаэдра и
 // четырёхугольника направление роста выбирает исходная грань стенки.
@@ -28,14 +29,15 @@ class CurvedStencil {
     std::vector<Coordinate> normal_; // Для PL нормаль к слою, усреднённая на ребре.
     std::vector<List> layer_faces_;  // Грани своего слоя, содержащие узел.
     std::vector<List> layer_edges_;  // Тангенциальные рёбра (в том числе в 2D).
-    void prepare_ijk();
+    void prepare_ijk(const NodeIncidence&);
     void prepare_pl(const Mesh&, const ReconstructionOptions&);
     template <class Next>
     bool follow_line(MeshIndex edge, bool fifth, bool limit_each_turn, Next next, CurvedPoints&) const;
     bool pl_points(MeshIndex, bool, CurvedPoints&) const;
 
   public:
-    CurvedStencil(const Mesh&, const ReconstructionOptions&);
+    // При совместной подготовке IJK и прямых шаблонов используем общую таблицу инцидентных ячеек.
+    CurvedStencil(const Mesh&, const ReconstructionOptions&, const NodeIncidence* cells = nullptr);
     // Возвращает обе ближние опоры и доступные дальние; false включает прямой шаблон.
     bool points(MeshIndex edge, bool fifth, CurvedPoints&) const;
 };

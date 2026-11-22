@@ -15,6 +15,7 @@ struct Settings {
     double c_des = .65; // Коэффициент сеточного масштаба в модели DDES Спаларта.
     bool uses_sa() const { return enabled && (ddes || les.scale==Scale::Off); }
     bool uses_sigma() const { return enabled && !uses_sa(); }
+    bool high_order = false; // Восстанавливать nu_tilde на газовом шаблоне перед конвективным переносом.
     double nut_nu_amb = 0.; // Отношение физической турбулентной вязкости к молекулярной в набегающем потоке.
     double prandtl = .9;    // Турбулентное число Прандтля в уравнении полной энергии.
 };

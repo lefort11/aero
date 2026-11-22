@@ -32,11 +32,10 @@ template <class F> void rejects(F f, const std::string& message) {
     }
     throw std::runtime_error("expected error: " + message);
 }
-Mesh line(double scale = 5) {
+Mesh line(double last_node = 1) {
     MeshData d;
     d.dimension = 1;
-    d.length_scale_to_meters = scale;
-    d.x = {0, .25, 1};
+    d.x = {0, .25, last_node};
     d.y = d.z = {0, 0, 0};
     d.face_nodes = MeshCsr({0, 1, 2, 3}, {0, 1, 2});
     d.cell_faces = MeshCsr({0, 2, 4}, {0, 1, 1, 2});
@@ -73,6 +72,18 @@ Mesh simplex(unsigned dim) {
 std::vector<double> load(const Mesh& m, const std::string& text, const PeriodicView* seam = nullptr) {
     std::istringstream s(text);
     return read_initial(m, 1.4, s, "build", seam);
+}
+void checkpoint_path() {
+    // Разбор init.txt разрешает путь с пробелами. Сам файл откроет солвер после разбиения сетки.
+    const auto mesh = line();
+    std::string path;
+    const auto parse = [&](const std::string& text) {
+        std::istringstream input(text);
+        return read_initial(mesh, 1.4, input, "case", nullptr, nullptr, {}, nullptr, 0., &path);
+    };
+    require(parse("initial_type=recovery\npath=\"../RANS output/recovery-1.bin\"").empty(), "deferred checkpoint");
+    require(path == "case/../RANS output/recovery-1.bin", "relative checkpoint path");
+    rejects([&] { parse("initial_type=recovery"); }, "missing path");
 }
 // Проверяет вычисление начальных полей по координатам и диагностику ошибок в выражениях.
 void formulas() {
@@ -214,7 +225,8 @@ int main() {
     try {
         formulas();
         files();
-        std::cout << "Initial condition formula, periodic and AEROFIELDS tests passed.\n";
+        checkpoint_path();
+        std::cout << "Initial condition formula, periodic, AEROFIELDS and recovery path tests passed.\n";
     } catch (const std::exception& e) {
         std::cerr << e.what() << "\n";
         return 1;

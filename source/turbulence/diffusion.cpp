@@ -1,4 +1,5 @@
 #include "storage.h"
+#include "../parallel/small_weight_row.h"
 #include "../viscosity/transport.h"
 #include <algorithm>
 #include <map>
@@ -179,7 +180,10 @@ void Storage::prepare_lines(const std::vector<MeshIndex>& owned) {
     parallel_for(owned.size(), [&](size_t row_index) {
         const auto i = owned[row_index];
         if (distance[i]<0.) return;
-        std::map<MeshIndex,double> geometry;
+        // На структурированном участке обычно до 26 соседей. Накопление по
+        // элементам и порядок выбора при равных весах остаются прежними.
+        thread_local SmallWeightRow<MeshIndex,32> geometry;
+        geometry.clear();
         const auto row=diffusion_rows[i];
         for (auto p=row.first;p<row.end;++p) geometry[diffusion_terms[p].neighbour]+=diffusion_terms[p].geometry;
         Link strongest[3]={none,none,none};

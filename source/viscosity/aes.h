@@ -107,6 +107,12 @@ public:
         return g;
     }
 private:
+    // Подготавливает геометрические коэффициенты на целой сетке без фильтра LES.
+    void prepare_local_cells(const MeshPartition&, const PeriodicPartition*, const ResidualFrame&, const Locate&);
+    // Превращает локальные номера пар из каждого блока в номера общей таблицы.
+    void merge_cell_metrics(std::vector<std::vector<PairMetric>>&);
+    // Собирает список вязких вкладов каждого узла в исходном порядке элементов.
+    void index_local_vertices();
     Operator op_{};
     bool store_iteration_gradients_=false; // Для BDF с переносом SA можно повторно использовать неизменное поле газа.
     std::vector<Gradient> gradient_cache_;
