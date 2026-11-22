@@ -208,11 +208,15 @@ def check_steady(aero, case, launcher, ranks, overrides, coords, names):
                          "implicit:steady_tol=" + repr(initial_rate * .5), "implicit:steady_max_steps=100")
         def last(log, criterion):
             rows = list(report_rows(log, r"^Steady\s+" + criterion + r" residual = (\S+)"))
-            return int(rows[-1][0]), float(rows[-1][1])
+            # В таблице семь значащих цифр. Для строгой сверки критериев
+            # берём невязку из итоговой строки с полной точностью вывода.
+            final = re.search(r"(?m)^Steady state converged, " + criterion + r" spatial residual = (\S+)", log)
+            return int(rows[-1][0]), float(final[1])
         accepted, ratio = last(relative_log, "relative")
         step, rate = last(abs_log, "absolute")
         if accepted != step or not 0. < ratio <= .5 or not math.isclose(ratio, rate/initial_rate, rel_tol=2e-8):
-            raise AssertionError("The absolute and relative stopping criteria disagree")
+            raise AssertionError(f"Steady criteria disagree: relative {ratio} at step {accepted}, "
+                                 f"absolute {rate} at step {step}, initial {initial_rate}")
         check_output(relative_output, target, ranks, len(coords), 1, names)
         # Те же физические потоки, но контрольные объёмы продвигаются с разными шагами.
         # Сравниваем одно и то же принятое состояние между CPU и разбиением.

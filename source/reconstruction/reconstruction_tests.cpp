@@ -38,15 +38,17 @@ void add(const std::string& name, std::function<void()> operation) {
 
 template<bool weno> void check_weak_transverse_mp6() {
     const Mp5Settings settings{!weno, weno, weno, 4.};
-    double slopes[5][5] = {{.4}, {.3}, {.7}, {-.1}, {1.}};
+    aero::FixedMatrix<double,5,5> slopes{};
+    const double first_column[]={.4,.3,.7,-.1,1.};
+    for (unsigned i=0;i<5;++i) slopes(i,0)=first_column[i];
     double base_l[5], base_r[5];
     mp6::reconstruct<weno>(slopes,5,settings,.6,base_l,base_r);
     for (double signal : {-1.e-12, 1.e-12}) {
         // У обеих сторон нулевой допустимый интервал для поперечной компоненты.
         // Для MP5 два дальних наклона по 12*signal обнуляют также линейный
         // полином (0.8*signal - 12*signal/15) при досрочном принятии.
-        slopes[0][3] = signal;
-        slopes[3][3] = slopes[4][3] = weno ? 0. : 12.*signal;
+        slopes(0, 3) = signal;
+        slopes(3, 3) = slopes(4, 3) = weno ? 0. : 12.*signal;
         double left[5], right[5];
         mp6::reconstruct<weno>(slopes,5,settings,.6,left,right);
         near(left[3], 0., 1.e-27);
@@ -1805,23 +1807,22 @@ int main(int argc, char** argv) {
     add("MP6 coupled wave correction and MPWENO5 switch", [] {
         // Один несимметричный шаблон содержит гладкие и ограниченные волны.
         // Эталон вычислен прямой двухпроходной формулой при h=0.75 и alpha=1.
-        const double slopes[5][5] = {{.4,.3,.01,-.5,-.1}, {.3,.7,-.09,-.6,-.4},
-                                     {.7,-.3,.25,-.2,-.6}, {-.1,1.2,-.2,-.8,-.9}, {1.,-.4,.6,.1,-.3}};
-        const double expected[3][2][5] = {
-            {{.349166666666667,.504166666666667,-.041166666666667,-.559166666666667,-.066666666666667},
-             {.4625,.0575,.064166666666667,-.4325,-.16}},
-            {{.353218333224483,.495104166666667,-.044252981410357,-.562291666666667,-.054166666666667},
-             {.456569000065310,.0809375,.067235962206430,-.435625,-.1625}},
-            {{.356319700409143,.495104166666667,-.046496969964287,-.562291666666667,-.054166666666667},
-             {.454708179754514,.0809375,.068748185830593,-.435625,-.1625}}};
+        const aero::FixedMatrix<double,5,5> slopes = {{.4,.3,.01,-.5,-.1, .3,.7,-.09,-.6,-.4,
+                                     .7,-.3,.25,-.2,-.6, -.1,1.2,-.2,-.8,-.9, 1.,-.4,.6,.1,-.3}};
+        const aero::FixedTensor<double,3,2,5> expected = {{.349166666666667,.504166666666667,-.041166666666667,-.559166666666667,-.066666666666667,
+             .4625,.0575,.064166666666667,-.4325,-.16,
+            .353218333224483,.495104166666667,-.044252981410357,-.562291666666667,-.054166666666667,
+             .456569000065310,.0809375,.067235962206430,-.435625,-.1625,
+            .356319700409143,.495104166666667,-.046496969964287,-.562291666666667,-.054166666666667,
+             .454708179754514,.0809375,.068748185830593,-.435625,-.1625}};
         for (unsigned mode=0; mode<3; ++mode) {
             const Mp5Settings settings = {mode==0, mode!=0, mode==2, 1.};
             double left[5], right[5];
             if (settings.weno) mp6::reconstruct<true>(slopes,5,settings,.75,left,right);
             else mp6::reconstruct<false>(slopes,5,settings,.75,left,right);
             for (unsigned k=0; k<5; ++k) {
-                near(left[k],expected[mode][0][k],2.e-14);
-                near(right[k],expected[mode][1][k],2.e-14);
+                near(left[k],expected(mode, 0, k),2.e-14);
+                near(right[k],expected(mode, 1, k),2.e-14);
             }
         }
     });

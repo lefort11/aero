@@ -21,10 +21,11 @@ struct HexFilterData {
 
 // Один элемент в подготовленной таблице. Общая формула фильтра обращается
 // к полной геометрии, когда четыре длиннейшие пары не определяют диаметр.
-struct HexFilter {
+template<class Shape>
+struct PackedHexFilter {
     const double* column;
     unsigned stride;
-    const FilterCell* shapes;
+    const Shape* shapes;
     const MeshIndex* shape_ids;
     MeshIndex element;
     double vol_length;
@@ -56,5 +57,6 @@ struct HexFilter {
         return shapes[shape_ids[element]].length_squared(scale,count,axis);
     }
 };
+using HexFilter=PackedHexFilter<FilterCell>;
 }
 }

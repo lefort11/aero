@@ -50,7 +50,7 @@ ExactError::ExactError(const RunSettings& run, const Processes& world, const Mes
 
 // У снимка значения постоянны во времени. Формулы вычисляем в момент текущего отчёта.
 std::array<double, 6> ExactError::reference(std::size_t i, double time) const {
-    if (run_.exact_solution == ExactSolution::Fields) return fields_[i];
+    if (run_.exact_solution == ExactSolution::Fields) return fields_.row(i);
     const auto& point = nodes_[i].point;
     double q[5]{};
     for (unsigned k = 0; k < dimension_ + 2; ++k)

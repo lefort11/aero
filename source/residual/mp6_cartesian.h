@@ -10,14 +10,14 @@ namespace residual_detail {
 struct FaceMomentumAxes {
     unsigned dimension;       // Число пространственных координат.
     const double* normal;     // Единичная нормаль, вычисленная решателем для этой грани.
-    double tangents[2][3];    // В 2D нужна одна касательная, в 3D — две.
+    FixedMatrix<double,2,3> tangents;    // В 2D нужна одна касательная, в 3D — две.
 
     AERO_HOST_DEVICE FaceMomentumAxes(unsigned dim, const double* area, const double* unit_normal)
         : dimension(dim), normal(unit_normal), tangents{} {
         euler_detail::face_tangents(dim, area, normal, tangents);
     }
 
-    AERO_HOST_DEVICE const double* axis(unsigned k) const { return k == 0 ? normal : tangents[k-1]; }
+    AERO_HOST_DEVICE const double* axis(unsigned k) const { return k == 0 ? normal : tangents.row(k-1); }
 
     // Массу и энергию переносим как скаляры. Между ними записываем проекции
     // вектора импульса на нормаль и касательные в том же порядке, что у ограничителя.
@@ -45,12 +45,13 @@ struct FaceMomentumAxes {
 // left и right на входе содержат обычные декартовы приращения MP5 или MPWENO5.
 // Рассчитываем добавку к ним в осях грани. Для состояния общий вес относится
 // к плотности, нормальному импульсу и энергии. Для потока — к потокам этих величин.
-template <bool weno, unsigned width>
-AERO_HOST_DEVICE inline void correct_cartesian_pair(const FaceMomentumAxes& axes, const double slopes[][width],
+template <bool weno, unsigned rows, unsigned width>
+AERO_HOST_DEVICE inline void correct_cartesian_pair(const FaceMomentumAxes& axes, const FixedMatrix<double,rows,width>& slopes,
                                                    Mp5Settings settings, double h, double* left, double* right) {
-    double local_slopes[5][5], local_left[5], local_right[5];
+    FixedMatrix<double,5,5> local_slopes;
+    double local_left[5], local_right[5];
     for (unsigned row = 0; row < 5; ++row)
-        axes.to_local(slopes[row], local_slopes[row]);
+        axes.to_local(slopes.row(row), local_slopes.row(row));
     axes.to_local(left, local_left);
     axes.to_local(right, local_right);
     // На входе у ограничителя базовые приращения в осях грани, на выходе — только добавка.

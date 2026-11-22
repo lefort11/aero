@@ -301,7 +301,7 @@ struct SpatialResidual::Impl {
              incidence.data(),
              patches.view(profiles),
              stencil,
-             options, {}};
+             options, {}, false};
         validate_linear_walls(g);
         if (device < 0) {
             buffer.resize(surfaces.size());

@@ -4,9 +4,11 @@
 #include "../../qa/test_field.h"
 #ifdef AERO_WITH_KOKKOS_GPU
 #include "../parallel/device_arrays.h"
+#include "../parallel/device_work.h"
 #endif
 #include "../../qa/test_checks.h"
 #include <cmath>
+#include <cstring>
 #include <iostream>
 #include <numeric>
 
@@ -19,8 +21,17 @@ void near(double value, double expected, const char* reason) {
     aero_test::require(std::abs(value-expected) <= 2.e-12*(1.+std::abs(expected)),reason);
 }
 
-// Одна ячейка с косыми осями. Сдвиг не меняет объём, но даёт ненулевые смешанные
-// производные базиса, которые нельзя проверить одним лапласианом на прямоугольнике.
+MeshPartition local_partition(Mesh mesh) {
+    const auto nodes=mesh.view().node_count;
+    MeshPartition part;
+    part.mesh=std::move(mesh);
+    part.node_owners.resize(nodes,0);
+    part.nodes.resize(nodes);
+    std::iota(part.nodes.begin(),part.nodes.end(),MeshIndex(0));
+    return part;
+}
+
+// Одна ячейка с косыми осями даёт ненулевые смешанные производные базиса.
 MeshPartition element(unsigned dim, const std::vector<Vertex>& coordinates, const std::vector<Face>& faces) {
     MeshData mesh;
     mesh.dimension = dim;
@@ -40,12 +51,189 @@ MeshPartition element(unsigned dim, const std::vector<Vertex>& coordinates, cons
         mesh.boundary_patch.push_back(0);
     }
     mesh.cell_faces.offsets.push_back(faces.size());
-    MeshPartition part;
-    part.mesh = Mesh(std::move(mesh));
-    part.node_owners.resize(coordinates.size(),0);
-    part.nodes.resize(coordinates.size());
-    std::iota(part.nodes.begin(),part.nodes.end(),MeshIndex(0));
-    return part;
+    return local_partition(Mesh(std::move(mesh)));
+}
+
+void check_jacobian(viscosity::Aes&,const Mesh&,const std::vector<double>&,int,bool,bool);
+
+// Получаем те же указатели на постоянную геометрию, которые при обычной загрузке
+// указывают на GPU. Проверка только читает их и не запрашивает рабочей памяти.
+struct GeometryProbe {
+    template<class T> T* upload(const std::vector<T>& values) { return const_cast<T*>(values.data()); }
+    template<class T> T* allocate(std::size_t,const T* = nullptr) { return nullptr; }
+};
+void check_coordinate_pairs(const viscosity::Aes& aes,MeshIndex nodes,bool shared) {
+    GeometryProbe probe;
+    auto geometry=aes.upload(probe,nodes).tetra;
+    aero_test::require((geometry.cells.shared!=nullptr)==shared,"coordinate and solution node numbering");
+    geometry.cached_cells=0;
+    const auto& cpu=aes.view();
+    const viscosity::CoordinatePairTile direct{};
+    for (MeshIndex e=0;e<cpu.cell_count;++e) {
+        const auto& cell=cpu.cells[e];
+        for (unsigned i=0;i<cell.count;++i) for (unsigned j=i+1;j<cell.count;++j) {
+            const auto stress=direct.get(geometry,e,i,j);
+            const auto& table=cpu.stencil.metric(cell,i,j);
+            for (unsigned m=0;m<3;++m) for (unsigned n=0;n<3;++n)
+                near(stress(m,n),table.stress(m,n),"mixed AES pair stress from coordinates");
+        }
+    }
+}
+
+// Три общие грани: пирамида примыкает к кубу и тетраэдру, призма — к кубу.
+// Пирамида идёт первой, поэтому у следующих ячеек смещение уже отлично от 8*e.
+void check_mixed_coordinates(const Processes& world,bool implicit,bool renumbered=false) {
+    const auto part=local_partition(Mesh::read("qa/cases/mixed_3d/grid.mesh"));
+    const auto nodes=part.mesh.view().node_count;
+    ViscositySettings settings;
+    settings.law="normal";
+    settings.prandtl=.72;
+    settings.reynolds=9.;
+    viscosity::Aes aes;
+    aes.prepare_device_geometry();
+#ifdef AERO_HAS_TURBULENCE
+    turbulence::Settings ddes;
+    ddes.enabled=ddes.ddes=true;
+    ddes.les.scale=turbulence::Scale::Sla;
+    aes.configure_les(ddes,settings.prandtl,true);
+#endif
+    aes.prepare(part,nullptr,{},world,settings,1.4,.75,nodes,[&](MeshIndex n,int){return renumbered ? nodes-1-n : n;});
+    aes.allocate_host(nodes);
+    // Нелинейное поле даёт различные напряжения на соседних тетраэдрах одной ячейки.
+    std::vector<double> field(5*nodes);
+    for (MeshIndex n=0;n<nodes;++n) {
+        const double t=static_cast<double>(n)+.5;
+        double* u=field.data()+5*n;
+        u[0]=1.+.03*t;
+        for (unsigned m=1;m<=3;++m) u[m]=.3*std::sin(t*m);
+        u[4]=3.+.13*std::cos(t);
+    }
+#ifdef AERO_HAS_TURBULENCE
+    // SLA использует направление завихренности. Сверим отдельно его длину и
+    // норму градиента, которая входит в защитную функцию DDES.
+    aes.evaluate(field.data(),nullptr,false,viscosity::Evaluation::DdesGasOnly);
+    aes.evaluate(field.data(),nullptr,true,viscosity::Evaluation::FilterOnly);
+    for (MeshIndex n=0;n<nodes;++n) aes.view().nodal_filter().gather<true>(n);
+#endif
+    aes.evaluate(field.data());
+    const auto* reference=aes.view().rows;
+    for (unsigned m=0;m<5;++m) {
+        double sum=0.;
+        for (MeshIndex n=0;n<nodes;++n) sum+=reference[n].residual[m];
+        near(sum,0.,"conservation on shared mixed-element nodes");
+    }
+    aero_test::require(aes.use_coordinate_geometry(implicit),"mixed mesh must exercise coordinate AES");
+    aes.finish_device_geometry();
+    check_coordinate_pairs(aes,nodes,implicit && !renumbered);
+    if (renumbered) return;
+#ifdef AERO_WITH_KOKKOS_GPU
+    int devices=0;
+    const auto status=gpu::count(&devices);
+    if (status!=gpu::Status::NoDevice && status!=gpu::Status::Unavailable) gpu::checked(status);
+    for (int device=0;device<devices;++device) {
+        gpu::DeviceScope scope(device);
+        gpu::checked(scope.status);
+        gpu::DeviceArrays arrays;
+        arrays.device=device;
+        const auto op=aes.upload(arrays,nodes);
+        aero_test::require(op.tetra.cells && !op.tetra.all_hex,"mixed GPU geometry");
+        auto* state=arrays.upload(field);
+        const auto evaluate=[&](viscosity::Evaluation phase) {
+            if (const auto* error=device_work::aero_device_viscosity(op,state,nullptr,phase))
+                throw std::runtime_error(error);
+        };
+#ifdef AERO_HAS_TURBULENCE
+        aero_test::require((op.tetra.cached_cells>0)==!implicit,"DDES tetrahedron volume cache");
+        if (const auto* error=device_work::aero_device_prepare_tetra_volumes(op)) throw std::runtime_error(error);
+        evaluate(viscosity::Evaluation::DdesGasOnly);
+        evaluate(viscosity::Evaluation::FilterOnly);
+        std::vector<turbulence::DdesPoint> model(nodes);
+        gpu::checked(gpu::copy(model.data(),op.sa.ddes,nodes*sizeof(model.front()),gpu::Copy::ToHost));
+        for (MeshIndex n=0;n<nodes;++n) {
+            const auto& exact=aes.view().sa.ddes[n];
+            aero_test::require(exact.grid_length>0. && exact.gradient_norm>0.,"nonzero mixed DDES reference");
+            near(model[n].grid_length,exact.grid_length,"mixed DDES filter width");
+            near(model[n].gradient_norm,exact.gradient_norm,"mixed DDES velocity gradient");
+        }
+#endif
+        evaluate(viscosity::Evaluation::Full);
+#ifdef AERO_HAS_TURBULENCE
+        if (implicit) {
+            aero_test::require(static_cast<const void*>(op.samples)==op.material,"DDES reuses cell material memory");
+            // Пробуем другое поле. После расчёта его газовой невязки Ньютон
+            // уточняет DDES с прежним полем SA. Фильтр может перезаписать
+            // материал, но все пять компонент невязки и вязкий CFL уже сохранены.
+            auto trial=field;
+            for (MeshIndex i=0;i<nodes;++i) trial[5*i+1]*=2.;
+            gpu::checked(gpu::copy(state,trial.data(),trial.size()*sizeof(double),gpu::Copy::ToDevice));
+            evaluate(viscosity::Evaluation::DdesGasOnly);
+            evaluate(viscosity::Evaluation::Full);
+            std::vector<viscosity::Row> before(nodes),after(nodes);
+            const auto bytes=nodes*sizeof(viscosity::Row);
+            gpu::checked(gpu::copy(before.data(),op.rows,bytes,gpu::Copy::ToHost));
+            evaluate(viscosity::Evaluation::FilterOnly);
+            gpu::checked(gpu::copy(after.data(),op.rows,bytes,gpu::Copy::ToHost));
+            aero_test::require(std::memcmp(before.data(),after.data(),bytes)==0,"DDES prediction preserves residual and CFL");
+            // Отклоняем предиктор. По восстановленному полю повторяем фильтр и
+            // сборку с нулём итераций SA. Ниже все строки сравниваются с CPU.
+            gpu::checked(gpu::copy(state,field.data(),field.size()*sizeof(double),gpu::Copy::ToDevice));
+            evaluate(viscosity::Evaluation::LesClosure);
+            evaluate(viscosity::Evaluation::BeforeSaIterations);
+            evaluate(viscosity::Evaluation::RowsOnly);
+        }
+#endif
+        std::vector<viscosity::Row> rows(nodes);
+        gpu::checked(gpu::copy(rows.data(),op.rows,rows.size()*sizeof(rows.front()),gpu::Copy::ToHost));
+        double max_error=0.;
+        for (MeshIndex n=0;n<nodes;++n) {
+            near(rows[n].cfl_rate,reference[n].cfl_rate,"mixed AES viscous CFL");
+            for (unsigned m=0;m<5;++m) {
+                near(rows[n].residual[m],reference[n].residual[m],"mixed AES nodal residual");
+                max_error=std::max(max_error,std::abs(rows[n].residual[m]-reference[n].residual[m]));
+            }
+        }
+        std::cout << "Mixed AES GPU " << device << ", maximum CPU/GPU residual difference " << max_error << '\n';
+        // Проверяем производную каждого столбца компактного Якобиана на той же сетке:
+        // эталон содержит все пары полной невязки, включая диагонали призм и пирамид.
+        if (implicit) {
+            check_jacobian(aes,part.mesh,field,device,true,true);
+            // Центральные разности изменили рабочие массивы CPU. Восстановим эталон
+            // перед сверкой со следующей картой, если в машине несколько устройств.
+#ifdef AERO_HAS_TURBULENCE
+            aes.evaluate(field.data(),nullptr,false,viscosity::Evaluation::DdesGasOnly);
+#endif
+            aes.evaluate(field.data());
+        }
+    }
+#endif
+}
+
+// Проверяем каждый блок, в том числе смешанные производные напряжений. Вершины
+// намеренно переставлены; опорный тетраэдр выбирается по координатам.
+void check_affine_hex(double thickness) {
+    using namespace viscosity;
+    Element e{};
+    e.count=8;
+    const unsigned order[8]={5,3,6,0,1,7,2,4};
+    for (unsigned i=0;i<8;++i) {
+        const unsigned n=order[i];
+        e.position[n]={{double(i&1)+.11*std::sin(i+1.),double((i>>1)&1)+.13*std::sin(3.*i),
+                        thickness*(double(i>>2)+.08*std::cos(i))}};
+        for (unsigned d=0;d<3;++d) e.neighbours[n]|=1u<<order[i^(1u<<d)];
+    }
+    const double gas_gamma=1.4,prandtl=.73;
+    Cell cell{}; cell.count=8;
+    MeanGradient mean{};
+    std::vector<PairMetric> pairs;
+    GradientBuilder builder;
+    builder.prepare(e,3,gas_gamma,prandtl,cell,pairs,&mean);
+    const auto reduced=make_affine_hex(e,cell,mean,pairs);
+    for(unsigned i=0;i<8;++i) for(unsigned j=0;j<8;++j) if(i!=j) {
+        const auto& full=pairs[cell.pair_index(i,j)];
+        const auto compact=reduced.metric(i,j,full.heat);
+        for(unsigned m=0;m<3;++m) for(unsigned d=0;d<3;++d)
+            near(compact.stress(m, d),i<j ? full.stress(m, d) : full.stress(d, m),"affine AES pair");
+    }
 }
 
 // При x = X + s*Y на квадрате вклад противоположной вершины в лапласиан равен s
@@ -73,7 +261,8 @@ void check_quadrilateral_diagonal(const Processes& world, const MeshPartition& p
 // Собираем настоящий CSR на выбранном исполнителе. Эталон — центральная разность
 // двух полных невязок (LF первого порядка + AES) при фиксированном начальном поле.
 // Проверка каждого столбца охватывает в том числе пары, связанные только вязкостью.
-void check_jacobian(viscosity::Aes& aes, const Mesh& mesh, const std::vector<double>& field, int device) {
+void check_jacobian(viscosity::Aes& aes, const Mesh& mesh, const std::vector<double>& field, int device,
+                    bool shared_csgs = false, bool compact = false) {
     using namespace residual_detail;
     const auto topology = mesh.view();
     const MedianDual dual(mesh);
@@ -92,8 +281,10 @@ void check_jacobian(viscosity::Aes& aes, const Mesh& mesh, const std::vector<dou
     options.diffusion = viscous.rows;
     options.wall = aes.wall.data();
     Geometry host{topology.dimension,topology.node_count,faces.size(),faces.size(),faces.data(),
-                  offsets.data(),incidence.data(),{},{},options,{}};
+                  offsets.data(),incidence.data(),{},{},options,{},false};
     implicit::Partition partition;
+    partition.shared_csgs = shared_csgs;
+    partition.compact_jacobian = compact;
     partition.host_aes = partition.active_aes = viscous;
     auto active = host;
 #ifdef AERO_WITH_KOKKOS_GPU
@@ -101,6 +292,9 @@ void check_jacobian(viscosity::Aes& aes, const Mesh& mesh, const std::vector<dou
     if (device >= 0) {
         arrays.device = device;
         partition.active_aes = aes.upload(arrays,host.nodes);
+        if (partition.active_aes.tetra.cached_cells)
+            if (const auto* error=device_work::aero_device_prepare_tetra_volumes(partition.active_aes))
+                throw std::runtime_error(error);
         active.surfaces = arrays.upload(faces);
         active.offsets = arrays.upload(offsets);
         active.incidence = arrays.upload(incidence);
@@ -115,6 +309,10 @@ void check_jacobian(viscosity::Aes& aes, const Mesh& mesh, const std::vector<dou
     const unsigned width = host.components();
     std::vector<EulerFluxResult> flux(faces.size());
     const auto residual = [&](const std::vector<double>& u) {
+#ifdef AERO_HAS_TURBULENCE
+        // При DDES декодирование газа вынесено в отдельную фазу до вязкой невязки.
+        if (viscous.c_des>0.) aes.evaluate(u.data(),nullptr,false,viscosity::Evaluation::DdesGasOnly);
+#endif
         aes.evaluate(u.data());
         cpu_face_fluxes({host,nullptr,faces.size(),u.data(),nullptr,flux.data(),nullptr,nullptr,false});
         std::vector<double> r(u.size());
@@ -132,10 +330,23 @@ void check_jacobian(viscosity::Aes& aes, const Mesh& mesh, const std::vector<dou
         plus[column] += h;
         minus[column] -= h;
         const auto rp = residual(plus), rm = residual(minus);
+        // Из производной полной невязки получаем независимый эталон компактного
+        // столбца. Сумму удалённых внедиагональных блоков переносим на диагональ.
+        const auto owner = column/width;
+        std::vector<bool> retained(host.nodes,!compact);
+        retained[owner] = true;
+        for (auto p=offsets[owner]; p<offsets[owner+1]; ++p) {
+            const auto& edge = faces[incidence[p].face()];
+            retained[edge.begin] = retained[edge.end] = true;
+        }
         for (unsigned r = 0; r < width; ++r) {
             double sum = 0., norm = 0.;
+            double omitted = 0.;
+            for (size_t i=r; i<field.size(); i+=width)
+                if (!retained[i/width]) omitted += (rp[i]-rm[i])/(2.*h);
             for (size_t i = r; i < field.size(); i += width) {
-                const double expected = (rp[i]-rm[i])/(2.*h);
+                const double expected = retained[i/width] ?
+                    (rp[i]-rm[i])/(2.*h) + (i/width==owner ? omitted : 0.) : 0.;
                 const double error = std::abs(product[i]-expected);
                 aero_test::require(error < 2.e-8*(1.+std::abs(expected)),
                     "LF+AES Jacobian finite difference: column " + std::to_string(column) +
@@ -176,10 +387,10 @@ void check_element(const Processes& world, const MeshPartition& part, double vol
 
     // Аффинные u и T имеют постоянные производные на любом из разбиений.
     // Независимо интегрируем аналитические напряжения и тепловой поток по ячейке.
-    const double gradient[3][3] = {{.3,-.1,.4},{.7,-.2,.5},{-.6,.15,.11}};
+    const FixedMatrix<double,3,3> gradient = {{.3,-.1,.4,.7,-.2,.5,-.6,.15,.11}};
     const double grad_p[] = {.13,-.09,.08};
     double mu = 0., mu_u[3]{}, divergence = 0.;
-    for (unsigned k = 0; k < d; ++k) divergence += gradient[k][k];
+    for (unsigned k = 0; k < d; ++k) divergence += gradient(k, k);
     for (MeshIndex i = 0; i < mesh.node_count; ++i) {
         double* q = &field[i*width];
         const auto point = mesh.coordinate(i);
@@ -190,7 +401,7 @@ void check_element(const Processes& world, const MeshPartition& part, double vol
         mu += viscosity;
         for (unsigned m = 0; m < d; ++m) {
             double u = .31;
-            for (unsigned k = 0; k < d; ++k) u += gradient[m][k]*point[k];
+            for (unsigned k = 0; k < d; ++k) u += gradient(m, k)*point[k];
             q[1+m] = u;
             mu_u[m] += viscosity*u;
             kinetic += .5*u*u;
@@ -211,7 +422,7 @@ void check_element(const Processes& world, const MeshPartition& part, double vol
         const double scale = volume/static_cast<double>(mesh.node_count);
         double energy = mu*gamma/((gamma-1.)*.73)*grad_p[a];
         for (unsigned m = 0; m < d; ++m) {
-            const double stress = gradient[m][a]+gradient[a][m]-(a==m ? 2.*divergence/3. : 0.);
+            const double stress = gradient(m, a)+gradient(a, m)-(a==m ? 2.*divergence/3. : 0.);
             near(flux[m+1],scale*mu*stress,"momentum flux");
             energy += mu_u[m]*stress;
         }
@@ -221,6 +432,9 @@ void check_element(const Processes& world, const MeshPartition& part, double vol
     for (MeshIndex i = 0; i < mesh.node_count; ++i) field[i*width] += .017*static_cast<double>(i);
     const auto check_device = [&](int device) {
         check_jacobian(aes,part.mesh,field,device);
+        // Те же разностные производные проверяют адреса общей матрицы CSGS на GPU.
+        if (device >= 0) check_jacobian(aes,part.mesh,field,device,true);
+        check_jacobian(aes,part.mesh,field,device,device >= 0,true);
         if (d == 2 && mesh.node_count == 4) {
             aes.wall.front() = 1;
             check_jacobian(aes,part.mesh,field,device);
@@ -257,6 +471,11 @@ int main(int argc, char** argv) {
         const aero::viscosity::Law normal{1.4,4.,.01,.72,0.};
         near(normal.dynamic_viscosity(.25),.01,"reference viscosity");
         near(normal.dynamic_viscosity(1.),.02,"normal law");
+        check_affine_hex(1.);
+        check_affine_hex(.001);
+        check_mixed_coordinates(world,false);
+        check_mixed_coordinates(world,true);
+        check_mixed_coordinates(world,true,true);
         const Vertex a{0,0,0}, b{1,0,0}, c{1,1,0}, d{0,1,0}, e{0,0,1}, f{1,0,1}, g{1,1,1}, h{0,1,1};
         check_element(world,element(1,{a,b},{{0},{1}}),1.);
         check_element(world,element(2,{a,b,d},{{0,1},{1,2},{2,0}}),.5);

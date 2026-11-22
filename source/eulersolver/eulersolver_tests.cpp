@@ -72,33 +72,33 @@ Values physical(const Values& u, const Values& n, double gamma = 1.4) {
 // Независимый эталон проекции для теста: решаем R·W = U методом исключения с выбором ведущего элемента.
 Values characteristic(const EulerRoeBasis& basis, const Values& u) {
     const unsigned count = basis.dimension + 2;
-    double a[5][6] = {};
+    aero::FixedMatrix<double,5,6> a = {};
     for (unsigned r = 0; r < count; ++r) {
         for (unsigned c = 0; c < count; ++c)
-            a[r][c] = basis.right[5 * r + c];
-        a[r][count] = u[r];
+            a(r, c) = basis.right[5 * r + c];
+        a(r, count) = u[r];
     }
     for (unsigned c = 0; c < count; ++c) {
         unsigned pivot = c;
         for (unsigned r = c + 1; r < count; ++r)
-            if (std::abs(a[r][c]) > std::abs(a[pivot][c]))
+            if (std::abs(a(r, c)) > std::abs(a(pivot, c)))
                 pivot = r;
-        require(std::abs(a[pivot][c]) > 1.e-13, "Singular test Roe matrix");
+        require(std::abs(a(pivot, c)) > 1.e-13, "Singular test Roe matrix");
         for (unsigned j = 0; j <= count; ++j)
-            std::swap(a[c][j], a[pivot][j]);
-        const double divisor = a[c][c];
+            std::swap(a(c, j), a(pivot, j));
+        const double divisor = a(c, c);
         for (unsigned j = c; j <= count; ++j)
-            a[c][j] /= divisor;
+            a(c, j) /= divisor;
         for (unsigned r = 0; r < count; ++r)
             if (r != c) {
-                const double factor = a[r][c];
+                const double factor = a(r, c);
                 for (unsigned j = c; j <= count; ++j)
-                    a[r][j] -= factor * a[c][j];
+                    a(r, j) -= factor * a(c, j);
             }
     }
     Values w(count);
     for (unsigned k = 0; k < count; ++k)
-        w[k] = a[k][count];
+        w[k] = a(k, count);
     return w;
 }
 // В тесте отдельно соединяем обратное преобразование и вычисление потока выбранной схемой.
@@ -455,10 +455,10 @@ int main(int argc, char** argv) {
         EulerRoeBasis basis;
         ok(euler_roe_basis(1, ui.data(), ui.data(), n.data(), 1.4, &basis));
         const double c = std::sqrt(1.4), h = 5.5;
-        const double expected[3][3] = {{1, 1, 1}, {2 - c, 2, 2 + c}, {h - 2 * c, 2, h + 2 * c}};
+        const aero::FixedMatrix<double,3,3> expected = {{1, 1, 1, 2 - c, 2, 2 + c, h - 2 * c, 2, h + 2 * c}};
         for (unsigned r = 0; r < 3; ++r)
             for (unsigned k = 0; k < 3; ++k)
-                near(basis.right[5 * r + k], expected[r][k]);
+                near(basis.right[5 * r + k], expected(r, k));
     });
     add("supplied fluxes are used rather than recomputed", [] {
         const Values ul = state(1, Values{1}, 1), ur = state(2, Values{-0.3}, 0.7), n = {1};

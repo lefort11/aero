@@ -305,7 +305,7 @@ ReconstructionStencilView PartitionStencil::view(MeshIndex state_nodes) const {
             row_owner.data(),      linear.weights.data(),
             slopes.offsets.data(), slopes.nodes.data(),
             slopes.weights.data(), weno_order.empty() ? nullptr : weno_order.data(),
-            epsilon_scale.data(), mp5};
+            epsilon_scale.data(), mp5,nullptr,false,nullptr,false};
 }
 
 namespace {

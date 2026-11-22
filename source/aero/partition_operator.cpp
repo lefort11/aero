@@ -1,9 +1,12 @@
+#include <iostream>
 #include "partition_operator.h"
 #include "../bc/profile.h"
 #include "../io/settings.h"
 #include "partition_kernels.h"
 #include "../parallel/parallel_for.h"
 #ifdef AERO_WITH_KOKKOS_GPU
+#include "../implicit/block_layout.h"
+#include "../implicit/spatial_jacobian.h"
 #include "../parallel/device_check.h"
 #include "../parallel/device_work.h"
 #include "../io/fields.h"
@@ -47,7 +50,7 @@ PartitionOperator::PartitionOperator(const MeshPartition& part, CvView cv, const
     residual_detail::build_incidence(ids_.size(), edge_count, surfaces_, offsets_, incidence_);
     grid_ = {
         mesh.dimension,    ids_.size(),    edge_count, surfaces_.size(), surfaces_.data(), offsets_.data(),
-        incidence_.data(), patches.view(boundary_profiles_), {},         options, {}};
+        incidence_.data(), patches.view(boundary_profiles_), {},         options, {}, false};
     if (!cuda) {
         flux_.resize(surfaces_.size());
         normals_.resize(edge_count);
@@ -193,9 +196,9 @@ PackedEdgeOrder pack_weno_edge(const PartitionStencil& stencil, MeshIndex edge, 
         const auto anchor = unused ? rows.offsets[8 * edge] : first;
         for (unsigned j = 0; j < capacity; ++j, ++term) {
             const auto node = j < terms ? first + j : anchor;
-            tile.nodes[term][lane] = static_cast<unsigned>(rows.nodes[node]);
+            tile.nodes(term, lane) = static_cast<unsigned>(rows.nodes[node]);
             if (j)
-                tile.weights[weight++][lane] = j < terms ? rows.weights[node] : 0.;
+                tile.weights(weight++, lane) = j < terms ? rows.weights[node] : 0.;
         }
     }
     return order;
@@ -306,6 +309,7 @@ void PartitionOperator::prepare_viscosity(const MeshPartition& part, const Perio
         const ResidualFrame& frame, const RunSettings& run) {
     const auto& settings=run.viscosity;
     if (settings.law == "off") return;
+    compact_jacobian_ = run.implicit_settings.compact_jacobian;
     // Периодический сосед может находиться вне конвективного шаблона. Включаем его
     // в уже существующий обмен полями, один раз для всех элементов этого процесса.
     std::map<Id,Id> slots;
@@ -315,6 +319,7 @@ void PartitionOperator::prepare_viscosity(const MeshPartition& part, const Perio
     for (Id i = 0; direct && i < ids_.size(); ++i) direct = ids_[i] == i;
     world_.local([&] {
         aes_.reset(new viscosity::Aes);
+        if (run.use_cuda) aes_->prepare_device_geometry();
 #ifdef AERO_HAS_TURBULENCE
         aes_->configure_les(run.turbulence,settings.prandtl,run.use_cuda,
                             world_.size==1 && !run.uses_implicit_time());
@@ -455,57 +460,137 @@ void PartitionOperator::layout_gpu(bool compact_buffer) {
     }
 }
 
+#ifdef AERO_HAS_VISCOSITY
+// Для компактного неявного расчёта на одной карте все эти поля вычисляются
+// заново после каждой поправки. Предиктор и сборка якобиана их не занимают:
+// вектора начинают запись только при входе в сам BiCGSTAB.
+static implicit::KrylovScratch krylov_workspace(const residual_detail::Geometry& g,
+        bool contiguous, EulerFluxResult* flux=nullptr, viscosity::Gas* gas=nullptr, viscosity::Row* rows=nullptr) {
+    implicit::KrylovScratch result;
+    const auto unknowns=g.nodes*g.components();
+    if (contiguous) {
+        // Режим доступен для одного процесса: все локальные узлы являются собственными.
+        result.borrow(flux,FluxWorkspace(g.faces,g.nodes,g.nodes).bytes,unknowns);
+        return result;
+    }
+    result.borrow(flux,g.faces*sizeof(EulerFluxResult),unknowns);
+    result.borrow(rows,g.nodes*sizeof(viscosity::Row),unknowns);
+    result.borrow(gas,g.nodes*sizeof(viscosity::Gas),unknowns);
+    return result;
+}
+#endif
+
 // Верхняя граница дополнительной памяти BDF1. У кратных рёбер CSR может объединить
 // несколько вхождений в один блок. Оценка относится только к собственным строкам.
-static MeshIndex implicit_storage_bytes(const residual_detail::Geometry& g, const std::vector<MeshIndex>& owned,
+static MeshIndex estimated_matrix_bytes(const residual_detail::Geometry& g, const std::vector<MeshIndex>& owned,
                                         const implicit::NewtonSettings& settings) {
     const MeshIndex width = g.components(), block = width * width * sizeof(double);
     MeshIndex columns = owned.size(); // Одна диагональ на узел, один внедиагональный блок на соседа.
     for (auto node : owned)
         for (auto k = g.offsets[node]; k < g.offsets[node + 1]; ++k)
             if (g.incidence[k].face() < g.edges) columns = partition_bytes(columns, 1, 1);
-    MeshIndex bytes = partition_bytes(0, columns, block + sizeof(MeshIndex)); // Блоки CSR и столбцы.
+    const MeshIndex neighbours = columns - owned.size();
+    const MeshIndex neighbour_block = width * width * sizeof(implicit::LinearCoefficient);
+    MeshIndex bytes = partition_bytes(0, columns, sizeof(MeshIndex));
+    bytes = partition_bytes(bytes, owned.size(), block);
+    bytes = partition_bytes(bytes, neighbours, neighbour_block);
+    if (implicit::mixed_linear || settings.csgs)
+        bytes = partition_bytes(bytes, columns, sizeof(MeshIndex)); // Адреса в раздельной или переставленной матрице.
     bytes = partition_bytes(bytes, owned.size() + 1, sizeof(MeshIndex));       // Смещения строк.
     bytes = partition_bytes(bytes, g.offsets[g.nodes], sizeof(MeshIndex));    // Вхождение грани в строку.
-    bytes = partition_bytes(bytes, g.faces, block); // На ребре два блока производных, на границе один.
-    bytes = partition_bytes(bytes, g.edges, block);
-    bytes = partition_bytes(bytes, owned.size(), block + width * sizeof(unsigned char)); // LU и перестановки BJ.
+    return bytes;
+}
+
+static MeshIndex implicit_storage_bytes(const residual_detail::Geometry& g, const std::vector<MeshIndex>& owned,
+                                        const implicit::NewtonSettings& settings, MeshIndex gradient_bytes,
+                                        const implicit::GpuMatrixPlan* plan=nullptr, unsigned shared_vectors=0) {
+    const MeshIndex width=g.components(), block=width*width*sizeof(double);
+    // Для компактного якобиана уже известны все столбцы и выравнивание цветных проходов.
+    MeshIndex bytes=plan ? implicit::gpu_matrix_bytes(*plan) : estimated_matrix_bytes(g,owned,settings);
+    // Производные по концам ребра занимают два блока, граничная площадка — один.
+    // До них в той же рабочей области собираются вязкие градиенты.
+    const auto face_bytes = partition_bytes(partition_bytes(0, g.faces, block), g.edges, block);
+    bytes = partition_bytes(bytes, 1, plan ? gradient_bytes : std::max(face_bytes, gradient_bytes));
+    // В компактной раскладке решатель раскладывает исходный диагональный блок
+    // в регистрах потока. Постоянная копия LU нужна только обычной раскладке.
+    if (!shared_vectors) bytes = partition_bytes(bytes, owned.size(), block + width * sizeof(unsigned char));
     // История BDF2 и промежуточное поле CSGS выделяются по запросу.
     const auto capacity = std::max<MeshIndex>(1,owned.size()*width);
     if (g.options.background.active() || settings.jacobian_update_every) bytes = partition_bytes(bytes, owned.size(), width*sizeof(double));
     if (settings.second_order) bytes=partition_bytes(bytes,capacity,sizeof(double));
-    if (settings.csgs) {
+    if (settings.csgs && !plan) {
         bytes=partition_bytes(bytes,capacity,sizeof(double));
         bytes=partition_bytes(bytes,owned.size(),2*sizeof(MeshIndex)); // Порядок и обратный порядок.
         bytes=partition_bytes(bytes,g.nodes,sizeof(MeshIndex));       // Полный узел -> собственная строка.
     }
     if (owned.empty()) return partition_bytes(bytes, 2, sizeof(double)); // Рабочие адреса двух пустых буферов.
-    return partition_bytes(bytes, owned.size(), (implicit::NewtonFieldCount + implicit::KrylovFieldCount) *
+    return partition_bytes(bytes, owned.size(), (implicit::NewtonFieldCount + implicit::KrylovFieldCount-shared_vectors) *
                                                 width * sizeof(double));
 }
 
 void PartitionOperator::reserve_gpu(bool compact_buffer, GpuMemoryFit& fit, const implicit::NewtonSettings* settings) {
-    auto extra = settings ? implicit_storage_bytes(grid_, owned, *settings) : 0;
+    shared_csgs_ = settings && settings->csgs;
+    MeshIndex extra = 0, gradient_bytes = 0;
 #ifdef AERO_HAS_VISCOSITY
     if (settings && aes_) {
         const auto v = aes_->view();
         // На смешанной сетке часть пар добавляет новые столбцы; считаем верхнюю границу до резервирования карты.
-        extra = partition_bytes(extra,v.neighbour_count,sizeof(Id)+width_*width_*sizeof(double));
+        if (!settings->compact_jacobian)
+            extra = partition_bytes(extra,v.neighbour_count,
+                sizeof(Id)*(1u+unsigned(implicit::mixed_linear || settings->csgs))
+                +width_*width_*sizeof(implicit::LinearCoefficient));
         extra = partition_bytes(extra,state_nodes()+1,sizeof(Id));
-        extra = partition_bytes(extra,v.vertex_count,sizeof(viscosity::ColumnElement)+sizeof(viscosity::Gradient));
+        extra = partition_bytes(extra,v.vertex_count,sizeof(viscosity::ColumnElement));
+        gradient_bytes = partition_bytes(0,v.vertex_count,sizeof(viscosity::Gradient));
         if (settings->csgs) extra = partition_bytes(extra,state_nodes()-grid_.nodes,sizeof(Id));
     }
 #endif
-    gpu_.reset(new PartitionGpu);
-    layout_gpu(compact_buffer);
-    fit.failed = !gpu_->reserve(fit, extra);
-    // На тесной карте расчёт может поместиться с исходными разреженными строками, без дополнительных буферов.
-    if (fit.failed && grid_.packed.state_nodes) {
-        grid_.packed = {};
+    if (settings) extra = partition_bytes(extra, 1, implicit_storage_bytes(grid_, owned, *settings, gradient_bytes));
+    const auto try_layout = [&] {
         gpu_.reset(new PartitionGpu);
         layout_gpu(compact_buffer);
         fit.failed = !gpu_->reserve(fit, extra);
+    };
+    try_layout();
+    // На тесной карте расчёт может поместиться с исходными разреженными строками, без дополнительных буферов.
+    if (fit.failed && grid_.packed.state_nodes) {
+        grid_.packed = {};
+        try_layout();
     }
+#ifdef AERO_HAS_VISCOSITY
+    // Обе компактные раскладки собирают блоки в готовом графе матрицы.
+    // Выбираем их по объёму фактических таблиц после осмотра связности сетки.
+    const auto try_compact_geometry = [&] {
+        if (world_.size==1 && settings && settings->compact_jacobian) {
+            // Однопроцессная сборка берёт адреса блоков из готового графа CSR и
+            // вычисляет производную в строке. Для обработки по группам буфер
+            // градиентов уже входит в память AES, второй раз его не учитываем.
+            if (!matrix_plan_) {
+                implicit::Partition topology;
+                topology.compact_jacobian=true;
+                topology.shared_csgs=shared_csgs_;
+                topology.host_aes=aes_->view();
+                topology.host_aes.node_count=state_nodes();
+                matrix_plan_=implicit::gpu_matrix_plan(grid_,owned.size(),topology);
+            }
+            extra=implicit_storage_bytes(grid_,owned,*settings,aes_->has_gradient_tiles() ? 0 : gradient_bytes,
+                                         matrix_plan_.get(),krylov_workspace(grid_,aes_->uses_implicit_coordinates()).count);
+        }
+        try_layout();
+    };
+    if (fit.failed && aes_ && aes_->use_affine_geometry()) {
+        const auto previous=fit.layout_bytes;
+        try_compact_geometry();
+        std::cout << "GPU rank " << world_.rank << ": compact AES geometry, saved "
+                  << previous-fit.layout_bytes << " bytes" << std::endl;
+    }
+    const bool coordinate_jacobian = world_.size==1 && settings && settings->compact_jacobian;
+    if (fit.failed && (!settings || coordinate_jacobian) && aes_ && aes_->use_coordinate_geometry(settings != nullptr)) {
+        try_compact_geometry();
+        std::cout << "GPU rank " << world_.rank << ": AES using resident vertex coordinates" << std::endl;
+    }
+    if (aes_ && !fit.failed) aes_->finish_device_geometry();
+#endif
 }
 
 void PartitionOperator::upload_state(const std::vector<double>& state, const std::vector<double>& initial) {
@@ -866,7 +951,7 @@ residual_detail::FluxCfl PartitionOperator::cfl_grid() const {
 #ifdef AERO_WITH_KOKKOS_GPU
     if (gpu_) {
         const auto& g = gpu_->active_grid();
-        return {g.geometry, g.flux, g.volumes, g.owned, g.owned_count, sa_rate, device_heights_};
+        return {g.geometry, g.flux, g.volumes, g.owned, g.owned_count, sa_rate, device_heights_,g.state};
     }
 #endif
     return {grid_, flux_.data(), volumes_, world_.size == 1 ? nullptr : owned.data(), owned.size(), sa_rate, heights_};
@@ -976,14 +1061,25 @@ const double* PartitionOperator::extend_linear_vector(const double* compact) {
 
 implicit::Partition PartitionOperator::linear_partition() {
     implicit::Partition part;
+#ifdef AERO_WITH_KOKKOS_GPU
+    part.shared_csgs = shared_csgs_;
+    part.gpu_matrix_plan = matrix_plan_;
+#endif
     part.steady_steps = steady_steps_.get();
 #ifdef AERO_HAS_VISCOSITY
     if (aes_) {
         part.host_aes = aes_->view();
+        part.compact_jacobian = compact_jacobian_;
         part.host_aes.node_count = state_nodes();
         part.active_aes = part.host_aes;
 #ifdef AERO_WITH_KOKKOS_GPU
-        if (gpu_) part.active_aes = gpu_->viscosity_view();
+        if (gpu_) {
+            part.active_aes = gpu_->viscosity_view();
+            if (world_.size==1 && part.compact_jacobian && (part.active_aes.affine || part.active_aes.tetra.cells)) {
+                part.krylov_scratch=krylov_workspace(grid_,aes_->uses_implicit_coordinates(),gpu_->active_grid().flux,
+                                                     part.active_aes.gas,part.active_aes.rows);
+            }
+        }
 #endif
     }
 #endif

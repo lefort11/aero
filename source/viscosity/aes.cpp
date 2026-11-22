@@ -1,4 +1,5 @@
 #include "aes.h"
+#include "volume_simplices.h"
 #include "../parallel/parallel_for.h"
 #include <algorithm>
 #include <array>
@@ -66,6 +67,7 @@ void Aes::prepare_local_cells(const MeshPartition& part, const PeriodicPartition
     const MeshIndex blocks = std::min<MeshIndex>(64, (mesh.cell_count + 511) / 512);
     std::vector<std::vector<PairMetric>> pairs(blocks);
     cells_.resize(mesh.cell_count);
+    if (keep_affine_input_) affine_input_.resize(mesh.cell_count);
     parallel_for(blocks, [&](MeshIndex b) {
         // Каждый блок имеет собственный кэш повторяющихся форм. Поэтому сборка
         // интегралов по элементам не блокирует остальные потоки.
@@ -73,12 +75,230 @@ void Aes::prepare_local_cells(const MeshPartition& part, const PeriodicPartition
         for (MeshIndex c = mesh.cell_count*b/blocks; c < mesh.cell_count*(b+1)/blocks; ++c) {
             const Element e = describe(part,seam,frame,c);
             auto& cell = cells_[c];
-            cell = prepare_cell(cache,e,mesh.dimension,op_.law.gamma,op_.law.prandtl,pairs[b]);
+            MeanGradient mean{};
+            cell=prepare_cell(cache,e,mesh.dimension,op_.law.gamma,op_.law.prandtl,pairs[b],keep_affine_input_ ? &mean : nullptr);
+            if (keep_affine_input_) remember_affine_input(c,e,mean);
             const auto nodes = mesh.cell_nodes(c);
             for (unsigned i = 0; i < cell.count; ++i) cell.node[i] = slots[nodes[i]];
         }
     }, 2);
     merge_cell_metrics(pairs);
+}
+
+void Aes::remember_affine_input(MeshIndex cell,const Element& element,const MeanGradient& mean) {
+    auto& input=affine_input_[cell];
+    std::copy_n(element.position,element.count,input.position);
+    input.mean=mean;
+    input.adjacency=0;
+    for (unsigned i=0;i<element.count;++i)
+        input.adjacency |= std::uint64_t(element.neighbours[i])<<(8*i);
+}
+
+bool Aes::use_affine_geometry() {
+    // На смешанной сетке сохраняется общий оператор AES для всех типов элементов.
+    // Этот исполнитель обрабатывает произвольные гексаэдры, включая криволинейные сетки.
+    if (!op_.element_order || compact_geometry_ || affine_input_.size()!=cells_.size() ||
+        cells_.size()>static_cast<size_t>(std::numeric_limits<int>::max())) return false;
+    const size_t dense=metrics_.size()*sizeof(PairMetric);
+    const size_t reduced=cells_.size()*sizeof(AffineHex)+metrics_.size()*sizeof(double);
+    if (reduced>=dense) return false;
+    prepare_compact_geometry();
+    return true;
+}
+
+// Коэффициенты тепла нужны газу и SA при обоих способах хранения геометрии.
+void Aes::prepare_compact_geometry() {
+    compact_geometry_=true;
+    pair_heat_.resize(metrics_.size());
+    // Скаляр SA читает те же double, сохраняя прежний порядок суммирования.
+    parallel_for(metrics_.size(),[&](MeshIndex p) { pair_heat_[p]=metrics_[p].heat; });
+    prepare_gradient_tiles();
+}
+
+void Aes::finish_device_geometry() {
+    if (compact_geometry_ && !coordinate_geometry_) {
+        affine_.resize(cells_.size());
+        parallel_for(cells_.size(),[&](MeshIndex e) {
+            Element element{};
+            std::copy_n(affine_input_[e].position,8,element.position);
+            affine_[e]=make_affine_hex(element,cells_[e],affine_input_[e].mean,metrics_);
+        });
+    }
+    release_device_geometry_input();
+}
+
+// Исходная нумерация вершин повторяется на многих элементах. Только список из
+// тетраэдров общий для такой нумерации, координаты каждой ячейки индивидуальны.
+bool Aes::use_coordinate_geometry(bool implicit) {
+    if (coordinate_geometry_ || cells_.empty() || tetra_cells_.size()!=cells_.size()) return false;
+    if (!compact_geometry_) {
+        // На смешанной сетке нет промежуточной таблицы гексаэдров. Сравним размеры
+        // с исходными коэффициентами перед переходом непосредственно к координатам.
+        const auto raw=tetra_position_.size()*sizeof(Coordinate)+cells_.size()*sizeof(VolumeCellNodes);
+        if (raw+metrics_.size()*sizeof(double)>=metrics_.size()*sizeof(PairMetric)) return false;
+        prepare_compact_geometry();
+    }
+    std::map<std::uint64_t,std::uint32_t> types;
+    for (MeshIndex e=0;e<cells_.size();++e) {
+        const auto mask=affine_input_[e].adjacency;
+        auto inserted=types.emplace(mask,static_cast<std::uint32_t>(types.size()));
+        tetra_cells_[e].pattern=inserted.first->second;
+        if (!inserted.second) continue;
+        Element shape{};
+        shape.count=cells_[e].count;
+        for (unsigned n=0;n<shape.count;++n) shape.neighbours[n]=static_cast<unsigned>((mask>>(8*n))&255);
+        VolumePattern pattern{};
+        unsigned t=0, count[8]{};
+        const bool valid=for_volume_tetrahedra(shape,[&](double weight,unsigned a,unsigned b,unsigned c,unsigned d) {
+            const unsigned vertices[]={a,b,c,d};
+            if (t>=24) throw MeshError("AES: too many tetrahedra in volume element");
+            for (unsigned j=0;j<4;++j) {
+                const auto n=vertices[j];
+                if (count[n]>=12) throw MeshError("AES: invalid tetrahedron incidence");
+                pattern.nodes(t,j)=static_cast<unsigned char>(n);
+                pattern.incidence(n,count[n]++)=static_cast<unsigned char>(4*t+j);
+            }
+            pattern.volume_divisor=6./weight;
+            ++t;
+        });
+        if (!valid) throw MeshError("AES: unsupported volume element");
+        pattern.tetrahedra=static_cast<unsigned char>(t);
+        for (unsigned n=0;n<shape.count;++n) pattern.degree[n]=static_cast<unsigned char>(count[n]);
+        pattern.prepare_pairs();
+        tetra_patterns_.push_back(pattern);
+    }
+#ifdef AERO_HAS_TURBULENCE
+    if (!filters_.empty() && box_nodes_.empty()) {
+        // Одинаковые формы уже получили один индекс при подготовке фильтра.
+        // Храним средние производные один раз на форму, включая призмы и пирамиды.
+        coordinate_filters_.resize(filters_.size());
+        const bool from_areas=implicit && prepare_mean_areas();
+        if (!from_areas) tetra_means_.resize(filters_.size());
+        parallel_for(filters_.size(),[&](MeshIndex i) {
+            const auto& shape=filters_[i];
+            coordinate_filters_[i]=shape;
+            if (from_areas) return;
+            auto& mean=tetra_means_[i];
+            mean.volume=shape.volume;
+            std::copy_n(shape.gradient,8,mean.basis);
+        });
+    }
+#endif
+    coordinate_all_hex_=std::all_of(cells_.begin(),cells_.end(),[](const Cell& cell) { return cell.count==8; });
+    implicit_coordinates_=implicit;
+    if (implicit) {
+        share_coordinate_nodes();
+        // Во время сборки Якобиана буфер узловых строк свободен. Если группа
+        // помещается целиком, вычисляем геометрию один раз для всех пяти столбцов.
+        // На большой сетке исходные группы уже помещаются и пересчёт списка не нужен.
+        const auto capacity=CoordinatePairTile::capacity(op_.row_count*sizeof(Row));
+        const auto largest=gradient_tiles_.empty() ? cells_.size() : gradient_tiles_.front().cells;
+        if (capacity && capacity<largest) prepare_gradient_tiles(capacity);
+    }
+    coordinate_geometry_=true;
+    return true;
+}
+
+// Не предполагаем определённого типа ячеек, порядка узлов или отсутствия
+// периодичности. На каждой ячейке сравниваем столько номеров, сколько у неё вершин.
+void Aes::share_coordinate_nodes() {
+    const auto groups=std::min<MeshIndex>(64,cells_.size());
+    std::vector<unsigned char> same(groups,1);
+    parallel_for(groups,[&](MeshIndex group) {
+        for (MeshIndex e=cells_.size()*group/groups;e<cells_.size()*(group+1)/groups;++e) {
+            const auto& cell=cells_[e];
+            if (!std::equal(cell.node,cell.node+cell.count,tetra_cells_[e].vertex)) {
+                same[group]=0;
+                return;
+            }
+        }
+    },2);
+    shared_coordinate_nodes_=std::find(same.begin(),same.end(),0)==same.end();
+    if (!shared_coordinate_nodes_ || tetra_patterns_.size()==1) return;
+    // Связность уже есть, дополнительно нужен лишь номер разбиения. При одной
+    // форме все номера нулевые и массив вовсе не выделяется.
+    tetra_pattern_ids_.resize(cells_.size());
+    parallel_for(cells_.size(),[&](MeshIndex e){tetra_pattern_ids_[e]=tetra_cells_[e].pattern;});
+}
+
+#ifdef AERO_HAS_TURBULENCE
+// На произвольной сетке ориентацию каждого тетраэдра определяем по фактическим
+// координатам. Только после этого можно разделить одну формулу между ячейками.
+bool Aes::prepare_mean_areas() {
+    std::vector<std::uint32_t> masks(cells_.size());
+    const std::uint32_t invalid=std::numeric_limits<std::uint32_t>::max();
+    parallel_for(cells_.size(),[&](MeshIndex e) {
+        const auto& cell=tetra_cells_[e];
+        const auto& pattern=tetra_patterns_[cell.pattern];
+        const VolumePoints points{tetra_position_.data(),&cell};
+        std::uint32_t mask=0;
+        for (unsigned t=0;t<pattern.tetrahedra;++t) {
+            const double det=TetrahedronGeometry(points,pattern.nodes.row(t)).determinant;
+            if (!std::isfinite(det) || det==0.) { mask=invalid; break; }
+            if (det<0.) mask |= std::uint32_t(1)<<t;
+        }
+        masks[e]=mask;
+    });
+    // Сохраняем готовую таблицу double, если она занимает меньше места,
+    // например на сетке из большого числа одинаковых форм.
+    const MeshIndex previous=filters_.size()*sizeof(MeanGradient);
+    std::map<std::uint64_t,std::uint32_t> indices;
+    std::vector<MeanAreaForm> forms;
+    std::vector<MeanAreaTerm> terms;
+    for (MeshIndex e=0;e<cells_.size();++e) {
+        const auto mask=masks[e], pattern=tetra_cells_[e].pattern;
+        if (mask==invalid) return false;
+        const auto key=(std::uint64_t(pattern)<<32) | mask;
+        const auto found=indices.emplace(key,static_cast<std::uint32_t>(indices.size()));
+        if (found.second) {
+            forms.push_back(append_mean_area_form(tetra_patterns_[pattern],mask,terms));
+            const MeshIndex bytes=forms.size()*sizeof(MeanAreaForm)+terms.size()*sizeof(MeanAreaTerm)
+                                 +(forms.size()>1 ? masks.size()*sizeof(masks[0]) : 0);
+            if (bytes>=previous) return false;
+        }
+        masks[e]=found.first->second;
+    }
+    mean_area_forms_.swap(forms);
+    mean_area_terms_.swap(terms);
+    if (mean_area_forms_.size()>1) mean_area_ids_.swap(masks);
+    return true;
+}
+#endif
+
+// Градиенты газа нужны, пока суммируются вклады в узлы. Обрабатываем одну группу
+// элементов и затем отдаём ту же рабочую память следующей группе. При склейке MPI
+// несколько локальных вершин могут обозначать один узел, поэтому используем готовую incidence_.
+void Aes::prepare_gradient_tiles(MeshIndex capacity) {
+    if (cells_.size()<=capacity) return;
+    const MeshIndex count=(cells_.size()-1)/capacity+1;
+    gradient_tiles_.resize(count);
+    // Вхождения в узел отсортированы по номеру элемента. В каждом диапазоне
+    // достаточно одного отрезка на узел, внутри него суммирование идёт в порядке исходной сетки.
+    std::vector<MeshIndex> sizes(count);
+    for (unsigned pass=0;pass<2;++pass) {
+        for (MeshIndex node=0;node<op_.row_count;++node) {
+            MeshIndex first=offsets_[node];
+            const MeshIndex end=offsets_[node+1];
+            do {
+                const MeshIndex tile=first==end ? 0 : incidence_[first]/8/capacity;
+                MeshIndex next=first;
+                while (next<end && incidence_[next]/8/capacity==tile) ++next;
+                if (!pass) ++sizes[tile];
+                else gradient_slices_[sizes[tile]++]={node,first,next};
+                first=next;
+            } while (first<end);
+        }
+        if (pass) break;
+        MeshIndex offset=0;
+        for (MeshIndex t=0;t<count;++t) {
+            const auto length=sizes[t];
+            gradient_tiles_[t]={t*capacity,std::min<MeshIndex>(capacity,cells_.size()-t*capacity),offset,length,
+                                cells_[t*capacity].first_vertex};
+            sizes[t]=offset;
+            offset+=length;
+        }
+        gradient_slices_.resize(offset);
+    }
 }
 
 void Aes::merge_cell_metrics(std::vector<std::vector<PairMetric>>& pairs) {
@@ -116,6 +336,24 @@ void Aes::prepare(const MeshPartition& part, const PeriodicPartition* seam, cons
                   const Processes& world, const ViscositySettings& settings, double gamma, double mach,
                   MeshIndex rows, const Locate& locate) {
     const auto mesh = part.mesh.view();
+    keep_affine_input_=keep_affine_input_ && mesh.dimension==3 && mesh.cell_count>0;
+    // Геометрический номер берём до склейки периодических узлов. Так один
+    // расчётный узел может по-прежнему иметь разные координаты на двух границах.
+    if (keep_affine_input_ && world.size==1 && mesh.node_count<=UINT32_MAX) {
+        tetra_cells_.resize(mesh.cell_count);
+        tetra_position_.resize(mesh.node_count);
+        parallel_for(mesh.node_count,[&](MeshIndex n) {
+            const auto point=mesh.coordinate(n);
+            for (unsigned k=0;k<3;++k) {
+                const auto axis=frame.axis[k];
+                tetra_position_[n][k]=axis.x*point[0]+axis.y*point[1]+axis.z*point[2];
+            }
+        });
+        parallel_for(mesh.cell_count,[&](MeshIndex e) {
+            const auto nodes=mesh.cell_nodes(e);
+            for (unsigned j=0;j<nodes.size;++j) tetra_cells_[e].vertex[j]=static_cast<std::uint32_t>(nodes[j]);
+        });
+    }
     op_.dim = mesh.dimension;
     op_.row_count = rows;
     op_.law = {gamma,gamma*mach*mach,1./settings.reynolds,settings.prandtl,
@@ -133,14 +371,14 @@ void Aes::prepare(const MeshPartition& part, const PeriodicPartition* seam, cons
     std::map<MeshIndex,MeshIndex> filter_by_shape;
 #endif
     const auto add = [&](const Element& e) {
-        MeanGradient* requested=nullptr;
-#ifdef AERO_HAS_TURBULENCE
         MeanGradient mean{};
+        MeanGradient* requested=keep_affine_input_ ? &mean : nullptr;
+#ifdef AERO_HAS_TURBULENCE
         if (op_.computes_les()) requested=&mean;
 #endif
         Cell cell = prepare_cell(gradients,e,mesh.dimension,gamma,op_.law.prandtl,metrics_,requested);
 #ifdef AERO_HAS_TURBULENCE
-        if (requested) {
+        if (op_.computes_les()) {
             auto shape=filter_by_shape.emplace(cell.first_pair,filters_.size());
             filter_indices_.push_back(shape.first->second);
             if (shape.second) {
@@ -178,6 +416,10 @@ void Aes::prepare(const MeshPartition& part, const PeriodicPartition* seam, cons
             }
         }
 #endif
+        if (keep_affine_input_) {
+            affine_input_.emplace_back();
+            remember_affine_input(cells_.size(),e,mean);
+        }
         cell.first_vertex = op_.vertex_count;
         op_.vertex_count += cell.count;
         for (unsigned i = 0; i < e.count; ++i) {
@@ -190,6 +432,7 @@ void Aes::prepare(const MeshPartition& part, const PeriodicPartition* seam, cons
         cells_.push_back(cell);
     };
 
+    if (keep_affine_input_ && !parallel_cells) affine_input_.reserve(mesh.cell_count);
     if (parallel_cells) {
         prepare_local_cells(part,seam,frame,locate);
         index_local_vertices();
@@ -339,6 +582,12 @@ void Aes::prepare_hex_filter() {
     hex_coefficients_.resize(padded*Table::Coefficients);
     hex_nodes_.resize(padded*8);
     op_.hex_filter={hex_nodes_.data(),hex_coefficients_.data(),lanes};
+    if (gpu_filter_) {
+        // Для запасного расчёта диаметра нужны восемь координат, а производные
+        // уже лежат в hex_coefficients_. Копируем между записями только общую часть.
+        filter_extents_.resize(filters_.size());
+        parallel_for(filters_.size(),[&](MeshIndex i) { filter_extents_[i]=filters_[i]; });
+    }
     parallel_for(count,[&](MeshIndex e) {
         const auto& geometry=filters_[filter_indices_[e]];
         auto* col=hex_coefficients_.data()+op_.hex_filter.first(e,Table::Coefficients);
@@ -396,7 +645,7 @@ void Aes::allocate_host(MeshIndex nodes) {
 template<bool ddes,unsigned dimension>
 void host_subgrid(const Operator& op) {
     if (dimension==3 && op.hex_filter.nodes)
-        parallel_for(op.cell_count,[&](MeshIndex e) { op.sample_hex<ddes>(e); });
+        parallel_for(op.cell_count,[&](MeshIndex e) { op.sample_hex<ddes>(e,op.filters); });
     else if (dimension==3 && op.box_nodes)
         parallel_for(op.cell_count,[&](MeshIndex e) { op.sample_les<ddes,3,true>(e); });
     else

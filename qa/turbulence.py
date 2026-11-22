@@ -376,6 +376,26 @@ def ddes_warped(case,args):
     print("OK DDES on warped hexahedra with adiabatic walls",flush=True)
 
 
+def ddes_mixed(case,args):
+    """Сверяет газ и SA на общих узлах тетраэдра, призмы, пирамиды и гексаэдра."""
+    case.mkdir()
+    configure(case,args,dimension=3,decompose=False)
+    mesh=case/"grid.mesh"
+    shutil.copyfile(Path(__file__).parent/"cases/mixed_3d/grid.mesh",mesh)
+    if args.mpi:
+        run([args.meshdec.resolve(),mesh,case/"grid.mdec","--target-ranks=2"])
+    (case/"bc.txt").write_text("[outer]\nbc_type novisc_wall\n[wall]\nbc_type adiabatic_wall\n")
+    (case/"init.txt").write_text("initial_type=formula\nrho=1+.03*sin(x+y)\np=2+.1*cos(y+z)\n"
+                                 "ux=.07*sin(y+z)\nuy=.04*cos(x-z)\nuz=.03*sin(x+y)\n")
+    (case/"turbulence.txt").write_text("model=DDES\nrans_eq=SA\nnut_nu_amb=.21\nsubgridscale=sla\n")
+    for scheme in ("ssprk3","bdf2"):
+        options=["main:time_scheme="+scheme,"main:final_time=.02","main:cfl=.03","gas:reynolds=1000"]
+        fields=solve(case,args,scheme,options=options)
+        assert min(fields["nu_tilde"])==0. and max(fields["nut"])>0.
+        compare_backends(case,args,scheme,fields,options)
+    print("OK mixed-element DDES, eight fields, SSPRK3 and BDF2",flush=True)
+
+
 def ddes_steady(case,args):
     """На плоском сдвиге проверяем BDF1 и локальный псевдошаг с SA-DDES."""
     case.mkdir()
@@ -482,6 +502,7 @@ if __name__=="__main__":
         ddes(Path(work)/"ddes",args)
         ddes_steady(Path(work)/"ddes-steady",args)
         ddes_warped(Path(work)/"ddes-warped",args)
+        ddes_mixed(Path(work)/"ddes-mixed",args)
         sigma(Path(work)/"sigma",args)
         planar_sigma(Path(work)/"planar",args)
         shear(Path(work),args)

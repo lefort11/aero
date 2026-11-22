@@ -4,6 +4,30 @@
 #include <iostream>
 #include <vector>
 using namespace aero::turbulence;
+// Вершины 0 и 2 принадлежат одному периодическому узлу. Его собственная
+// пара исключается, остальные связи имеют разные знаки или нулевой вес.
+void test_shared_diffusion() {
+    aero::viscosity::Cell cell{};
+    cell.count=4;
+    cell.node[1]=1;
+    cell.node[3]=2;
+    aero::viscosity::PairMetric pairs[6]{};
+    const double heat[]={-2.,17.,1.,0.,3.,-1.};
+    for (unsigned p=0;p<6;++p) pairs[p].heat=heat[p];
+    const aero::MeshIndex offsets[]={0,2}, incidence[]={0,2};
+    double w[]={2.,5.,8.}, mean=2.;
+    Transport t{};
+    t.cells=&cell;
+    t.shared_geometry.pairs=pairs;
+    t.heat_to_diffusion=.5;
+    t.filter.offsets=offsets;
+    t.filter.incidence=incidence;
+    t.sa.w=w;
+    t.sa.diffusion.element_mean=&mean;
+    double rate=0., diagonal=0.;
+    t.add_volume_diffusion<false>(0,w[0],rate,diagonal);
+    aero_test::require(rate==6. && diagonal==4.,"SA diffusion from signed AES coefficients");
+}
 // У одного ребра задаём разные приращения слева и справа. Смена знака расхода
 // должна выбрать другую сторону, в том числе при локальном понижении порядка.
 void test_sa_convection() {
@@ -50,7 +74,7 @@ void test_sigma() {
         LesSettings settings;
         settings.scale=scale;
         settings.c_sigma=1.;
-        VelocityGradient g={{0.,-2.,0.},{3.,0.,0.},{0.,0.,1.}};
+        VelocityGradient g={{0.,-2.,0.,3.,0.,0.,0.,0.,1.}};
         return evaluate_sigma(g,box,8,settings);
     };
     for (auto v : {std::make_pair(Scale::Max,16.),{Scale::Min,1.},{Scale::Vol,4.},
@@ -58,9 +82,9 @@ void test_sigma() {
         const auto sample=viscosity(v.first);
         aero_test::require(std::abs(sample.value-v.second/9.)<1.e-14 && sample.tilt==0., "Sigma box filter");
     }
-    VelocityGradient planar={{1.,2.,0.},{4.,0.,0.},{0.,0.,0.}};
+    VelocityGradient planar={{1.,2.,0.,4.,0.,0.,0.,0.,0.}};
     aero_test::require(sigma_rate(planar)==0., "Sigma planar limit");
-    VelocityGradient rotated={{1.8,-2.4,0.},{1.6,1.2,0.},{0.,0.,1.}};
+    VelocityGradient rotated={{1.8,-2.4,0.,1.6,1.2,0.,0.,0.,1.}};
     aero_test::require(std::abs(sigma_rate(rotated)-1./9.)<1.e-14,"Sigma rotated basis");
     aero_test::require(kh_factor(.1,.2)==.2 && kh_factor(.4,.2)==1. &&
                        std::abs(kh_factor(.225,.2)-.6)<1.e-14,"SLA ramp");
@@ -78,19 +102,19 @@ void test_sigma_spectrum() {
             const double low=middle*ratio;
             const double expected=low*(1.-middle)*(middle-low);
             for (unsigned n=1;n<=12;++n) {
-                VelocityGradient g={{1.,0.,0.},{0.,middle,0.},{0.,0.,low}};
+                VelocityGradient g={{1.,0.,0.,0.,middle,0.,0.,0.,low}};
                 for (unsigned i=0;i<3;++i) {
                     const unsigned j=(i+1)%3;
                     const double c=std::cos(n+i*.7), s=std::sin(n+i*.7);
                     for (unsigned k=0;k<3;++k) {
-                        const double a=g[i][k], b=g[j][k];
-                        g[i][k]=c*a-s*b;
-                        g[j][k]=s*a+c*b;
+                        const double a=g(i, k), b=g(j, k);
+                        g(i, k)=c*a-s*b;
+                        g(j, k)=s*a+c*b;
                     }
                     for (unsigned k=0;k<3;++k) {
-                        const double a=g[k][i], b=g[k][j];
-                        g[k][i]=c*a+s*b;
-                        g[k][j]=c*b-s*a;
+                        const double a=g(k, i), b=g(k, j);
+                        g(k, i)=c*a+s*b;
+                        g(k, j)=c*b-s*a;
                     }
                 }
                 const double rate=sigma_rate(g);
@@ -135,13 +159,13 @@ void test_sigma_filter_geometry() {
         // менять производные линейного поля. Проверяем все девять компонент.
         struct Cell { unsigned node[8]; } cell{};
         struct Gas { double velocity[3]; } gas[8]{};
-        const VelocityGradient linear={{1.,.5,-2.},{.25,-3.,4.},{-2.,2.,1.}};
+        const VelocityGradient linear={{1.,.5,-2.,.25,-3.,4.,-2.,2.,1.}};
         for (unsigned k=0;k<8;++k) {
             cell.node[k]=(3*k+1)%8;
             for (unsigned i=0;i<3;++i) {
                 gas[cell.node[k]].velocity[i]=4096.;
                 for (unsigned j=0;j<3;++j)
-                    gas[cell.node[k]].velocity[i]+=linear[i][j]*rectangular.position[k][j];
+                    gas[cell.node[k]].velocity[i]+=linear(i, j)*rectangular.position[k][j];
             }
         }
         VelocityGradient gradient{};
@@ -150,7 +174,7 @@ void test_sigma_filter_geometry() {
         const double speed=reduced.rectangular_gradient(nodes,1,gas,true,gradient);
         aero_test::require(speed>=4096.,"rectangular filter velocity scale");
         for (unsigned i=0;i<3;++i) for (unsigned j=0;j<3;++j)
-            aero_test::require(std::abs(gradient[i][j]-linear[i][j])<1.e-14,"linear box gradient");
+            aero_test::require(std::abs(gradient(i, j)-linear(i, j))<1.e-14,"linear box gradient");
         for (aero::Coordinate axis : {aero::Coordinate{{1.,0.,0.}},aero::Coordinate{{-.2,.3,.4}}}) {
             for (auto scale : {Scale::Omega,Scale::OmegaTilde,Scale::Sla}) {
                 const double ref=rectangular.length_squared(scale,8,axis);
@@ -210,7 +234,7 @@ void test_ddes() {
     }
     FilterCell box{};
     box.volume=2.; box.vol_length=std::cbrt(2.);
-    VelocityGradient strain={{1.,1.e-16,0.},{0.,2.,0.},{0.,0.,3.}};
+    VelocityGradient strain={{1.,1.e-16,0.,0.,2.,0.,0.,0.,3.}};
     LesSettings scale;
     scale.scale=Scale::Sla;
     const auto uncertain=filter_scale(strain,box,0,scale,1.e-14);
@@ -261,6 +285,7 @@ int main() {
         aero_test::require(extrapolated_viscosity(.1,-.5,-1.)==.1,"implicit SA positive branch");
         test_sa_line();
         test_sa_convection();
+        test_shared_diffusion();
         test_sigma();
         test_ddes();
         for (unsigned k=0;k<=20000;++k) {

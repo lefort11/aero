@@ -60,10 +60,10 @@ void expect_error(Operation operation, const std::string& message) {
     throw std::runtime_error("Expected exception containing " + message);
 }
 
-void check_blocks(int device, unsigned dimension) {
+void check_blocks(int device, unsigned dimension, bool use_matrix_diagonal) {
     const unsigned width = dimension + 2;
     const std::size_t nodes = 1031; // Неполная последняя группа на GPU, выше порога параллельного цикла CPU.
-    BlockJacobi jacobi(nodes, dimension, device);
+    BlockJacobi jacobi(nodes, dimension, device, use_matrix_diagonal);
     auto matrix = make_diagonal(nodes, width);
     Values diagonal(device, matrix.size()), rhs(device, nodes * width), result(device, nodes * width);
     expect_error<std::logic_error>([&] { jacobi.apply(rhs.data(), result.data()); }, "prepare");
@@ -123,7 +123,8 @@ void check_device(int device) {
     empty.prepare(nullptr);
     empty.apply(nullptr, nullptr);
     for (unsigned dimension = 1; dimension <= 3; ++dimension)
-        check_blocks(device, dimension);
+        for (bool use_matrix_diagonal : {false,true})
+            check_blocks(device, dimension, use_matrix_diagonal);
     std::cout << "Block Jacobi passed on " << (device < 0 ? "CPU" : "GPU " + std::to_string(device)) << '\n';
     test_csgs(device);
     test_lf_edge_jacobian(device);

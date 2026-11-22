@@ -7,7 +7,7 @@ AERO_SOURCES += source/aero/mpi_stencil.cpp source/aero/partition_report.cpp sou
 AERO_SOURCES += source/aero/geometry.cpp source/aero/case_geometry.cpp source/mesh/mdec.cpp source/mesh/partition.cpp source/parallel/processes.cpp
 AERO_HEADERS := source/aero/run_control.h source/aero/exact_error.h source/io/expression.h $(MESH_SOURCE)/archive_format.h $(NUMBER_CODEC) source/aero/solver_timings.h source/aero/startup.h source/io/settings.h source/io/settings_text.h source/io/settings_boundary.h source/io/report.h $(OUTPUT_HEADERS) $(INITIAL_HEADERS) $(RES_HDR) $(TIMESTEP_HEADERS) $(EXPLICIT_HEADERS)
 AERO_LIBS := $(IMPLICIT_LIBRARY) $(RES_LIB) $(INITIAL_LIB) $(TIMESTEP_LIBRARY) $(EXPLICIT_LIBRARY) $(IO_LIBRARY) $(RES_DEPS)
-AERO_SOURCES += $(wildcard source/viscosity/aes.cpp source/viscosity/grad.cpp) $(if $(wildcard source/viscosity/transport.h),$(wildcard source/turbulence/*.cpp))
+AERO_SOURCES += $(wildcard source/viscosity/aes.cpp source/viscosity/grad.cpp source/viscosity/affine_hex.cpp) $(if $(wildcard source/viscosity/transport.h),$(wildcard source/turbulence/*.cpp))
 AERO_HEADERS += source/io/flow_values.h
 AERO_HEADERS += source/aero/console_log.h
 AERO_HEADERS += source/implicit/implicit_settings.h source/implicit/bdf1_step.h source/implicit/partition.h
@@ -16,6 +16,7 @@ AERO_HEADERS += source/aero/recovery.h source/aero/indexed_io.h source/aero/mpi_
 AERO_HEADERS += source/aero/partition_kernels.h source/aero/time_loop.h source/aero/mpi_periodic.h source/aero/mpi_periodic_detail.h
 AERO_HEADERS += source/aero/partition_state.h source/aero/partition_output.h source/aero/partition_operator.h source/aero/partition_transfers.h
 AERO_HEADERS += source/aero/mpi_stencil.h source/aero/partition_report.h source/aero/mpi_balance.h source/mesh/leaf_balance.h
+AERO_HEADERS += source/aero/compact_slopes.h $(wildcard source/viscosity/affine_hex.h)
 ifeq ($(kokkos_gpu),1)
 AERO_GPU := $(BUILD)/partition_kernels.o
 AERO_SOURCES += source/aero/partition_gpu.cpp

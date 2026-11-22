@@ -97,6 +97,7 @@ def build(args):
     (work / "KokkosCore_config.h").write_text(config, encoding="utf-8")
     os.environ["PATH"] = str(cuda / "bin") + os.pathsep + os.environ["PATH"]
     includes = ["-I" + str(p) for p in (work, source / "core/src", source / "containers/src")]
+    includes.append("-DAERO_MIXED_LINEAR=" + args.mixed_linear)
     if args.static:
         # У CPU-сборки Kokkos свой DefaultExecutionSpace. При включении двух реализаций
         # в один EXE разделяем их C++-символы, а вызывающая сторона использует общий API Aero.
@@ -161,6 +162,7 @@ if __name__ == "__main__":
     for option in ("work", "source", "cuda", "output"):
         parser.add_argument("--" + option, type=Path, required=True)
     parser.add_argument("--arch", required=True)
+    parser.add_argument("--mixed-linear", choices=("0", "1"), required=True)
     parser.add_argument("--compiler", required=True)
     parser.add_argument("--host-compiler", required=True)
     parser.add_argument("--static", action="store_true")

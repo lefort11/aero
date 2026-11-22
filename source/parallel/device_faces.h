@@ -196,7 +196,7 @@ void compute_unpacked_fluxes(const Execution& exec, FaceBatch batch, Index* bad)
         launch(exec,batch,bad);
     } else if (batch.nodal_roe_2d())
         other_faces<true, true>(exec, batch, bad);
-    else if (!batch.geometry.stencil.row_owner)
+    else if (!batch.geometry.stencil.has_owners())
         // В 1D и 3D поток Роу первого порядка также использует только концы ребра.
         other_faces<false, true>(exec, batch, bad);
     // У EBR3 и EBR5 различны только заранее рассчитанные веса. В 2D в узле четыре компоненты.
@@ -205,7 +205,7 @@ void compute_unpacked_fluxes(const Execution& exec, FaceBatch batch, Index* bad)
     else if (batch.roe_2d())
         other_faces<true>(exec, batch, bad);
     // В 3D фиксированная ширина линейной строки равна пяти.
-    else if (batch.geometry.dim == 3 && batch.geometry.stencil.row_owner &&
+    else if (batch.geometry.dim == 3 && batch.geometry.stencil.has_owners() &&
              !batch.geometry.stencil.weno_order)
         ebr_faces<false, 5>(exec, batch, bad);
     else

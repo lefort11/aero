@@ -7,6 +7,8 @@ NEWTON_OBJECT := $(BUILD)/bdf1_step_$(EBR_TAG).o
 BICGSTAB_HEADERS := source/implicit/bdf1_linear_system.h source/implicit/bicgstab_vectors.h
 SPATIAL_HEADERS := source/implicit/edge_jacobian.h source/implicit/csgs_order.h source/implicit/csgs_sweep.h source/implicit/roe_edge_jacobian.h source/implicit/spatial_jacobian.h source/implicit/spatial_jacobian_detail.h source/implicit/boundary_jacobian.h source/implicit/lf_edge_jacobian.h source/parallel/device_arrays.h $(RES_HDR)
 IMPLICIT_LIBRARY := $(BUILD)/libaero_implicit_$(EBR_TAG).a
+IMPLICIT_HEADERS += source/implicit/krylov_scratch.h
+SPATIAL_HEADERS += source/implicit/block_layout.h source/implicit/index_list.h
 IMPLICIT_TEST := $(BUILD)/implicit_tests_$(EBR_TAG)$(EXE)
 ifeq ($(kokkos_gpu),1)
 IMPLICIT_FLAGS := -DAERO_WITH_KOKKOS_GPU

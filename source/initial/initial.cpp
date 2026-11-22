@@ -225,7 +225,7 @@ struct NodalSnapshot {
 }
 
 // Из снимка сохраняем только представителей, которые участвуют в нормах данного процесса.
-std::vector<std::array<double, 6>> read_exact_fields(const Mesh& mesh, double gamma, std::istream& input,
+RowTable<double,6> read_exact_fields(const Mesh& mesh, double gamma, std::istream& input,
         const std::string& directory, const FieldNodeSelection* selection, const LinearBackground& background,
         const std::vector<MeshIndex>& nodes, std::vector<std::string>* warnings) {
     const unsigned d = mesh.view().dimension;
@@ -233,7 +233,7 @@ std::vector<std::array<double, 6>> read_exact_fields(const Mesh& mesh, double ga
     NodalSnapshot file;
     file.load(settings, mesh, directory, selection, primitives(d), true);
     finish_settings(settings, warnings);
-    std::vector<std::array<double, 6>> reference(nodes.size());
+    RowTable<double,6> reference(nodes.size());
     parallel_for(nodes.size(), [&](MeshIndex i) {
         const MeshIndex node = nodes[i];
         if (node >= file.node_count) throw std::out_of_range("exact.txt: invalid local node");
@@ -242,12 +242,12 @@ std::vector<std::array<double, 6>> read_exact_fields(const Mesh& mesh, double ga
         if (file.conservative) {
             const double energy = q[d + 1];
             if (background.active()) background.to_primitive(d, q, gamma);
-            reference[i] = output_values(d, q, gamma, node, background);
-            reference[i][5] = energy;
+            reference.set_row(i,output_values(d, q, gamma, node, background));
+            reference(i,5) = energy;
         } else {
-            reference[i] = primitive_output_values(d, q, gamma, background);
+            reference.set_row(i,primitive_output_values(d, q, gamma, background));
             // Если E записана, сравниваем именно сохранённые числа, без пересчёта из давления.
-            if (file.energy.field) reference[i][5] = file.value(file.energy, node);
+            if (file.energy.field) reference(i,5) = file.value(file.energy, node);
         }
     });
     return reference;

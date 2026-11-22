@@ -1,4 +1,5 @@
 #include "storage.h"
+#include "diffusion_geometry.h"
 #include "../parallel/small_weight_row.h"
 #include "../viscosity/transport.h"
 #include <algorithm>
@@ -75,59 +76,50 @@ bool Storage::pack_three_neighbours(size_t node_count) {
     return true;
 }
 
-template<unsigned lanes>
-bool Storage::pack_dense_rows(MeshIndex possible,std::vector<DiffusionBlock<lanes>>& blocks) {
+bool Storage::pack_dense_rows(MeshIndex possible) {
     if (!possible || diffusion_terms.size()<=possible-possible/3 ||
         distance.size()>UINT32_MAX || element_count>UINT32_MAX) return false;
+    // Сначала считаем число элементов в каждой строке. Периодические копии
+    // могут добавить восьмого соседа, тогда сохраняем общий список пар.
     std::vector<RowRange> rows(diffusion_rows.size());
-    // Сначала нумеруем строки внутри каждой независимой плитки. Глобальный
-    // адрес станет известен после суммирования высот плиток.
-    const size_t groups = (rows.size()+lanes-1)/lanes;
-    std::vector<size_t> offsets(groups+1);
-    std::vector<unsigned char> too_wide(groups);
-    parallel_for(groups,[&](size_t group) {
-        const size_t first = group*lanes;
-        size_t longest = 0;
-        for (size_t i=first;i<std::min(first+lanes,rows.size());++i) {
-            const auto row=diffusion_rows[i];
-            size_t elements=0, neighbours=0;
-            for (auto p=row.first;p<row.end;++p) {
-                if (p==row.first || diffusion_terms[p].element!=diffusion_terms[p-1].element) {
-                    ++elements;
-                    neighbours=0;
-                }
-                if (++neighbours>DiffusionBlock<lanes>::neighbours) too_wide[group]=1;
-            }
-            rows[i]={i-first,i-first+elements*lanes};
-            longest=std::max(longest,elements);
-        }
-        offsets[group+1]=longest;
-    },32);
-    if (std::find(too_wide.begin(),too_wide.end(),1)!=too_wide.end()) return false;
-    for (size_t g=0;g<groups;++g) offsets[g+1]+=offsets[g];
-    const auto tile_count=offsets.back();
-    // Плитка полезна лишь при плотном заполнении. Ограничиваем выделение
-    // объёмом уже построенной таблицы пар даже для неоднородной сетки.
-    if (tile_count>diffusion_terms.size()*sizeof(DiffusionTerm)/sizeof(DiffusionBlock<lanes>)) return false;
-    blocks.resize(tile_count);
+    std::vector<unsigned char> too_wide(rows.size());
     parallel_for(rows.size(),[&](size_t i) {
-        const size_t base=offsets[i/lanes]*lanes;
-        rows[i].first+=base;
-        rows[i].end+=base;
         const auto row=diffusion_rows[i];
-        size_t tile=rows[i].first/lanes, lane=i%lanes;
-        for (auto p=row.first;p<row.end;++tile) {
+        size_t elements=0, neighbours=0;
+        for (auto p=row.first;p<row.end;++p) {
+            if (p==row.first || diffusion_terms[p].element!=diffusion_terms[p-1].element) {
+                ++elements;
+                neighbours=0;
+            }
+            if (++neighbours>DiffusionCell::neighbours) too_wide[i]=1;
+        }
+        rows[i].end=elements;
+    });
+    if (std::find(too_wide.begin(),too_wide.end(),1)!=too_wide.end()) return false;
+    size_t count=0;
+    for (auto& row:rows) {
+        row.first=count;
+        count+=row.end;
+        row.end=count;
+    }
+    if (count>diffusion_terms.size()*sizeof(DiffusionTerm)/sizeof(DiffusionCell)) return false;
+    cell_rows.resize(count);
+    parallel_for(rows.size(),[&](size_t i) {
+        const auto row=diffusion_rows[i];
+        auto p=row.first;
+        for (auto k=rows[i].first;k<rows[i].end;++k) {
             const auto element=diffusion_terms[p].element;
-            auto& t=blocks[tile];
-            t.element[lane]=static_cast<std::uint32_t>(element);
+            auto& block=cell_rows[k];
+            block.element=static_cast<std::uint32_t>(element);
             unsigned j=0;
             do {
                 const auto& term=diffusion_terms[p++];
-                t.node[j][lane]=static_cast<std::uint32_t>(term.neighbour);
-                t.geometry[j++][lane]=term.geometry;
-                t.diagonal[lane]+=std::abs(term.geometry);
+                block.node[j]=static_cast<std::uint32_t>(term.neighbour);
+                block.geometry[j++]=term.geometry;
+                block.diagonal+=std::abs(term.geometry);
             } while (p<row.end && diffusion_terms[p].element==element);
-            for (;j<DiffusionBlock<lanes>::neighbours;++j) t.node[j][lane]=static_cast<std::uint32_t>(i);
+            // Нулевой вес и собственный узел дополняют неполную строку.
+            for (;j<DiffusionCell::neighbours;++j) block.node[j]=static_cast<std::uint32_t>(i);
         }
     });
     diffusion_rows.swap(rows);
@@ -154,7 +146,7 @@ bool Storage::prepare_element_pairs(const viscosity::Operator& aes,double scale)
         if (!entry.second) continue;
         double diagonal[8]{};
         for (unsigned i=0;i<c.count;++i) for (unsigned j=i+1;j<c.count;++j) {
-            const double g=-scale*aes.stencil.metric(c,i,j).heat;
+            const double g=diffusion_weight(aes.stencil,c,i,j,scale);
             pair_weights.push_back(g);
             diagonal[i]+=std::abs(g); diagonal[j]+=std::abs(g);
         }
@@ -168,9 +160,24 @@ bool Storage::prepare_element_pairs(const viscosity::Operator& aes,double scale)
     return true;
 }
 
+// В CPU-строках и при выборе сильных связей порядок суммирования одинаков:
+// сначала элементы контрольного объёма, затем вершины каждого элемента.
+template<class Visitor>
+static void visit_diffusion_row(const viscosity::Operator& aes, MeshIndex node, double scale, Visitor visit) {
+    for (auto pos=aes.offsets[node]; pos<aes.offsets[node+1]; ++pos) {
+        const auto entry=aes.incidence[pos], e=entry/8;
+        const auto i=static_cast<unsigned>(entry%8);
+        const auto& cell=aes.cells[e];
+        for (unsigned j=0; j<cell.count; ++j) {
+            const double weight=diffusion_weight(aes.stencil,cell,i,j,scale);
+            if (weight!=0.) visit(e,cell.node[j],weight);
+        }
+    }
+}
+
 // Сосед входит в линию только при взаимном выборе. Так у вершины будет не
 // более двух связей, а на границе MPI линия закончится на собственном узле.
-void Storage::prepare_lines(const std::vector<MeshIndex>& owned) {
+void Storage::prepare_lines(const viscosity::Operator& aes,double scale,const std::vector<MeshIndex>& owned) {
     const auto missing=static_cast<MeshIndex>(-1);
     struct Link { MeshIndex node; double weight; };
     const Link none{missing,0.};
@@ -184,8 +191,9 @@ void Storage::prepare_lines(const std::vector<MeshIndex>& owned) {
         // элементам и порядок выбора при равных весах остаются прежними.
         thread_local SmallWeightRow<MeshIndex,32> geometry;
         geometry.clear();
-        const auto row=diffusion_rows[i];
-        for (auto p=row.first;p<row.end;++p) geometry[diffusion_terms[p].neighbour]+=diffusion_terms[p].geometry;
+        visit_diffusion_row(aes,i,scale,[&](MeshIndex,MeshIndex neighbour,double weight) {
+            geometry[neighbour]+=weight;
+        });
         Link strongest[3]={none,none,none};
         for (const auto& edge:geometry) {
             Link next{edge.first,edge.second};
@@ -237,25 +245,23 @@ void Storage::prepare_lines(const std::vector<MeshIndex>& owned) {
 void Storage::prepare_diffusion(const viscosity::Operator& aes,View& view,bool host,bool implicit,
                                 const std::vector<MeshIndex>* steady_nodes) {
     element_count = aes.cell_count;
+    const double scale = diffusion_scale(aes.law.gamma,aes.law.prandtl);
+    if (steady_nodes) {
+        prepare_lines(aes,scale,*steady_nodes);
+        if (host) view.lines={line_vertices.data(),line_segments.data(),line_segments.size()};
+    }
+    // На GPU каждый узел обходит готовую геометрию AES. При steady на карту
+    // потребуются выбранные выше линии, временную таблицу всех пар не строим.
+    if (!host) return;
     diffusion_rows.resize(aes.row_count);
-    const double scale = (aes.law.gamma - 1.) * aes.law.prandtl / (aes.law.gamma * sigma);
     // Одинаковый обход сначала определяет длину строки, затем заполняет её диапазон.
     // Порядок слагаемых внутри узла совпадает с порядком элементов в таблице AES.
     const auto build_row = [&](MeshIndex node, DiffusionTerm* output) {
         size_t count = 0;
-        for (auto pos = aes.offsets[node]; pos < aes.offsets[node + 1]; ++pos) {
-            const auto entry = aes.incidence[pos], e = entry / 8;
-            const unsigned i = static_cast<unsigned>(entry % 8);
-            const auto &cell = aes.cells[e];
-            for (unsigned j = 0; j < cell.count; ++j)
-                if (cell.node[j] != node) {
-                    const double heat = aes.stencil.metric(cell, i, j).heat;
-                    if (heat != 0.) {
-                        if (output) output[count] = {e, cell.node[j], -heat * scale};
-                        ++count;
-                    }
-                }
-        }
+        visit_diffusion_row(aes,node,scale,[&](MeshIndex e,MeshIndex neighbour,double weight) {
+            if (output) output[count]={e,neighbour,weight};
+            ++count;
+        });
         return count;
     };
     parallel_for(aes.row_count, [&](MeshIndex node) {
@@ -272,25 +278,14 @@ void Storage::prepare_diffusion(const viscosity::Operator& aes,View& view,bool h
         const auto row = diffusion_rows[node];
         if (row.first != row.end) build_row(node, diffusion_terms.data()+row.first);
     });
-    // В CPU-кэше удобно обходить вершины одного элемента. На GPU соседние
-    // исполнители получают более короткое чтение из чередующихся строк пар.
     // В BDF при каждой скалярной итерации повторно считаем среднюю вязкость.
     // На CPU тот же обход элемента вычисляет парные вклады в обе вершины.
     // У явной схемы такого повторного обхода нет, ей выгоднее собирать строку в узле.
-    if (steady_nodes) {
-        prepare_lines(*steady_nodes);
-        if (host) view.lines={line_vertices.data(),line_segments.data(),line_segments.size()};
-    }
-    bool dense = host && implicit && prepare_element_pairs(aes,scale);
-    if (!dense) dense = host ? pack_dense_rows(aes.neighbour_count,cell_rows)
-                             : pack_dense_rows(aes.neighbour_count,diffusion_tiles);
+    bool dense = implicit && prepare_element_pairs(aes,scale);
+    if (!dense) dense = pack_dense_rows(aes.neighbour_count);
     if (!dense) {
-        const bool shared=share_diffusion_rows();
-        if (pack_three_neighbours(distance.size())) {
-            if (!shared) diffusion_stride=arrange(host,diffusion_rows,triples);
-        } else if (!shared) {
-            diffusion_stride=arrange(host,diffusion_rows,diffusion_terms);
-        }
+        share_diffusion_rows();
+        pack_three_neighbours(distance.size());
     }
     if (distance.size()<=UINT32_MAX && element_count<=UINT32_MAX && !diffusion_terms.empty()) {
         local_terms.resize(diffusion_terms.size());
@@ -303,17 +298,14 @@ void Storage::prepare_diffusion(const viscosity::Operator& aes,View& view,bool h
     }
     view.diffusion.short_blocks = aes.cell_count && std::all_of(aes.cells,aes.cells+aes.cell_count,
                                         [](const viscosity::Cell& c){ return c.count<=4; });
-    if (host) {
-        element_mean.resize(element_count);
-        molecular_mean.resize(element_count);
-        view.diffusion = {
-            diffusion_rows.data(), diffusion_anchors.empty() ? nullptr : diffusion_anchors.data(),
-            diffusion_stride,      diffusion_terms.data(), local_terms.empty() ? nullptr : local_terms.data(), nullptr,
-            pair_weights.data(), shape_index.data(), vertex_contributions.empty() ? nullptr : vertex_contributions.data(),
-            cell_rows.empty() ? nullptr : cell_rows.data(),
-            triples.empty() ? nullptr : triples.data(),
-            molecular_mean.data(), element_mean.data(), view.diffusion.short_blocks};
-    }
+    element_mean.resize(element_count);
+    molecular_mean.resize(element_count);
+    view.diffusion = {
+        diffusion_rows.data(), diffusion_anchors.empty() ? nullptr : diffusion_anchors.data(),
+        diffusion_terms.data(), local_terms.empty() ? nullptr : local_terms.data(),
+        pair_weights.data(), shape_index.data(), vertex_contributions.empty() ? nullptr : vertex_contributions.data(),
+        cell_rows.empty() ? nullptr : cell_rows.data(), triples.empty() ? nullptr : triples.data(),
+        molecular_mean.data(), element_mean.data(), view.diffusion.short_blocks};
 }
 }
 }

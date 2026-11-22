@@ -1,6 +1,8 @@
 #include "../../qa/test_mesh.h"
 #include "spatial_jacobian.h"
 #include "../residual/residual.h"
+#include "../residual/residual_detail.h"
+#include "block_layout.h"
 #include "../../qa/test_field.h"
 #include <algorithm>
 #include <cmath>
@@ -11,6 +13,35 @@ using namespace aero;
 using aero_test::require;
 using aero_test::TestField;
 using Vector = std::vector<double>;
+
+// Два разных ребра между узлами должны занимать один соседний блок в каждой
+// строке. Сверяем число байтов для независимого BJ и общей с CSGS матрицы.
+void check_matrix_budget() {
+    using namespace aero::implicit;
+    using namespace aero::residual_detail;
+    Surface faces[2]{};
+    for (auto& f : faces) f.end=1;
+    const MeshIndex offsets[]={0,2,4};
+    const OrientedFace incidence[]={OrientedFace::outward(0),OrientedFace::outward(1),
+                                    OrientedFace::inward(0),OrientedFace::inward(1)};
+    Geometry g{};
+    g.dim=1;
+    g.nodes=g.edges=g.faces=2;
+    g.offsets=offsets;
+    g.incidence=incidence;
+    g.surfaces=faces;
+    Partition part;
+    for (bool csgs : {false,true}) {
+        part.shared_csgs=csgs;
+        const auto plan=gpu_matrix_plan(g,g.nodes,part);
+        // CSR: 3 смещения, 4 столбца и 4 привязки рёбер. Два плотных блока
+        // диагонали хранятся в double, два соседних — в точности сборки.
+        MeshIndex expected=3*8+4*4+4*4+2*9*8+2*9*sizeof(LinearCoefficient);
+        if (csgs || mixed_linear) expected+=4*4; // Адрес каждого блока.
+        if (csgs) expected+=2*4+2*16+2*4+6*8;  // Порядок, два прохода, соседи и прямое решение.
+        require(gpu_matrix_bytes(*plan)==expected,"wrong exact GPU matrix budget");
+    }
+}
 
 // Гладкое физическое поле с различающимися скоростями LF в соседних узлах.
 Vector states(unsigned d, MeshIndex nodes, double speed) {
@@ -104,6 +135,7 @@ void check_product(SpatialResidual& op, unsigned d, MeshIndex nodes, double spee
 
 void test_spatial_jacobian(int device) {
     using namespace aero;
+    if (device<0) check_matrix_budget();
     ReconstructionOptions reconstruction;
     reconstruction.scheme = ReconstructionScheme::FirstOrder;
     auto options = residual_options("conservative","lf",1.4);

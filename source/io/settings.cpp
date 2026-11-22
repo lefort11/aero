@@ -330,6 +330,8 @@ RunSettings read_run_settings(const RunDirectories& directories) {
         };
         controls.simplified_jacobian = settings.contains("simplified_jacobian") &&
             choice(lowercase(settings.take("simplified_jacobian")), {"on","off"}) == "on";
+        controls.compact_jacobian = settings.contains("compact_jacobian") &&
+            choice(lowercase(settings.take("compact_jacobian")), {"on","off"}) == "on";
         controls.jacobian_update_every = settings.optional_count<unsigned>("jacobian_update_every");
         // В старых файлах переиспользование матрицы уже задавалось интервалом.
         // Явный переключатель имеет приоритет и задаёт тот же режим решателя.

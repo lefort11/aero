@@ -1,6 +1,8 @@
 #ifndef AERO_VISCOUS_TRANSPORT_H
 #define AERO_VISCOUS_TRANSPORT_H
-#include "grad.h"
+#include "affine_hex.h"
+#include "volume_coordinates.h"
+#include "mean_area.h"
 #include "../parallel/modules.h"
 #ifdef AERO_HAS_TURBULENCE
 #include "../turbulence/sa.h"
@@ -61,6 +63,12 @@ struct Material {
 struct Row {
     double residual[5], cfl_rate;
 };
+// В компактном неявном расчёте газ и вязкие строки занимают соседние части
+// буфера потоков. Между сборками этот же участок используется решателем СЛАУ.
+struct FlowScratch {
+    Gas* gas;
+    Row* rows;
+};
 struct Law {
     double gamma, temperature_scale, inverse_reynolds, prandtl, sutherland_ratio;
     // Масштабы: rho_inf = U_inf = 1. При T = T_inf получаем mu = 1/Re для обоих законов.
@@ -71,6 +79,12 @@ struct Law {
     }
 };
 // Адреса принадлежат одному исполнителю. Те же три операции выполняются на CPU и в Kokkos на GPU.
+struct GradientSlice {
+    MeshIndex node,first,end; // Какие вхождения текущего узла принадлежат группе элементов.
+};
+struct GradientTile {
+    MeshIndex first_cell,cells,first_slice,slices,first_vertex; // Начало градиентов группы в общей нумерации.
+};
 struct Operator {
     unsigned dim;
     Law law;
@@ -78,6 +92,9 @@ struct Operator {
     turbulence::View sa;
     turbulence::LesSettings les;
     const turbulence::FilterCell* filters;
+    const turbulence::FilterExtent* filter_extents; // Для упакованного GPU-фильтра нужны только размеры и координаты.
+    const turbulence::FilterLengths* coordinate_filters; // При общей сетке точки уже доступны в tetra.position.
+    MeanAreaTable mean_areas; // Интегралы градиентов фильтра по координатам вершин ячейки.
     const MeshIndex* filter_indices;
     // При явном шаге один узел обслуживает все свои элементы. Вес для
     // напряжений, тепла и работы напряжений меняется только вместе с полем узла.
@@ -107,6 +124,13 @@ struct Operator {
     // Вычитаем скорость первой вершины до умножения на градиент базисной функции.
     // Так постоянная скорость даёт точный ноль даже на сильно искажённом элементе.
     // Максимум модуля компоненты нужен только для фильтра с направлением по ротору.
+    template<class Geometry>
+    AERO_HOST_DEVICE static void read_basis(const Geometry& geometry,unsigned vertex,unsigned dimension,double* basis) {
+        for (unsigned j=0;j<dimension;++j) basis[j]=geometry.basis(vertex,j);
+    }
+    AERO_HOST_DEVICE static void read_basis(const MeanAreaBasis& geometry,unsigned vertex,unsigned,double* basis) {
+        geometry.read(vertex,basis);
+    }
     template<unsigned fixed_dim,unsigned fixed_count,class Geometry,class Index>
     AERO_HOST_DEVICE double mean_velocity_gradient(const Geometry& geometry,const Index* nodes,unsigned stride,
                                   unsigned count,turbulence::VelocityGradient& grad) const {
@@ -119,11 +143,11 @@ struct Operator {
         for (unsigned k=1;k<vertices;++k) {
             const auto& point=gas[nodes[k*stride]];
             double basis[3];
-            for (unsigned j=0;j<dimension;++j) basis[j]=geometry.basis(k,j);
+            read_basis(geometry,k,dimension,basis);
             for (unsigned i=0;i<dimension;++i) {
                 if (directional) speed=::fmax(speed,::fabs(point.velocity[i]));
                 const double jump=point.velocity[i]-origin.velocity[i];
-                for (unsigned j=0;j<dimension;++j) grad[i][j]+=jump*basis[j];
+                for (unsigned j=0;j<dimension;++j) grad(i, j)+=jump*basis[j];
             }
         }
         return speed;
@@ -138,14 +162,70 @@ struct Operator {
         finish_sample<ddes>(e,geometry,box ? 8 : cell.count,fixed_dim ? fixed_dim : dim,grad,speed,
                             geometry.gradient_sum,geometry.volume*(box ? .125 : cell.inverse_count));
     }
+    // Средние производные здесь те же, что использованы для линейной части AES.
+    // Возвращаем номер вершины в порядке сетки: порядок суммирования модели сохраняется.
+    struct AffineBasis {
+        const AffineHex& cell;
+        AERO_HOST_DEVICE double basis(unsigned i,unsigned axis) const { return cell.basis(axis,cell.ordered[i]); }
+    };
+    struct TetraBasis {
+        const MeanGradient& cell;
+        AERO_HOST_DEVICE double basis(unsigned i,unsigned axis) const { return cell.basis[i][axis]; }
+    };
+    // Фильтр получает те же относительные координаты, что при подготовке AES.
+    // Геометрические номера берутся до периодической склейки; прикладная
+    // модель читает один и тот же диаметр при обеих раскладках памяти.
+    struct CoordinateFilter {
+        const turbulence::FilterLengths& shape;
+        const Coordinate* positions;
+        VolumeCellView cell;
+        double vol_length;
+        AERO_HOST_DEVICE Coordinate relative(unsigned i) const {
+            return positions[cell.vertex[i]]-positions[cell.vertex[0]];
+        }
+        AERO_HOST_DEVICE Coordinate point(unsigned i) const {
+            if (!shape.diagonals) return relative(i);
+            const unsigned pair=shape.longest_pairs[i];
+            return relative(pair/8)-relative(pair%8);
+        }
+        AERO_HOST_DEVICE Coordinate long_diagonal(unsigned k) const { return shape.diagonal(*this,k); }
+        AERO_HOST_DEVICE double length_squared(turbulence::Scale scale,unsigned count,const Coordinate& axis) const {
+            return shape.squared(*this,scale,count,axis);
+        }
+    };
+    template<bool ddes,unsigned fixed_count,class Basis,class Extent>
+    AERO_HOST_DEVICE void sample_compact_cell(MeshIndex e,const Basis& basis,const Extent& extent,
+                                            const turbulence::FilterLengths& sizes) const {
+        turbulence::VelocityGradient gradient{};
+        const unsigned count=fixed_count ? fixed_count : cells[e].count;
+        const double weight=fixed_count==8 ? .125 : cells[e].inverse_count;
+        const double speed=mean_velocity_gradient<3,fixed_count>(basis,cells[e].node,1,count,gradient);
+        finish_sample<ddes>(e,extent,count,3,gradient,speed,sizes.gradient_sum,sizes.volume*weight);
+    }
+    template<bool ddes,unsigned fixed_count>
+    AERO_HOST_DEVICE void sample_compact_filter(MeshIndex e) const {
+        const auto shape=filter_indices[e];
+        if (coordinate_filters) {
+            const auto& sizes=coordinate_filters[shape];
+            const CoordinateFilter extent{sizes,tetra.position,tetra.cells[e],sizes.vol_length};
+            if (mean_areas.forms) {
+                const auto count=fixed_count ? fixed_count : cells[e].count;
+                const MeanAreaBasis basis(mean_areas,tetra,e,count,sizes.volume);
+                sample_compact_cell<ddes,fixed_count>(e,basis,extent,sizes);
+            } else sample_compact_cell<ddes,fixed_count>(e,TetraBasis{tetra.mean[shape]},extent,sizes);
+        } else {
+            const auto& extent=filter_extents[shape];
+            sample_compact_cell<ddes,8>(e,AffineBasis{affine[e]},extent,extent);
+        }
+    }
     // Для компактной таблицы известны все размеры: восемь вершин и три направления.
     // Градиент и формула модели те же, что на смешанной сетке.
-    template<bool ddes>
-    AERO_HOST_DEVICE void sample_hex(MeshIndex e) const {
+    template<bool ddes,class Shape>
+    AERO_HOST_DEVICE void sample_hex(MeshIndex e,const Shape* shapes) const {
         const auto& table=hex_filter;
         const auto* nodes=table.nodes+table.first(e,8);
         const auto* column=table.coefficients+table.first(e,turbulence::HexFilterData::Coefficients);
-        const turbulence::HexFilter geometry{column,table.lanes,filters,filter_indices,e,
+        const turbulence::PackedHexFilter<Shape> geometry{column,table.lanes,shapes,filter_indices,e,
                 column[turbulence::HexFilterData::VolumeLength*table.lanes]};
         turbulence::VelocityGradient grad{};
         const double speed=mean_velocity_gradient<3,8>(geometry,nodes,table.lanes,8,grad);
@@ -163,12 +243,12 @@ struct Operator {
             // DDES использует только норму первого порядка. Для обычных скоростей
             // сам квадрат нормы уже даёт безопасный масштаб для всех дальнейших операций.
             double sum=0.;
-            for (unsigned i=0;i<dimension;++i) for (unsigned j=0;j<dimension;++j) sum+=grad[i][j]*grad[i][j];
+            for (unsigned i=0;i<dimension;++i) for (unsigned j=0;j<dimension;++j) sum+=grad(i, j)*grad(i, j);
             double magnitude=1.;
             if (!(sum>1.e-160 && sum<1.e160)) {
                 magnitude=turbulence::normalize_gradient(grad);
                 sum=0.;
-                for (unsigned i=0;i<dimension;++i) for (unsigned j=0;j<dimension;++j) sum+=grad[i][j]*grad[i][j];
+                for (unsigned i=0;i<dimension;++i) for (unsigned j=0;j<dimension;++j) sum+=grad(i, j)*grad(i, j);
             }
             cell_gradient_norm[e]=weight*(magnitude*::sqrt(sum));
             if (fixed_ddes_length) return;
@@ -185,11 +265,16 @@ struct Operator {
 #endif
     MeshIndex node_count, cell_count, row_count, vertex_count, neighbour_count;
     const Cell* cells;
+    const GradientSlice* gradient_slices; // На GPU сумма в узле продолжается со следующей группы элементов.
+    const GradientTile* host_gradient_tiles; // Описание запусков Kokkos читает только CPU.
+    MeshIndex gradient_tile_count;
+    const AffineHex* affine; // Сокращённый оператор по элементам, когда полная таблица не помещается на GPU.
+    VolumeCoordinates tetra;    // При дефиците памяти напряжения восстанавливаются по координатам на карте.
     GradientStencil stencil; // Геометрические данные принадлежат тому же исполнителю, что и поле.
     const MeshIndex *offsets, *incidence;
     Gas* gas;
     Gradient* gradient_cache; // Производные в порядке элементов или вхождений в собственные строки.
-    bool element_order;      // Восемь вершин каждого гексаэдра размещаются подряд.
+    bool element_order;      // Все вершины каждого элемента размещаются подряд.
     Material* material;
     Row* rows;
 
@@ -317,24 +402,26 @@ struct Operator {
 #endif
     // Каждую строку записывает только владелец узла. Номер вхождения хранит
     // номер элемента и местный номер его вершины (не больше семи).
-    enum class Gradients { Direct, Save, Reuse, Element };
+    enum class Gradients { Direct, Save, Reuse, Element, MixedElement };
     // Соседние исполнители читают общие скорости и коэффициенты одного
     // гексаэдра. Состав и порядок слагаемых совпадают со сборкой по узлам.
     AERO_HOST_DEVICE void prepare_hex_gradient(MeshIndex entry) const {
         const auto& cell = cells[entry/8];
         gradient_cache[entry]=stencil.vertex_gradient<3>(cell,static_cast<unsigned>(entry%8),gas);
     }
-    template<unsigned d, Gradients mode=Gradients::Direct>
-    AERO_HOST_DEVICE void assemble_row(MeshIndex node) const {
-        Row result{};
-        for (MeshIndex k = offsets[node]; k < offsets[node+1]; ++k) {
+    template<unsigned d, Gradients mode>
+    AERO_HOST_DEVICE void add_row_range(Row& result,MeshIndex first,MeshIndex end,MeshIndex first_vertex) const {
+        for (MeshIndex k=first;k<end;++k) {
             const auto entry = incidence[k];
             const auto e = entry / 8;
             const auto& average = material[e];
             const unsigned i = static_cast<unsigned>(entry % 8);
             // При изменении только рабочей вязкости BDF сохраняет точно тот же
             // газ. Меняются средние коэффициенты элемента, но не производные поля.
-            const auto gradient=mode==Gradients::Element ? gradient_cache[entry] :
+            // В гексаэдре код вхождения 8*e+i уже равен адресу градиента.
+            // На смешанной сетке берём начало списка фактических вершин элемента.
+            const auto gradient=mode==Gradients::Element ? gradient_cache[entry-first_vertex] :
+                mode==Gradients::MixedElement ? gradient_cache[cells[e].first_vertex+i-first_vertex] :
                 mode==Gradients::Reuse ? gradient_cache[k] : stencil.vertex_gradient<d>(cells[e],i,gas);
             if (mode==Gradients::Save) gradient_cache[k]=gradient;
             average.add_flux(d, gradient, result.residual);
@@ -344,8 +431,26 @@ struct Operator {
 #endif
             result.cfl_rate += diffusion_mu * cells[e].diffusion[i];
         }
-        result.cfl_rate *= 2. / gas[node].density;
-        rows[node] = result;
+    }
+    // Продолжаем сумму, только когда предыдущая группа уже записала часть строки.
+    // Деление на плотность относится ко всей строке и выполняется после последней части.
+    template<unsigned d, Gradients mode,bool partial>
+    AERO_HOST_DEVICE void finish_row(MeshIndex node,MeshIndex first,MeshIndex end,MeshIndex first_vertex) const {
+        Row result{};
+        if (partial && first!=offsets[node]) result=rows[node];
+        add_row_range<d,mode>(result,first,end,first_vertex);
+        if (!partial || end==offsets[node+1]) result.cfl_rate*=2./gas[node].density;
+        rows[node]=result;
+    }
+    template<unsigned d, Gradients mode=Gradients::Direct>
+    AERO_HOST_DEVICE void assemble_row(MeshIndex node) const {
+        finish_row<d,mode,false>(node,offsets[node],offsets[node+1],0);
+    }
+    AERO_HOST_DEVICE void assemble_slice(const GradientSlice& slice,MeshIndex first_vertex) const {
+        if (tetra.cells && !tetra.all_hex)
+            finish_row<3,Gradients::MixedElement,true>(slice.node,slice.first,slice.end,first_vertex);
+        else
+            finish_row<3,Gradients::Element,true>(slice.node,slice.first,slice.end,first_vertex);
     }
     template<Gradients mode=Gradients::Direct>
     AERO_HOST_DEVICE void assemble(MeshIndex node) const {

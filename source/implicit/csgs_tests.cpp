@@ -32,7 +32,7 @@ void test_csgs(int device) {
     layout.build(order,rows,columns,device>=0);
     aero_test::TestField packed(device,layout.source.size()*width*width), middle(device,9);
     CsgsSweep sweep{};
-    CsgsPacking packing{layout.source.data(),packed.data(),layout.source.size(),width,layout.lanes};
+    CsgsPacking packing{layout.source.data(),packed.data(),layout.source.size(),width,layout.lanes,{},nullptr};
     sweep.sequence=order.sequence.data();
     sweep.rows=layout.rows.data();
     sweep.neighbours=layout.neighbours.data();

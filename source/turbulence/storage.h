@@ -1,5 +1,6 @@
 #pragma once
 #include "sa.h"
+#include "face_geometry.h"
 #include "../parallel/parallel_for.h"
 #include "../aero/mpi_periodic.h"
 
@@ -22,8 +23,9 @@ struct Storage {
     std::vector<double> incoming;
     std::vector<LineVertex> line_vertices;
     std::vector<RowRange> line_segments;
-    void prepare_lines(const std::vector<MeshIndex>& owned);
-    unsigned face_stride = 1, diffusion_stride = 1;
+    void prepare_lines(const viscosity::Operator& aes,double scale,const std::vector<MeshIndex>& owned);
+    unsigned face_stride = 1;
+    MeshIndex gas_face_entries=0; // Длина исходного списка: по одному вхождению грани на узел.
 
     // На GPU соседние потоки читают одну позицию соседних строк подряд. Для
     // сильно различающихся длин оставляем обычные строки CSR, без большого дополнения.
@@ -61,19 +63,13 @@ struct Storage {
 
     template <class Grid> void prepare_faces(const Grid &grid, View &view, bool host) {
         // В списке инцидентности уже есть место для каждого вклада, включая граничные.
-        face_terms.resize(grid.nodes ? grid.offsets[grid.nodes] : 0);
+        gas_face_entries=grid.nodes ? grid.offsets[grid.nodes] : 0;
+        face_terms.resize(gas_face_entries);
         face_rows.resize(grid.nodes);
         parallel_for(grid.nodes, [&](MeshIndex i) {
             for (auto k = grid.offsets[i]; k < grid.offsets[i + 1]; ++k) {
                 const auto link = grid.incidence[k];
-                const auto f = link.face();
-                const auto &face = grid.surfaces[f];
-                const bool interior = f < grid.edges;
-                FaceTerm term{link.encoded, interior ? (face.begin == i ? face.end : face.begin) : i, {}};
-                const double weight = link.outward_flux(interior ? .5 : 1.);
-                for (unsigned d = 0; d < grid.dim; ++d)
-                    term.area[d] = weight * face.area[d];
-                face_terms[k] = term;
+                face_terms[k]=make_face_term(grid.surfaces[link.face()],link,i,grid.edges,grid.dim);
             }
             face_rows[i] = {grid.offsets[i], grid.offsets[i+1]};
         });
@@ -130,7 +126,6 @@ struct Storage {
     std::vector<MeshIndex> diffusion_anchors;
     std::vector<DiffusionTerm> diffusion_terms;
     std::vector<LocalDiffusionTerm> local_terms;
-    std::vector<DiffusionTile> diffusion_tiles;
     std::vector<double> pair_weights;
     std::vector<MeshIndex> shape_index;
     std::vector<ScalarContribution> vertex_contributions;
@@ -142,7 +137,7 @@ struct Storage {
     // Несколько пар элемента имеют одну среднюю вязкость. На CPU храним
     // полную строку подряд, на GPU чередуем элементы 32 соседних строк.
     bool prepare_element_pairs(const viscosity::Operator& aes,double scale);
-    template<unsigned lanes> bool pack_dense_rows(MeshIndex possible,std::vector<DiffusionBlock<lanes>>& blocks);
+    bool pack_dense_rows(MeshIndex possible);
     std::vector<double> element_mean, molecular_mean;
     MeshIndex element_count = 0;
     // Нумерация соседей и интегралы AES постоянны. На стадии нужны только номера
@@ -183,23 +178,34 @@ struct Storage {
             v.plain_update=data+7*n;
         }
     }
-    template <class Device> void upload(View &v, Device &device) const {
+    template <class Device> void upload(View &v, Device &device,bool share_faces=false) const {
         v.nodal_material = device.template allocate<View::Material>(w.size());
-        v.face_terms = device.upload(face_terms);
-        v.axis_faces = device.upload(axis_faces);
-        v.face_columns={device.upload(face_orientations),device.upload(face_neighbours),
-                        device.upload(face_areas),face_orientations.size()};
         v.lines={device.upload(line_vertices),device.upload(line_segments),line_segments.size()};
-        v.face_rows = device.upload(face_rows);
-        v.incoming = device.template allocate<double>(implicit_work ? std::max(face_orientations.size(), std::max(axis_faces.size(),face_terms.size())) : 0);
-        v.face_stride = face_stride;
-        v.diffusion = {device.upload(diffusion_rows),
-                       device.upload(diffusion_anchors),
-                       diffusion_stride,
-                       device.upload(diffusion_terms), device.upload(local_terms), device.upload(diffusion_tiles), nullptr, nullptr, nullptr, nullptr,
-                       device.upload(triples),
-                       device.template allocate<double>(element_count),
-                       device.template allocate<double>(element_count), v.diffusion.short_blocks};
+        // Скаляры входящего потока нужны только между итерациями SA при неявном шаге.
+        MeshIndex incoming_count=gas_face_entries;
+        if (share_faces) {
+            v.face_rows=nullptr;
+            v.face_terms=nullptr;
+            v.axis_faces=nullptr;
+            v.face_columns={};
+            v.face_stride=1;
+        } else {
+            v.face_terms=device.upload(face_terms);
+            v.axis_faces=device.upload(axis_faces);
+            v.face_columns={device.upload(face_orientations),device.upload(face_neighbours),
+                            device.upload(face_areas),face_orientations.size()};
+            v.face_rows=device.upload(face_rows);
+            v.face_stride=face_stride;
+            incoming_count=std::max(face_orientations.size(),std::max(axis_faces.size(),face_terms.size()));
+        }
+        // Когда газ и SA читают один граф граней, массовый поток уже лежит на
+        // карте. Из него восстанавливаем входящую скорость на каждой итерации.
+        v.incoming=device.template allocate<double>(implicit_work && !share_faces ? incoming_count : 0);
+        // Связность и постоянные коэффициенты уже загружены вязким оператором.
+        // Для SA на карте дополнительно нужны только средние вязкости элементов.
+        v.diffusion = {};
+        v.diffusion.molecular_mean = device.template allocate<double>(element_count);
+        v.diffusion.element_mean = device.template allocate<double>(element_count);
         v.w = device.upload(w);
         v.inverse_distance = device.upload(distance);
         bind_work(v, device.template allocate<double>((implicit_work ? 8 : 6) * w.size()), w.size());

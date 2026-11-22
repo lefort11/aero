@@ -12,6 +12,7 @@ struct MatrixSettings {
     bool csgs = false;                // Симметричные проходы по соседям вместо независимых узлов BJ.
 };
 struct NewtonSettings : MatrixSettings {
+    bool compact_jacobian = false; // Хранить вязкие производные только для узлов, соединённых ребром.
     // Ноль — обновлять матрицу на каждой поправке Ньютона. N>0 — хранить
     // пространственные производные в течение N принятых шагов по времени.
     unsigned jacobian_update_every = 0;

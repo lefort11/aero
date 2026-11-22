@@ -25,6 +25,13 @@ AERO_HOST_DEVICE inline Coordinate operator-(Coordinate a, const Coordinate& b) 
     for (unsigned axis = 0; axis < 3; ++axis) a[axis] -= b[axis];
     return a;
 }
+// Скалярное и векторное произведения нужны геометрии AES и направленным фильтрам LES/DDES.
+AERO_HOST_DEVICE inline double dot3(const Coordinate& a, const Coordinate& b) {
+    return a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+}
+AERO_HOST_DEVICE inline Coordinate cross3(const Coordinate& a, const Coordinate& b) {
+    return {{a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]}};
+}
 AERO_HOST_DEVICE inline double coordinate_length(const Coordinate& a) {
     return ::hypot(::hypot(a[0], a[1]), a[2]);
 }

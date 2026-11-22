@@ -42,7 +42,7 @@ ReconstructionStencilView ReconstructionStencil::view() const {
                                               data_.weno_order.empty() ? nullptr : data_.weno_order.data(),
                                               data_.weno_epsilon_scale.data(),
                                               {data_.scheme == ReconstructionScheme::Mp5, data_.scheme == ReconstructionScheme::MPWENO5,
-                                               data_.mpweno_ad_corr, data_.mp5_alpha}};
+                                               data_.mpweno_ad_corr, data_.mp5_alpha},nullptr,false,nullptr,false};
     return result;
 }
 ReconstructionIndex ReconstructionStencil::incomplete_sides() const {

@@ -5,6 +5,7 @@
 #include "../residual/flux_cfl.h"
 #include "mpi_balance.h"
 #include "mpi_stencil.h"
+#include "compact_slopes.h"
 #include "../parallel/device_memory.h"
 #include "../parallel/pinned_buffer.h"
 #include "../parallel/processes.h"
@@ -15,6 +16,27 @@
 #endif
 
 namespace aero {
+#ifdef AERO_HAS_VISCOSITY
+// Потоки, свойства газа и вязкие строки живут одновременно при сборке невязки.
+// На время решения СЛАУ все три массива свободны. Непрерывное размещение
+// позволяет отдать BiCGSTAB также остатки между целыми векторами.
+struct FluxWorkspace {
+    MeshIndex flux_bytes, gas_end, bytes;
+    FluxWorkspace(MeshIndex faces, MeshIndex gas_nodes, MeshIndex rows)
+        : flux_bytes(partition_bytes(0,faces,sizeof(EulerFluxResult))),
+          gas_end(partition_bytes(flux_bytes,gas_nodes,sizeof(viscosity::Gas))),
+          bytes(partition_bytes(gas_end,rows,sizeof(viscosity::Row))) {}
+
+    viscosity::FlowScratch viscosity_fields(EulerFluxResult* flux) const {
+        if (!flux) return {nullptr,nullptr}; // Первый проход только подсчитывает занимаемую память.
+        auto* base = reinterpret_cast<unsigned char*>(flux);
+        static_assert(sizeof(EulerFluxResult)%alignof(viscosity::Gas)==0 &&
+                      sizeof(viscosity::Gas)%alignof(viscosity::Row)==0, "Invalid workspace alignment");
+        return {reinterpret_cast<viscosity::Gas*>(base+flux_bytes),
+                reinterpret_cast<viscosity::Row*>(base+gas_end)};
+    }
+};
+#endif
 void select_partition_gpu(const Processes& world, const std::vector<int>& devices);
 void query_gpu_memory(GpuMemoryFit& fit, const std::vector<double>& limits, const Processes& world);
 
@@ -54,6 +76,9 @@ class PartitionGpu {
             return allocate(host.size(), host.data());
         }
     } storage_;
+    CompactSlopes compact_slopes_; // Живёт на CPU между подсчётом памяти и однократной загрузкой.
+    std::vector<MeshIndex> boundary_nodes_; // По площадке находим исходное значение для граничного условия.
+    void upload_boundary_initial(const std::vector<double>& initial);
 #ifdef AERO_HAS_VISCOSITY
     const viscosity::Aes* aes_ = nullptr;
     viscosity::Operator viscous_grid_{};

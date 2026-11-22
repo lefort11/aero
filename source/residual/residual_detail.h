@@ -12,14 +12,6 @@
 namespace aero {
 namespace residual_detail {
 using Index = ReconstructionIndex;
-struct Surface {
-    Index begin;           // Начало ребра или единственный узел физической площадки.
-    Index end;             // Второй узел внутреннего ребра.
-    Index patch;           // Метка физической площадки для выбора граничного условия.
-    double area[3];        // Вектор площади: от begin к end на ребре, наружу на границе.
-    double measure;        // Модуль вектора площади.
-    unsigned char use_nodal_traces; // На ребре у открытой границы берём значения прямо из узлов.
-};
 
 // Запись списка узла хранит номер поверхности и направление её нормали относительно узла.
 struct OrientedFace {
@@ -91,25 +83,26 @@ AERO_HOST_DEVICE constexpr Index count(Index n) { return index(n) + (lane(n) != 
 template <unsigned scheme_order> struct WenoEdgeTile {
     // Обеим сторонам достаточно трёх общих наклонов. Пятый порядок добавляет по дальнему с каждой стороны.
     static constexpr unsigned rows_per_edge = scheme_order == 5 ? 5 : 3;
-    unsigned nodes[first_slope_term(rows_per_edge)][edge_tile::width]; // Индексы слагаемых по строкам наклонов.
+    FixedMatrix<unsigned,first_slope_term(rows_per_edge),edge_tile::width> nodes; // Индексы слагаемых по строкам наклонов.
     PackedEdgeOrder order[edge_tile::width]; // Хранится вместе с постоянной геометрией ребра.
     // В каждой строке первый узел задаёт начало отсчёта. Для него вес хранить не требуется.
-    double weights[first_slope_term(rows_per_edge) - rows_per_edge][edge_tile::width];
+    FixedMatrix<double,first_slope_term(rows_per_edge) - rows_per_edge,edge_tile::width> weights;
 };
 // Рабочая плитка чистой MPWENO5 на GPU. В одной строке подряд лежат значения
 // 32 рёбер: так соседние исполнители читают один и тот же наклон соседних рёбер.
 struct MpEdgeTile {
     static constexpr Index batch_limit = 131072; // До 4096 плиток; память одинакова для всех стадий.
     PackedEdgeOrder order[edge_tile::width]; // Копируется только после успешной проекции текущего поля.
-    double waves[5][4][edge_tile::width]; // Пять строк по четырём волнам; затем строки 0 и 1 содержат следы.
+    FixedTensor<double,5,4,edge_tile::width> waves; // Пять строк по четырём волнам; затем строки 0 и 1 содержат следы.
 
     // Средний газ один на обе стороны ребра. Нормаль уже хранится с геометрией.
-    double velocity[2][edge_tile::width], enthalpy[edge_tile::width], sound[edge_tile::width];
+    FixedMatrix<double,2,edge_tile::width> velocity;
+    double enthalpy[edge_tile::width], sound[edge_tile::width];
     double kinetic[edge_tile::width], normal_speed[edge_tile::width], tangent_speed[edge_tile::width];
 
     AERO_HOST_DEVICE void store_basis(unsigned lane, const euler_detail::PlaneWaveBasis& basis) {
-        velocity[0][lane] = basis.velocity[0];
-        velocity[1][lane] = basis.velocity[1];
+        velocity(0, lane) = basis.velocity[0];
+        velocity(1, lane) = basis.velocity[1];
         enthalpy[lane] = basis.enthalpy;
         sound[lane] = basis.sound_speed;
         kinetic[lane] = basis.kinetic;
@@ -121,8 +114,8 @@ struct MpEdgeTile {
     AERO_HOST_DEVICE void load_basis(unsigned lane, const double* normal, euler_detail::PlaneWaveBasis& basis) const {
         basis.normal[0] = normal[0];
         basis.normal[1] = normal[1];
-        basis.velocity[0] = velocity[0][lane];
-        basis.velocity[1] = velocity[1][lane];
+        basis.velocity[0] = velocity(0, lane);
+        basis.velocity[1] = velocity(1, lane);
         basis.enthalpy = enthalpy[lane];
         basis.sound_speed = sound[lane];
         basis.kinetic = kinetic[lane];
@@ -155,10 +148,17 @@ struct Geometry {
         MpEdgeTile* mp_work;        // Буфер проекций, базисов и следов для негибридной MPWENO5 в 2D.
         Index state_nodes;          // Включает удалённые узлы шаблона.
     } packed;
+    bool initial_on_boundary; // На GPU начальные данные можно хранить по номеру граничной площадки.
 
     AERO_HOST_DEVICE unsigned components() const { return dim + 2; } // Плотность, импульс и энергия.
     template <class T> AERO_HOST_DEVICE T* node_row(T* field, Index node) const {
         return field + node * components();
+    }
+    // Вызывается только на физической границе. На CPU исходное поле адресуется
+    // по узлу; на карте одна запись соответствует одной граничной площадке.
+    AERO_HOST_DEVICE const double* boundary_initial(const double* initial, Index face) const {
+        if (!initial) return nullptr;
+        return node_row(initial, initial_on_boundary ? face - edges : surfaces[face].begin);
     }
 };
 // Величины одного узла нужны всем его рёбрам. Нулевая плотность отмечает ошибку разбора.
@@ -204,7 +204,7 @@ struct LinearReader {
     const double* normal;
     ResidualVariables variables;
     const LinearFace& face;
-    double tangent[2][3];
+    FixedMatrix<double,2,3> tangent;
     AERO_HOST_DEVICE EulerStatus physical_flux(Index, const double* q, double* flux) const {
         face.physical(q,flux);
         return EulerStatus::Success;
@@ -222,7 +222,7 @@ AERO_HOST_DEVICE inline bool project_slope(const LinearReader& r, bool character
         double w[5] = {};
         r.face.acoustic(q,w[0],w[d+1]);
         w[1] = q[0]-(w[0]+w[d+1]);
-        for (unsigned t=0; t+1<d; ++t) w[2+t] = gas.rho*euler_detail::dot(d,q+1,r.tangent[t]);
+        for (unsigned t=0; t+1<d; ++t) w[2+t] = gas.rho*euler_detail::dot(d,q+1,r.tangent.row(t));
         for (unsigned k=0; k<d+2; ++k) q[k] = w[k];
     } else if (r.variables == ResidualVariables::Conservative) {
         gas.to_conservative(d,q,r.g.options.gamma);
@@ -236,10 +236,8 @@ AERO_HOST_DEVICE inline bool project_slope(const LinearReader& r, bool character
 // В разреженной строке всё равно используем её собственные индексы и локальный порядок.
 template <unsigned linear_width = 0, bool characteristic_2d = false, class FieldReader>
 KOKKOS_FORCEINLINE_FUNCTION bool transformed_row(const FieldReader& reader, Index owner, const double* own,
-                                             const Index* offsets, const Index* nodes, const double* weights,
-                                             Index row, double* out, unsigned stride) {
-    const Index begin = offsets[row];
-    const Index count = offsets[row + 1] - begin;
+                                             StencilRow row, double* out, unsigned stride) {
+    const Index count = row.count;
     // У линейного шаблона EBR все компоненты читаются из поля консервативных переменных.
     // Когда ширина известна, сумма одной строки целиком помещается в регистры.
     const unsigned width = characteristic_2d ? 4 : (linear_width ? linear_width : reader.g.components());
@@ -250,7 +248,7 @@ KOKKOS_FORCEINLINE_FUNCTION bool transformed_row(const FieldReader& reader, Inde
         return true;
     }
     const auto values = [&](Index i, double* buffer) -> const double* {
-        const Index node = nodes[begin + i];
+        const Index node = row.node(i);
         const double* state = reader.field + node * width;
         if (characteristic_2d || linear_width || reader.variables != ResidualVariables::Flux)
             return state;
@@ -258,7 +256,7 @@ KOKKOS_FORCEINLINE_FUNCTION bool transformed_row(const FieldReader& reader, Inde
             return own;
         return reader.physical_flux(node, state, buffer) == EulerStatus::Success ? buffer : nullptr;
     };
-    const auto weight = [&](Index i) { return weights[begin + i]; };
+    const auto weight = [&](Index i) { return row.weight(i); };
     double slope[5];
     if (!reconstruction_detail::sum_slope<characteristic_2d ? 4 : linear_width>(width, count, values, weight, slope))
         return false;
@@ -276,8 +274,7 @@ KOKKOS_FORCEINLINE_FUNCTION bool read_side_slopes(const FieldReader& reader, Ind
                                                            double* slopes) {
     const auto& st = reader.g.stencil;
     for (unsigned k = 0; k < weno_slope_count(st.weno_order[row]); ++k)
-        if (!transformed_row<0, characteristic_2d>(reader, st.row_owner[row], own, st.slope_offsets,
-                st.slope_nodes, st.slope_weights, 4 * row + k, slopes + k, 4))
+        if (!transformed_row<0, characteristic_2d>(reader, st.owner(row), own, st.slope_row(4*row+k), slopes + k, 4))
             return false;
     return true;
 }
@@ -286,7 +283,7 @@ KOKKOS_FORCEINLINE_FUNCTION bool read_side_slopes(const FieldReader& reader, Ind
 KOKKOS_FORCEINLINE_FUNCTION void side_increments(const ReconstructionStencilView& st, Index row, unsigned width,
                                              const double* slopes, double* out) {
     for (unsigned k = 0; k < width; ++k)
-        out[k] = nonlinear_increment(st.weno_order[row], slopes + 4*k, st.weno_epsilon_scale[row], st.mp5);
+        out[k] = nonlinear_increment(st.weno_order[row], slopes + 4*k, st.epsilon(row), st.mp5);
 }
 
 template <bool characteristic_2d = false, class FieldReader>
@@ -294,8 +291,7 @@ KOKKOS_FORCEINLINE_FUNCTION bool transformed_weno_increment(const FieldReader& r
                                                                     double* out) {
     const auto& st = reader.g.stencil;
     if (!st.weno_order[row])
-        return transformed_row<0, characteristic_2d>(reader, st.row_owner[row], own, st.offsets, st.nodes,
-                                                      st.weights, row, out, 1);
+        return transformed_row<0, characteristic_2d>(reader, st.owner(row), own, st.linear_row(row), out, 1);
     double slopes[5 * 4];
     if (!read_side_slopes<characteristic_2d>(reader, row, own, slopes))
         return false;
@@ -356,7 +352,7 @@ AERO_HOST_DEVICE inline bool add_increment(const LinearReader& r, bool character
     if (characteristic) {
         q[0] = increment[1];
         for (unsigned t=0; t+1<d; ++t)
-            for (unsigned j=0; j<d; ++j) q[j+1] += r.tangent[t][j]*increment[2+t]/r.face.gas.rho;
+            for (unsigned j=0; j<d; ++j) q[j+1] += r.tangent(t, j)*increment[2+t]/r.face.gas.rho;
         r.face.add_acoustic(increment[0],increment[d+1],q);
         increment = q;
     } else if (r.variables == ResidualVariables::Conservative) {
@@ -368,15 +364,16 @@ AERO_HOST_DEVICE inline bool add_increment(const LinearReader& r, bool character
 // Для conservative и flux базовые приращения считаем по собственным четырём
 // строкам каждой стороны, тем же вызовом, что при выключенном гибриде.
 template<class FieldReader>
-AERO_HOST_DEVICE inline bool cartesian_hybrid_increments(const FieldReader& reader, Index row, const double own[2][5],
+AERO_HOST_DEVICE inline bool cartesian_hybrid_increments(const FieldReader& reader, Index row, const FixedMatrix<double,2,5>& own,
                                                          EdgeTraces& increments) {
     const auto& st = reader.g.stencil;
     const unsigned width = reader.g.components();
-    double left_rows[5*4], right_rows[5*4], slopes[5][5];
+    double left_rows[5*4], right_rows[5*4];
+    FixedMatrix<double,5,5> slopes;
     // У сторон разные геометрические строки. Отдельные массивы дают ядру GPU
     // известный адрес четырёх наклонов каждой компоненты даже в трёхмерном случае.
-    if (!read_side_slopes(reader, row, own[0], left_rows) ||
-        !read_side_slopes(reader, row+1, own[1], right_rows))
+    if (!read_side_slopes(reader, row, own.row(0), left_rows) ||
+        !read_side_slopes(reader, row+1, own.row(1), right_rows))
         return false;
     side_increments(st, row, width, left_rows, increments.left);
     side_increments(st, row+1, width, right_rows, increments.right);
@@ -384,8 +381,8 @@ AERO_HOST_DEVICE inline bool cartesian_hybrid_increments(const FieldReader& read
     // для дальней точки справа нужна последняя строка правой стороны.
     for (unsigned k = 0; k < width; ++k) {
         for (unsigned j = 0; j < 4; ++j)
-            slopes[j][k] = left_rows[4*k+j];
-        slopes[FarRightSlope][k] = right_rows[4*k+3];
+            slopes(j, k) = left_rows[4*k+j];
+        slopes(FarRightSlope, k) = right_rows[4*k+3];
     }
     const FaceMomentumAxes axes(reader.g.dim, reader.surface.area, reader.normal);
     const double h = reader.g.options.mp6_hybrid;
@@ -403,14 +400,15 @@ AERO_HOST_DEVICE inline bool hybrid_edge_traces(const FieldReader& reader, Index
     const auto& st = reader.g.stencil;
     const unsigned width = characteristic_2d ? 4 : reader.g.components();
     const Index row = 2*edge;
-    double own[2][5], slopes[5][5];
+    FixedMatrix<double,2,5> own;
+    FixedMatrix<double,5,5> slopes;
     for (unsigned side = 0; side < 2; ++side) {
         const Index node = side ? reader.surface.end : reader.surface.begin;
         const double* state = reader.field + node * width;
         if (reader.variables == ResidualVariables::Flux) {
-            if (reader.physical_flux(node, state, own[side]) != EulerStatus::Success) return false;
+            if (reader.physical_flux(node, state, own.row(side)) != EulerStatus::Success) return false;
         } else {
-            for (unsigned k = 0; k < width; ++k) own[side][k] = state[k];
+            for (unsigned k = 0; k < width; ++k) own(side, k) = state[k];
         }
     }
     if (characteristic_2d || reader.variables == ResidualVariables::Characteristic) {
@@ -419,8 +417,7 @@ AERO_HOST_DEVICE inline bool hybrid_edge_traces(const FieldReader& reader, Index
             const unsigned offset = edge_slope_offset(k, 5); // Гибрид здесь использует полный шаблон.
             const unsigned side = offset / 4;
             const Index slope_row = 4*row + offset;
-            if (!transformed_row<0,characteristic_2d>(reader, st.row_owner[row+side], own[side], st.slope_offsets,
-                    st.slope_nodes, st.slope_weights, slope_row, slopes[k], 1))
+            if (!transformed_row<0,characteristic_2d>(reader, st.owner(row+side), own.row(side), st.slope_row(slope_row), slopes.row(k), 1))
                 return false;
         }
         if (st.mp5.weno)
@@ -430,8 +427,8 @@ AERO_HOST_DEVICE inline bool hybrid_edge_traces(const FieldReader& reader, Index
     } else if (!cartesian_hybrid_increments(reader, row, own, traces))
         return false;
     const bool characteristic = reader.variables == ResidualVariables::Characteristic;
-    return add_increment<0>(reader,characteristic,own[0],traces.left,false,traces.left) &&
-           add_increment<0>(reader,characteristic,own[1],traces.right,true,traces.right);
+    return add_increment<0>(reader,characteristic,own.row(0),traces.left,false,traces.left) &&
+           add_increment<0>(reader,characteristic,own.row(1),traces.right,true,traces.right);
 }
 
 // Граница с узловыми следами уже обработана в integrated_edge_flux. Здесь обе стороны используют шаблон.
@@ -456,7 +453,7 @@ KOKKOS_FORCEINLINE_FUNCTION bool reconstruct_edge_traces(const FieldReader& read
         const Index row = 2 * edge + side;
         const bool valid = characteristic_2d || (!linear_width && stencil.weno_order)
             ? transformed_weno_increment<characteristic_2d>(reader, row, own, increment)
-            : transformed_row<linear_width>(reader, node, own, stencil.offsets, stencil.nodes, stencil.weights, row, increment, 1);
+            : transformed_row<linear_width>(reader, node, own, stencil.linear_row(row), increment, 1);
         if (!valid)
             return false;
         const bool characteristic = characteristic_2d || (!linear_width && reader.variables == ResidualVariables::Characteristic);
@@ -667,7 +664,7 @@ KOKKOS_FORCEINLINE_FUNCTION bool prepare_edge_basis(const Geometry& g, const Sur
                                                             const euler_detail::InterfaceGas& base,
                                                             EulerRoeBasis& basis) {
     // При узловых следах поток Роу сам проверяет базис. Для характеристического LF проверяем его здесь.
-    const bool reconstruct_states = !nodal_only && g.stencil.row_owner && surface.use_nodal_traces != 1;
+    const bool reconstruct_states = !nodal_only && g.stencil.has_owners() && surface.use_nodal_traces != 1;
     const bool project_waves = reconstruct_states && g.stencil.weno_order;
     if (g.options.variables != ResidualVariables::Characteristic ||
         (!reconstruct_states && g.options.solver == ResidualSolver::Roe))
@@ -685,13 +682,13 @@ KOKKOS_FORCEINLINE_FUNCTION bool ebr_state_and_flux(const FieldReader& reader, I
                                                       EdgeTraces& flux) {
     const auto& stencil = reader.g.stencil;
     for (unsigned side = 0; side < 2; ++side) {
-        const Index row = 2 * edge + side, begin = stencil.offsets[row];
+        const auto entries = stencil.linear_row(2 * edge + side);
         const Index owner = side ? reader.surface.end : reader.surface.begin;
         const double* own = reader.field + width * owner;
         double own_flux[width], increment[2*width];
         if (reader.physical_flux(owner,own,own_flux) != EulerStatus::Success) return false;
         const auto values = [&](Index k, double* pair) -> const double* {
-            const Index node = stencil.nodes[begin+k];
+            const Index node = entries.node(k);
             const double* u = reader.field + width*node;
             for (unsigned c = 0; c < width; ++c) pair[c] = u[c];
             if (node == owner) {
@@ -699,8 +696,8 @@ KOKKOS_FORCEINLINE_FUNCTION bool ebr_state_and_flux(const FieldReader& reader, I
             } else if (reader.physical_flux(node,u,pair+width) != EulerStatus::Success) return nullptr;
             return pair;
         };
-        const auto weight = [&](Index k) { return stencil.weights[begin+k]; };
-        if (!reconstruction_detail::sum_slope<2*width>(2*width,stencil.offsets[row+1]-begin,values,weight,increment))
+        const auto weight = [&](Index k) { return entries.weight(k); };
+        if (!reconstruction_detail::sum_slope<2*width>(2*width,entries.count,values,weight,increment))
             return false;
         add_half_increment(width,own,increment,side!=0,side ? state.right : state.left);
         add_half_increment(width,own_flux,increment+width,side!=0,side ? flux.right : flux.left);
@@ -716,7 +713,7 @@ template<unsigned linear_width, bool characteristic_2d, bool ebr_flux = false, c
 KOKKOS_FORCEINLINE_FUNCTION bool reconstruct_pair(const Geometry& g, Index edge, FieldReader& reader,
         EdgeTraces& state, EdgeTraces& reconstructed_flux, EdgeTraces*& physical_flux) {
     // Для обоих концов нужны две строки одного шаблона, в том числе при совместном расчёте U и F(U).
-    if (edge >= g.stencil.edge_count || !g.stencil.row_owner || !g.stencil.offsets)
+    if (edge >= g.stencil.edge_count || !g.stencil.has_owners())
         return false;
     // У EBR все компоненты имеют одинаковые постоянные веса. Для базиса этого ребра
     // R·(Σ aᵢ L·Uᵢ) = Σ aᵢ Uᵢ, поскольку R и L взаимно обратны. Считаем линейную
@@ -753,7 +750,7 @@ AERO_HOST_DEVICE inline bool linear_edge_flux(const Geometry& g, Index edge, con
     const double* right = g.node_row(field,s.end);
     EdgeTraces state, flux;
     EdgeTraces* physical = nullptr;
-    if (s.use_nodal_traces != 1 && g.stencil.row_owner) {
+    if (s.use_nodal_traces != 1 && g.stencil.has_owners()) {
         LinearReader reader = {g,field,s,n,g.options.variables,face,{}};
         if (reader.variables == ResidualVariables::Characteristic)
             euler_detail::face_tangents(g.dim,s.area,n,reader.tangent);
@@ -783,7 +780,7 @@ KOKKOS_FORCEINLINE_FUNCTION bool integrated_edge_flux(const Geometry& g, Index e
     Reader reader = {g, field, surface, basis, base.normal, g.options.variables};
     if (!prepare_edge_basis<roe_2d, nodal_only>(g, surface, base, basis))
         return false;
-    if (nodal_only || !g.stencil.row_owner || surface.use_nodal_traces == 1)
+    if (nodal_only || !g.stencil.has_owners() || surface.use_nodal_traces == 1)
         return solve_edge_flux<roe_2d>(g, surface, begin, end, base, nullptr, out, nodal_lf_dim);
 
     EdgeTraces state, reconstructed_flux;
@@ -798,7 +795,7 @@ AERO_HOST_DEVICE inline bool integrated_boundary_flux(const Geometry& g, Index f
                                                       const double* initial, EulerFluxResult& out) {
     const auto& piece = g.surfaces[face];
     const auto patch = g.patches.by_patch[piece.patch];
-    const double* initial_state = initial ? g.node_row(initial, piece.begin) : nullptr;
+    const double* initial_state = g.boundary_initial(initial, face);
     if (g.options.background.active()) {
         double n[3] = {};
         if (euler_unit_direction(g.dim,piece.area,n) != EulerStatus::Success) return false;
@@ -832,18 +829,18 @@ struct FaceBatch {
     }
     // Первый порядок LF читает только два узла. Размерность выбираем один раз
     // до обхода всего списка, чтобы ядро работало с постоянной шириной состояния.
-    bool nodal_lf() const { return !geometry.stencil.row_owner && geometry.options.solver == ResidualSolver::LocalLF; }
+    bool nodal_lf() const { return !geometry.stencil.has_owners() && geometry.options.solver == ResidualSolver::LocalLF; }
     template<class Launcher>
     Launcher select_by_dimension(Launcher one, Launcher two, Launcher three) const {
         return geometry.dim == 1 ? one : (geometry.dim == 2 ? two : three);
     }
     AERO_HOST_DEVICE bool nodal_roe_2d() const {
-        return roe_2d() && !geometry.stencil.row_owner;
+        return roe_2d() && !geometry.stencil.has_owners();
     }
     // В двумерном EBR3 и EBR5 меняются только веса в строках. Потоковым переменным
     // нужен отдельный физический поток в каждом узле шаблона, для них оставляем общий обход.
     AERO_HOST_DEVICE bool linear_roe_2d() const {
-        return roe_2d() && geometry.stencil.row_owner && !geometry.stencil.weno_order &&
+        return roe_2d() && geometry.stencil.has_owners() && !geometry.stencil.weno_order &&
                geometry.options.variables != ResidualVariables::Flux;
     }
     template <bool roe, bool nodal, unsigned linear_width = 0, bool characteristic_2d = false, bool ebr_flux = false>

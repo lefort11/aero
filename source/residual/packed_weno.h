@@ -11,8 +11,9 @@ template<WenoSlopeRow row, unsigned order, class Read>
 KOKKOS_FORCEINLINE_FUNCTION bool packed_slope(const WenoEdgeTile<order>& tile, unsigned lane,
                                                const Read& read, double result[4]) {
     constexpr unsigned first = first_slope_term(row);
-    const auto values = [&](Index i, double* buffer) { return read(tile.nodes[first + i][lane], buffer); };
-    const auto weight = [&](Index i) { return tile.weights[first - row + i - 1][lane]; };
+    // i нумерует слагаемые одной короткой строки, глобальный номер узла храним отдельно.
+    const auto values = [&](Index i, double* buffer) { return read(tile.nodes(first + static_cast<unsigned>(i), lane), buffer); };
+    const auto weight = [&](Index i) { return tile.weights(first - row + static_cast<unsigned>(i) - 1, lane); };
     return reconstruction_detail::sum_slope<4>(4, slope_terms(row), values, weight, result);
 }
 
@@ -23,36 +24,36 @@ template <WenoSlopeRow row, unsigned order>
 KOKKOS_FORCEINLINE_FUNCTION bool characteristic_slope(const WenoEdgeTile<order>& tile, unsigned lane,
                                                   const double* field, const euler_detail::PlaneWaveBasis& basis,
                                                   const double* normal, double gamma, double inverse_sound,
-                                                  double waves[][4]) {
+                                                  FixedMatrix<double,WenoEdgeTile<order>::rows_per_edge,4>& waves) {
     const auto state = [&](Index node, double*) { return field + 4 * node; };
     double slope[4];
     packed_slope<row>(tile, lane, state, slope);
     return euler_detail::project_characteristic<2>(basis, normal, gamma, basis.kinetic_energy(),
-                                                    slope, waves[row], inverse_sound) == EulerStatus::Success;
+                                                    slope, waves.row(row), inverse_sound) == EulerStatus::Success;
 }
 
 // Разворачиваем ближние наклоны в порядке, принятом формулой WENO на выбранной стороне.
 // Нелинейные веса считаются только после перехода в характеристики.
-template <unsigned order>
-KOKKOS_FORCEINLINE_FUNCTION double wave_increment(const double slopes[][4], unsigned component,
+template <unsigned order, unsigned rows>
+KOKKOS_FORCEINLINE_FUNCTION double wave_increment(const FixedMatrix<double,rows,4>& slopes, unsigned component,
                                                bool right, double epsilon_scale) {
-    const double values[] = {slopes[CentralSlope][component],
-                             slopes[right ? NearRightSlope : NearLeftSlope][component],
-                             slopes[right ? NearLeftSlope : NearRightSlope][component],
-                             order == 5 ? slopes[right ? FarRightSlope : FarLeftSlope][component] : 0};
+    const double values[] = {slopes(CentralSlope, component),
+                             slopes(right ? NearRightSlope : NearLeftSlope, component),
+                             slopes(right ? NearLeftSlope : NearRightSlope, component),
+                             order == 5 ? slopes(right ? FarRightSlope : FarLeftSlope, component) : 0};
     return weno_increment2<order>(order, values, epsilon_scale);
 }
 
 // В плоском полном шаблоне центральный и ближние наклоны уже общие для двух сторон.
 // У WENO5 и индикаторы этих наклонов можно посчитать за один проход.
 template <unsigned order>
-KOKKOS_FORCEINLINE_FUNCTION void reconstruct_wave_pair(const double slopes[][4], unsigned c,
+KOKKOS_FORCEINLINE_FUNCTION void reconstruct_wave_pair(const FixedMatrix<double,WenoEdgeTile<order>::rows_per_edge,4>& slopes, unsigned c,
                                               double left_epsilon, double right_epsilon,
                                               double& left, double& right) {
-    const double center = slopes[CentralSlope][c];
-    const double nl = slopes[NearLeftSlope][c], nr = slopes[NearRightSlope][c];
-    const double fl = order == 5 ? slopes[FarLeftSlope][c] : 0;
-    const double fr = order == 5 ? slopes[FarRightSlope][c] : 0;
+    const double center = slopes(CentralSlope, c);
+    const double nl = slopes(NearLeftSlope, c), nr = slopes(NearRightSlope, c);
+    const double fl = order == 5 ? slopes(FarLeftSlope, c) : 0;
+    const double fr = order == 5 ? slopes(FarRightSlope, c) : 0;
     const double maximum = ::fmax(::fabs(center), ::fmax(::fmax(::fabs(nl), ::fabs(nr)),
                                                          ::fmax(::fabs(fl), ::fabs(fr))));
     if (!regular_weno_scale(maximum, left_epsilon) || !regular_weno_scale(maximum, right_epsilon)) {
@@ -111,7 +112,7 @@ struct PlaneEdge {
 template <unsigned scheme_order>
 KOKKOS_FORCEINLINE_FUNCTION bool prepare_edge_slopes(const Geometry& g, Index edge, const double* field,
                                             const WenoEdgeTile<scheme_order>& tile, unsigned lane,
-                                            PlaneEdge& plane, double slopes[][4]) {
+                                            PlaneEdge& plane, FixedMatrix<double,WenoEdgeTile<scheme_order>::rows_per_edge,4>& slopes) {
     // Обе стороны используют один базис Роу. Сразу возвращаем ошибку, если его нельзя построить.
     if (!plane.prepare(g, field, edge)) return false;
     const double gamma = g.options.gamma;
@@ -136,7 +137,7 @@ KOKKOS_FORCEINLINE_FUNCTION bool prepare_edge_slopes(const Geometry& g, Index ed
 // лежат ещё приращения волн. Преобразование в состояния выполняет PlaneEdge::flux.
 template <unsigned scheme_order, bool use_mp5, bool use_mpweno, int hybrid_mode>
 KOKKOS_FORCEINLINE_FUNCTION void reconstruct_packed_traces(const Geometry& g, Index edge,
-                                                                   const double slopes[][4], EdgeTraces& traces) {
+                                                                   const FixedMatrix<double,WenoEdgeTile<scheme_order>::rows_per_edge,4>& slopes, EdgeTraces& traces) {
     // Гибриду нужны сразу все волны для общего ограничения средней поправки.
     const bool hybrid = hybrid_mode == 1 || (hybrid_mode < 0 && g.options.mp6_hybrid > 0);
     if (scheme_order == 5 && (use_mp5 || use_mpweno) && hybrid) {
@@ -146,19 +147,19 @@ KOKKOS_FORCEINLINE_FUNCTION void reconstruct_packed_traces(const Geometry& g, In
         // Без гибрида пара следов каждой волны независима от остальных волн.
         for (unsigned c = 0; c < 4; ++c) {
             if (use_mpweno) {
-                mpweno5::pair(slopes[FarLeftSlope][c], slopes[NearLeftSlope][c], slopes[CentralSlope][c],
-                              slopes[NearRightSlope][c], slopes[FarRightSlope][c], g.stencil.mp5.alpha,
+                mpweno5::pair(slopes(FarLeftSlope, c), slopes(NearLeftSlope, c), slopes(CentralSlope, c),
+                              slopes(NearRightSlope, c), slopes(FarRightSlope, c), g.stencil.mp5.alpha,
                               g.stencil.mp5.correction, traces.left[c], traces.right[c]);
                 continue;
             }
             if (use_mp5) {
-                mp5::pair(slopes[FarLeftSlope][c], slopes[NearLeftSlope][c], slopes[CentralSlope][c],
-                          slopes[NearRightSlope][c], slopes[FarRightSlope][c], g.stencil.mp5.alpha,
+                mp5::pair(slopes(FarLeftSlope, c), slopes(NearLeftSlope, c), slopes(CentralSlope, c),
+                          slopes(NearRightSlope, c), slopes(FarRightSlope, c), g.stencil.mp5.alpha,
                           traces.left[c], traces.right[c]);
                 continue;
             }
-            reconstruct_wave_pair<scheme_order>(slopes, c, g.stencil.weno_epsilon_scale[2 * edge],
-                                                g.stencil.weno_epsilon_scale[2 * edge + 1], traces.left[c], traces.right[c]);
+            reconstruct_wave_pair<scheme_order>(slopes, c, g.stencil.epsilon(2 * edge),
+                                                g.stencil.epsilon(2 * edge + 1), traces.left[c], traces.right[c]);
         }
     }
 }
@@ -169,7 +170,7 @@ KOKKOS_FORCEINLINE_FUNCTION bool packed_edge_flux(const Geometry& g, const doubl
                                              const WenoEdgeTile<scheme_order>& tile, unsigned lane,
                                              EulerFluxResult& out) {
     PlaneEdge plane;
-    double slopes[WenoEdgeTile<scheme_order>::rows_per_edge][4];
+    FixedMatrix<double,WenoEdgeTile<scheme_order>::rows_per_edge,4> slopes;
     if (!prepare_edge_slopes(g, edge, field, tile, lane, plane, slopes))
         return false;
     EdgeTraces traces;
@@ -192,12 +193,12 @@ KOKKOS_FORCEINLINE_FUNCTION bool cartesian_packed_values(const Geometry& g, Inde
         return gas.density > 0. && euler_detail::project_flux(2,state,gas,plane.gas.normal,buffer,&speed)
                == EulerStatus::Success ? buffer : nullptr;
     };
-    double slopes[WenoEdgeTile<order>::rows_per_edge][4];
-    if (!packed_slope<CentralSlope>(tile,lane,read,slopes[CentralSlope]) ||
-        !packed_slope<NearLeftSlope>(tile,lane,read,slopes[NearLeftSlope]) ||
-        !packed_slope<NearRightSlope>(tile,lane,read,slopes[NearRightSlope])) return false;
-    if (order == 5 && (!packed_slope<FarLeftSlope>(tile,lane,read,slopes[FarLeftSlope]) ||
-                       !packed_slope<FarRightSlope>(tile,lane,read,slopes[FarRightSlope]))) return false;
+    FixedMatrix<double,WenoEdgeTile<order>::rows_per_edge,4> slopes;
+    if (!packed_slope<CentralSlope>(tile,lane,read,slopes.row(CentralSlope)) ||
+        !packed_slope<NearLeftSlope>(tile,lane,read,slopes.row(NearLeftSlope)) ||
+        !packed_slope<NearRightSlope>(tile,lane,read,slopes.row(NearRightSlope))) return false;
+    if (order == 5 && (!packed_slope<FarLeftSlope>(tile,lane,read,slopes.row(FarLeftSlope)) ||
+                       !packed_slope<FarRightSlope>(tile,lane,read,slopes.row(FarRightSlope)))) return false;
     reconstruct_packed_traces<order,mp,mpweno,0>(g,edge,slopes,traces);
     const auto& surface = g.surfaces[edge];
     if (hybrid) {

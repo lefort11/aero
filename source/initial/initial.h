@@ -1,5 +1,6 @@
 #ifndef AERO_INITIAL_H
 #define AERO_INITIAL_H
+#include "../parallel/row_table.h"
 #include "../mesh/mesh_index.h"
 #include "../eulersolver/linear_euler.h"
 #include <array>
@@ -27,7 +28,7 @@ std::vector<double> read_initial(const Mesh& mesh, double gamma, std::istream& s
                                  double mach = 0., std::string* recovery_path = nullptr);
 
 // Возвращает эталонные rho, ux, uy, uz, p, E в порядке переданных локальных номеров узлов.
-std::vector<std::array<double, 6>> read_exact_fields(const Mesh&, double gamma, std::istream&,
+RowTable<double,6> read_exact_fields(const Mesh&, double gamma, std::istream&,
         const std::string& directory, const FieldNodeSelection*, const LinearBackground&,
         const std::vector<MeshIndex>& nodes, std::vector<std::string>* warnings = nullptr);
 

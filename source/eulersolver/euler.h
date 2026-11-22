@@ -1,6 +1,7 @@
 #ifndef AERO_EULERSOLVER_EULER_H
 #define AERO_EULERSOLVER_EULER_H
 
+#include "../parallel/fixed_matrix.h"
 #include "../parallel/kernel_math.h"
 #include <cmath>
 
@@ -390,10 +391,10 @@ AERO_HOST_DEVICE inline double plane_tangent(const double* normal, unsigned axis
 // Единичные касательные к грани. Этот же выбор осей задаёт поперечные характеристики Роу
 // и локальные компоненты импульса в гибриде MP6. В 1D касательных нет.
 AERO_HOST_DEVICE inline void face_tangents(unsigned dimension, const double* direction, const double* n,
-                                           double tangent[2][3]) {
+                                           FixedMatrix<double,2,3>& tangent) {
     if (dimension == 2) {
-        tangent[0][0] = plane_tangent(n, 0);
-        tangent[0][1] = plane_tangent(n, 1);
+        tangent(0, 0) = plane_tangent(n, 0);
+        tangent(0, 1) = plane_tangent(n, 1);
     }
     if (dimension == 3) {
         unsigned axis = 0;
@@ -402,13 +403,13 @@ AERO_HOST_DEVICE inline void face_tangents(unsigned dimension, const double* dir
             if (euler_detail::absolute(direction[k]) < euler_detail::absolute(direction[axis]))
                 axis = k;
         for (unsigned k = 0; k < 3; ++k)
-            tangent[0][k] = (k == axis ? 1.0 : 0.0) - n[axis] * n[k];
-        const double length = ::sqrt(euler_detail::dot(3, tangent[0], tangent[0]));
+            tangent(0, k) = (k == axis ? 1.0 : 0.0) - n[axis] * n[k];
+        const double length = ::sqrt(euler_detail::dot(3, tangent.row(0), tangent.row(0)));
         for (unsigned k = 0; k < 3; ++k)
-            tangent[0][k] /= length;
-        tangent[1][0] = n[1] * tangent[0][2] - n[2] * tangent[0][1];
-        tangent[1][1] = n[2] * tangent[0][0] - n[0] * tangent[0][2];
-        tangent[1][2] = n[0] * tangent[0][1] - n[1] * tangent[0][0];
+            tangent(0, k) /= length;
+        tangent(1, 0) = n[1] * tangent(0, 2) - n[2] * tangent(0, 1);
+        tangent(1, 1) = n[2] * tangent(0, 0) - n[0] * tangent(0, 2);
+        tangent(1, 2) = n[0] * tangent(0, 1) - n[1] * tangent(0, 0);
     }
 }
 
@@ -472,7 +473,7 @@ AERO_HOST_DEVICE inline EulerStatus build_roe_basis(unsigned mesh_dimension, con
     basis.enthalpy = gas.enthalpy;
     for (unsigned k = 0; k < dimension; ++k)
         basis.velocity[k] = gas.velocity[k];
-    double tangent[2][3] = {};
+    FixedMatrix<double,2,3> tangent = {};
     if (full_basis)
         face_tangents(dimension, direction, n, tangent);
     // Крайние столбцы описывают акустические волны, между ними стоят энтропийная и сдвиговые.
@@ -483,8 +484,8 @@ AERO_HOST_DEVICE inline EulerStatus build_roe_basis(unsigned mesh_dimension, con
     }
     for (unsigned t = 0; full_basis && t + 1 < dimension; ++t) {
         for (unsigned k = 0; k < dimension; ++k)
-            basis.right[5 * (k + 1) + 2 + t] = tangent[t][k];
-        basis.right[5 * energy + 2 + t] = euler_detail::dot(dimension, basis.velocity, tangent[t]);
+            basis.right[5 * (k + 1) + 2 + t] = tangent(t, k);
+        basis.right[5 * energy + 2 + t] = euler_detail::dot(dimension, basis.velocity, tangent.row(t));
     }
     for (unsigned k = 0; k < dimension + 2; ++k)
         basis.eigenvalues[k] = gas.normal_speed;

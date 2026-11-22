@@ -18,6 +18,11 @@ $(kokkos_stamp): $(kokkos_inputs)
 	touch "$@"
 override CPPFLAGS += -isystem "$(KOKKOS_PREFIX)/include"
 override LDLIBS += "$(kokkos_library)"
+# Установка внешней библиотеки общая. Объекты Aero и модуль GPU храним
+# отдельно, чтобы при переключении точности make выбрал совместимую пару.
+ifeq ($(MIXED_LINEAR),1)
+override BUILD := $(BUILD)/mixed-linear
+endif
 # Каталог для объектов Aero создаётся после установки заголовков библиотеки.
 $(BUILD): | $(kokkos_library)
 ifeq ($(kokkos_bundled),1)
@@ -77,7 +82,7 @@ KOKKOS_DEVICE_LIBRARY := $(kokkos_gpu_dir)/$(kokkos_gpu_archive)
 kokkos_device_sources := source/parallel/build_kokkos_gpu.py $(wildcard source/parallel/*.cu source/*/*.h) qa/device_cases.cu qa/device_cases.h
 $(KOKKOS_DEVICE_LIBRARY): $(kokkos_stamp) $(kokkos_device_sources) $(llvm_ready)
 	$(call action,Building,Kokkos GPU library)
-	python3 source/parallel/build_kokkos_gpu.py --work "$(kokkos_gpu_dir)/objects" --source "$(kokkos_source)" --cuda "$(CUDA_HOME)" --arch "$(CUDA_ARCH)" --compiler "$(KOKKOS_GPU_CXX)" --host-compiler "$(CXX)" --output "$@" $(kokkos_gpu_flags) $(if $(filter 1,$(V)),--verbose)
+	python3 source/parallel/build_kokkos_gpu.py --work "$(kokkos_gpu_dir)/objects" --source "$(kokkos_source)" --cuda "$(CUDA_HOME)" --arch "$(CUDA_ARCH)" --compiler "$(KOKKOS_GPU_CXX)" --host-compiler "$(CXX)" --mixed-linear $(MIXED_LINEAR) --output "$@" $(kokkos_gpu_flags) $(if $(filter 1,$(V)),--verbose)
 endif
 $(BUILD): | $(KOKKOS_DEVICE_LIBRARY)
 ifeq ($(STATIC_LINK),0)

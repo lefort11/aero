@@ -15,6 +15,7 @@ struct BlockJacobi::Storage {
     JacobiBlocks blocks{};               // На CPU и GPU ядро получает адреса местных массивов.
     int device = -1;                     // Владелец разложения, -1 обозначает оперативную память.
     bool ready = false;                  // Только полностью разложенная диагональ пригодна для BiCGSTAB.
+    bool use_matrix_diagonal = false;    // Повторно читаем исходный блок вместо второй копии всей диагонали.
     std::vector<double> host_factors;    // LU в памяти CPU.
     std::vector<unsigned char> host_pivots; // Перестановки при разложении на CPU.
     ~Storage() {
@@ -25,7 +26,7 @@ struct BlockJacobi::Storage {
     }
 };
 
-BlockJacobi::BlockJacobi(MeshIndex owned_nodes, unsigned dimension, int device)
+BlockJacobi::BlockJacobi(MeshIndex owned_nodes, unsigned dimension, int device, bool use_matrix_diagonal)
     : storage_(new Storage) {
     if (dimension < 1 || dimension > 3 || device < -1)
         throw std::invalid_argument("Block Jacobi: invalid dimension or device");
@@ -36,8 +37,10 @@ BlockJacobi::BlockJacobi(MeshIndex owned_nodes, unsigned dimension, int device)
     const auto rows = static_cast<std::size_t>(owned_nodes) * width;
     auto& s = *storage_;
     s.device = device;
-    s.blocks = {owned_nodes, width, nullptr, nullptr};
+    s.use_matrix_diagonal = use_matrix_diagonal;
+    s.blocks = {owned_nodes, width, nullptr, nullptr, nullptr, nullptr};
     if (device == -1) {
+        if (use_matrix_diagonal) return;
         s.host_factors.resize(rows * width);
         s.host_pivots.resize(rows);
         s.blocks.factors = s.host_factors.data();
@@ -45,7 +48,8 @@ BlockJacobi::BlockJacobi(MeshIndex owned_nodes, unsigned dimension, int device)
         return;
     }
 #ifdef AERO_WITH_KOKKOS_GPU
-    device_work::check(device_work::aero_device_jacobi_allocate(device, s.blocks));
+    if (!use_matrix_diagonal)
+        device_work::check(device_work::aero_device_jacobi_allocate(device, s.blocks));
 #else
     throw std::invalid_argument("Block Jacobi on GPU requires a Kokkos GPU build");
 #endif
@@ -69,6 +73,10 @@ void BlockJacobi::prepare(const double* diagonal, const MeshIndex* row_starts) {
     s.ready = false; // После неудачного пересчёта нельзя использовать смесь старых и новых блоков.
     if (s.blocks.nodes && !diagonal)
         throw std::invalid_argument("Block Jacobi: missing diagonal");
+    if (s.use_matrix_diagonal) {
+        s.blocks.diagonal = diagonal;
+        s.blocks.rows = row_starts;
+    }
     if (s.device == -1) {
         parallel_for(s.blocks.nodes, [&](std::size_t node) {
             if (!s.blocks.factor_node(node, diagonal, row_starts))

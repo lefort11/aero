@@ -23,6 +23,7 @@ AERO_DEVICE_ENTRY const char* aero_device_sa_convection(const turbulence::SaEdge
 AERO_DEVICE_ENTRY const char* aero_device_sa_norm(const turbulence::Step&, turbulence::Norm, bool, double*);
 #endif
 #ifdef AERO_HAS_VISCOSITY
+AERO_DEVICE_ENTRY const char* aero_device_prepare_tetra_volumes(const viscosity::Operator&);
 AERO_DEVICE_ENTRY const char* aero_device_viscosity(const viscosity::Operator&, const double* state,
                                                      const EulerState* cached, viscosity::Evaluation phase=viscosity::Evaluation::Full);
 #endif

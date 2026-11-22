@@ -16,7 +16,7 @@ struct SaEdgeConvection {
 
     AERO_HOST_DEVICE double increment(MeshIndex edge, bool right) const {
         const auto side = right ? ReconstructionSide::Right : ReconstructionSide::Left;
-        const auto owner = stencil.row_owner[2*edge + right];
+        const auto owner = stencil.owner(2*edge + right);
         const ReconstructionFieldView field{working,1,1};
         double value = 0.;
         reconstruct_increment2(stencil, edge, side, working+owner, 1, field, &value);
@@ -30,11 +30,10 @@ struct SaEdgeConvection {
         if (hybrid > 0. && (stencil.mp5.enabled || stencil.mp5.weno) &&
             stencil.weno_order[2*edge] == 5 && stencil.weno_order[2*edge+1] == 5) {
             const ReconstructionFieldView field{working,1,1};
-            double slopes[5][1];
+            FixedMatrix<double,5,1> slopes;
             for (unsigned k=0; k<5; ++k) {
                 const auto row = 8*edge + residual_detail::edge_slope_offset(k,5);
-                slopes[k][0] = evaluate_reconstruction_sparse(stencil.slope_offsets, stencil.slope_nodes,
-                    stencil.slope_weights, row, row/4, 0, field);
+                slopes(k, 0) = evaluate_reconstruction_row(stencil.slope_row(row),row/4,0,field);
             }
             double left = 0., other = 0.;
             if (stencil.mp5.weno) mp6::reconstruct<true>(slopes,1,stencil.mp5,hybrid,&left,&other);
@@ -58,7 +57,7 @@ struct SaEdgeConvection {
         const bool right = mass < 0.;
         const unsigned mask = face.use_nodal_traces;
         double flux = 0.;
-        if (mass != 0. && stencil.row_owner && mask != 1 && !(mask & (right ? 4u : 2u))) {
+        if (mass != 0. && stencil.has_owners() && mask != 1 && !(mask & (right ? 4u : 2u))) {
             const double w = working[right ? face.end : face.begin];
             // Ограничиваем добавку к значению до [-w,w]. Тогда уносимая величина
             // лежит в [0,2w]; из узла с w=0 поправка ничего вывести не может.

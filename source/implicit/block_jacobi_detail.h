@@ -11,14 +11,20 @@ struct JacobiBlocks {
     unsigned width;         // Число уравнений Эйлера в одном узле: от трёх до пяти.
     double* factors;        // Нижний и верхний треугольники LU хранятся в одном плотном блоке.
     unsigned char* pivots;  // С какой строкой поменяли местами строку k на шаге исключения k.
+    const double* diagonal; // В экономном режиме диагональ принадлежит матрице до следующей сборки.
+    const MeshIndex* rows;  // Начало строки CSR или nullptr, если блоки диагонали лежат подряд.
+
+    // Находит диагональ и в обычной блочной CSR, и при раздельном хранении соседей.
+    template<unsigned size>
+    AERO_HOST_DEVICE static const double* diagonal_block(MeshIndex node, const double* values,
+                                                         const MeshIndex* starts) {
+        return values + (starts ? starts[node] : node) * size * size;
+    }
 
     // Разлагает один диагональный блок с частичным выбором главного элемента.
     // Слева от диагонали записываем множители L, на диагонали и справа — U.
-    AERO_HOST_DEVICE bool factor_node(MeshIndex node, const double* diagonal, const MeshIndex* row_starts) const {
-        const MeshIndex offset = node * width * width;
-        double* lu = factors + offset;
-        unsigned char* swaps = pivots + node * width;
-        const double* source = diagonal + (row_starts ? row_starts[node] * width * width : offset);
+    template<unsigned width>
+    AERO_HOST_DEVICE static bool factor_block(const double* source, double* lu, unsigned char* swaps) {
         for (unsigned i = 0; i < width * width; ++i) {
             const double value = source[i];
             if (!(::fabs(value) <= max_finite_double))
@@ -56,6 +62,26 @@ struct JacobiBlocks {
         return true;
     }
 
+    // При подготовке проверяем каждый блок, чтобы сразу сообщить номер вырожденного узла.
+    // В обычном режиме разложение сохраняется. В экономном его строит поток при подстановке.
+    template<unsigned size>
+    AERO_HOST_DEVICE bool prepare_block(MeshIndex node, const double* values, const MeshIndex* starts) const {
+        const double* source = diagonal_block<size>(node, values, starts);
+        if (factors)
+            return factor_block<size>(source, factors + node*size*size, pivots + node*size);
+        double lu[size*size];
+        unsigned char swaps[size];
+        return factor_block<size>(source, lu, swaps);
+    }
+
+    AERO_HOST_DEVICE bool factor_node(MeshIndex node, const double* values, const MeshIndex* starts) const {
+        switch (width) {
+        case 3: return prepare_block<3>(node,values,starts);
+        case 4: return prepare_block<4>(node,values,starts);
+        default: return prepare_block<5>(node,values,starts);
+        }
+    }
+
     // Применяет две треугольные подстановки одного узла. Другие узлы
     // решают свои системы независимо, поэтому обмен через MPI здесь не нужен.
     AERO_HOST_DEVICE void solve_node(MeshIndex node, const double* residual, double* correction) const {
@@ -73,10 +99,22 @@ struct JacobiBlocks {
     // узла помещаются в регистры при обеих подстановках.
     template<unsigned size>
     AERO_HOST_DEVICE void solve_fixed(MeshIndex node, const double* rhs, double* answer) const {
-        const MeshIndex first = node * size;
-        const double* lu = factors + first * size;
-        const unsigned char* swaps = pivots + first;
-        double x[5];
+        if (factors) {
+            solve_factored<size>(factors + node*size*size, pivots + node*size, rhs, answer);
+            return;
+        }
+        // Матрица неизменна между prepare и подстановкой. Порядок выбора строк и
+        // арифметика LU те же, но рабочий блок живёт только до конца обработки узла.
+        double lu[size*size];
+        unsigned char swaps[size];
+        factor_block<size>(diagonal_block<size>(node, diagonal, rows), lu, swaps);
+        solve_factored<size>(lu, swaps, rhs, answer);
+    }
+
+    template<unsigned size>
+    AERO_HOST_DEVICE static void solve_factored(const double* lu, const unsigned char* swaps,
+                                                const double* rhs, double* answer) {
+        double x[size];
         for (unsigned row = 0; row < size; ++row)
             x[row] = rhs[row];
         // Применяем к правой части те же перестановки, что и к матрице.

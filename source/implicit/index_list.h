@@ -1,0 +1,20 @@
+#pragma once
+#include "../mesh/mesh_index.h"
+#include "../parallel/kernel_math.h"
+
+namespace aero {
+namespace implicit {
+// Граф строится с 64-разрядными номерами. Видеокарта хранит короткий массив,
+// только если наибольшее записываемое значение помещается в 32 бита.
+// Сложение и умножение адресов в ядрах по-прежнему выполняются в MeshIndex.
+struct IndexList {
+    const MeshIndex* wide;
+    const std::uint32_t* narrow;
+
+    AERO_HOST_DEVICE IndexList(const MeshIndex* values = nullptr) : wide(values), narrow(nullptr) {}
+    AERO_HOST_DEVICE explicit IndexList(const std::uint32_t* values) : wide(nullptr), narrow(values) {}
+    AERO_HOST_DEVICE explicit operator bool() const { return narrow || wide; }
+    AERO_HOST_DEVICE MeshIndex operator[](MeshIndex i) const { return narrow ? narrow[i] : wide[i]; }
+};
+}
+}

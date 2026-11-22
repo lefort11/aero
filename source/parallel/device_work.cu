@@ -12,6 +12,7 @@
 #include "device_faces.h"
 #ifdef AERO_HAS_VISCOSITY
 #include "../viscosity/jacobian.h"
+#include "device_affine_aes.h"
 #endif
 #include <map>
 #include <memory>
@@ -218,8 +219,27 @@ const char* aero_device_viscous_matrix(int device, const viscosity::Jacobian& ma
     const unsigned width = aes.dim+2;
     return on_device(nullptr, [&](const Execution& exec) {
         for_indices(exec,"Aero: clear viscous matrix",v.value_count,KOKKOS_LAMBDA(Index k) { v.values[k] = 0.; });
+        if (v.single_count) for_indices(exec,"Aero: clear mixed off-diagonal",v.single_count,
+                                        KOKKOS_LAMBDA(Index k) { v.layout.neighbours[k] = 0.f; });
         for_indices(exec,"Aero: viscous Jacobian states",aes.node_count,KOKKOS_LAMBDA(Index n) { aes.prepare_gas(n,state,nullptr); });
-        for_indices(exec,"Aero: viscous Jacobian gradients",aes.cell_count,KOKKOS_LAMBDA(Index e) { v.prepare_cell(e); });
+        if (aes.affine || aes.tetra.cells) {
+            for_indices(exec,"Aero: Jacobian cell material",aes.cell_count,KOKKOS_LAMBDA(Index e) { aes.average_material(e); });
+            if (v.column_nodes && aes.gradient_tile_count) {
+                // Разные потоки GPU заполняют разные компоненты столбца. Внутри
+                // столбца обходим группы по номеру элемента, как при полной сборке.
+                affine_aes::for_gradient_tiles(exec,aes,[&](viscosity::GradientTile tile) {
+                    const auto pairs=coordinate_aes::prepare_pairs(exec,v,tile.first_cell,tile.cells);
+                    for_indices(exec,"Aero: viscous Jacobian column slices",tile.slices*width,KOKKOS_LAMBDA(Index k) {
+                        const auto slice=aes.gradient_slices[tile.first_slice+k/width];
+                        v.add_column<3>(slice,static_cast<unsigned>(k%width),tile.first_vertex,pairs);
+                    });
+                });
+                return;
+            }
+            affine_aes::gradients(exec,aes,v.gradients,0,aes.cell_count,0);
+        } else {
+            for_indices(exec,"Aero: viscous Jacobian gradients",aes.cell_count,KOKKOS_LAMBDA(Index e) { v.prepare_cell(e); });
+        }
         for_indices(exec,"Aero: viscous Jacobian columns",aes.node_count*width,KOKKOS_LAMBDA(Index k) {
             v.assemble_column(k/width,static_cast<unsigned>(k%width));
         });
@@ -241,14 +261,17 @@ const char* aero_device_spatial_faces(int device, const implicit::SpatialBlocks&
 }
 // На GPU соседние потоки считают соседние уравнения одного узла. Для каждого
 // ребра они читают соседние строки блока из памяти. Индексы CSR общие для всех.
-template<unsigned Width>
+template<unsigned Width,bool direct=false>
 void assemble_matrix_rows(const Execution& exec, implicit::SpatialBlocks blocks,
                           const double* volumes, double dt, MeshIndex* bad) {
-    const auto range=Kokkos::Experimental::require(Range(exec,0,blocks.row_count*Width),
+    // При вычислении производной на месте один исполнитель сразу записывает
+    // весь блок: пять компонент не повторяют вычисление потока.
+    constexpr unsigned lanes=direct ? 1u : Width;
+    const auto range=Kokkos::Experimental::require(Range(exec,0,blocks.row_count*lanes),
                            Kokkos::Experimental::WorkItemProperty::HintLightWeight);
     Kokkos::parallel_reduce("Aero: assemble Jacobian rows",range,KOKKOS_LAMBDA(Index i, MeshIndex& first) {
-        const auto row=i/Width;
-        if (!blocks.assemble_equations<Width,1>(row,static_cast<unsigned>(i%Width),volumes,dt)) {
+        const auto row=i/lanes;
+        if (!blocks.assemble_equations<Width,direct ? Width : 1,direct>(row,static_cast<unsigned>(i%lanes),volumes,dt)) {
             const auto node=blocks.node(row);
             if (node<first) first=node;
         }
@@ -257,6 +280,7 @@ void assemble_matrix_rows(const Execution& exec, implicit::SpatialBlocks blocks,
 const char* aero_device_spatial_rows(int device, const implicit::SpatialBlocks& matrix,
                                      const double* volumes, double dt, MeshIndex* bad) {
     return on_device(nullptr, [&](const Execution& exec) {
+        if (matrix.direct_faces) return assemble_matrix_rows<5,true>(exec,matrix,volumes,dt,bad);
         switch (matrix.grid.dim) {
         case 1: return assemble_matrix_rows<3>(exec,matrix,volumes,dt,bad);
         case 2: return assemble_matrix_rows<4>(exec,matrix,volumes,dt,bad);
@@ -421,8 +445,12 @@ void cell_material(const Execution& exec, const viscosity::Operator& g) {
 // Тип замыкания выбираем один раз на стадии, до запуска ядер Kokkos.
 template<bool ddes,unsigned dimension>
 void subgrid_on_device(const Execution& exec,const viscosity::Operator& g) {
-    if (dimension==3 && g.hex_filter.nodes)
-        for_indices(exec,"Aero: hexahedral filter",g.cell_count,KOKKOS_LAMBDA(Index e){g.sample_hex<ddes>(e);});
+    if (dimension==3 && g.coordinate_filters && !g.tetra.all_hex)
+        for_indices(exec,"Aero: mixed AES filter",g.cell_count,KOKKOS_LAMBDA(Index e){g.sample_compact_filter<ddes,0>(e);});
+    else if (dimension==3 && ((g.affine && g.filter_extents) || g.coordinate_filters))
+        for_indices(exec,"Aero: shared AES filter basis",g.cell_count,KOKKOS_LAMBDA(Index e){g.sample_compact_filter<ddes,8>(e);});
+    else if (dimension==3 && g.hex_filter.coefficients)
+        for_indices(exec,"Aero: hexahedral filter",g.cell_count,KOKKOS_LAMBDA(Index e){g.sample_hex<ddes>(e,g.filter_extents);});
     else if (dimension==3 && g.box_nodes)
         for_indices(exec,"Aero: rectangular filter",g.cell_count,KOKKOS_LAMBDA(Index i){g.sample_les<ddes,3,true>(i);});
     else
@@ -447,6 +475,9 @@ void launch_viscous_rows(const Execution& exec, const viscosity::Operator& g) {
     else viscous_rows<1,mode>(exec,g);
 }
 
+const char* aero_device_prepare_tetra_volumes(const viscosity::Operator& input) {
+    return on_device(nullptr,[&](const Execution& exec){coordinate_aes::prepare_volumes(exec,input.tetra);});
+}
 const char* aero_device_viscosity(const viscosity::Operator& input, const double* state, const EulerState* cached,viscosity::Evaluation phase) {
     const auto g = input;
     return on_device(nullptr, [&](const Execution& exec) {
@@ -475,10 +506,21 @@ const char* aero_device_viscosity(const viscosity::Operator& input, const double
         }
         if (!work.rows) return;
         using Mode=viscosity::Operator::Gradients;
-        if (g.element_order) {
-            if (!work.reuse_gradients)
-                for_indices(exec,"Aero: AES gradients by element",g.vertex_count,KOKKOS_LAMBDA(Index k) { g.prepare_hex_gradient(k); });
-            for_indices(exec,"Aero: AES assembled gradients",g.row_count,KOKKOS_LAMBDA(Index n) { g.assemble_row<3,Mode::Element>(n); });
+        if (g.gradient_tile_count) {
+            affine_aes::for_gradient_tiles(exec,g,[&](viscosity::GradientTile tile) {
+                for_indices(exec,"Aero: accumulate AES tile",tile.slices,KOKKOS_LAMBDA(Index k) {
+                    g.assemble_slice(g.gradient_slices[tile.first_slice+k],tile.first_vertex);
+                });
+            });
+        } else if (g.element_order) {
+            if (!work.reuse_gradients) {
+                if (g.affine || g.tetra.cells) affine_aes::gradients(exec,g,g.gradient_cache,0,g.cell_count,0);
+                else for_indices(exec,"Aero: AES gradients by element",g.vertex_count,KOKKOS_LAMBDA(Index k) { g.prepare_hex_gradient(k); });
+            }
+            if (g.tetra.cells && !g.tetra.all_hex)
+                launch_viscous_rows<Mode::MixedElement>(exec,g);
+            else
+                launch_viscous_rows<Mode::Element>(exec,g);
         } else if (!g.gradient_cache)
             launch_viscous_rows<Mode::Direct>(exec,g);
         else if (work.reuse_gradients)

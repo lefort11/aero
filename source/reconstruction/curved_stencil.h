@@ -1,4 +1,5 @@
 #pragma once
+#include "../parallel/row_table.h"
 #include "reconstruction.h"
 #include <array>
 #include <functional>
@@ -24,7 +25,7 @@ class CurvedStencil {
     using List = std::vector<MeshIndex>;
     MeshView mesh_;
     double cosine_; // Косинус предельного отклонения от прямого продолжения ребра.
-    std::vector<std::array<MeshIndex, 2>> next_; // Следующее ребро за каждым концом или edge_count.
+    RowTable<MeshIndex,2> next_; // Следующее ребро за каждым концом или edge_count.
     std::vector<int> layer_;         // Минимальное число слоёв от стенки; -1 вне призматической области.
     std::vector<Coordinate> normal_; // Для PL нормаль к слою, усреднённая на ребре.
     std::vector<List> layer_faces_;  // Грани своего слоя, содержащие узел.

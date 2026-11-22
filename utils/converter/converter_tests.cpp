@@ -97,7 +97,7 @@ std::string triangle(bool modern, bool binary, bool reverse = false) {
     }
     o << "$Nodes\n";
     const int tags[] = {30, 10, 90};
-    const double xy[][2] = {{0, 0}, {1, 0}, {0, 1}};
+    const double xy[] = {0, 0, 1, 0, 0, 1};
     if (modern) {
         size(1);
         size(3);
@@ -118,8 +118,8 @@ std::string triangle(bool modern, bool binary, bool reverse = false) {
             else
                 o << tags[i] << " ";
         }
-        real(xy[i][0]);
-        real(xy[i][1]);
+        real(xy[2*i]);
+        real(xy[2*i+1]);
         real(0);
     }
     o << "\n$EndNodes\n$Elements\n";

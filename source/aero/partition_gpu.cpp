@@ -183,14 +183,42 @@ void PartitionGpu::layout(residual_detail::Geometry g,
     }
     g.packed.gas = storage_.allocate<EulerState>(g.packed.state_nodes);
     g.packed.normals = storage_.allocate<residual_detail::FaceNormal>(g.packed.state_nodes ? g.edges : 0);
+    // Граничные условия обращаются к исходному полю лишь на физических площадках.
+    // Сохраняем отображение на CPU до замены адреса геометрии адресом устройства.
+    const auto boundary_count = g.faces - g.edges;
+    if (storage_.base) {
+        boundary_nodes_.resize(boundary_count);
+        parallel_for(boundary_count, [&](MeshIndex i) { boundary_nodes_[i] = g.surfaces[g.edges+i].begin; });
+    }
+    g.initial_on_boundary = true;
+#ifdef AERO_HAS_VISCOSITY
+    if (!storage_.base && aes_ && aes_->uses_implicit_coordinates())
+        compact_slopes_.inspect_edges(g.stencil,g.surfaces);
+#endif
     g.surfaces = storage_.allocate(g.faces, g.surfaces);
     g.incidence = storage_.allocate(g.offsets[g.nodes], g.incidence);
     g.offsets = storage_.allocate(g.nodes + 1, g.offsets);
     g.patches = upload_boundary_patches(storage_, g.patches);
-    g.stencil = upload_reconstruction_stencil(storage_,g.stencil);
+    if (!storage_.base && g.dim==3) {
+        bool share=false;
+#ifdef AERO_HAS_VISCOSITY
+        share=aes_ && aes_->uses_compact_geometry();
+#endif
+        compact_slopes_.prepare(g.stencil,share);
+    }
+    const auto exceptions=compact_slopes_.bind(g.stencil);
+    compact_slopes_.use_edge_data(g.stencil,g.surfaces);
+    g.stencil = upload_reconstruction_stencil(storage_,g.stencil,exceptions);
+    if (storage_.base) compact_slopes_=CompactSlopes{};
 #ifdef AERO_HAS_VISCOSITY
     if (aes_) {
-        viscous_grid_ = aes_->upload(storage_,state_nodes);
+        viscosity::FlowScratch fields{};
+        if (aes_->uses_implicit_coordinates()) {
+            const FluxWorkspace layout(g.faces,state_nodes,aes_->view().row_count);
+            grid_.flux = reinterpret_cast<EulerFluxResult*>(storage_.allocate<unsigned char>(layout.bytes));
+            fields = layout.viscosity_fields(grid_.flux);
+        }
+        viscous_grid_ = aes_->upload(storage_,state_nodes,aes_->uses_implicit_coordinates() ? &fields : nullptr);
         g.options.diffusion = viscous_grid_.rows;
         g.options.wall = storage_.upload(aes_->wall);
 #ifdef AERO_HAS_TURBULENCE
@@ -208,11 +236,14 @@ void PartitionGpu::layout(residual_detail::Geometry g,
     grid_.owned = whole_mesh ? nullptr : storage_.upload(owned);
     grid_.computed_count = computed.size();
     grid_.owned_count = owned.size();
-    grid_.flux = storage_.allocate<EulerFluxResult>(g.faces);
+#ifdef AERO_HAS_VISCOSITY
+    if (!aes_ || !aes_->uses_implicit_coordinates())
+#endif
+        grid_.flux = storage_.allocate<EulerFluxResult>(g.faces);
     const unsigned width = g.dim + 2;
     if (state_nodes > std::numeric_limits<std::size_t>::max() / width)
         throw std::length_error("GPU state too large");
-    grid_.initial = storage_.allocate<double>(state_nodes * width);
+    grid_.initial = storage_.allocate<double>(boundary_count * width);
     grid_.state = storage_.allocate<double>(state_nodes * width);
     if (g.options.retry_nonphysical) {
         accepted_state_ = storage_.allocate<double>(state_nodes * width);
@@ -247,16 +278,30 @@ bool PartitionGpu::reserve(GpuMemoryFit& fit, MeshIndex implicit_bytes) {
     storage_.used = 0;
     return true;
 }
+void PartitionGpu::upload_boundary_initial(const std::vector<double>& initial) {
+    if (boundary_nodes_.empty()) return;
+    const auto width = grid_.geometry.components();
+    std::vector<double> values(boundary_nodes_.size() * width);
+    // Соседние площадки одной метки могут иметь разные начальные условия.
+    // Копируем все компоненты без усреднения, в том же порядке, что и площадки.
+    parallel_for(boundary_nodes_.size(), [&](MeshIndex i) {
+        std::copy_n(initial.data() + width*boundary_nodes_[i], width, values.data() + width*i);
+    });
+    check(gpu::copy(grid_.initial, values.data(), values.size()*sizeof(double), gpu::Copy::ToDevice));
+}
 void PartitionGpu::upload_state(const std::vector<double>& state, const std::vector<double>& initial) {
     gas_current_ = false;
     if (storage_.used != storage_.capacity)
         throw std::logic_error("GPU layout changed after reservation");
     if (grid_.geometry.packed.normals)
         residual_detail::gpu_prepare_face_normals(grid_.geometry);
+#ifdef AERO_HAS_VISCOSITY
+    if (viscous_grid_.tetra.cached_cells)
+        device_work::check(device_work::aero_device_prepare_tetra_volumes(viscous_grid_));
+#endif
     if (!state.empty()) {
         check(aero::gpu::copy(grid_.state, state.data(), state.size() * sizeof(double), aero::gpu::Copy::ToDevice));
-        check(aero::gpu::copy(grid_.initial, initial.data(), initial.size() * sizeof(double),
-                         aero::gpu::Copy::ToDevice));
+        upload_boundary_initial(initial);
     }
     // Ядро меняет индекс только при ошибке. На обычной стадии процессору достаточно
     // дождаться ядра и прочитать закреплённое слово, без отдельной передачи PCIe.
@@ -368,11 +413,15 @@ void PartitionGpu::failed_nodes(std::vector<MeshIndex>& failed, bool implicit) {
 void PartitionGpu::download_owned(std::vector<double>& compact) const {
     if (compact.empty())
         return;
-    // Отчёт снимается перед первой или после последней стадии. В эти моменты буфер начала шага RK свободен.
-    partition_detail::transfer({grid_.geometry.components(), grid_.state, nullptr}, grid_.owned,
+    // На одной карте собственные узлы уже записаны подряд. Перестановка требуется
+    // только при MPI-разбиении, когда внутри поля встречаются копии соседних узлов.
+    const double* source = grid_.state;
+    if (grid_.owned) {
+        partition_detail::transfer({grid_.geometry.components(), grid_.state, nullptr}, grid_.owned,
                                grid_.owned_count, nullptr, grid_.original);
-    check(
-        aero::gpu::copy(compact.data(), grid_.original, compact.size() * sizeof(double), aero::gpu::Copy::ToHost));
+        source = grid_.original;
+    }
+    check(gpu::copy(compact.data(), source, compact.size()*sizeof(double), gpu::Copy::ToHost));
 }
 double* PartitionGpu::expand_owned(const double* compact) const {
     partition_detail::transfer({grid_.geometry.components(), krylov_input_, nullptr}, grid_.owned,

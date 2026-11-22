@@ -217,6 +217,14 @@ void local_steady_cfl() {
     near(height_cfl.local(1, .5).dt, .5 / (convective_rate + viscous_rate));
     near(cpu_flux_cfl(height_cfl,.5), .125);
 
+    // На тесном GPU тот же CFL должен получиться без отдельной таблицы EulerState.
+    grid.options.gamma=1.4;
+    grid.packed.gas=nullptr;
+    const double thermal=1./(grid.options.gamma*(grid.options.gamma-1.));
+    const double conserved[]={1.,3.,4.,12.5+thermal,1.,0.,0.,thermal};
+    const FluxCfl without_cache(grid,flux,volumes,owned,2,sa_rate,heights,conserved);
+    near(without_cache.local(1,.5).dt,height_cfl.local(1,.5).dt);
+    near(without_cache.local(0,.5).dt,height_cfl.local(0,.5).dt);
     // Для Linear скорость распространения определяется фоном при любых пульсациях.
     grid.packed.gas = nullptr;
     grid.options.background.rho = 1.;
@@ -499,9 +507,10 @@ void oblique_mp_limit() {
         const double normal[3] = {d == 2 ? .6 : 2./3., d == 2 ? .8 : 1./3., d == 2 ? 0. : 2./3.};
         const double momentum[] = {1., 2., -1.};
         const residual_detail::FaceMomentumAxes axes(d, normal, normal);
-        double slopes[5][5] = {};
-        slopes[residual_detail::CentralSlope][0] = 1.;
-        for (auto& row : slopes) {
+        FixedMatrix<double,5,5> slopes = {};
+        slopes(residual_detail::CentralSlope, 0) = 1.;
+        for (unsigned i=0;i<5;++i) {
+            double* row=slopes.row(i);
             for (unsigned j = 0; j < d; ++j)
                 row[1+j] = momentum[j];
             row[d+1] = 1.;

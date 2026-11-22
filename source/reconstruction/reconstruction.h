@@ -1,12 +1,37 @@
 #ifndef AERO_RECONSTRUCTION_H
 #define AERO_RECONSTRUCTION_H
 #include "../parallel/kernel_math.h"
+#include "../cv/flux_surface.h"
 #include "ebr.h"
 #include "mpweno5.h"
 #include "weno.h"
 
 namespace aero {
 typedef unsigned long long ReconstructionIndex;
+
+// Для наклона по двум узлам сумма уже записана через разность поля.
+// Первый коэффициент при этом не читается, а второй сохраняется в double.
+struct TwoNodeSlope {
+    unsigned first, second;
+    double weight;
+    static constexpr unsigned marker = ~0u;
+};
+struct StencilRow {
+    ReconstructionIndex count;
+    const ReconstructionIndex* nodes;
+    const double* weights;
+    const TwoNodeSlope* pair;
+    AERO_HOST_DEVICE ReconstructionIndex node(ReconstructionIndex i) const {
+        return pair ? (i ? pair->second : pair->first) : nodes[i];
+    }
+    AERO_HOST_DEVICE double weight(ReconstructionIndex i) const { return pair ? pair->weight : weights[i]; }
+    AERO_HOST_DEVICE static StencilRow sparse(const ReconstructionIndex* starts, const ReconstructionIndex* ids,
+                                              const double* factors, ReconstructionIndex row) {
+        if (!starts) return {0,nullptr,nullptr,nullptr}; // Все строки таблицы пусты.
+        const auto first = starts[row], count = starts[row+1]-first;
+        return {count, count ? ids+first : nullptr, count ? factors+first : nullptr, nullptr};
+    }
+};
 
 // Компактная геометрия всех сторон рёбер. Значения поля подставляются при каждом вызове реконструкции.
 struct ReconstructionStencilView {
@@ -25,6 +50,45 @@ struct ReconstructionStencilView {
         weno_order; // Ноль задаёт линейную формулу, 3 или 5 — соответствующий порядок WENO-JS.
     const double* weno_epsilon_scale; // h·√ε в единицах поля.
     Mp5Settings mp5; // Для полной строки MP5 подставляем ограничитель вместо весов WENO.
+    const TwoNodeSlope* pairs;
+    bool shared_edge_slopes; // Общие центральный и два ближних наклона хранятся один раз на ребро.
+    const residual_detail::Surface* owner_edges; // Номера узлов уже хранятся в геометрии потоков.
+    bool epsilon_per_edge; // Обе стороны используют один вес, если значения совпали точно.
+    AERO_HOST_DEVICE bool has_owners() const { return row_owner || owner_edges; }
+    AERO_HOST_DEVICE ReconstructionIndex owner(ReconstructionIndex row) const {
+        if (!owner_edges) return row_owner[row];
+        const auto& edge = owner_edges[row/2];
+        return row%2 ? edge.end : edge.begin;
+    }
+    AERO_HOST_DEVICE double epsilon(ReconstructionIndex row) const {
+        return weno_epsilon_scale[epsilon_per_edge ? row/2 : row];
+    }
+    AERO_HOST_DEVICE ReconstructionIndex pair_count() const {
+        return pairs ? edge_count * (shared_edge_slopes ? 5 : 8) : 0;
+    }
+    AERO_HOST_DEVICE StencilRow linear_row(ReconstructionIndex row) const {
+        return StencilRow::sparse(offsets,nodes,weights,row);
+    }
+    AERO_HOST_DEVICE StencilRow slope_row(ReconstructionIndex row) const {
+        if (pairs) {
+            auto slot=row;
+            if (shared_edge_slopes) {
+                const auto side_row=row/4;
+                const unsigned order=weno_order[side_row];
+                if (!order || row%4>=weno_slope_count(order)) return {0,nullptr,nullptr,nullptr};
+                // Слева: центральный, ближний левый, ближний правый, дальний левый.
+                // Справа меняются местами ближние наклоны и выбирается дальний правый.
+                const unsigned k=static_cast<unsigned>(row%8);
+                const unsigned shared=k<4 ? k : (k==4 ? 0u : (k==5 ? 2u : (k==6 ? 1u : 4u)));
+                slot=(row/8)*5+shared;
+            }
+            const auto& p = pairs[slot];
+            if (p.first != TwoNodeSlope::marker) return {2,nullptr,nullptr,&p};
+            if (!p.second) return {0,nullptr,nullptr,nullptr};
+            row = p.second-1; // Нестандартная строка хранится целиком, в исходном порядке.
+        }
+        return StencilRow::sparse(slope_offsets,slope_nodes,slope_weights,row);
+    }
 };
 
 struct ReconstructionFieldView {
@@ -71,21 +135,24 @@ KOKKOS_FORCEINLINE_FUNCTION bool sum_slope(unsigned width, ReconstructionIndex c
 // Низкоуровневый вызов предполагает корректные индексы и доступную исполнителю память.
 template <class Reader>
 AERO_HOST_DEVICE inline double
-evaluate_reconstruction_sparse(const ReconstructionIndex* offsets, const ReconstructionIndex* nodes,
-                               const double* weights, ReconstructionIndex sparse_row,
-                               ReconstructionIndex read_row, ReconstructionIndex component,
-                               const Reader& read) {
-    const ReconstructionIndex begin = offsets[sparse_row], end = offsets[sparse_row + 1];
+evaluate_reconstruction_row(StencilRow row, ReconstructionIndex read_row, ReconstructionIndex component,
+                            const Reader& read) {
     // Библиотечный читатель выдаёт одну компоненту. Тот же обход в солвере
     // читает сразу всё состояние или вычисляет один физический поток для всех компонент.
     const auto values = [&](ReconstructionIndex i, double* buffer) -> const double* {
-        *buffer = read(read_row,nodes[begin+i],component);
+        *buffer = read(read_row,row.node(i),component);
         return buffer;
     };
-    const auto weight = [&](ReconstructionIndex i) { return weights[begin+i]; };
+    const auto weight = [&](ReconstructionIndex i) { return row.weight(i); };
     double result;
-    reconstruction_detail::sum_slope<1>(1,end-begin,values,weight,&result);
+    reconstruction_detail::sum_slope<1>(1,row.count,values,weight,&result);
     return result;
+}
+template <class Reader>
+AERO_HOST_DEVICE inline double evaluate_reconstruction_sparse(const ReconstructionIndex* offsets,
+        const ReconstructionIndex* nodes,const double* weights,ReconstructionIndex row,
+        ReconstructionIndex read_row,ReconstructionIndex component,const Reader& read) {
+    return evaluate_reconstruction_row(StencilRow::sparse(offsets,nodes,weights,row),read_row,component,read);
 }
 
 // При неполном шаблоне MP5 использует доступную WENO3; при нулевом порядке вызывающий код читает линейную строку.
@@ -119,7 +186,7 @@ template <class Reader> struct ReconstructionSideInput {
     const Reader& neighbours; // Чтение остальных узлов, в том числе импортированных для MPI.
     AERO_HOST_DEVICE double operator()(ReconstructionIndex r, ReconstructionIndex node,
                                        ReconstructionIndex component) const {
-        return node == stencil.row_owner[row] ? own[component * own_stride] : neighbours(r, node, component);
+        return node == stencil.owner(row) ? own[component * own_stride] : neighbours(r, node, component);
     }
     AERO_HOST_DEVICE double linear(ReconstructionIndex component) const {
         return evaluate_reconstruction_sparse(stencil.offsets, stencil.nodes, stencil.weights, row, row,
@@ -127,10 +194,9 @@ template <class Reader> struct ReconstructionSideInput {
     }
     AERO_HOST_DEVICE unsigned order() const { return stencil.weno_order ? stencil.weno_order[row] : 0; }
     AERO_HOST_DEVICE double slope(unsigned k, ReconstructionIndex component) const {
-        return evaluate_reconstruction_sparse(stencil.slope_offsets, stencil.slope_nodes,
-                                              stencil.slope_weights, 4 * row + k, row, component, *this);
+        return evaluate_reconstruction_row(stencil.slope_row(4*row+k),row,component,*this);
     }
-    AERO_HOST_DEVICE double epsilon_scale() const { return stencil.weno_epsilon_scale[row]; }
+    AERO_HOST_DEVICE double epsilon_scale() const { return stencil.epsilon(row); }
 };
 
 // За вызов обрабатывается одна сторона ребра, одинаково на CPU и в ядре CUDA. Массивы должны быть доступны исполнителю.
@@ -150,7 +216,7 @@ reconstruct_increment2(ReconstructionStencilView stencil, ReconstructionIndex ed
     if (!components || !own_stride || !output_stride || (components - 1) > limit / own_stride ||
         (components - 1) > limit / output_stride)
         return ReconstructionStatus::InvalidLayout;
-    if (!own || !output || !stencil.row_owner)
+    if (!own || !output || !stencil.has_owners())
         return ReconstructionStatus::NullPointer;
     const ReconstructionIndex row = 2 * edge + (side == ReconstructionSide::Right ? 1 : 0);
     const ReconstructionSideInput<Reader> input = {stencil, row, own, own_stride, neighbours};

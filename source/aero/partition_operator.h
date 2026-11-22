@@ -122,6 +122,8 @@ private:
     PartitionGpu* device() const;
 #ifdef AERO_WITH_KOKKOS_GPU
     std::unique_ptr<PartitionGpu> gpu_; // Раскладка, рабочая память и ядра текущей карты.
+    std::shared_ptr<implicit::GpuMatrixPlan> matrix_plan_; // Фактический граф расчёта памяти переходит в решатель.
+    bool shared_csgs_ = false; // Способ хранения определяем до создания системы Ньютона.
 #endif
     // Подготавливает представление распределённой системы. Формулы и итерации общие для всех режимов.
     struct ImplicitFields {
@@ -139,6 +141,7 @@ private:
     PartitionTransfers edges_; // Результаты расчёта потоков на рёбрах между подобластями.
 #ifdef AERO_HAS_VISCOSITY
     std::unique_ptr<viscosity::Aes> aes_;
+    bool compact_jacobian_ = false; // Ширину шаблона матрицы задаём до построения таблиц на CPU и GPU.
 #endif
 #ifdef AERO_HAS_TURBULENCE
     void update_les(const std::vector<double>& state, SolverTimings& timing,

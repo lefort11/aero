@@ -23,6 +23,7 @@ $(info Aero build configuration)
 $(info Goals       : $(or $(MAKECMDGOALS),$(.DEFAULT_GOAL)))
 $(info Build type  : $(BUILD_TYPE))
 $(info Kokkos      : $(KOKKOS_BACKEND))
+$(info Linear solve: $(if $(filter 1,$(MIXED_LINEAR)),mixed float/double,double) (MIXED_LINEAR=$(MIXED_LINEAR)))
 ifeq ($(kokkos_gpu),1)
 $(info GPU         : $(KOKKOS_GPU_CXX)  sm_$(CUDA_ARCH)  CUDA_HOME=$(CUDA_HOME))
 endif

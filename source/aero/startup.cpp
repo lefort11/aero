@@ -130,6 +130,7 @@ void show_settings(const RunSettings& r) {
                   << r.implicit_settings.linear_relative << "\nsolver_max_iter = " << r.implicit_settings.linear_max_iterations
                   << "\nnewton_tol = " << r.implicit_settings.newton_relative
                   << "\nsimplified_jacobian = " << (r.implicit_settings.simplified_jacobian ? "on" : "off")
+                  << "\ncompact_jacobian = " << (r.implicit_settings.compact_jacobian ? "on" : "off")
                   << "\nsimplified_newton = " << (r.implicit_settings.simplified_newton() ? "on" : "off")
                   << "\njacobian_update_every = " << r.implicit_settings.jacobian_update_every
                   << "\nnewton_max_iter = " << r.implicit_settings.max_iterations << '\n';

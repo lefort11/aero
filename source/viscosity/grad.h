@@ -2,6 +2,7 @@
 #include "../mesh/coordinate.h"
 #include "../mesh/mesh_index.h"
 #include "../eulersolver/euler.h"
+#include "../parallel/fixed_matrix.h"
 #include <array>
 #include <map>
 #include <vector>
@@ -17,10 +18,31 @@ struct Element {
     Coordinate position[8];       // Координаты в базисе уравнений, с масштабом сетки.
     bool edge(unsigned a, unsigned b) const { return (neighbours[a] & (1u<<b)) != 0; }
 };
+// Четыре пространственные диагонали гексаэдра задают четыре триангуляции AES.
+// Обходим тетраэдры в одном порядке при сборке таблицы и при вычислении по координатам.
+template<class Visit>
+inline bool for_hex_tetrahedra(const Element& element, Visit visit) {
+    unsigned count=0;
+    for (unsigned a=0;a<8;++a) for (unsigned b=a+1;b<8;++b) {
+        if (element.edge(a,b) || (element.neighbours[a]&element.neighbours[b])) continue;
+        for (unsigned i=0;i<8;++i) for (unsigned j=i+1;j<8;++j) {
+            if (i==a || i==b || j==a || j==b || !element.edge(i,j)) continue;
+            visit(a,b,i,j);
+            ++count;
+        }
+    }
+    return count==24;
+}
 // Коэффициенты пары постоянны на неподвижной сетке. При обходе в обратном
 // направлении матрица напряжений транспонируется, а коэффициент тепла тот же.
 struct PairMetric {
-    double stress[3][3], heat;
+    FixedMatrix<double,3,3> stress;
+    double heat;
+    // Из интегралов P_mn = ∫ ∂mNi ∂nNj получаем производную вязкого напряжения.
+    // Здесь одна формула для постоянной таблицы CPU и вычисления по координатам.
+    AERO_HOST_DEVICE static double stress_entry(unsigned m,unsigned n,double trace,double p_mn,double p_nm) {
+        return (m==n ? trace : 0.)+p_nm-(2./3.)*p_mn;
+    }
 };
 struct Cell {
     unsigned count;
@@ -28,9 +50,12 @@ struct Cell {
     MeshIndex node[8];
     double diffusion[8]; // Сумма геометрических коэффициентов CFL для каждой вершины.
     MeshIndex first_pair, first_vertex; // Начало таблиц пар и вершин данного элемента.
+    AERO_HOST_DEVICE static unsigned pair_offset(unsigned vertices,unsigned a,unsigned b) {
+        return a*(2*vertices-a-1)/2 + b-a-1; // Верхний треугольник без диагонали, a < b.
+    }
     AERO_HOST_DEVICE MeshIndex pair_index(unsigned i, unsigned j) const {
         const unsigned a = i < j ? i : j, b = i < j ? j : i;
-        return first_pair + a*(2*count-a-1)/2 + b-a-1;
+        return first_pair + pair_offset(count,a,b);
     }
 };
 // Вклад геометрии одной пары до умножения на коэффициенты переноса.
@@ -58,13 +83,18 @@ AERO_HOST_DEVICE inline void add_gradient(const PairMetric& pair, bool reverse,
     for (unsigned m = 0; m < dim; ++m) {
         double stress = 0.;
         for (unsigned n = 0; n < dim; ++n)
-            stress += (reverse ? pair.stress[n][m] : pair.stress[m][n]) * change.velocity[n];
+            stress += (reverse ? pair.stress(n, m) : pair.stress(m, n)) * change.velocity[n];
         sum.stress[m] += stress;
     }
 }
 // Одно представление геометрических коэффициентов для невязки и её якобиана.
 struct GradientStencil {
     const PairMetric* pairs; // Для элемента его верхний треугольник лежит подряд в памяти.
+    const double* pair_heat; // На тесном GPU диффузия SA читает только скаляр теплопереноса.
+    AERO_HOST_DEVICE double heat(const Cell& cell,unsigned i,unsigned j) const {
+        const auto index=cell.pair_index(i,j);
+        return pair_heat ? pair_heat[index] : pairs[index].heat;
+    }
     AERO_HOST_DEVICE const PairMetric& metric(const Cell& cell, unsigned i, unsigned j) const {
         return pairs[cell.pair_index(i,j)];
     }

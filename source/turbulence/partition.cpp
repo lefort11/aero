@@ -42,6 +42,7 @@ turbulence::Step PartitionOperator::sa_step() const {
     if (gpu_) {
         const auto &g = gpu_->active_grid();
         aes = gpu_->viscosity_view();
+        t.gas_faces={g.geometry.surfaces,g.geometry.incidence,g.geometry.offsets};
         t.flux = g.flux;
         t.profiles = g.geometry.patches.profiles;
         t.volume = g.volumes;
@@ -52,6 +53,8 @@ turbulence::Step PartitionOperator::sa_step() const {
     t.filter = aes.nodal_filter();
     t.gas_nodes = aes.gas;
     t.cells = aes.cells;
+    t.shared_geometry = aes.stencil;
+    t.heat_to_diffusion = turbulence::diffusion_scale(aes.law.gamma,aes.law.prandtl);
     t.cell_count = aes.cell_count;
     t.dim = grid_.dim;
     t.edges = grid_.edges;

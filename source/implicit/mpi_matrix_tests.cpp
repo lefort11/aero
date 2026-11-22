@@ -36,7 +36,7 @@ void compare(const Processes& world, const char* mesh_path, const char* archive,
 #else
     if (gpu) throw std::invalid_argument("GPU matrix test requires a Kokkos GPU build");
 #endif
-    PartitionOperator op(part, local, nullptr, patches, physics, ResidualFrame{}, world, nullptr, gpu);
+    PartitionOperator op(part, local, nullptr, patches, physics, ResidualFrame{}, world, nullptr, gpu, false);
     op.connect(gpu, true);
 #ifdef AERO_WITH_KOKKOS_GPU
     if (gpu) world.local([&] {

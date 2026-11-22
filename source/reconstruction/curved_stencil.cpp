@@ -150,13 +150,13 @@ struct IjkNode {
 
     // У ребра отдельная запись на каждый конец. Потоки для двух соседних узлов
     // могут одновременно записать продолжения в противоположные стороны.
-    void save(MeshView m, Id n, std::vector<std::array<Id,2>>& next) const {
+    void save(MeshView m, Id n, RowTable<Id,2>& next) const {
         for (unsigned j = 0; j < degree; ++j) {
             // Продолжение однозначно, когда остался ровно один сосед вне всех ячеек ребра.
             const unsigned candidates = ((1u << degree) - 1u) & ~excluded[j];
             if (!candidates || (candidates & (candidates - 1u))) continue;
             for (unsigned k = 0; k < degree; ++k)
-                if (candidates == (1u << k)) next[edges[j]][m.edge_end[edges[j]] == n] = edges[k];
+                if (candidates == (1u << k)) next(edges[j],m.edge_end[edges[j]] == n) = edges[k];
         }
     }
 };
@@ -167,7 +167,7 @@ void CurvedStencil::prepare_ijk(const NodeIncidence& incident) {
     std::vector<unsigned char> structured(m.cell_count);
     parallel_for(m.cell_count, [&](Id c) { structured[c] = structured_cell(m, c); });
     if (std::find(structured.begin(), structured.end(), 1) == structured.end()) return;
-    next_.resize(m.edge_count, {{m.edge_count, m.edge_count}});
+    next_.resize(m.edge_count,m.edge_count);
     parallel_for(m.node_count, [&](Id n) {
         const auto cells = incident[n];
         IjkNode node;
@@ -392,7 +392,7 @@ bool CurvedStencil::pl_points(Id e, bool fifth, CurvedPoints& p) const {
 
 bool CurvedStencil::points(Id edge, bool fifth, CurvedPoints& out) const {
     if (!next_.empty()) {
-        const auto continuation = [&](Id e, Id n) { return next_[e][mesh_.edge_end[e] == n]; };
+        const auto continuation = [&](Id e, Id n) { return next_(e,mesh_.edge_end[e] == n); };
         if (follow_line(edge, fifth, true, continuation, out))
             return true;
     }

@@ -1,3 +1,4 @@
+#include "../parallel/fixed_matrix.h"
 #include "report.h"
 #include "../../qa/test_checks.h"
 #include "../explicit/explicit.h"
@@ -58,12 +59,12 @@ void table_example() {
     require(line.find("Domain integral") != std::string::npos, "column names");
     const char* names[] = {"rho", "ux", "uy", "p", "E"};
     // Столбцы эталона содержат минимум, максимум и сумму произведений значений на объёмы.
-    const double rows[][3] = {{1, 2, 1.75}, {-1, 2, -0.25}, {0, 2, 1.5}, {1, 2, 1.75}, {4.5, 10, 8.625}};
+    const FixedMatrix<double,5,3> rows = {{1, 2, 1.75, -1, 2, -0.25, 0, 2, 1.5, 1, 2, 1.75, 4.5, 10, 8.625}};
     for (unsigned k = 0; k < 5; ++k) {
         std::string name;
         double lo, hi, integral;
         require(bool(in >> name >> lo >> hi >> integral), "missing row");
-        require(name == names[k] && lo == rows[k][0] && hi == rows[k][1] && integral == rows[k][2],
+        require(name == names[k] && lo == rows(k, 0) && hi == rows(k, 1) && integral == rows(k, 2),
                 "wrong row");
     }
     require(out.str().find("RMS(dE/dt) = 1.802776e+00") !=

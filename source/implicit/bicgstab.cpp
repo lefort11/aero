@@ -28,10 +28,15 @@ struct BdfLinearSystem::Storage {
 #endif
     template<class... GeometryArgs>
     explicit Storage(GeometryArgs&&... geometry)
-        : matrix(std::forward<GeometryArgs>(geometry)...), jacobi(matrix.node_count(), matrix.dimension(), matrix.device()),
+        : matrix(std::forward<GeometryArgs>(geometry)..., true),
+          jacobi(matrix.node_count(), matrix.dimension(), matrix.device(),
+                 matrix.device() >= 0 && matrix.partition().krylov_scratch.count != 0),
           device(matrix.device()), count(matrix.node_count() * (matrix.dimension()+2)) {
         if (count > host.max_size()/KrylovFieldCount) throw std::length_error("BiCGSTAB: too many unknowns");
-        const auto size = std::max<MeshIndex>(1, KrylovFieldCount*count); // Пустой ранг тоже передаёт корректные адреса.
+        auto scratch = matrix.partition().krylov_scratch;
+        const auto remaining = KrylovFieldCount - scratch.count;
+        // На пустом ранге оставляем один допустимый адрес для коллективных операций.
+        const auto size = count ? remaining*count : MeshIndex(1);
         double* buffer;
 #ifdef AERO_WITH_KOKKOS_GPU
         if (device >= 0) {
@@ -45,7 +50,9 @@ struct BdfLinearSystem::Storage {
             host.resize(size);
             buffer = host.data();
         }
-        work = {buffer, buffer+count, buffer+2*count, buffer+3*count, buffer+4*count, buffer+5*count};
+        for (unsigned i=0; i<remaining; ++i) scratch.field[scratch.count+i] = buffer+i*count;
+        work = {scratch.field[0], scratch.field[1], scratch.field[2],
+                scratch.field[3], scratch.field[4], scratch.field[5]};
     }
 
     void update(const KrylovUpdate& operation) const {

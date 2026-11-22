@@ -2,7 +2,9 @@
 #define AERO_IMPLICIT_PARTITION_H
 #include "../timestep/node_step.h"
 #include "../mesh/mesh_index.h"
+#include "krylov_scratch.h"
 #include <functional>
+#include <memory>
 #include "../parallel/modules.h"
 #ifdef AERO_HAS_VISCOSITY
 #include "../viscosity/transport.h"
@@ -11,13 +13,16 @@
 namespace aero {
 namespace residual_detail { struct Geometry; }
 namespace implicit {
-// Число компактных рабочих полей определяет длину буфера и резерв памяти карты.
-enum { NewtonFieldCount = 3, KrylovFieldCount = 6 };
+struct GpuMatrixPlan;
 // Связь численного метода с разбиением сетки. Сам решатель не зависит от MPI:
 // в обычном расчёте списки пусты, номера узлов и строк совпадают.
 struct Partition {
+    std::shared_ptr<GpuMatrixPlan> gpu_matrix_plan; // Граф и раскраска из проверки размещения на карте.
+    KrylovScratch krylov_scratch; // Пуст для CPU и для раздельных рабочих массивов GPU.
+    bool shared_csgs = false; // Для GPU с выбранным CSGS собираем матрицу сразу в порядке проходов.
     const SteadyNodeSteps* steady_steps = nullptr; // Владелец меняет режим между принятыми шагами.
 #ifdef AERO_HAS_VISCOSITY
+    bool compact_jacobian = false; // Для вязких блоков использовать граф рёбер конвективного оператора.
     viscosity::Operator host_aes{}, active_aes{}; // Топология для CSR и массивы исполнителя для производных.
 #endif
     MeshIndex rows = 0, faces = 0;       // Число собственных узлов и вычисляемых площадок.

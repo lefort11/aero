@@ -24,7 +24,7 @@ KOKKOS_INLINE_FUNCTION void project(const FaceBatch& batch, Index face, MpEdgeTi
         return; // Для неполных шаблонов и границ уже подготовлены отдельные списки.
 
     PlaneEdge edge;
-    double slopes[5][4];
+    FixedMatrix<double,5,4> slopes;
     if (!prepare_edge_slopes(g, face, batch.state, *stencil, geometry_lane, edge, slopes)) {
         Kokkos::atomic_fetch_min(bad, face);
         return;
@@ -32,7 +32,7 @@ KOKKOS_INLINE_FUNCTION void project(const FaceBatch& batch, Index face, MpEdgeTi
     work.store_basis(lane, edge.basis);
     for (unsigned row = 0; row < 5; ++row)
         for (unsigned wave = 0; wave < 4; ++wave)
-            work.waves[row][wave][lane] = slopes[row][wave];
+            work.waves(row, wave, lane) = slopes(row, wave);
     if (!order.complete()) {
         // Дальний наклон укороченной стороне не нужен. В его ячейке сохраняем
         // её штатный результат WENO3, включая индивидуальную регуляризацию.
@@ -40,8 +40,8 @@ KOKKOS_INLINE_FUNCTION void project(const FaceBatch& batch, Index face, MpEdgeTi
             if (!order.shortened(side))
                 continue;
             for (unsigned wave = 0; wave < 4; ++wave)
-                work.waves[side ? FarRightSlope : FarLeftSlope][wave][lane] =
-                    wave_increment<3>(slopes, wave, side != 0, g.stencil.weno_epsilon_scale[2 * face + side]);
+                work.waves(side ? FarRightSlope : FarLeftSlope, wave, lane) =
+                    wave_increment<3>(slopes, wave, side != 0, g.stencil.epsilon(2 * face + side));
         }
     }
     work.order[lane] = order;
@@ -59,31 +59,31 @@ using Teams = Kokkos::TeamPolicy<Kokkos::DefaultExecutionSpace, Kokkos::LaunchBo
 struct WeightQueue {
     // На пару приходится не больше двух нелинейных задач. Компоненты храним
     // отдельно: при обработке очереди соседние потоки читают соседние double.
-    double beta[3][2 * team_size];
-    double polynomial[3][2 * team_size];
+    FixedMatrix<double,3,2 * team_size> beta;
+    FixedMatrix<double,3,2 * team_size> polynomial;
     unsigned jobs; // Суммарное число активных сторон у исполнителей этой команды.
 
     // В очередь передаём только шесть чисел. Интервал MP остаётся у владельца стороны.
     KOKKOS_INLINE_FUNCTION void put(unsigned slot, const mpweno5::Side& side) {
         const auto values = side.polynomials();
-        beta[0][slot] = side.indicators.first;
-        beta[1][slot] = side.indicators.middle;
-        beta[2][slot] = side.indicators.last;
-        polynomial[0][slot] = values.first;
-        polynomial[1][slot] = values.middle;
-        polynomial[2][slot] = values.last;
+        beta(0, slot) = side.indicators.first;
+        beta(1, slot) = side.indicators.middle;
+        beta(2, slot) = side.indicators.last;
+        polynomial(0, slot) = values.first;
+        polynomial(1, slot) = values.middle;
+        polynomial(2, slot) = values.last;
     }
 
     KOKKOS_INLINE_FUNCTION void solve(unsigned slot, bool correction) {
-        const mpweno5::Indicators indicators = {beta[0][slot], beta[1][slot], beta[2][slot]};
-        const mpweno5::Polynomials values = {polynomial[0][slot], polynomial[1][slot], polynomial[2][slot]};
+        const mpweno5::Indicators indicators = {beta(0, slot), beta(1, slot), beta(2, slot)};
+        const mpweno5::Polynomials values = {polynomial(0, slot), polynomial(1, slot), polynomial(2, slot)};
         // Индикаторы этого задания больше никому не нужны. Его ответ занимает
         // первую ячейку той же записи и остаётся в общей памяти блока.
-        beta[0][slot] = mpweno5::weighted_value(indicators, values, correction);
+        beta(0, slot) = mpweno5::weighted_value(indicators, values, correction);
     }
 
     // После общего барьера ответ забирает тот поток, который поставил сторону в очередь.
-    KOKKOS_INLINE_FUNCTION double result(unsigned slot) const { return beta[0][slot]; }
+    KOKKOS_INLINE_FUNCTION double result(unsigned slot) const { return beta(0, slot); }
 };
 
 // Второй проход. Четыре последовательные группы по 32 потока разбирают одну
@@ -109,7 +109,7 @@ inline void reconstruct_waves(const Kokkos::DefaultExecutionSpace& exec, MpEdgeT
             const bool valid = order.ready();
             double slope[5];
             for (unsigned row = 0; row < 5; ++row)
-                slope[row] = valid ? tile.waves[row][wave][lane] : 0.;
+                slope[row] = valid ? tile.waves(row, wave, lane) : 0.;
             mpweno5::Side sides[2];
             mpweno5::prepare_pair<true>(slope[FarLeftSlope], slope[NearLeftSlope], slope[CentralSlope],
                                        slope[NearRightSlope], slope[FarRightSlope], alpha, sides[0], sides[1]);
@@ -147,7 +147,7 @@ inline void reconstruct_waves(const Kokkos::DefaultExecutionSpace& exec, MpEdgeT
                         answer[side] = sides[side].bounds.clamp<true>(queue.result(slot[side]));
                     // Пять исходных наклонов уже прочитаны их единственным владельцем.
                     // Первые две строки этой волны теперь содержат левый и правый след.
-                    tile.waves[side][wave][lane] = answer[side];
+                    tile.waves(side, wave, lane) = answer[side];
                 }
             }
             team.team_barrier(); // Kokkos может повторно использовать блок для следующей плитки.
@@ -174,8 +174,8 @@ KOKKOS_INLINE_FUNCTION void write_flux(const FaceBatch& batch, Index face, const
         work.load_basis(lane, edge.gas.normal, edge.basis);
         EdgeTraces traces;
         for (unsigned wave = 0; wave < 4; ++wave) {
-            traces.left[wave] = work.waves[0][wave][lane];
-            traces.right[wave] = work.waves[1][wave][lane];
+            traces.left[wave] = work.waves(0, wave, lane);
+            traces.right[wave] = work.waves(1, wave, lane);
         }
         if (edge.flux(batch.geometry, face, traces, batch.flux[face])) {
             batch.save_speed(face);

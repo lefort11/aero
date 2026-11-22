@@ -12,8 +12,9 @@ struct JacobiBlocks;
 class BlockJacobi {
 public:
     // dimension = 1, 2 или 3. device = -1 выбирает CPU, иначе это номер GPU Kokkos.
-    // Память под разложения выделяется один раз. Пустая подобласть допустима.
-    BlockJacobi(MeshIndex owned_nodes, unsigned dimension, int device = -1);
+    // use_matrix_diagonal разлагает диагональ на месте применения. Переданные в prepare
+    // массивы в этом режиме должны оставаться живыми и неизменными до следующего prepare.
+    BlockJacobi(MeshIndex owned_nodes, unsigned dimension, int device = -1, bool use_matrix_diagonal = false);
     ~BlockJacobi();
     BlockJacobi(const BlockJacobi&) = delete;
     BlockJacobi& operator=(const BlockJacobi&) = delete;

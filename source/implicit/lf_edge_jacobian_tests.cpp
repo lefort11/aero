@@ -76,10 +76,9 @@ void near(double actual, double expected, double tolerance, const char* check) {
 void check_columns(const Case& test, double area, double upwind, int device, double tolerance, bool simplified = false, bool roe = false) {
     const EdgeFluxJacobian blocks = jacobian(test, area, upwind, device, simplified, roe);
     const unsigned width = test.dimension + 2;
-    double matrix[4][25];
-    for (auto& block : matrix)
-        std::fill_n(block, 25, 1.); // Проверяем добавление к уже записанным вкладам соседних рёбер.
-    blocks.add_to(matrix[0], matrix[1], matrix[2], matrix[3]);
+    aero::FixedMatrix<double,4,25> matrix;
+    std::fill_n(matrix.values,100,1.); // Проверяем добавление к уже записанным вкладам соседних рёбер.
+    blocks.add_to(matrix.row(0), matrix.row(1), matrix.row(2), matrix.row(3));
     for (unsigned side = 0; side < 2; ++side)
         for (unsigned col = 0; col < width; ++col) {
             Case plus = test, minus = test;
@@ -93,8 +92,8 @@ void check_columns(const Case& test, double area, double upwind, int device, dou
             for (unsigned row = 0; row < width; ++row) {
                 double expected = (fp.flux[row] - fm.flux[row]) / (high - low);
                 const unsigned k = row * width + col;
-                near(matrix[side][k] - 1., expected, tolerance, "left residual");
-                near(matrix[2 + side][k] - 1., -expected, tolerance, "right residual");
+                near(matrix(side, k) - 1., expected, tolerance, "left residual");
+                near(matrix(2 + side, k) - 1., -expected, tolerance, "right residual");
             }
         }
 }

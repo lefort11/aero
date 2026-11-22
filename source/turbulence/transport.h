@@ -3,12 +3,15 @@
 #include "../residual/residual_detail.h"
 #include "../explicit/explicit_stage.h"
 #include "../io/diagnostic_fields.h"
+#include "diffusion_geometry.h"
+#include "face_geometry.h"
 
 namespace aero {
 namespace turbulence {
 // Все индексы и указатели относятся к одной подобласти и одному исполнителю.
 struct Transport {
     NodalFilter filter;
+    GasFaces gas_faces; // При компактном размещении SA не хранит вторую таблицу тех же граней.
     View sa; // Только массивы, нужные уравнению SA на выбранном исполнителе.
     const viscosity::Gas *gas_nodes;
     const viscosity::Cell *cells;
@@ -20,6 +23,8 @@ struct Transport {
     const double *volume;
     const MeshIndex *owned;
     MeshIndex count;
+    viscosity::GradientStencil shared_geometry; // Таблица коэффициентов AES на том же исполнителе.
+    double heat_to_diffusion; // Перевод теплового коэффициента AES в коэффициент диффузии SA.
 
     AERO_HOST_DEVICE MeshIndex node(MeshIndex k) const { return owned ? owned[k] : k; }
     // В уравнении переноса разность с соседним значением нужна только при втекании.
@@ -79,28 +84,26 @@ struct Transport {
             diagonal+=::fabs(coupling);
         }
     }
-    template<unsigned lanes,unsigned neighbours>
-    AERO_HOST_DEVICE void add_dense(const DiffusionBlock<lanes>* blocks,RowRange row,double w,
+    template<unsigned neighbours>
+    AERO_HOST_DEVICE void add_dense(const DiffusionCell* blocks,RowRange row,double w,
                                     double& diffusion,double& diagonal) const {
-        const unsigned lane=static_cast<unsigned>(row.first%lanes);
-        for (auto pos=row.first;pos<row.end;pos+=lanes) {
-            const auto& block=blocks[pos/lanes];
-            const double mean=sa.diffusion.element_mean[block.element[lane]];
+        for (auto pos=row.first;pos<row.end;++pos) {
+            const auto& block=blocks[pos];
+            const double mean=sa.diffusion.element_mean[block.element];
             double jump=0.;
             for (unsigned j=0;j<neighbours;++j)
-                jump+=block.geometry[j][lane]*(sa.w[block.node[j][lane]]-w);
+                jump+=block.geometry[j]*(sa.w[block.node[j]]-w);
             diffusion+=mean*jump;
-            diagonal+=::fabs(mean)*block.diagonal[lane];
+            diagonal+=::fabs(mean)*block.diagonal;
         }
     }
     // У треугольника и четырёхугольника не более трёх соседей в элементе.
     // Таблица хранит семь мест для смешанных сеток. Здесь длина фактического
     // цикла известна при компиляции, поэтому нулевые заполнители не загружаются.
-    template<unsigned lanes>
-    AERO_HOST_DEVICE void element_diffusion(const DiffusionBlock<lanes>* blocks,RowRange row,double w,
+    AERO_HOST_DEVICE void element_diffusion(const DiffusionCell* blocks,RowRange row,double w,
                                             double& diffusion,double& diagonal) const {
-        if (sa.diffusion.short_blocks) add_dense<lanes,3>(blocks,row,w,diffusion,diagonal);
-        else add_dense<lanes,7>(blocks,row,w,diffusion,diagonal);
+        if (sa.diffusion.short_blocks) add_dense<3>(blocks,row,w,diffusion,diagonal);
+        else add_dense<7>(blocks,row,w,diffusion,diagonal);
     }
     template<bool host>
     AERO_HOST_DEVICE void add_volume_diffusion(MeshIndex i,double w,double& diffusion,double& diagonal) const {
@@ -108,7 +111,11 @@ struct Transport {
         // Коэффициенты могут иметь разный знак на косой сетке, поэтому в оценке
         // шага берём модуль каждого вклада до суммирования по элементам.
         const auto &stencil = sa.diffusion;
-        if (host && stencil.vertex_contributions) {
+        if (!host) {
+            diffuse_from_aes(i,w,diffusion,diagonal);
+            return;
+        }
+        if (stencil.vertex_contributions) {
             for (auto k=filter.offsets[i];k<filter.offsets[i+1];++k) {
                 const auto entry=filter.incidence[k];
                 const auto contribution=stencil.vertex_contributions[entry];
@@ -118,11 +125,10 @@ struct Transport {
             return;
         }
         const auto row=stencil.rows[i];
-        if (host && stencil.cell_rows) { element_diffusion(stencil.cell_rows,row,w,diffusion,diagonal); return; }
-        if (!host && stencil.tiles) { element_diffusion(stencil.tiles,row,w,diffusion,diagonal); return; }
+        if (stencil.cell_rows) { element_diffusion(stencil.cell_rows,row,w,diffusion,diagonal); return; }
         const auto base_element = stencil.anchor ? stencil.anchor[i] : 0;
         const auto base_node = stencil.anchor ? i : 0;
-        const unsigned stride=host ? 1 : stencil.stride;
+        const unsigned stride=1;
         if (stencil.triples) {
             // Три разности имеют общий множитель. Сумма модулей геометрических
             // коэффициентов для диагонали уже известна на неподвижной сетке.
@@ -144,9 +150,29 @@ struct Transport {
             add_pairs(stencil.terms,row,stride,base_element,base_node,w,diffusion,diagonal);
         }
     }
+    // Обход соответствует порядку заполнения плиток: сначала элементы узла,
+    // внутри элемента — вершины по исходному номеру. Множитель вязкости
+    // применяем к сумме по элементу один раз, как и при чтении готовой плитки.
+    AERO_HOST_DEVICE void diffuse_from_aes(MeshIndex node,double w,double& rate,double& diagonal) const {
+        for (auto p=filter.offsets[node]; p<filter.offsets[node+1]; ++p) {
+            const auto entry=filter.incidence[p], e=entry/8;
+            const unsigned local=static_cast<unsigned>(entry%8);
+            const auto& cell=cells[e];
+            double jump=0., absolute_sum=0.;
+            for (unsigned j=0; j<cell.count; ++j) {
+                const double weight=diffusion_weight(shared_geometry,cell,local,j,heat_to_diffusion);
+                if (weight==0.) continue;
+                jump+=weight*(sa.w[cell.node[j]]-w);
+                absolute_sum+=::fabs(weight);
+            }
+            const double mean=sa.diffusion.element_mean[e];
+            rate+=mean*jump;
+            diagonal+=::fabs(mean)*absolute_sum;
+        }
+    }
     // Схема первого порядка по потоку массы сохраняет постоянное nu_tilde и при
     // переменной плотности. На втекании используем набегающий поток, на вытекании — значение узла.
-    template <unsigned d, bool reuse_gas, bool host, bool axial>
+    template <unsigned d, bool reuse_gas, bool host, bool axial,bool shared=false>
     AERO_HOST_DEVICE void assemble_sa_row(MeshIndex k, bool save_rotation) const {
         const auto i = node(k);
         // Первый обход на новом газе собирает длину DDES в том же узле, где
@@ -161,18 +187,19 @@ struct Transport {
         double advection = 0., diffusion = 0., diagonal = 0., dw[3]{};
         diagnostic::Curl curl{};
         const double inverse_density = reciprocal(gas.density);
-        const auto faces = sa.face_rows[i];
+        const auto faces = shared ? gas_faces.row(i) : sa.face_rows[i];
         for (auto pos = faces.first; pos < faces.end; pos += (host ? 1 : sa.face_stride)) {
             const AxisFace compact=axial ? sa.axis_faces[pos] : AxisFace{};
-            const FaceTerm general = !axial && !host && sa.face_columns.area ? sa.face_columns.read<d>(pos) :
+            const FaceTerm general = shared ? gas_faces.read(i,pos,edges,d) :
+                                     !axial && !host && sa.face_columns.area ? sa.face_columns.read<d>(pos) :
                                      axial ? FaceTerm{} : sa.face_terms[pos];
             const FaceTerm* face=&general;
             const residual_detail::OrientedFace orientation{axial ? compact.side_axis/4 : face->encoded};
             const bool edge = orientation.face() < edges;
             const auto j = axial ? compact.neighbour : face->neighbour;
             // В серии скалярных итераций поток газа на ребре один и тот же.
-            const double incoming = reuse_gas ? sa.incoming[pos] : incoming_speed(orientation, inverse_density);
-            if (!reuse_gas && save_rotation)
+            const double incoming = reuse_gas && sa.incoming ? sa.incoming[pos] : incoming_speed(orientation, inverse_density);
+            if (!reuse_gas && save_rotation && sa.incoming)
                 sa.incoming[pos] = incoming;
             double jump = 0.;
             if (edge) jump = sa.w[j] - w;
@@ -243,7 +270,8 @@ struct Transport {
     // нужна одна компонента площади, у произвольной — все компоненты.
     template<unsigned d,bool reuse_gas,bool host=false>
     AERO_HOST_DEVICE void residual_row(MeshIndex k,bool save_rotation) const {
-        if (sa.axis_faces) assemble_sa_row<d,reuse_gas,host,true>(k,save_rotation);
+        if (!host && !sa.face_rows) assemble_sa_row<d,reuse_gas,host,false,true>(k,save_rotation);
+        else if (sa.axis_faces) assemble_sa_row<d,reuse_gas,host,true>(k,save_rotation);
         else assemble_sa_row<d,reuse_gas,host,false>(k,save_rotation);
     }
     template <bool reuse_gas> AERO_HOST_DEVICE void residual(MeshIndex k, bool save_rotation) const {

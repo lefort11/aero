@@ -32,6 +32,14 @@ LDFLAGS ?=
 LDLIBS ?=
 WITH_OPENMP ?= 1
 WITH_MPI ?= 1
+# Точность коэффициентов линейной системы. Диагональные блоки, умножение
+# на вектор и проверка невязки BiCGSTAB всегда используют double.
+MIXED_LINEAR ?= 1
+ifeq ($(MIXED_LINEAR),1)
+else ifneq ($(MIXED_LINEAR),0)
+$(error MIXED_LINEAR must be 0 or 1)
+endif
+override CPPFLAGS += -DAERO_MIXED_LINEAR=$(MIXED_LINEAR)
 build_optimization := -O3
 STATIC_LINK ?= 1
 CUDA_LIBDIR ?= $(if $(wildcard $(CUDA_HOME)/lib64),$(CUDA_HOME)/lib64,$(CUDA_HOME)/lib)

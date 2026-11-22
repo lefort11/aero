@@ -1,6 +1,7 @@
 #include "../../qa/test_mesh.h"
 #include "bdf1_linear_system.h"
 #include "spatial_jacobian.h"
+#include "block_layout.h"
 #include "../residual/residual.h"
 #include "../../qa/test_field.h"
 #include <algorithm>
@@ -46,7 +47,24 @@ void check_mesh(unsigned d, int device) {
     x.set(exact);
     spatial.assemble(state.data());
     spatial.apply(x.data(),ax.data());
-    const Vector jx = ax.read();
+    Vector jx = ax.read();
+    if (mixed_linear) {
+        // Независимый эталон для хранения блоков: из матрицы в double извлекаем
+        // по одному столбцу и округляем только коэффициенты соседних узлов.
+        std::fill(jx.begin(),jx.end(),0.);
+        Vector unit(size,0.);
+        for (MeshIndex col = 0; col < size; ++col) {
+            unit[col]=1.;
+            x.set(unit);
+            spatial.apply(x.data(),ax.data());
+            const auto column=ax.read();
+            for (MeshIndex row=0; row<size; ++row) {
+                const double a=row/width==col/width ? column[row] : static_cast<LinearCoefficient>(column[row]);
+                jx[row]+=a*exact[col];
+            }
+            unit[col]=0.;
+        }
+    }
     LinearTolerance tol;
     tol.relative = 1.e-11;
     for (double dt : {.005,.017}) {

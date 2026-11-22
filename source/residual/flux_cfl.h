@@ -30,18 +30,20 @@ struct FluxCfl {
     const double* sa_rate; // Диагональ переноса SA, в единицах обратного времени.
     const double* heights; // Минимум высот исходных ячеек вокруг узла.
     const EulerState* gas; // Уже вычисленные при сборке потоков узловые состояния Euler.
+    const double* state; // Консервативное поле, если на GPU нет отдельного массива примитивных переменных.
+    double gamma;
     unsigned dimension;
     double linear_speed;   // Для Linear скорость определяется однородным фоном.
     FluxCfl(const Geometry& grid, const EulerFluxResult* flux, const double* node_volumes,
             const MeshIndex* owned_nodes, Index rows, const double* transport_rate = nullptr,
-            const double* node_heights = nullptr)
+            const double* node_heights = nullptr,const double* node_state=nullptr)
         : offsets(grid.offsets), speeds{grid.incidence, grid.surfaces, flux},
 #ifdef AERO_HAS_VISCOSITY
           diffusion(grid.options.diffusion),
 #endif
           volumes(node_volumes),
           owned(owned_nodes), count(rows), sa_rate(transport_rate), heights(node_heights),
-          gas(grid.packed.gas), dimension(grid.dim), linear_speed(0.) {
+          gas(grid.packed.gas), state(node_state), gamma(grid.options.gamma), dimension(grid.dim), linear_speed(0.) {
         const auto& background = grid.options.background;
         if (background.active())
             linear_speed = wave_speed(dimension, background.velocity, background.sound);
@@ -56,6 +58,12 @@ struct FluxCfl {
         if (gas) {
             if (!(gas[i].density > 0.)) return {-1., i};
             speed = wave_speed(dimension, gas[i].velocity, gas[i].sound_speed);
+        } else if (state && linear_speed==0.) {
+            // При тесном размещении нет кэша газа. Высота и формула CFL те же:
+            // восстанавливаем скорость и звук из состояния только этого узла.
+            EulerState local{};
+            if (euler_state(dimension,state+i*(dimension+2),gamma,&local)!=EulerStatus::Success) return {-1.,i};
+            speed=wave_speed(dimension,local.velocity,local.sound_speed);
         }
         if (!(speed > 0. && speed <= max_finite_double &&
               viscous_rate >= 0. && viscous_rate <= max_finite_double)) return {-1., i};

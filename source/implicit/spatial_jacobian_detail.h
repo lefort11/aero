@@ -4,6 +4,7 @@
 #include "boundary_jacobian.h"
 #include "roe_edge_jacobian.h"
 #include "lf_edge_jacobian.h"
+#include "block_layout.h"
 #include "../residual/residual_detail.h"
 
 namespace aero {
@@ -13,8 +14,8 @@ namespace implicit {
 struct SpatialBlocks {
     residual_detail::Geometry grid;
     const MeshIndex* rows;       // Смещения строк в массиве номеров столбцов.
-    const MeshIndex* columns;    // Номер узла для каждого плотного блока.
-    const MeshIndex* neighbour;  // Индекс блока соседа для каждого вхождения ребра.
+    IndexList columns;           // Номер узла для каждого плотного блока.
+    IndexList neighbour;         // Индекс блока соседа для каждого вхождения ребра.
     const MeshIndex* computed;   // Индексы площадок, поток которых вычисляет процесс.
     MeshIndex face_count, row_count;
 #ifdef AERO_HAS_VISCOSITY
@@ -25,8 +26,12 @@ struct SpatialBlocks {
     bool simplified;             // Фиксировать диссипацию LF или Роу при дифференцировании.
     AERO_HOST_DEVICE MeshIndex node(MeshIndex row) const { return columns[rows[row]]; }
     AERO_HOST_DEVICE MeshIndex face(MeshIndex k) const { return computed ? computed[k] : k; }
-    double* values;             // Блоки подряд, внутри блока — по строкам.
+    double* values;             // Единственный массив коэффициентов пространственной матрицы.
+    BlockLayout layout;         // Адреса коэффициентов в CSR или в порядке проходов CSGS.
     double* spatial_diagonal;    // Чистые пространственные коэффициенты A_kk для повторного использования.
+    bool direct_faces; // На тесной карте одного процесса не храним по две матрицы на каждое ребро.
+    const double* assembly_state;
+    const double* assembly_initial;
     double* face_values;        // Для внутреннего ребра два блока, для границы один.
 
     // Вклад производной по времени одинаков при первой сборке и при смене шага.
@@ -68,14 +73,13 @@ struct SpatialBlocks {
         return true;
     }
     // Каждая площадка единожды вычисляет свои производные и пишет только в свою память.
-    AERO_HOST_DEVICE bool differentiate(MeshIndex f, const double* u, const double* initial) const {
+    AERO_HOST_DEVICE bool face_derivatives(MeshIndex f,const double* u,const double* initial,double* out) const {
         const auto& s = grid.surfaces[f];
         const double* left = grid.node_row(u, s.begin);
-        double* out = face_block(f);
         if (grid.options.background.active()) return linear_blocks(f,out);
         if (f >= grid.edges)
             return boundary_detail::block(grid.dim, grid.patches.by_patch[s.patch], grid.patches.free_rules,
-                    left, initial ? grid.node_row(initial, s.begin) : nullptr, s.area, grid.options.gamma, out, grid.patches.profile(f-grid.edges));
+                    left, grid.boundary_initial(initial, f), s.area, grid.options.gamma, out, grid.patches.profile(f-grid.edges));
         EdgeFluxJacobian edge;
         const euler_detail::FaceStates states = {grid.dim, left, grid.node_row(u, s.end), s.area,
                                                  grid.options.gamma, grid.options.upw_coeff};
@@ -90,9 +94,12 @@ struct SpatialBlocks {
         }
         return true;
     }
+    AERO_HOST_DEVICE bool differentiate(MeshIndex f,const double* u,const double* initial) const {
+        return face_derivatives(f,u,initial,face_block(f));
+    }
     // Каждый исполнитель владеет одной строкой плотного блока (GPU) или всем блоком (CPU).
     // Одна и та же формула обрабатывает обычное ребро, границу и кратные связи.
-    template<unsigned Width, unsigned Equations>
+    template<unsigned Width, unsigned Equations,bool direct=false>
     AERO_HOST_DEVICE bool assemble_equations(MeshIndex row, unsigned first, const double* volumes, double dt) const {
         const MeshIndex i = node(row);
         const unsigned stride = Width*Width;
@@ -102,17 +109,22 @@ struct SpatialBlocks {
 #ifdef AERO_HAS_VISCOSITY
         const bool add_to_existing = viscous;
         if (viscous) {
-            const double* diffusion = values+rows[row]*stride+offset;
-            for (unsigned k = 0; k < count; ++k) diagonal[k] = diffusion[k];
+            const auto diffusion = layout.view(values, rows[row], Width, true);
+            for (unsigned k = 0; k < count; ++k) diagonal[k] = diffusion[offset+k];
         }
 #else
         const bool add_to_existing = false;
 #endif
         for (MeshIndex p=grid.offsets[i]; p<grid.offsets[i+1]; ++p) {
             const auto entry = grid.incidence[p];
-            const auto f = entry.face();
+            const auto f=entry.face();
+            double local[direct ? 2*Width*Width : 1];
+            if (direct && !face_derivatives(f,assembly_state,assembly_initial,local)) return false;
+            // У каждой строки свой буфер в прямом режиме. В обычном режиме два конца
+            // читают общую запись вычисленной грани. Ориентация и порядок суммы одинаковы.
+            const double* pair=direct ? local : face_block(f);
             if (f >= grid.edges) {
-                const double* boundary = face_values+(grid.edges+f)*stride+offset;
+                const double* boundary=pair+offset;
                 for (unsigned k=0; k<count; ++k) diagonal[k] += boundary[k];
                 continue;
             }
@@ -120,15 +132,17 @@ struct SpatialBlocks {
             if (!slot) continue;
             // Младший бит ориентации выбирает производную по своему узлу.
             // Сосед получит тот же блок с обратным знаком: так сохраняется баланс потока.
-            const double* own = face_values+entry.encoded*stride+offset;
-            const double* other = face_values+(entry.encoded^1)*stride+offset;
-            double* block = values+(slot/2)*stride+offset;
+            const unsigned side=static_cast<unsigned>(entry.encoded&1);
+            const double* own=pair+side*stride+offset;
+            const double* other=pair+(side^1u)*stride+offset;
+            const auto block = layout.view(values, slot/2, Width, false);
             for (unsigned k=0; k<count; ++k) {
                 diagonal[k] += entry.outward_flux(own[k]);
                 const double contribution = entry.outward_flux(other[k]);
-                block[k] = (add_to_existing || (slot&1)) ? block[k]+contribution : contribution;
+                if (add_to_existing || (slot&1)) block.add(offset+k, contribution);
+                else block.set(offset+k, contribution);
                 // Производные грани уже проверены. Переполнение возможно только при сложении связей.
-                if ((slot&1) && !euler_detail::finite(block[k])) return false;
+                if (((slot&1) || block.neighbours) && !euler_detail::finite(block[offset+k])) return false;
             }
         }
 #ifdef AERO_HAS_VISCOSITY
@@ -140,10 +154,11 @@ struct SpatialBlocks {
                 const bool fixed = wall && first+r > 0 && first+r+1 < Width;
                 if (fixed) for (unsigned c = 0; c < Width; ++c) diagonal[r*Width+c] = 0.;
                 for (MeshIndex p = rows[row]+1; p < rows[row+1]; ++p) {
-                    double* equation = values+p*stride+(first+r)*Width;
+                    const auto block = layout.view(values, p, Width, false);
                     for (unsigned c = 0; c < Width; ++c) {
-                        if (fixed) equation[c] = 0.;
-                        else if (!euler_detail::finite(equation[c])) return false;
+                        const unsigned k = (first+r)*Width+c;
+                        if (fixed) block.set(k, 0.);
+                        else if (!euler_detail::finite(block[k])) return false;
                     }
                 }
             }
@@ -159,10 +174,10 @@ struct SpatialBlocks {
                 coefficient += mass;
             }
         }
-        double* output = values+rows[row]*stride+offset;
+        const auto output = layout.view(values, rows[row], Width, true);
         for (unsigned k=0; k<count; ++k) {
             if (!euler_detail::finite(diagonal[k])) return false;
-            output[k] = diagonal[k];
+            output.set(offset+k, diagonal[k]);
         }
         return true;
     }
@@ -173,11 +188,11 @@ struct SpatialBlocks {
         const unsigned width = grid.components();
         double mass;
         if (!time_mass(node(row),volumes,dt,mass)) return false;
-        double* block = values + rows[row] * stride();
+        const auto block = layout.view(values, rows[row], width, true);
         for (unsigned k = 0; k < width; ++k) {
             const double value = spatial_diagonal[row*width + k] + mass;
             if (!euler_detail::finite(value)) return false;
-            block[k*width + k] = value;
+            block.set(k*width + k, value);
         }
         return true;
     }
@@ -192,14 +207,14 @@ struct SpatialBlocks {
 
     // Фиксированный размер убирает внутренние циклы по компонентам при компиляции.
     // Equations определяет, сколько уравнений строки CSR считает один поток.
-    template<unsigned Width, unsigned Equations>
+    template<unsigned Width, unsigned Equations,bool direct=false>
     AERO_HOST_DEVICE void multiply_equations(MeshIndex row, unsigned first, const double* x, double* y) const {
         double sum[Equations] = {};
         for (MeshIndex p=rows[row]; p<rows[row+1]; ++p) {
-            const double* block = values+p*Width*Width+first*Width;
+            const auto block = layout.view(values, p, Width, p==rows[row]);
             const double* v = x+columns[p]*Width;
             for (unsigned r=0; r<Equations; ++r)
-                for (unsigned c=0; c<Width; ++c) sum[r] += block[r*Width+c]*v[c];
+                for (unsigned c=0; c<Width; ++c) sum[r] += block[(first+r)*Width+c]*v[c];
         }
         for (unsigned r=0; r<Equations; ++r) y[row*Width+first+r] = sum[r];
     }

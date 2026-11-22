@@ -1,5 +1,6 @@
 #ifndef AERO_MP6_HYBRID_H
 #define AERO_MP6_HYBRID_H
+#include "../parallel/fixed_matrix.h"
 #include "mpweno5.h"
 
 namespace aero {
@@ -147,14 +148,14 @@ KOKKOS_FORCEINLINE_FUNCTION double prepare_wave(double fl, double l, double c, d
 // минимальный MP-вес по всем компонентам, затем применяем его к каждой по её назначению.
 // Обычно left и right получают полные приращения. При anchored=true они уже
 // содержат исходные приращения в осях грани и на выходе получают только поправки.
-template <bool weno, bool anchored = false, unsigned capacity>
-AERO_HOST_DEVICE inline void reconstruct(const double (*slopes)[capacity], unsigned width, Mp5Settings settings,
+template <bool weno, bool anchored = false, unsigned rows, unsigned capacity>
+AERO_HOST_DEVICE inline void reconstruct(const FixedMatrix<double,rows,capacity>& slopes, unsigned width, Mp5Settings settings,
                                          double h, double *left, double *right) {
     Correction corrections[capacity];
     double weight = 1;
     double shared_scale = mean_tolerance;
     for (unsigned k = 0; k < width; ++k) {
-        const double c = slopes[0][k], l = slopes[1][k], r = slopes[2][k], fl = slopes[3][k], fr = slopes[4][k];
+        const double c = slopes(0, k), l = slopes(1, k), r = slopes(2, k), fl = slopes(3, k), fr = slopes(4, k);
         const double t = prepare_wave<weno, anchored>(fl, l, c, r, fr, settings, h, corrections[k], left[k], right[k]);
         if (width > 1) {
             // Общий коэффициент будет умножен на сдвиги акустики и энтропии.

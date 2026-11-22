@@ -1,4 +1,5 @@
 #pragma once
+#include "../parallel/fixed_matrix.h"
 #include "../mesh/coordinate.h"
 #include "model_math.h"
 
@@ -26,19 +27,13 @@ struct LesSettings {
     double f_kh_lim = .1;      // Нижний предел множителя F_KH.
     double c_sigma = 1.35;     // Константа модели Никуд.
 };
-using VelocityGradient = double[3][3]; // Строка i содержит производные компоненты скорости u_i.
-AERO_HOST_DEVICE inline double dot3(const Coordinate& a, const Coordinate& b) {
-    return a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
-}
-AERO_HOST_DEVICE inline Coordinate cross3(const Coordinate& a, const Coordinate& b) {
-    return {{a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]}};
-}
+using VelocityGradient = FixedMatrix<double,3,3>; // Строка i содержит производные компоненты скорости u_i.
 
 // Повороты Якоби ортогонализуют столбцы градиента, сохраняя сингулярные числа.
 // Длины итоговых столбцов дают их непосредственно, в том числе у почти плоского течения.
 AERO_HOST_DEVICE inline double jacobi_sigma_rate(const VelocityGradient& g) {
     Coordinate col[3];
-    for (unsigned j=0;j<3;++j) for (unsigned i=0;i<3;++i) col[j][i]=g[i][j];
+    for (unsigned j=0;j<3;++j) for (unsigned i=0;i<3;++i) col[j][i]=g(i, j);
     for (unsigned sweep=0;sweep<12;++sweep) {
         bool rotated=false;
         for (unsigned i=0;i<2;++i) for (unsigned j=i+1;j<3;++j) {
@@ -86,7 +81,7 @@ AERO_HOST_DEVICE inline double largest_root_cosine(double r) {
 // Два малых числа восстанавливаем по минорам и определителю: разность следа
 // и наибольшего корня теряла бы значащие цифры у почти плоского течения.
 AERO_HOST_DEVICE inline double sigma_rate(const VelocityGradient& g) {
-    const Coordinate a{{g[0][0],g[1][0],g[2][0]}}, b{{g[0][1],g[1][1],g[2][1]}}, c{{g[0][2],g[1][2],g[2][2]}};
+    const Coordinate a{{g(0, 0),g(1, 0),g(2, 0)}}, b{{g(0, 1),g(1, 1),g(2, 1)}}, c{{g(0, 2),g(1, 2),g(2, 2)}};
     const double aa=dot3(a,a), bb=dot3(b,b), cc=dot3(c,c);
     const double ab=dot3(a,b), ac=dot3(a,c), bc=dot3(b,c);
     const double mean=(aa+bb+cc)/3.;
@@ -148,17 +143,89 @@ AERO_HOST_DEVICE inline bool try_transverse_filter(const Geometry& cell, const C
     return true;
 }
 
-struct FilterCell {
-    Coordinate position[8], gradient[8]; // Исходные вершины и средние градиенты их базисных функций.
+// Для масштаба фильтра нужны только размер и координаты элемента. В упакованной
+// таблице LES производные уже записаны по отдельности, рядом для соседних элементов.
+struct FilterLengths {
     double volume, vol_length, min_edge, max_edge;
-    double gradient_sum; // Максимум суммы |∂N_k/∂x_j| по трём направлениям.
-    unsigned char corner_node[8]; // Младшие биты номера угла задают верхние координаты x, y, z.
-    Coordinate face_gradient; // 1/(4h) по трём направлениям у прямоугольного гексаэдра.
-    bool rectangular_box; // Восемь разных углов прямоугольного параллелепипеда в осях расчёта.
-    unsigned char longest_pairs[4]; // Местные номера i,j закодированы как 8*i+j.
-    double remaining_length2; // Верхняя граница квадрата длины остальных пар.
-    bool bounded_diameter;
-    unsigned diagonals; // У центрально-симметричного элемента храним разности противоположных вершин.
+    double gradient_sum; // Максимальная сумма модулей производных по одному направлению.
+    double remaining_length2;
+    unsigned char longest_pairs[4];
+    unsigned diagonals;
+    bool rectangular_box, bounded_diameter;
+    // Пара хранится как 8*i+j. Координаты могут лежать в таблице формы или в общей сетке.
+    template<class Points>
+    AERO_HOST_DEVICE Coordinate diagonal(const Points& points,unsigned k) const {
+        const unsigned pair=longest_pairs[k];
+        return points.point(pair/8)-points.point(pair%8);
+    }
+    // Для несжатого элемента полный перебор даёт точный максимум при любом
+    // направлении оси, в том числе если максимум задаёт короткое ребро.
+    template<class Points>
+    AERO_HOST_DEVICE double transverse(const Points& points,unsigned count, const Coordinate& axis) const {
+        double diameter2=0.;
+        for (unsigned i=1; i<count; ++i) for (unsigned j=0; j<i; ++j)
+            diameter2=::fmax(diameter2,transverse_square(axis,points.point(i)-points.point(j)));
+        return diameter2/3.;
+    }
+    template<class Points>
+    AERO_HOST_DEVICE double squared(const Points& points,Scale scale, unsigned count, const Coordinate& axis) const {
+        if (scale==Scale::Max) return max_edge*max_edge;
+        if (scale==Scale::Min) return min_edge*min_edge;
+        if (scale==Scale::Vol || dot3(axis,axis)==0.) return vol_length*vol_length;
+        if (rectangular_box) {
+            const Coordinate diagonal=points.point(0);
+            const double x=::fabs(diagonal[0]*axis[0]), y=::fabs(diagonal[1]*axis[1]);
+            const double z=::fabs(diagonal[2]*axis[2]), span=x+y+z;
+            if (scale==Scale::Omega) return span>0. ? volume/span : vol_length*vol_length;
+            // Из четырёх диагоналей максимальную проекцию поперёк оси имеет та,
+            // у которой минимален модуль продольной проекции |±x±y±z|.
+            const double nearest=2.*::fmax(x,::fmax(y,z))-span;
+            const double full=dot3(diagonal,diagonal)*dot3(axis,axis);
+            const double transverse=full-nearest*nearest;
+            // Для тонкого элемента разность квадратов может терять точность.
+            // Тогда ниже считаем проекции непосредственно векторным произведением.
+            if (transverse>.25*full && full<DBL_MAX) return transverse/3.;
+        }
+        if (diagonals) {
+            double span=0.;
+            for (unsigned i=0;i<diagonals;++i) {
+                double value;
+                if (scale==Scale::Omega) value=::fabs(dot3(points.point(i),axis));
+                else value=transverse_square(axis,points.point(i));
+                if (value>span) span=value;
+            }
+            if (scale!=Scale::Omega) return span/3.;
+            return span>0. ? volume/span : vol_length*vol_length;
+        }
+        if (scale==Scale::Omega) {
+            // Среднее сечение поперёк вихря равно объёму, делённому на толщину вдоль оси.
+            double low=dot3(points.point(0),axis), high=low;
+            for (unsigned i=1;i<count;++i) {
+                const double x=dot3(points.point(i),axis);
+                low=::fmin(low,x); high=::fmax(high,x);
+            }
+            return high>low ? volume/(high-low) : vol_length*vol_length;
+        }
+        double filter2;
+        if (bounded_diameter && try_transverse_filter(points,axis,remaining_length2,filter2)) return filter2;
+        return transverse(points,count,axis);
+    }
+};
+struct FilterExtent : FilterLengths {
+    Coordinate position[8];
+    AERO_HOST_DEVICE const Coordinate& point(unsigned i) const { return position[i]; }
+    AERO_HOST_DEVICE Coordinate long_diagonal(unsigned k) const { return diagonal(*this,k); }
+    AERO_HOST_DEVICE double full_transverse_filter(unsigned count,const Coordinate& axis) const {
+        return transverse(*this,count,axis);
+    }
+    AERO_HOST_DEVICE double length_squared(Scale scale,unsigned count,const Coordinate& axis) const {
+        return squared(*this,scale,count,axis);
+    }
+};
+struct FilterCell : FilterExtent {
+    Coordinate gradient[8];           // Средние производные базисных функций в вершинах.
+    Coordinate face_gradient;         // Коэффициенты средней производной для прямоугольного элемента.
+    unsigned char corner_node[8];     // Соответствие локальной вершины геометрическому углу.
     AERO_HOST_DEVICE double basis(unsigned vertex,unsigned direction) const {
         return gradient[vertex][direction];
     }
@@ -217,6 +284,7 @@ struct FilterCell {
             }
             if (j==count) return;
             used[j]=true;
+            longest_pairs[pairs]=static_cast<unsigned char>(8*i+j);
             differences[pairs++]=position[i]-position[j];
         }
         for (unsigned i=0;i<pairs;++i) position[i]=differences[i];
@@ -236,12 +304,13 @@ struct FilterCell {
     template<class Node,class Gas>
     AERO_HOST_DEVICE double rectangular_gradient(const Node* nodes,size_t stride,const Gas* gas,
                                                    bool need_speed,VelocityGradient& gradient_out) const {
-        double jumps[4][3], speed=0.;
+        FixedMatrix<double,4,3> jumps;
+        double speed=0.;
         for (unsigned k=0;k<4;++k) {
             const auto& low=gas[nodes[k*stride]];
             const auto& high=gas[nodes[(7-k)*stride]];
             for (unsigned i=0;i<3;++i) {
-                jumps[k][i]=high.velocity[i]-low.velocity[i];
+                jumps(k, i)=high.velocity[i]-low.velocity[i];
                 if (need_speed) {
                     const double a=::fabs(low.velocity[i]), b=::fabs(high.velocity[i]);
                     if (a>speed) speed=a;
@@ -250,81 +319,26 @@ struct FilterCell {
             }
         }
         for (unsigned i=0;i<3;++i) {
-            const double lower=jumps[0][i]+jumps[1][i], upper=jumps[2][i]+jumps[3][i];
-            gradient_out[i][0]=((jumps[0][i]-jumps[1][i])+(jumps[2][i]-jumps[3][i]))*face_gradient[0];
-            gradient_out[i][1]=(lower-upper)*face_gradient[1];
-            gradient_out[i][2]=(lower+upper)*face_gradient[2];
+            const double lower=jumps(0, i)+jumps(1, i), upper=jumps(2, i)+jumps(3, i);
+            gradient_out(i, 0)=((jumps(0, i)-jumps(1, i))+(jumps(2, i)-jumps(3, i)))*face_gradient[0];
+            gradient_out(i, 1)=(lower-upper)*face_gradient[1];
+            gradient_out(i, 2)=(lower+upper)*face_gradient[2];
         }
         return speed;
     }
-    // Пара хранится как 8*i+j. Разность координат нужна и при упаковке таблицы.
-    AERO_HOST_DEVICE Coordinate long_diagonal(unsigned k) const {
-        const unsigned pair=longest_pairs[k];
-        return position[pair/8]-position[pair%8];
-    }
-    // Для несжатого элемента полный перебор даёт точный максимум при любом
-    // направлении оси, в том числе если максимум задаёт короткое ребро.
-    AERO_HOST_DEVICE double full_transverse_filter(unsigned count, const Coordinate& axis) const {
-        double diameter2=0.;
-        for (unsigned i=1; i<count; ++i) for (unsigned j=0; j<i; ++j)
-            diameter2=::fmax(diameter2,transverse_square(axis,position[i]-position[j]));
-        return diameter2/3.;
-    }
-    AERO_HOST_DEVICE double length_squared(Scale scale, unsigned count, const Coordinate& axis) const {
-        if (scale==Scale::Max) return max_edge*max_edge;
-        if (scale==Scale::Min) return min_edge*min_edge;
-        if (scale==Scale::Vol || dot3(axis,axis)==0.) return vol_length*vol_length;
-        if (rectangular_box) {
-            const Coordinate& diagonal=position[0];
-            const double x=::fabs(diagonal[0]*axis[0]), y=::fabs(diagonal[1]*axis[1]);
-            const double z=::fabs(diagonal[2]*axis[2]), span=x+y+z;
-            if (scale==Scale::Omega) return span>0. ? volume/span : vol_length*vol_length;
-            // Из четырёх диагоналей максимальную проекцию поперёк оси имеет та,
-            // у которой минимален модуль продольной проекции |±x±y±z|.
-            const double nearest=2.*::fmax(x,::fmax(y,z))-span;
-            const double full=dot3(diagonal,diagonal)*dot3(axis,axis);
-            const double transverse=full-nearest*nearest;
-            // Для тонкого элемента разность квадратов может терять точность.
-            // Тогда ниже считаем проекции непосредственно векторным произведением.
-            if (transverse>.25*full && full<DBL_MAX) return transverse/3.;
-        }
-        if (diagonals) {
-            double span=0.;
-            for (unsigned i=0;i<diagonals;++i) {
-                double value;
-                if (scale==Scale::Omega) value=::fabs(dot3(position[i],axis));
-                else value=transverse_square(axis,position[i]);
-                if (value>span) span=value;
-            }
-            if (scale!=Scale::Omega) return span/3.;
-            return span>0. ? volume/span : vol_length*vol_length;
-        }
-        if (scale==Scale::Omega) {
-            // Среднее сечение поперёк вихря равно объёму, делённому на толщину вдоль оси.
-            double low=dot3(position[0],axis), high=low;
-            for (unsigned i=1;i<count;++i) {
-                const double x=dot3(position[i],axis);
-                low=::fmin(low,x); high=::fmax(high,x);
-            }
-            return high>low ? volume/(high-low) : vol_length*vol_length;
-        }
-        double filter2;
-        if (bounded_diameter && try_transverse_filter(*this,axis,remaining_length2,filter2)) return filter2;
-        return full_transverse_filter(count,axis);
-    }
 };
 AERO_HOST_DEVICE inline double vortex_tilting(const VelocityGradient& g, const Coordinate& axis) {
-    const double trace_third=(g[0][0]+g[1][1]+g[2][2])/3.;
+    const double trace_third=(g(0, 0)+g(1, 1)+g(2, 2))/3.;
     Coordinate strain_axis{};
     double norm2=0.;
     // Тензор деформаций симметричен. Внедиагональный элемент вычисляем
     // один раз и учитываем в обеих компонентах произведения S·axis.
     for (unsigned i=0;i<3;++i) {
-        const double diagonal=g[i][i]-trace_third;
+        const double diagonal=g(i, i)-trace_third;
         strain_axis[i]+=diagonal*axis[i];
         norm2+=diagonal*diagonal;
         for (unsigned j=i+1;j<3;++j) {
-            const double shear=.5*(g[i][j]+g[j][i]);
+            const double shear=.5*(g(i, j)+g(j, i));
             strain_axis[i]+=shear*axis[j];
             strain_axis[j]+=shear*axis[i];
             norm2+=2.*shear*shear;
@@ -345,7 +359,7 @@ AERO_HOST_DEVICE inline double normalize_gradient(VelocityGradient& g) {
     // нормируем, а после вычисления возвращаем частоте её физический масштаб.
     double largest=0.;
     for (unsigned i=0;i<3;++i) for (unsigned j=0;j<3;++j) {
-        const double v=::fabs(g[i][j]);
+        const double v=::fabs(g(i, j));
         if (v>largest) largest=v;
     }
     if (largest==0.) return 0.;
@@ -354,9 +368,9 @@ AERO_HOST_DEVICE inline double normalize_gradient(VelocityGradient& g) {
         rate_scale=largest;
         if (largest>1.e-300) {
             const double inverse=1./largest;
-            for (unsigned i=0;i<3;++i) for (unsigned j=0;j<3;++j) g[i][j]*=inverse;
+            for (unsigned i=0;i<3;++i) for (unsigned j=0;j<3;++j) g(i, j)*=inverse;
         } else {
-            for (unsigned i=0;i<3;++i) for (unsigned j=0;j<3;++j) g[i][j]/=largest;
+            for (unsigned i=0;i<3;++i) for (unsigned j=0;j<3;++j) g(i, j)/=largest;
         }
     }
     return rate_scale;
@@ -368,7 +382,7 @@ AERO_HOST_DEVICE inline LesSample filter_scale(const VelocityGradient& g, const 
                                                 unsigned count, const LesSettings& settings, double rotation_floor) {
     if (settings.scale==Scale::Min || settings.scale==Scale::Max || settings.scale==Scale::Vol)
         return {cell.length_squared(settings.scale,count,Coordinate{}),0.};
-    Coordinate axis{{g[2][1]-g[1][2],g[0][2]-g[2][0],g[1][0]-g[0][1]}};
+    Coordinate axis{{g(2, 1)-g(1, 2),g(0, 2)-g(2, 0),g(1, 0)-g(0, 1)}};
     const double square=dot3(axis,axis);
     const double rotation=square>1.e-290 ? ::sqrt(square) : coordinate_length(axis);
     // У почти безвихревого поля направление может задаваться одной ошибкой округления

@@ -103,7 +103,10 @@ public:
             total_cells_ = world.sum(op.owned.size());
     }
 
-    bool needs_compact_buffer() const { return stages_.count > 1 || run_.report_every; }
+    bool needs_compact_buffer() const {
+        // SSPRK хранит начало шага; при MPI этот же буфер собирает узлы для отчёта.
+        return stages_.count > 1 || (world_.size > 1 && run_.report_every);
+    }
 
     // Для отчёта каждый процесс учитывает только объёмы узлов, которыми владеет.
     void prepare_report(const RunSettings& run, unsigned dimension, const double* volumes) {
@@ -630,18 +633,20 @@ bool prepare_gpu_memory(PartitionOperator& op, const MeshPartition& part, const 
     world.local([&] {
         if (!world.rank)
             std::cout << "Reserving GPU memory..." << std::endl;
-        if (single) {
-            fit.budget = std::numeric_limits<Id>::max();
-        } else {
-            query_gpu_memory(fit, run.mpi_gpu_memory_mib, world);
-        }
+        // Драйвер может разрешить выделение сверх физической памяти карты.
+        // Учитываем её свободный объём и при запуске одного процесса, чтобы
+        // солвер успел выбрать более компактное хранение до такой подкачки.
+        const bool distributed_limits = single && run.mpi_gpu_memory_mib.size()>1;
+        query_gpu_memory(fit, distributed_limits ? std::vector<double>{} : run.mpi_gpu_memory_mib, world);
         fit.first = part.first_leaf;
         fit.end = part.end_leaf;
         op.reserve_gpu(compact, fit, run.uses_implicit_time() ? &run.implicit_settings : nullptr);
     });
     if (single) {
         if (fit.failed) {
-            throw std::runtime_error("Insufficient GPU memory for the mesh");
+            throw std::runtime_error("Insufficient GPU memory for the mesh: arrays "
+                +std::to_string(fit.layout_bytes)+" bytes, estimated total "
+                +std::to_string(fit.required)+" bytes, budget "+std::to_string(fit.budget)+" bytes");
         }
     } else {
         const bool retry = world.sum(fit.failed ? 1 : 0) != 0;

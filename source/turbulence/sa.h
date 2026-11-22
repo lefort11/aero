@@ -20,6 +20,10 @@ struct Settings {
     double prandtl = .9;    // Турбулентное число Прандтля в уравнении полной энергии.
 };
 constexpr double cv1 = 7.1, sigma = 2. / 3., cb1 = .1355, cb2 = .622, kappa = .41;
+// Связь теплового коэффициента AES с геометрическим коэффициентом уравнения SA.
+inline double diffusion_scale(double gamma,double prandtl) {
+    return (gamma-1.)*prandtl/(gamma*sigma);
+}
 
 // Демпфирование вязкости вблизи стенки. Отношение в каждой ветви не больше единицы.
 AERO_HOST_DEVICE inline double fv1(double chi) {
@@ -175,24 +179,19 @@ struct DiffusionTriple {
     std::uint32_t element, neighbour[3];
     double geometry[3], diagonal;
 };
-// Соседние исполнители GPU читают один и тот же номер вершины в своих
-// элементах. Каждая такая строка из 32 номеров или коэффициентов лежит подряд.
-template<unsigned lanes> struct DiffusionBlock {
+// Все соседи CPU-строки из одного элемента используют его среднюю вязкость.
+struct DiffusionCell {
     enum { neighbours=7 };
-    std::uint32_t element[lanes], node[neighbours][lanes];
-    double geometry[neighbours][lanes], diagonal[lanes];
+    std::uint32_t element, node[neighbours];
+    double geometry[neighbours], diagonal;
 };
-using DiffusionTile=DiffusionBlock<32>;
-using DiffusionCell=DiffusionBlock<1>;
 // Поток диффузии от элемента в вершину и его вклад в оценку шага.
 struct ScalarContribution { double rate, diagonal; };
 struct Diffusion {
     const RowRange *rows;
     const MeshIndex *anchor; // Первый элемент строки при общей геометрии с другими узлами.
-    unsigned stride;
     const DiffusionTerm *terms;
     const LocalDiffusionTerm* local_terms;
-    const DiffusionTile* tiles;
     const double* pair_weights;
     const MeshIndex* shape;
     ScalarContribution* vertex_contributions;

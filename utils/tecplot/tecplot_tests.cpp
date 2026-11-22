@@ -177,7 +177,11 @@ struct DecodedZone {
     double time;
     std::vector<I32> locations, passive, connectivity, offsets, left, right;
     std::map<std::string, std::string> auxiliary;
-    std::vector<std::vector<double>> data;
+    std::vector<double> data;
+    // В зоне узловая и ячеечная переменные имеют разную длину. Их начала
+    // указывают на срезы единого массива, пассивная переменная даёт пустой срез.
+    std::vector<std::size_t> starts;
+    double value(std::size_t variable,std::size_t i) const { return data[starts[variable]+i]; }
 };
 class PltReader {
 public:
@@ -255,18 +259,20 @@ public:
                     const double lo = real64(), hi = real64();
                     ranges[static_cast<std::size_t>(i)] = std::make_pair(lo, hi);
                 }
-            z.data.resize(static_cast<std::size_t>(nv));
+            z.starts.reserve(static_cast<std::size_t>(nv)+1);
             for (I32 i = 0; i < nv; ++i) {
                 const std::size_t k = static_cast<std::size_t>(i);
+                z.starts.push_back(z.data.size());
                 if (z.passive[k])
                     continue;
                 const I32 count = z.locations[k] ? z.cells : z.nodes;
                 for (I32 j = 0; j < count; ++j)
-                    z.data[k].push_back(real64());
-                const auto mm = std::minmax_element(z.data[k].begin(), z.data[k].end());
+                    z.data.push_back(real64());
+                const auto mm = std::minmax_element(z.data.data()+z.starts.back(),z.data.data()+z.data.size());
                 require(*mm.first == ranges[k].first && *mm.second == ranges[k].second,
                         "Exact zone variable min/max");
             }
+            z.starts.push_back(z.data.size());
             if (z.type == 1)
                 for (I32 i = 0; i < 2 * z.cells; ++i)
                     z.connectivity.push_back(integer());
@@ -376,9 +382,9 @@ void check_fields(const Mesh& mesh, const FieldSnapshot& snapshot, const PltRead
             const std::size_t zi = field.location == FieldLocation::Edge   ? 1
                                    : field.location == FieldLocation::Face ? 2
                                                                            : 0;
-            const auto& data = reader.zones[zi].data[variable];
-            require(data.size() == count, "Full field values");
-            require(std::equal(data.begin(), data.end(),
+            const auto& zone = reader.zones[zi];
+            require(zone.starts[variable+1]-zone.starts[variable] == count, "Full field values");
+            require(std::equal(zone.data.data()+zone.starts[variable], zone.data.data()+zone.starts[variable+1],
                                field.values.begin() + static_cast<std::ptrdiff_t>(component * count)),
                     "Component-major fields");
             require(reader.variable_aux.at(std::make_pair(static_cast<I32>(variable), "Aero.Component")) ==
@@ -388,7 +394,7 @@ void check_fields(const Mesh& mesh, const FieldSnapshot& snapshot, const PltRead
                 require(reader.zones[0].passive[variable] == 1, "Inactive field not interpolated on volume");
         }
     for (std::size_t i = 0; i < mesh.data().x.size(); ++i)
-        require(z.data[0][i] == mesh.data().x[i], "Coordinate units");
+        require(z.value(0,i) == mesh.data().x[i], "Coordinate units");
 }
 // Проверки топологии зон и значений полей с разным расположением.
 void register_zones() {
@@ -438,7 +444,7 @@ void register_zones() {
             require(surface.type == 6 && surface.cells == static_cast<I32>(mesh.view().face_count),
                     "Whole face polygons");
             for (std::size_t i = 0; i < mesh.data().face_nodes.indices.size(); ++i)
-                require(surface.data[0][i] ==
+                require(surface.value(0,i) ==
                             mesh.data().x[static_cast<std::size_t>(mesh.data().face_nodes.indices[i])],
                         "Surface node remapping");
         }
@@ -456,7 +462,7 @@ void register_zones() {
         data.fields.push_back(f);
         bytes = export_bytes(mesh, data);
         PltReader scalar(bytes);
-        require(scalar.zones[0].locations[3] == 1 && scalar.zones[0].data[3][0] == 101325, "Cell scalar");
+        require(scalar.zones[0].locations[3] == 1 && scalar.zones[0].value(3,0) == 101325, "Cell scalar");
     });
     add("coordinates long UTF-8 names and metadata", [] {
         MeshData d = polygon().data();
@@ -534,7 +540,9 @@ void register_cli() {
                 require(z.connectivity == expected.connectivity && z.offsets == expected.offsets &&
                             z.left == expected.left && z.right == expected.right,
                         "Same topology as field export");
-                require(std::equal(z.data.begin(), z.data.end(), expected.data.begin()),
+                require(z.data.size()==expected.starts.at(3) &&
+                            std::equal(z.starts.begin(),z.starts.end(),expected.starts.begin()) &&
+                            std::equal(z.data.begin(), z.data.end(), expected.data.begin()),
                         "Same coordinates as field export");
                 require(z.auxiliary.count("Aero.Step") == 0 &&
                             z.auxiliary.at("Aero.MeshSHA256") == expected.auxiliary.at("Aero.MeshSHA256"),
