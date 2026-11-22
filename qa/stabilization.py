@@ -8,6 +8,28 @@ from mpi_fields import binary_snapshot
 from mpi_geometry import run
 
 
+def check_boundary_retry(args, case, mesh, archive):
+    # Возмущение давления подходит к правой границе. Узловые плотность и давление
+    # ещё положительны, но дозвуковое условие уже отклоняет поправку Ньютона.
+    (case / "init.txt").write_text("initial_type formula\nrho=1\nux=0.02\np=if(x < 0.99,0.5,1)\n")
+    (case / "bc.txt").write_text(
+        "[xmin]\nbc_type free\nsuperin initial\ninflow base_p\noutflow base_u\n"
+        "[xmax]\nbc_type free\nsuperin initial\ninflow base_u initial\noutflow base_p initial\n"
+    )
+    shutil.copyfile(ROOT / "templates/implicit.txt", case / "implicit.txt")
+    for parallel in (False, True):
+        cmd = [args.mpiexec, "-n", "2", args.aero] if parallel else [args.aero]
+        if parallel and args.devices:
+            cmd += ["main:backend=cuda", f"cuda:devices={args.devices}"]
+        log = run([*cmd, f"--input={case}", f"--output={case / f'boundary-{parallel}'}",
+                   f"main:mesh={archive if parallel else mesh}", "main:time_scheme=bdf1",
+                   "main:stabilization=low", "cfl:cfl_init=.5", "cfl:cfl_max=.5",
+                   "cfl:cfl_min=.05", "main:report_every=1"], success=False)
+        assert "RETRY step 2 | CFL 0.5 -> 0.25 | failed nodes = 1" in log, log
+        assert re.search(r"STEP 2 +\|.*?failed since last report = 1 +first-order now = 1", log, re.S), log
+        assert "next CFL is below cfl_min" in log, log
+
+
 def check(args, case):
     source = ROOT / "qa/cases/sod_1d"
     for path in source.glob("*.txt"):
@@ -59,6 +81,7 @@ def check(args, case):
                        "main:stabilization=cfl", "main:report_every=0"])
             assert "CFL 4 -> 2 |" in log, log
         print("OK stabilization", mode)
+    check_boundary_retry(args, case, mesh, archive)
 
 
 if __name__ == "__main__":

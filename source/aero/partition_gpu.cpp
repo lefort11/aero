@@ -1,5 +1,6 @@
 #include "../parallel/device_check.h"
 #include "partition_gpu.h"
+#include "../residual/boundary_flux_failure.h"
 #include "../reconstruction/device_stencil.h"
 #ifdef AERO_HAS_VISCOSITY
 #include "../parallel/device_work.h"
@@ -320,7 +321,7 @@ void PartitionGpu::upload_state(const std::vector<double>& state, const std::vec
         check(aero::gpu::fill_async(grid_.bad, 0xff, sizeof(*grid_.bad), nullptr));
     }
 }
-void PartitionGpu::check_kernel(const char* phase) {
+void PartitionGpu::check_kernel(const char* phase, bool checking_flux) {
     partition_detail::Index bad;
     if (error_index_.device()) {
         synchronize();
@@ -333,6 +334,8 @@ void PartitionGpu::check_kernel(const char* phase) {
         // должна видеть ошибки нового запуска, поэтому сбрасываем отметку после чтения.
         if (error_index_.device()) *error_index_.host() = ~partition_detail::Index(0);
         else check(aero::gpu::fill_async(grid_.bad, 0xff, sizeof(*grid_.bad), nullptr));
+        if (checking_flux && bad >= grid_.geometry.edges && bad < grid_.geometry.faces)
+            throw BoundaryFluxFailure(bad);
         throw std::domain_error(std::string("MPI CUDA ") + phase + " at local index " + std::to_string(bad));
     }
 }
@@ -379,7 +382,7 @@ void PartitionGpu::fluxes(bool first_order_start,bool defer_viscous_rows) {
         if (error) throw std::runtime_error(error);
     }
 #endif
-    check_kernel("flux");
+    check_kernel("flux", true);
 }
 void PartitionGpu::update(explicit_detail::Stage stage, double dt, bool save_original) {
     if (grid_.failed_count) reset_failed_count();

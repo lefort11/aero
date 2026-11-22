@@ -89,8 +89,6 @@ void report_step(const Processes& world, const FlowSummary& local, unsigned dime
 }
 
 // Выполняет шаг на своей подобласти. Буфер начальных значений стадий живёт весь расчёт.
-struct RejectedGasState {};
-
 class PartitionStepper {
 public:
     // Оператор и поля принадлежат расчёту и используются всеми стадиями.
@@ -239,7 +237,8 @@ public:
                 std::cout << "RETRY step " << step.number << " | " << e.what()
                           << " | dt_min " << step.dt << " -> " << .5*step.dt << std::endl;
             return false;
-        } catch (const RejectedGasState&) {
+        } catch (RejectedGasState& rejection) {
+            record_failed_nodes(rejection.local_nodes, rejection.total);
             if (run_.local_time_step == LocalStepMode::Auto) op_.reset_auto_history();
             world_.local([&] { op_.copy_backup(fields_.current, backup_, true); });
             if (run_.stabilization.local_order()) {
@@ -432,9 +431,17 @@ private:
     }
     void validate_stage() {
         std::vector<Id> failed;
+        world_.local([&] { op_.failed_nodes(fields_.current, failed, run_.uses_implicit_time()); });
+        const auto total = world_.size == 1 ? failed.size() : world_.sum(failed.size());
+        if (total) throw RejectedGasState{std::move(failed), total};
+    }
+
+    // Состояние узла и граничный поток отклоняют шаг одинаково. К моменту
+    // записи меток все ранги уже знают, что попытка завершилась отказом.
+    void record_failed_nodes(std::vector<Id>& failed, Id total) {
+        failed_count_ = total;
         const unsigned width = static_cast<unsigned>(fields_.current.size() / std::max<Id>(1, op_.state_nodes()));
         world_.local([&] {
-            op_.failed_nodes(fields_.current, failed, run_.uses_implicit_time());
             for (Id& node : failed) {
                 if (run_.stabilization.local_order()) {
                     if (marks_.empty()) marks_.resize(fields_.current.size());
@@ -443,30 +450,28 @@ private:
                 node = op_.global_node(node);
             }
         });
-        failed_count_ = world_.size == 1 ? failed.size() : world_.sum(failed.size());
-        if (failed_count_) {
-            // Владельцы передают только глобальные номера отказавших узлов.
-            // По ним master знает и число, и состав проблемных объёмов всей сетки.
-            std::ostringstream ids;
-            for (Id node : failed) ids << node << ' ';
-            const auto records = world_.gather_text(ids.str());
-            if (!world_.rank) {
-                for (const auto& record : records) {
-                    std::istringstream in(record);
-                    Id node;
-                    while (in >> node) {
-                        if (run_.report_every) report_failed_.insert(node);
-                        if (run_.stabilization.local_order()) master_low_.insert(node);
-                    }
+        // Владельцы передают только глобальные номера отказавших узлов.
+        // По ним master знает и число, и состав проблемных объёмов всей сетки.
+        std::ostringstream ids;
+        for (Id node : failed) ids << node << ' ';
+        const auto records = world_.gather_text(ids.str());
+        if (!world_.rank) {
+            for (const auto& record : records) {
+                std::istringstream in(record);
+                Id node;
+                while (in >> node) {
+                    if (run_.report_every) report_failed_.insert(node);
+                    if (run_.stabilization.local_order()) master_low_.insert(node);
                 }
             }
-            if (run_.stabilization.local_order() && marks_.empty()) marks_.resize(fields_.current.size());
-            throw RejectedGasState{};
         }
+        if (run_.stabilization.local_order() && marks_.empty()) marks_.resize(fields_.current.size());
     }
 
     void advance_explicit(const TimeStep& step, SolverTimings& timing) {
-        const auto assemble = [&](double) { assemble_fluxes(timing); };
+        const auto assemble = [&](double) {
+            op_.assemble_fluxes(fields_.current, fields_.initial, timing, false, run_.stabilization.active());
+        };
         const auto update = [&](explicit_detail::StepStage stage) {
             world_.local([&] {
                 if (stage.first()) capture_report(step);

@@ -1,4 +1,5 @@
 #include "flux_cfl.h"
+#include "boundary_flux_failure.h"
 #include "../bc/profile.h"
 #include "packed_weno.h"
 #include "../parallel/parallel_for.h"
@@ -163,6 +164,7 @@ void compute_cpu_faces(const FaceBatch& batch, const MeshIndex* global_nodes) {
             const Index f = batch.face(k);
             if (compute(batch, f))
                 return;
+            if (batch.is_boundary(f)) throw BoundaryFluxFailure(f);
             if (global_nodes)
                 throw std::domain_error("Invalid flux at global node " +
                                         std::to_string(global_nodes[batch.geometry.surfaces[f].begin]));

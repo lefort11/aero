@@ -18,6 +18,11 @@
 
 namespace aero {
 struct RunSettings;
+// Все ранги откатывают одну попытку. Каждый помечает только свои отказавшие узлы.
+struct RejectedGasState {
+    std::vector<MeshIndex> local_nodes;
+    std::size_t total;
+};
 namespace residual_detail { struct FluxCfl; }
 // Пространственный оператор одной подобласти. Сетка и её владельцы живут дольше оператора.
 class PartitionOperator {
@@ -84,7 +89,7 @@ public:
     void halo_host(std::vector<double>& u);
     // Вычисляет потоки на принадлежащих процессу поверхностях и получает остальные от соседей.
     bool assemble_fluxes(const std::vector<double>& u, const std::vector<double>& initial,
-                         SolverTimings& timing, bool trial = false);
+                         SolverTimings& timing, bool trial = false, bool retry_boundary = false);
     // Находит допустимый шаг по собственным узлам и берёт минимум по всем процессам.
     double cfl_step(double cfl);
     // После отказа повторяем ту же попытку с половиной фактически использованного шага.

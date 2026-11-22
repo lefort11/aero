@@ -94,7 +94,7 @@ class PartitionGpu {
     residual_detail::FaceBatch face_batch() const; // Адреса полей и текущие настройки потока.
     void update_face_batch(); // Обновляет параметры, которые читают упакованные ядра.
     void reset_failed_count(); // Счётчик доступен на CPU после синхронизации стадии.
-    void check_kernel(const char* phase);
+    void check_kernel(const char* phase, bool checking_flux = false);
     static double measure_flux_rate(ResidualOptions options, std::size_t faces, MeshIndex budget);
 
 public:

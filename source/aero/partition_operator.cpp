@@ -1,5 +1,6 @@
 #include <iostream>
 #include "partition_operator.h"
+#include "../residual/boundary_flux_failure.h"
 #include "../bc/profile.h"
 #include "../io/settings.h"
 #include "partition_kernels.h"
@@ -832,7 +833,7 @@ void PartitionOperator::halo_host(std::vector<double>& u) {
 }
 
 bool PartitionOperator::assemble_fluxes(const std::vector<double>& u, const std::vector<double>& initial,
-                                        SolverTimings& timing, bool trial) {
+                                        SolverTimings& timing, bool trial, bool retry_boundary) {
 #ifdef AERO_HAS_TURBULENCE
     if(sa_active()) sa_exchange();
     if (aes_ && aes_->view().computes_les()) {
@@ -849,6 +850,7 @@ bool PartitionOperator::assemble_fluxes(const std::vector<double>& u, const std:
 #endif
     (void)defer_viscous_rows;
     bool physical = true;
+    std::vector<Id> failed;
     const auto compute = [&] {
         WallTimer timer(timing.counter(SolverTimings::Flux));
 #ifdef AERO_WITH_KOKKOS_GPU
@@ -870,11 +872,22 @@ bool PartitionOperator::assemble_fluxes(const std::vector<double>& u, const std:
     };
     world_.local([&] {
         try { compute(); }
+        catch (const BoundaryFluxFailure& e) {
+            if (!trial && !retry_boundary) throw;
+            if (!trial) failed.push_back(surfaces_[e.face].begin);
+            physical = false;
+        }
         catch (const std::domain_error&) {
             if (!trial) throw;
             physical = false;
         }
     });
+    // При пробе предиктора достаточно вернуть false. После поправки Ньютона
+    // или на стадии SSPRK3 нужен откат всего шага до обмена потоками между рангами.
+    if (retry_boundary && !trial) {
+        const auto total = world_.size == 1 ? failed.size() : world_.sum(failed.size());
+        if (total) throw RejectedGasState{std::move(failed), total};
+    }
 #ifdef AERO_HAS_TURBULENCE
     const auto update_sa=[&] {
         if (!sa_active()) return;
@@ -1153,7 +1166,10 @@ implicit::NewtonResult PartitionOperator::advance_bdf(std::vector<double>& state
     const double dt_or_fraction = steady_steps_ && steady_steps_->local ? dt / minimum_step_ : dt;
     // При каждой поправке используем тот же поток и ту же реконструкцию из main.txt.
     // В матрицу поправки входят производные выбранного потока первого порядка.
-    const auto refresh = [&] { if (validate) validate(); assemble_fluxes(state, initial, timing); };
+    const auto refresh = [&] {
+        if (validate) validate();
+        assemble_fluxes(state, initial, timing, false, bool(validate));
+    };
     const auto trial = [&] { if (validate) validate(); return assemble_fluxes(state, initial, timing, true); };
     std::function<bool()> confirm_prediction;
 #ifdef AERO_HAS_TURBULENCE
