@@ -22,7 +22,8 @@ void ControlFile::open(const std::string& directory) {
 }
 
 std::string ControlFile::read_and_clear() const {
-    std::unique_ptr<std::FILE, decltype(&std::fclose)> file(std::fopen(path_.c_str(), "r+b"), &std::fclose);
+    const auto close_file = [](std::FILE* handle) noexcept { std::fclose(handle); };
+    std::unique_ptr<std::FILE, decltype(close_file)> file(std::fopen(path_.c_str(), "r+b"), close_file);
     if (!file) throw std::runtime_error("Cannot open " + path_);
     std::string commands;
     char block[4096];
