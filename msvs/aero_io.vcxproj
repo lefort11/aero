@@ -39,6 +39,11 @@
     <ClCompile Include="..\third_party\lzma\LzFind.c" />
     <ClCompile Include="..\third_party\lzma\LzmaDec.c" />
     <ClCompile Include="..\third_party\lzma\LzmaEnc.c" />
+    <ClInclude Include="..\source\io\diagnostic_fields.h" />
+    <ClInclude Include="..\source\io\flow_values.h" />
+    <ClInclude Include="..\source\io\freestream.h" />
+    <None Include="..\source\io\io.mk" />
+    <ClInclude Include="..\source\io\native_format.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

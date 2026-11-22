@@ -1,5 +1,5 @@
 #include "cv.h"
-#include "../../qa/test_checks.h"
+#include "../../tests/test_checks.h"
 #include "../mesh/mesh.h"
 #include "../eulersolver/lax_friedrichs.h"
 #include <cmath>

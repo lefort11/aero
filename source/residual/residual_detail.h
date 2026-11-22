@@ -393,10 +393,10 @@ AERO_HOST_DEVICE inline bool cartesian_hybrid_increments(const FieldReader& read
     return true;
 }
 
-// Разреженный полный шаблон: ближние наклоны и центральный берём из левой строки,
-// правый дальний — из правой. Все компоненты одной стороны используют один базис ребра.
+// На полном шаблоне нужны пять наклонов: центральный, два ближних и два дальних.
+// В характеристических переменных обе стороны пользуются одним базисом Роу.
 template <bool characteristic_2d, class FieldReader>
-AERO_HOST_DEVICE inline bool hybrid_edge_traces(const FieldReader& reader, Index edge, EdgeTraces& traces) {
+AERO_HOST_DEVICE inline bool full_mp_edge_traces(const FieldReader& reader, Index edge, EdgeTraces& traces) {
     const auto& st = reader.g.stencil;
     const unsigned width = characteristic_2d ? 4 : reader.g.components();
     const Index row = 2*edge;
@@ -412,15 +412,25 @@ AERO_HOST_DEVICE inline bool hybrid_edge_traces(const FieldReader& reader, Index
         }
     }
     if (characteristic_2d || reader.variables == ResidualVariables::Characteristic) {
-        // Строки уже выражены в характеристических переменных Роу.
+        // Проецируем каждую из пяти строк ровно один раз. Центральная и обе
+        // ближние строки понадобятся и слева, и справа.
         for (unsigned k = 0; k < 5; ++k) {
-            const unsigned offset = edge_slope_offset(k, 5); // Гибрид здесь использует полный шаблон.
+            const unsigned offset = edge_slope_offset(k, 5);
             const unsigned side = offset / 4;
             const Index slope_row = 4*row + offset;
             if (!transformed_row<0,characteristic_2d>(reader, st.owner(row+side), own.row(side), st.slope_row(slope_row), slopes.row(k), 1))
                 return false;
         }
-        if (st.mp5.weno)
+        if (reader.g.options.mp6_hybrid == 0.) {
+            // При нулевом весе сюда попадает чистая MP5. Сохраняем прежний
+            // порядок аргументов и операций ограничителя отдельно для каждой стороны.
+            for (unsigned c=0; c<width; ++c) {
+                const double center=slopes(CentralSlope,c);
+                const double left=slopes(NearLeftSlope,c), right=slopes(NearRightSlope,c);
+                traces.left[c]=mp5::increment(slopes(FarLeftSlope,c),left,center,right,st.mp5.alpha);
+                traces.right[c]=mp5::increment(slopes(FarRightSlope,c),right,center,left,st.mp5.alpha);
+            }
+        } else if (st.mp5.weno)
             mp6::reconstruct<true>(slopes, width, st.mp5, reader.g.options.mp6_hybrid, traces.left, traces.right);
         else
             mp6::reconstruct<false>(slopes, width, st.mp5, reader.g.options.mp6_hybrid, traces.left, traces.right);
@@ -435,9 +445,15 @@ AERO_HOST_DEVICE inline bool hybrid_edge_traces(const FieldReader& reader, Index
 template <unsigned linear_width = 0, bool characteristic_2d = false, class FieldReader>
 KOKKOS_FORCEINLINE_FUNCTION bool reconstruct_edge_traces(const FieldReader& reader, Index edge, EdgeTraces& traces) {
     const auto& stencil = reader.g.stencil;
-    if (!linear_width && reader.g.options.mp6_hybrid > 0 && (stencil.mp5.enabled || stencil.mp5.weno) &&
-        stencil.weno_order[2*edge] == 5 && stencil.weno_order[2*edge+1] == 5)
-        return hybrid_edge_traces<characteristic_2d>(reader,edge,traces);
+    if (!linear_width && (stencil.mp5.enabled || stencil.mp5.weno)) {
+        // Для чистой MP5 используем общие строки только после проверки их
+        // совпадения при подготовке сетки. Укороченные стороны идут в обычный обход.
+        const bool shared_mp5 = stencil.shared_edge_slopes && stencil.mp5.enabled && !stencil.mp5.weno &&
+                                reader.variables == ResidualVariables::Characteristic;
+        if ((reader.g.options.mp6_hybrid > 0. || shared_mp5) &&
+            stencil.weno_order[2*edge] == 5 && stencil.weno_order[2*edge+1] == 5)
+            return full_mp_edge_traces<characteristic_2d>(reader,edge,traces);
+    }
     const unsigned width = characteristic_2d ? 4 : (linear_width ? linear_width : reader.g.components());
     for (unsigned side = 0; side < 2; ++side) {
         const Index node = side ? reader.surface.end : reader.surface.begin;
@@ -597,6 +613,16 @@ KOKKOS_FORCEINLINE_FUNCTION bool solve_edge_flux(const Geometry& g, const Surfac
     return status == EulerStatus::Success && integrate_flux(dim + 2, surface.measure, out);
 }
 
+// Нормаль хранится в трёх координатах, но в 1D и 2D заполнены только рабочие оси.
+// Проверяем размерность до записи, в том числе при чтении уже подготовленной нормали.
+AERO_HOST_DEVICE inline bool copy_face_normal(unsigned dim, const double (&source)[3], double (&target)[3]) {
+    if (dim < 1 || dim > 3)
+        return false;
+    for (unsigned k = 0; k < dim; ++k)
+        target[k] = source[k];
+    return true;
+}
+
 // Из полей узлов собирает физические величины для базиса, ограничителя и потока первого порядка.
 template <bool packed_plane = false>
 AERO_HOST_DEVICE inline bool edge_gas(const Geometry& g, const Surface& surface, const double* begin,
@@ -609,9 +635,7 @@ AERO_HOST_DEVICE inline bool edge_gas(const Geometry& g, const Surface& surface,
             return false;
         if (packed_plane || g.packed.normals) {
             const auto& n = g.packed.normals[&surface - g.surfaces];
-            for (unsigned k = 0; k < (packed_plane ? 2u : g.dim); ++k)
-                base.normal[k] = n.axis[k];
-            return true;
+            return copy_face_normal(packed_plane ? 2u : g.dim, n.axis, base.normal);
         }
         return euler_unit_direction(g.dim, surface.area, base.normal) == EulerStatus::Success;
     }
@@ -636,6 +660,9 @@ KOKKOS_FORCEINLINE_FUNCTION bool finish_edge_flux(const Geometry& g, const Surfa
                                               const double* end, const euler_detail::InterfaceGas& base,
                                               EdgeTraces& state, EdgeTraces* physical, EulerFluxResult& out) {
     const unsigned dim = roe_2d ? 2 : g.dim;
+    euler_detail::InterfaceGas gas;
+    if (!copy_face_normal(dim, base.normal, gas.normal))
+        return false;
     // Маска принадлежит ребру и обновляется при откате или снятии меток.
     // Этим кодом пользуются как полные шаблоны WENO/MP, так и разреженные.
     const unsigned mask = surface.use_nodal_traces;
@@ -645,9 +672,6 @@ KOKKOS_FORCEINLINE_FUNCTION bool finish_edge_flux(const Geometry& g, const Surfa
         if ((mask & 4) && !use_first_order_side<roe_2d ? 2 : 0>(dim, end, base.right, base.normal,
                 state.right, !states_only && physical ? physical->right : nullptr)) return false;
     }
-    euler_detail::InterfaceGas gas;
-    for (unsigned k = 0; k < dim; ++k)
-        gas.normal[k] = base.normal[k];
     // Если восстановлены состояния, ограничителю нужны только они. В режиме Flux дополнительно
     // передаём физический поток соответствующей стороны, который ограничивается тем же коэффициентом.
     if (!limit_trace(dim, g.options, begin, state.left, surface.area, !states_only && physical ? physical->left : nullptr,

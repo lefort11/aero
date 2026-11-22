@@ -136,7 +136,7 @@ BiCGSTAB принимает `preconditioner = BJ` или `CSGS`. CSGS испол
 
 `make -j32 test` собирает и запускает модульные проверки. Для сборки и проверки MPI укажите `WITH_MPI=1`. Число после `-j` задаёт число одновременно выполняемых заданий сборки. Число вычислительных потоков задают `omp_threads` в постановке или `OMP_NUM_THREADS`.
 
-Решение Visual Studio [aero.sln](msvs/aero.sln) собирает проекты тем же GNU Make. Для GPU передайте MSBuild параметр `/p:KokkosBackend=cuda`. Если MSYS2 установлен вне C:\msys64, задайте его корневой каталог в переменной среды MSYS2_ROOT.
+Решение Visual Studio [aero.sln](msvs/aero.sln) собирает проекты тем же GNU Make. По умолчанию все проекты используют CUDA, OpenMP и MPI со статической линковкой CUDA Runtime. Для CPU передайте MSBuild параметр `/p:KokkosBackend=cpu`. Если MSYS2 установлен вне C:\msys64, задайте его корневой каталог в переменной среды MSYS2_ROOT.
 
 `make -j32 programs` собирает программы. После этого `python qa/run.py --case sod_1d` сравнивает расчёт с точным решением задачи Сода. Команда `python qa/run.py` проходит всю матрицу. Варианты CUDA и MPI, расположение результатов и допуски описаны в [руководстве по QA](qa/README.md).
 

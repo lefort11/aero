@@ -2,10 +2,10 @@
 #include "lf_edge_jacobian.h"
 #include "../eulersolver/roe.h"
 #include "../eulersolver/lax_friedrichs.h"
-#include "../../qa/device_cases.h"
-#include "../../qa/test_checks.h"
+#include "../../tests/device_cases.h"
+#include "../../tests/test_checks.h"
 #ifdef AERO_WITH_KOKKOS_GPU
-#include "../../qa/device_test_buffer.h"
+#include "../../tests/device_test_buffer.h"
 #endif
 #include <algorithm>
 #include <cmath>

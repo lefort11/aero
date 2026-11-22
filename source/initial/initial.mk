@@ -29,4 +29,4 @@ initial-test: $(BIN)/$(notdir $(INITIAL_TEST))
 initial-debug-test: $(BIN)/$(notdir $(INITIAL_DEBUG))
 	$(running_test)
 	./$(INITIAL_DEBUG)
-$(INITIAL_TEST) $(INITIAL_DEBUG): qa/test_checks.h
+$(INITIAL_TEST) $(INITIAL_DEBUG): tests/test_checks.h

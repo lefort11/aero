@@ -1,5 +1,5 @@
 #include "explicit_test_problem.h"
-#include "../../qa/device_cases.h"
+#include "../../tests/device_cases.h"
 #include <stdexcept>
 namespace {
 using namespace aero::device_tests;

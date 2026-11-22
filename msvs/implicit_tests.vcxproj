@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003" DefaultTargets="Build">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{2FB0898E-11DC-4E17-A27F-E5890EA69918}</ProjectGuid>
+    <Keyword>MakeFileProj</Keyword>
+    <MakeGoal>implicit-test</MakeGoal>
+  </PropertyGroup>
+  <Import Project="kokkos_make.props" />
+  <ItemGroup>
+    <ClCompile Include="..\source\implicit\bdf1_linear_tests.cpp" />
+    <ClCompile Include="..\source\implicit\bdf1_step_tests.cpp" />
+    <ClCompile Include="..\source\implicit\block_jacobi_tests.cpp" />
+    <ClCompile Include="..\source\implicit\csgs_tests.cpp" />
+    <ClCompile Include="..\source\implicit\lf_edge_jacobian_tests.cpp" />
+    <ClCompile Include="..\source\implicit\mpi_matrix_tests.cpp" />
+    <ClCompile Include="..\source\implicit\spatial_jacobian_tests.cpp" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

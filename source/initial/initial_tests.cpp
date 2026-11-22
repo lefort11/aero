@@ -1,5 +1,5 @@
 #include "initial.h"
-#include "../../qa/test_checks.h"
+#include "../../tests/test_checks.h"
 #include "../io/expression.h"
 #include "../bc/periodic.h"
 #include "../io/fields.h"

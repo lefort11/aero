@@ -2,6 +2,7 @@
 #define AERO_SOLVER_TIMINGS_H
 #include "../parallel/processes.h"
 #include "../parallel/wall_timer.h"
+#include "../implicit/phase_timing.h"
 #include <array>
 #include <iosfwd>
 
@@ -9,8 +10,10 @@ namespace aero {
 class SolverTimings {
 public:
     // Для каждой операции храним отдельно число вызовов и суммарное время на данном процессе.
-    enum Phase { Flux, Update, Halo, FluxExchange, Cfl, Readback, Fields, Recovery, SaTransport, LesClosure, Total, Count };
+    enum Phase { Flux, Update, Halo, FluxExchange, Cfl, Readback, Fields, Recovery, SaTransport, LesClosure,
+                 ImplicitFirst, Total = ImplicitFirst + implicit::PhaseTiming::Count, Count };
     SolverTimings(const Processes& world, bool enabled, bool cuda, std::uint64_t first_step);
+    implicit::PhaseTiming bdf_phases();
     // При включённых замерах регистрирует вызов и отдаёт накопитель таймеру данной фазы.
     double* counter(Phase phase) {
         if (!enabled_)
@@ -24,7 +27,7 @@ public:
 private:
     // Группа процессов, измеряющих одни и те же фазы расчёта.
     const Processes& world_;
-    bool enabled_, cuda_;
+    bool enabled_, cuda_, profile_bdf_ = false;
     // Номер уже принятого шага в момент запуска замера, в том числе после восстановления.
     std::uint64_t first_;
     WallTimer::Clock::time_point start_;

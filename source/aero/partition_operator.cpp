@@ -1175,7 +1175,8 @@ implicit::NewtonResult PartitionOperator::advance_bdf(std::vector<double>& state
         evaluate_sa(state,timing,true); // Первый остаток Ньютона тоже должен учитывать новый слой SA.
     }
 #endif
-    const auto result=bdf_->advance(fields.state, fields.initial, fields.volumes, fields.flux, dt_or_fraction, settings, refresh, trial,confirm_prediction);
+    const auto result=bdf_->advance(fields.state, fields.initial, fields.volumes, fields.flux, dt_or_fraction,
+                                    settings, refresh, trial, confirm_prediction, timing.bdf_phases());
 #ifdef AERO_HAS_TURBULENCE
     if(sa_active()) {
         if(sa_bdf2_) sa_apply(sa_step(),turbulence::Operation::CommitHistory);

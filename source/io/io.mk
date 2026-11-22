@@ -96,4 +96,4 @@ output-debug-test: io-fields-debug-test
 all: $(BIN)/$(notdir $(FIELD_TEST))
 test: io-fields-test
 debug-test: io-fields-debug-test
-$(BUILD)/io_fields_tests.o $(FIELD_DEBUG_TEST): qa/test_checks.h
+$(BUILD)/io_fields_tests.o $(FIELD_DEBUG_TEST): tests/test_checks.h

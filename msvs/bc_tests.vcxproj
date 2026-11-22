@@ -17,6 +17,7 @@
     <ClCompile Include="..\source\bc\bc_gpu_tests.cpp" />
     <ClCompile Include="..\source\bc\bc_tests.cpp" />
     <ClCompile Include="..\source\bc\periodic_tests.cpp" />
+    <ClInclude Include="..\source\bc\bc_test_case.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

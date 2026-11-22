@@ -31,4 +31,4 @@ io-settings-test: $(BIN)/$(notdir $(SETTINGS_TEST))
 io-settings-debug-test: $(BIN)/$(notdir $(SETTINGS_DEBUG_TEST))
 	$(running_test)
 	"$(SETTINGS_DEBUG_TEST)"
-$(SETTINGS_TEST) $(SETTINGS_DEBUG_TEST): qa/test_checks.h
+$(SETTINGS_TEST) $(SETTINGS_DEBUG_TEST): tests/test_checks.h

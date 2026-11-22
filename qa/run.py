@@ -212,9 +212,18 @@ def export_comparison(work, snap, fields, exact, mesh, exporter, destination):
     plot.replace(destination)
 
 
-def run_case(name, options, solver, exporter, progress, total):
+def case_variants(name):
+    """Перечисляет сочетания схем, для которых задана проверка точности."""
+    smooth = CASES[name][2]
+    reconstructions = RECONSTRUCTIONS if smooth else ("weno3", "weno5", "mp5", "MPWENO5")
+    # На разрыве Сода проверяем реконструкцию в характеристических переменных.
+    variables = ("characteristic",) if name == "sod_1d" else VARIABLES
+    return list(itertools.product(reconstructions, variables, FLUXES, TIME_SCHEMES))
+
+
+def run_case(name, variants, options, solver, exporter, progress, total):
     """Готовит эталон один раз и проверяет каждое сочетание схем для выбранной задачи."""
-    formula, dim, smooth = CASES[name]
+    formula, dim, _ = CASES[name]
     folder = QA / "cases" / name
     main = settings(folder / "main.txt")
     mesh = (folder / main["mesh"]).resolve()
@@ -228,8 +237,7 @@ def run_case(name, options, solver, exporter, progress, total):
     outdir.mkdir(parents=True, exist_ok=True)
     active = f"CUDA device {options.device}" if options.backend == "cuda" else "CPU"
     failures = 0
-    recs = RECONSTRUCTIONS if smooth else ("weno3", "weno5", "mp5", "MPWENO5")
-    for variant in itertools.product(recs, VARIABLES, FLUXES, TIME_SCHEMES):
+    for variant in variants:
         label = "_".join(variant)
         progress += 1
         print(f"[{progress}/{total}] {name} / {' / '.join(variant)}", flush=True)
@@ -292,22 +300,16 @@ def main():
         flush=True,
     )
     cases = list(dict.fromkeys(options.case or CASES))
-    counts = {
-        name: (len(RECONSTRUCTIONS) if CASES[name][2] else 4)
-        * len(VARIABLES)
-        * len(FLUXES)
-        * len(TIME_SCHEMES)
-        for name in cases
-    }
-    total = sum(counts.values())
+    variants_by_case = {name: case_variants(name) for name in cases}
+    total = sum(map(len, variants_by_case.values()))
     failures = progress = 0
-    for name in cases:
+    for name, variants in variants_by_case.items():
         try:
-            failures += run_case(name, options, solver, exporter, progress, total)
+            failures += run_case(name, variants, options, solver, exporter, progress, total)
         except (OSError, ValueError, KeyError) as exc:
             print(f"FAIL  {name}: {exc}", flush=True)
-            failures += counts[name]
-        progress += counts[name]
+            failures += len(variants)
+        progress += len(variants)
     if failures:
         print(f"FAIL: {failures}/{total} runs failed. See FAIL lines above.")
         return 1

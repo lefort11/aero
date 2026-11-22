@@ -1,5 +1,5 @@
 #include "tecplot.h"
-#include "../../qa/test_checks.h"
+#include "../../tests/test_checks.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>

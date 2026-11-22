@@ -6,15 +6,26 @@ kokkos_bundled := 1
 KOKKOS_PREFIX := $(abspath $(BUILD))/kokkos-install
 endif
 kokkos_library := $(KOKKOS_PREFIX)/lib/libkokkoscore.a
-kokkos_source := $(abspath $(BUILD))/kokkos-source
+kokkos_unpack := $(abspath $(BUILD))/kokkos-source
+kokkos_source := $(kokkos_unpack)/kokkos-3.2.01
 # В MSYS пути GCC вида C:/... в depfile воспринимаются make как лишнее двоеточие.
 # Для этой пары инструментов зависимости заголовков собирает сам CMake.
-kokkos_build := $(abspath $(BUILD))/kokkos-build$(if $(filter Windows_NT,$(OS)),-unix)
-kokkos_inputs := third_party/kokkos-3.2.01.zip third_party/kokkos-3.2.01-compat.patch source/parallel/prepare_kokkos.py
+kokkos_build := $(abspath $(BUILD))/kokkos-build$(if $(filter Windows_NT,$(OS)),-unix)/3.2.01
+kokkos_zip := third_party/kokkos-3.2.01.zip
+kokkos_inputs := $(kokkos_zip) third_party/kokkos-3.2.01-compat.patch
 kokkos_stamp := $(kokkos_source)/.prepared
 $(kokkos_stamp): $(kokkos_inputs)
 	$(call action,Preparing,Kokkos sources)
-	python3 source/parallel/prepare_kokkos.py "$(kokkos_source)"
+	@printf '%s  %s\n' 4e88d9cfab0520fd183e3dd76b1c327447f47b44d4dae24b360979e518fc5d75 "$(kokkos_zip)" | sha256sum -c -
+	@mkdir -p "$(kokkos_unpack)"
+ifeq ($(OS),Windows_NT)
+	# Для тестовой ссылки gtest в zip на Windows могут требоваться особые права.
+	bsdtar -xf "$(kokkos_zip)" -C "$(kokkos_unpack)" --exclude '*/gtest-test-part.h'
+	cp "$(kokkos_source)/tpls/gtest/gtest/gtest.h" "$(kokkos_source)/tpls/gtest/gtest/gtest-test-part.h"
+else
+	cd "$(kokkos_unpack)" && cmake -E tar xf "$(abspath $(kokkos_zip))"
+endif
+	patch --binary -d "$(kokkos_source)" -p1 --batch < third_party/kokkos-3.2.01-compat.patch
 	touch "$@"
 override CPPFLAGS += -isystem "$(KOKKOS_PREFIX)/include"
 override LDLIBS += "$(kokkos_library)"
@@ -35,7 +46,6 @@ endif
 
 ifeq ($(kokkos_gpu),1)
 kokkos_gpu_dir := $(abspath $(BUILD))/kokkos-device
-kokkos_module := $(if $(filter Windows_NT,$(OS)),aero_kokkos_cuda.dll,libaero_kokkos_cuda.so)
 ifeq ($(OS),Windows_NT)
 # Сначала ищем инструменты в среде пользователя. В рабочем дереве также
 # может быть локально распакован комплект MinGW для сборки Kokkos.
@@ -64,7 +74,6 @@ endif
 ifeq ($(STATIC_LINK),1)
 # Объекты GPU входят в исполняемый файл. На Windows LLD читает архив CUDA в формате MSVC.
 kokkos_gpu_archive := libaero_kokkos_device.a
-kokkos_gpu_flags := --static --archiver "$(AR)"
 ifeq ($(OS),Windows_NT)
 override LDFLAGS += -fuse-ld=lld
 # CUDA вызывает строковое форматирование UCRT из состава Windows 10/11.
@@ -75,14 +84,12 @@ else
 kokkos_static_runtime := $(CUDA_RUNTIME_LINK)
 endif
 else
-kokkos_gpu_archive := $(if $(filter Windows_NT,$(OS)),libaero_kokkos_cuda.a,$(kokkos_module))
+kokkos_module := libaero_kokkos_cuda.so
+kokkos_gpu_archive := $(kokkos_module)
 endif
 ifeq ($(origin KOKKOS_DEVICE_LIBRARY),undefined)
 KOKKOS_DEVICE_LIBRARY := $(kokkos_gpu_dir)/$(kokkos_gpu_archive)
-kokkos_device_sources := source/parallel/build_kokkos_gpu.py $(wildcard source/parallel/*.cu source/*/*.h) qa/device_cases.cu qa/device_cases.h
-$(KOKKOS_DEVICE_LIBRARY): $(kokkos_stamp) $(kokkos_device_sources) $(llvm_ready)
-	$(call action,Building,Kokkos GPU library)
-	python3 source/parallel/build_kokkos_gpu.py --work "$(kokkos_gpu_dir)/objects" --source "$(kokkos_source)" --cuda "$(CUDA_HOME)" --arch "$(CUDA_ARCH)" --compiler "$(KOKKOS_GPU_CXX)" --host-compiler "$(CXX)" --mixed-linear $(MIXED_LINEAR) --output "$@" $(kokkos_gpu_flags) $(if $(filter 1,$(V)),--verbose)
+include source/parallel/kokkos_gpu.mk
 endif
 $(BUILD): | $(KOKKOS_DEVICE_LIBRARY)
 ifeq ($(STATIC_LINK),0)
@@ -91,11 +98,7 @@ ifeq ($(STATIC_LINK),0)
 kokkos-runtime: $(KOKKOS_DEVICE_LIBRARY) | $(BIN) $(BUILD)
 	cp -f "$(dir $(KOKKOS_DEVICE_LIBRARY))$(kokkos_module)" "$(BIN)/"
 	cp -f "$(dir $(KOKKOS_DEVICE_LIBRARY))$(kokkos_module)" "$(BUILD)/"
-ifeq ($(OS),Windows_NT)
-	@for f in "$(CUDA_HOME)"/bin/cudart64_*.dll; do cp -f "$$f" "$(BIN)/"; cp -f "$$f" "$(BUILD)/"; done
-else
 override LDFLAGS += -Wl,-rpath,'$$ORIGIN'
-endif
 bin-runtime: kokkos-runtime
 endif
 endif

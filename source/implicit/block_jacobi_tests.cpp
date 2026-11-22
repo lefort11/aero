@@ -1,6 +1,6 @@
-#include "../../qa/test_field.h"
+#include "../../tests/test_field.h"
 #include "block_jacobi.h"
-#include "../../qa/test_checks.h"
+#include "../../tests/test_checks.h"
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 #if defined(AERO_WITH_KOKKOS_GPU)
-#include "../../qa/device_test_buffer.h"
+#include "../../tests/device_test_buffer.h"
 #include "../parallel/device_scope.h"
 #endif
 

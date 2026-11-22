@@ -20,6 +20,7 @@
     <ClCompile Include="..\utils\meshdec\order.cpp" />
     <ClCompile Include="..\utils\meshdec\storage.cpp" />
     <ClInclude Include="..\utils\meshdec\storage.h" />
+    <None Include="..\utils\meshdec\meshdec.mk" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

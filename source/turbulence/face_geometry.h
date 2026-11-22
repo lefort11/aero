@@ -24,7 +24,7 @@ AERO_HOST_DEVICE inline FaceTerm make_face_term(const residual_detail::Surface &
 struct GasFaces {
     const residual_detail::Surface *faces;
     const residual_detail::OrientedFace *incidence;
-    const MeshIndex *offsets;
+    const residual_detail::Index *offsets;
     AERO_HOST_DEVICE RowRange row(MeshIndex node) const { return {offsets[node], offsets[node + 1]}; }
     AERO_HOST_DEVICE FaceTerm read(MeshIndex node, MeshIndex entry, MeshIndex edges, unsigned dim) const {
         const auto side = incidence[entry];

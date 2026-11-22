@@ -1,9 +1,9 @@
-#include "../../qa/test_mesh.h"
+#include "../../tests/test_mesh.h"
 #include "spatial_jacobian.h"
 #include "../residual/residual.h"
 #include "../residual/residual_detail.h"
 #include "block_layout.h"
-#include "../../qa/test_field.h"
+#include "../../tests/test_field.h"
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -21,7 +21,7 @@ void check_matrix_budget() {
     using namespace aero::residual_detail;
     Surface faces[2]{};
     for (auto& f : faces) f.end=1;
-    const MeshIndex offsets[]={0,2,4};
+    const Index offsets[]={0,2,4};
     const OrientedFace incidence[]={OrientedFace::outward(0),OrientedFace::outward(1),
                                     OrientedFace::inward(0),OrientedFace::inward(1)};
     Geometry g{};

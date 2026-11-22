@@ -3,6 +3,7 @@
 #include <memory>
 #include "../mesh/mesh_index.h"
 #include "partition.h"
+#include "phase_timing.h"
 
 namespace aero {
 class SpatialResidual;
@@ -35,7 +36,8 @@ private:
     unsigned dimension() const;
     int device() const;
     const Partition& partition() const;
-    void assemble_matrix(const double* state, const double* initial, const double* volumes, double dt, bool simplified = false, bool roe = false);
+    void assemble_matrix(const double* state, const double* initial, const double* volumes, double dt,
+                         bool simplified = false, bool roe = false, const PhaseTiming& timing = {});
     void reserve_diagonal();
     void update_time_diagonal(const double* volumes, double dt);
     void prepare_csgs();

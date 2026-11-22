@@ -1,5 +1,5 @@
 #include "reconstruction.h"
-#include "../../qa/device_cases.h"
+#include "../../tests/device_cases.h"
 #include "../parallel/device_scope.h"
 #include <stdlib.h>
 #include <stdio.h>

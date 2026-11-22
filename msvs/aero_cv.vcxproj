@@ -14,6 +14,7 @@
     <None Include="..\source\cv\README.txt" />
     <ClCompile Include="..\source\cv\cv.cpp" />
     <ClInclude Include="..\source\cv\cv.h" />
+    <ClInclude Include="..\source\cv\flux_surface.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

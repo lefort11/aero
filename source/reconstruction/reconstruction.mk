@@ -57,4 +57,4 @@ reconstruction-cuda-test:
 all: $(BIN)/$(notdir $(EBR_TEST))
 test: reconstruction-test
 debug-test: reconstruction-debug-test
-$(EBR_TEST) $(EBR_DEBUG_TEST): qa/test_checks.h
+$(EBR_TEST) $(EBR_DEBUG_TEST): tests/test_checks.h

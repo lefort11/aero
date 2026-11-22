@@ -121,12 +121,13 @@ struct BdfStep::Storage {
 
     // Возвращает единицу, если пришлось заново дифференцировать потоки.
     unsigned prepare_matrix(const double* state, const double* initial, const double* volumes,
-                            double effective_dt, const NewtonSettings& settings, unsigned iteration) {
+                            double effective_dt, const NewtonSettings& settings, unsigned iteration,
+                            const PhaseTiming& timing) {
         if (!cached) {
             // Для линейных уравнений пространственные производные постоянны.
             // В упрощённом Ньютоне сохраняем их вместе с готовым предобусловливателем.
             const bool reuse = grid.options.background.active() || settings.simplified_newton();
-            linear.assemble(state, initial, volumes, effective_dt, settings, reuse);
+            linear.assemble(state, initial, volumes, effective_dt, settings, reuse, timing);
             cached = reuse;
             cached_settings = settings;
             accepted_since_build = 0;
@@ -134,7 +135,9 @@ struct BdfStep::Storage {
         }
         // Для первого решения на новом шаге обновляем V*a/dt и разложение
         // диагонали. Остальные поправки используют ту же готовую матрицу.
-        if (iteration == 0) linear.update_time_diagonal(volumes, effective_dt);
+        if (iteration == 0) timing.measure(PhaseTiming::PreconditionerSetup,[&] {
+            linear.update_time_diagonal(volumes,effective_dt);
+        });
         return 0;
     }
 
@@ -246,7 +249,7 @@ double BdfStep::spatial_rate_norm(const double* volumes, const EulerFluxResult* 
 NewtonResult BdfStep::advance(double* state, const double* initial, const double* volumes,
                               const EulerFluxResult* flux, double dt, const NewtonSettings& settings,
                               const std::function<void()>& refresh_fluxes, const std::function<bool()>& try_prediction_fluxes,
-                              const std::function<bool()>& confirm_prediction) {
+                              const std::function<bool()>& confirm_prediction, const PhaseTiming& timing) {
     auto& s = *storage_;
     s.partition.local([&] {
         if (settings.second_order) s.ensure_history();
@@ -302,10 +305,10 @@ NewtonResult BdfStep::advance(double* state, const double* initial, const double
         spatial_predictor = initial_norm > 0. && s.partition.steady_steps && confirm_prediction &&
                             !s.partition.host_aes.c_des && settings.simplified_newton() && settings.max_iterations > 1;
 #endif
-        if (spatial_predictor) assemblies += s.prepare_matrix(state, initial, volumes, dt / leading, settings, 0);
+        if (spatial_predictor) assemblies += s.prepare_matrix(state,initial,volumes,dt/leading,settings,0,timing);
         const auto predictor_update = [&](NewtonUpdate::Operation op, double relaxation) {
             if (spatial_predictor && op == NewtonUpdate::Predict) {
-                s.linear.predict(s.rhs, s.correction);
+                timing.measure(PhaseTiming::Prediction,[&] { s.linear.predict(s.rhs,s.correction); });
                 op = NewtonUpdate::PredictCorrection;
             }
             update_trial(op, relaxation);
@@ -326,8 +329,13 @@ NewtonResult BdfStep::advance(double* state, const double* initial, const double
             // Диагональ пространственной части берётся из баланса потоков. Временной
             // вклад a*V/dt добавляется при сборке системы для текущей поправки.
             if (!spatial_predictor || iteration != 0)
-                assemblies += s.prepare_matrix(state, initial, volumes, dt / leading, settings, iteration);
-            const auto result = s.linear.solve_with_rhs_norm(s.rhs, s.correction, tolerance, norm);
+                assemblies += s.prepare_matrix(state,initial,volumes,dt/leading,settings,iteration,timing);
+            // Время BiCGSTAB включает обмены вектора, предобусловливание и
+            // коллективные редукции всех скалярных произведений этой поправки.
+            LinearResult result;
+            timing.measure(PhaseTiming::Solve,[&] {
+                result=s.linear.solve_with_rhs_norm(s.rhs,s.correction,tolerance,norm);
+            });
             correction_iterations.push_back(result.iterations);
             linear_iterations += result.iterations;
             if (result.status != LinearStatus::Converged) {

@@ -112,16 +112,21 @@ inline void gradients(const Execution &exec, const viscosity::Operator &g, Gradi
     Kokkos::parallel_for("Aero: affine AES", policy,
                          Apply{g.affine, g.cells, g.gas, output, g.stencil.pair_heat, first_vertex, first_cell});
 }
+// Одни и те же границы плиток нужны при сборке невязки и матрицы. Потребитель
+// ставит все операции текущей плитки в очередь Kokkos до повторной записи её буферов.
+template<class Calculate>
+inline void for_tiles(const viscosity::Operator& g,Calculate calculate) {
+    for (MeshIndex t=0;t<g.gradient_tile_count;++t) calculate(g.host_gradient_tiles[t]);
+}
 // Рабочий массив вмещает одну группу гексаэдров. Сначала все её градиенты
 // вычисляются на карте, затем потребитель добавляет вклады в невязку или матрицу.
 // Последовательность запусков в одном исполнителе Kokkos защищает от перезаписи.
 template<class Accumulate>
 inline void for_gradient_tiles(const Execution& exec, const viscosity::Operator& g, Accumulate accumulate) {
-    for (MeshIndex t = 0; t < g.gradient_tile_count; ++t) {
-        const auto tile = g.host_gradient_tiles[t];
+    for_tiles(g,[&](viscosity::GradientTile tile) {
         gradients(exec, g, g.gradient_cache, tile.first_cell, tile.cells, tile.first_vertex);
         accumulate(tile);
-    }
+    });
 }
 }
 }

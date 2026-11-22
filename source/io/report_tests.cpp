@@ -1,6 +1,6 @@
 #include "../parallel/fixed_matrix.h"
 #include "report.h"
-#include "../../qa/test_checks.h"
+#include "../../tests/test_checks.h"
 #include "../explicit/explicit.h"
 #include <algorithm>
 #include <sstream>

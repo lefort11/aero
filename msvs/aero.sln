@@ -64,12 +64,36 @@ Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "meshdec", "meshdec.vcxproj"
 EndProject
 Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "meshdec_tests", "meshdec_tests.vcxproj", "{75B27152-F45C-4350-AB81-B60817DC4937}"
 EndProject
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "aero_implicit", "aero_implicit.vcxproj", "{ECDA7621-2ECB-4D15-B1B3-E51BAFA6BCEE}"
+EndProject
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "implicit_tests", "implicit_tests.vcxproj", "{2FB0898E-11DC-4E17-A27F-E5890EA69918}"
+EndProject
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "turbulence_tests", "turbulence_tests.vcxproj", "{EF3F96C5-8CCF-48CC-A812-11C606F3FE5A}"
+EndProject
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "viscosity_tests", "viscosity_tests.vcxproj", "{FC3FB789-AF40-4458-8860-E3863A7F4569}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
 		Release|x64 = Release|x64
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{FC3FB789-AF40-4458-8860-E3863A7F4569}.Debug|x64.ActiveCfg = Debug|x64
+		{FC3FB789-AF40-4458-8860-E3863A7F4569}.Debug|x64.Build.0 = Debug|x64
+		{FC3FB789-AF40-4458-8860-E3863A7F4569}.Release|x64.ActiveCfg = Release|x64
+		{FC3FB789-AF40-4458-8860-E3863A7F4569}.Release|x64.Build.0 = Release|x64
+		{EF3F96C5-8CCF-48CC-A812-11C606F3FE5A}.Debug|x64.ActiveCfg = Debug|x64
+		{EF3F96C5-8CCF-48CC-A812-11C606F3FE5A}.Debug|x64.Build.0 = Debug|x64
+		{EF3F96C5-8CCF-48CC-A812-11C606F3FE5A}.Release|x64.ActiveCfg = Release|x64
+		{EF3F96C5-8CCF-48CC-A812-11C606F3FE5A}.Release|x64.Build.0 = Release|x64
+		{2FB0898E-11DC-4E17-A27F-E5890EA69918}.Debug|x64.ActiveCfg = Debug|x64
+		{2FB0898E-11DC-4E17-A27F-E5890EA69918}.Debug|x64.Build.0 = Debug|x64
+		{2FB0898E-11DC-4E17-A27F-E5890EA69918}.Release|x64.ActiveCfg = Release|x64
+		{2FB0898E-11DC-4E17-A27F-E5890EA69918}.Release|x64.Build.0 = Release|x64
+		{ECDA7621-2ECB-4D15-B1B3-E51BAFA6BCEE}.Debug|x64.ActiveCfg = Debug|x64
+		{ECDA7621-2ECB-4D15-B1B3-E51BAFA6BCEE}.Debug|x64.Build.0 = Debug|x64
+		{ECDA7621-2ECB-4D15-B1B3-E51BAFA6BCEE}.Release|x64.ActiveCfg = Release|x64
+		{ECDA7621-2ECB-4D15-B1B3-E51BAFA6BCEE}.Release|x64.Build.0 = Release|x64
 		{75B27152-F45C-4350-AB81-B60817DC4937}.Debug|x64.ActiveCfg = Debug|x64
 		{75B27152-F45C-4350-AB81-B60817DC4937}.Debug|x64.Build.0 = Debug|x64
 		{75B27152-F45C-4350-AB81-B60817DC4937}.Release|x64.ActiveCfg = Release|x64

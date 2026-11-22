@@ -50,4 +50,4 @@ timestep-cuda-test:
 	$(MAKE) KOKKOS_BACKEND=cuda $(BIN)/timestep_tests_cuda1_omp$(WITH_OPENMP)$(EXE)
 	$(running_test)
 	./$(BIN)/timestep_tests_cuda1_omp$(WITH_OPENMP)$(EXE) --require-cuda
-$(TIMESTEP_TEST) $(TIMESTEP_DEBUG): qa/test_checks.h
+$(TIMESTEP_TEST) $(TIMESTEP_DEBUG): tests/test_checks.h

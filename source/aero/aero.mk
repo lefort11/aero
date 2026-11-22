@@ -40,7 +40,7 @@ $(AERO_OBJECT_DIR)/%.o: source/%.cpp $(AERO_HEADERS) | $(BUILD)
 AERO_MATRIX_TEST := $(BUILD)/mpi_matrix_tests_$(EBR_TAG)$(EXE)
 $(AERO_PROGRAM): $(AERO_OBJECT_DIR)/aero/main.o
 $(AERO_MATRIX_TEST): $(AERO_OBJECT_DIR)/implicit/mpi_matrix_tests.o
-$(AERO_OBJECT_DIR)/implicit/mpi_matrix_tests.o: source/implicit/bdf1_linear_system.h qa/test_field.h
+$(AERO_OBJECT_DIR)/implicit/mpi_matrix_tests.o: source/implicit/bdf1_linear_system.h tests/test_field.h
 $(AERO_PROGRAM) $(AERO_MATRIX_TEST): $(filter-out $(AERO_OBJECT_DIR)/aero/main.o,$(AERO_OBJECTS)) $(AERO_LIBS) $(AERO_GPU) $(KOKKOS_DEVICE_LIBRARY)
 	$(call action,Linking,$@)
 	$(MPI_HOST_CXX) $(CXXFLAGS) $(filter-out $(AERO_LIBS),$(filter %.o,$^)) $(LDFLAGS) $(AERO_LIBS) $(EBR_LIBS) $(if $(filter 1,$(WITH_MPI)),$(MPI_LIBS)) $(LDLIBS) $(if $(filter Windows_NT,$(OS)),-lpsapi) -o $@
@@ -106,7 +106,7 @@ else
 mpi-timing-test mpi-fields-test mpi-recovery-test mpi-geometry-test mpi-balance-test mpi-euler-test mpi-ssprk3-test mpi-bdf1-test mpi-bdf2-test mpi-linear-test mpi-periodic-test $(MPI_RECONSTRUCTION_TESTS):
 	$(MAKE) WITH_MPI=1 $@
 endif
-$(AERO_TEST): qa/test_checks.h
+$(AERO_TEST): tests/test_checks.h
 .PHONY: completion-forecast-test curved-stencil-test
 completion-forecast-test: aero
 	$(running_test)

@@ -1,5 +1,5 @@
-#ifndef AERO_QA_DEVICE_CASES_H
-#define AERO_QA_DEVICE_CASES_H
+#ifndef AERO_TESTS_DEVICE_CASES_H
+#define AERO_TESTS_DEVICE_CASES_H
 #include "../source/parallel/device_memory.h"
 #include "../source/bc/bc_test_case.h"
 #include "../source/bc/periodic.h"

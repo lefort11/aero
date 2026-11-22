@@ -1,9 +1,9 @@
-#include "../../qa/device_test_buffer.h"
+#include "../../tests/device_test_buffer.h"
 #include "timestep.h"
 #include "../explicit/explicit.h"
 #define AERO_EULERSOLVER_KERNEL_ONLY
 #include "../eulersolver/lax_friedrichs.h"
-#include "../../qa/device_cases.h"
+#include "../../tests/device_cases.h"
 #include <stdexcept>
 
 using namespace aero;

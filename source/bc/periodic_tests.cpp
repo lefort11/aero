@@ -1,5 +1,5 @@
 #include "periodic.h"
-#include "../../qa/test_checks.h"
+#include "../../tests/test_checks.h"
 #include <cmath>
 #include <iostream>
 #include <sstream>

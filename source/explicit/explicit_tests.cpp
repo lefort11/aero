@@ -1,5 +1,5 @@
 #include "explicit_test_problem.h"
-#include "../../qa/test_checks.h"
+#include "../../tests/test_checks.h"
 #include <algorithm>
 #include <cmath>
 #include <iostream>

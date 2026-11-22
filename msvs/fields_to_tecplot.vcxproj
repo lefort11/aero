@@ -16,6 +16,7 @@
     <ClCompile Include="..\utils\tecplot\main.cpp" />
     <ClCompile Include="..\utils\tecplot\tecplot.cpp" />
     <ClInclude Include="..\utils\tecplot\tecplot.h" />
+    <None Include="..\utils\tecplot\tecplot.mk" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

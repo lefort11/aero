@@ -1,6 +1,6 @@
-#include "../../qa/device_test_buffer.h"
+#include "../../tests/device_test_buffer.h"
 #include "cv.h"
-#include "../../qa/device_cases.h"
+#include "../../tests/device_cases.h"
 #include <cstdio>
 #include <cmath>
 #include <stdexcept>

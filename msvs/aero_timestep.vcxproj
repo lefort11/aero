@@ -17,6 +17,10 @@
     <ClInclude Include="..\source\timestep\timestep.h" />
     <None Include="..\source\timestep\timestep.mk" />
     <ClCompile Include="..\source\timestep\timestep_gpu.cpp" />
+    <ClInclude Include="..\source\timestep\adaptive_step.h" />
+    <ClInclude Include="..\source\timestep\local_step_mode.h" />
+    <ClInclude Include="..\source\timestep\node_step.h" />
+    <ClInclude Include="..\source\timestep\stabilization.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

@@ -149,12 +149,14 @@ def verify(case, aero, meshdec, launcher):
     configure("grid.mdec", 0.003)
     zones.write_text(global_zones[global_zones.index("[history]") :])
     log = run([launcher, "-n", 2, aero, f"--input={case}", f"--output={collision}"], success=False)
-    if (
-        "publish" not in log
-        or first.read_bytes() != b"old history"
-        or list(first.parent.iterdir()) != [first]
-    ):
-        raise AssertionError(log)
+    if "Cannot publish" not in log or first.name not in log:
+        raise AssertionError(f"Expected a publication error for {first.name}:\n{log}")
+    if first.read_bytes() != b"old history":
+        raise AssertionError(f"Publication replaced an existing snapshot: {first}")
+    # Диагностика отдельно показывает, если после неудачной публикации остался временный файл.
+    remaining = sorted(path.name for path in first.parent.iterdir())
+    if remaining != [first.name]:
+        raise AssertionError(f"Unexpected directory contents after publication failed: {remaining!r}")
 
     legacy_archive(case / "grid.mdec", case / "old.mdec", version=3)
     configure("old.mdec", 0.003)

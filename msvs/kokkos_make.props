@@ -9,7 +9,7 @@
   <!-- Проекты IDE и терминал вызывают одни и те же правила сборки Kokkos. -->
   <PropertyGroup>
     <KokkosBackend Condition="'$(KokkosBackend)'==''">$(KOKKOS_BACKEND)</KokkosBackend>
-    <KokkosBackend Condition="'$(KokkosBackend)'==''">cpu</KokkosBackend>
+    <KokkosBackend Condition="'$(KokkosBackend)'==''">cuda</KokkosBackend>
     <CudaArchitecture Condition="'$(CudaArchitecture)'==''">86</CudaArchitecture>
     <WithMPI Condition="'$(WithMPI)'==''">true</WithMPI>
     <WithOpenMP Condition="'$(WithOpenMP)'==''">true</WithOpenMP>

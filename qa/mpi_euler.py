@@ -335,8 +335,8 @@ def verify(
         result = run([launcher, "-n", len(devices) or 2, matrix_test, native, archive, *map(str, devices)])
         print(result.strip())
     if cut:
-        i = common_cut(case, case, aero, launcher, coords)
-        location = (coords[i][0] + coords[i + 1][0]) / 2
+        cut_node = common_cut(case, case, aero, launcher, coords)
+        location = (coords[cut_node][0] + coords[cut_node + 1][0]) / 2
         init = case / "init.txt"
         init.write_text(
             init.read_text().replace("x < 0.5", ("x > " if reverse else "x < ") + repr(location))
@@ -346,7 +346,7 @@ def verify(
     log = run([aero, f"--input={case}", f"--output={reference}"])
     if cut:
         if reconstruction == "first_order" and scheme not in ("bdf1","bdf2"):
-            cut_balance(reference / "state_000001.fields", coords, i, reverse, scheme)
+            cut_balance(reference / "state_000001.fields", coords, cut_node, reverse, scheme)
         times = [stamp(path)[1] for path in sorted(reference.glob("timed_*.fields"))]
         if times != [final / 2, final]:
             raise AssertionError(f"Missed physical-time outputs: {times}")
@@ -435,7 +435,10 @@ def verify(
         )
         failed = case / "failed-stage"
         log = run([launcher, "-n", 4, aero, f"--input={case}", f"--output={failed}"], success=False)
-        if "Invalid flux at global node" not in log or any(failed.rglob("*.fields")):
+        # После первой стадии именно левый узел разрыва теряет допустимое
+        # состояние. Номер берём из фактического разбиения этой сетки.
+        bad_node = rf"(?m)^aero: rank \d+: Invalid Euler stage state at global node {cut_node}$"
+        if not re.search(bad_node, log) or any(failed.rglob("*.fields")):
             raise AssertionError(
                 f"Expected a collective intermediate-stage failure before output:\n{log}"
             )

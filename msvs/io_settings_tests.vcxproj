@@ -13,6 +13,7 @@
   <Import Project="kokkos_make.props" />
   <ItemGroup>
     <ClCompile Include="..\source\io\settings_tests.cpp" />
+    <None Include="..\source\io\settings_tests.mk" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

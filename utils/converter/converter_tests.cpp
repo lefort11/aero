@@ -1,5 +1,5 @@
 #include "converter.h"
-#include "../../qa/test_checks.h"
+#include "../../tests/test_checks.h"
 #include "cli.h"
 #include "detail.h"
 #include <algorithm>

@@ -27,6 +27,9 @@
     <ClCompile Include="..\source\reconstruction\stencil_builder.cpp" />
     <ClInclude Include="..\source\reconstruction\stencil_builder.h" />
     <ClInclude Include="..\source\reconstruction\weno.h" />
+    <ClInclude Include="..\source\reconstruction\curved_stencil.h" />
+    <ClInclude Include="..\source\reconstruction\device_stencil.h" />
+    <ClInclude Include="..\source\reconstruction\parallel_stencil.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

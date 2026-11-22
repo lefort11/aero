@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003" DefaultTargets="Build">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{ECDA7621-2ECB-4D15-B1B3-E51BAFA6BCEE}</ProjectGuid>
+    <Keyword>MakeFileProj</Keyword>
+    <MakeGoal>implicit</MakeGoal>
+  </PropertyGroup>
+  <Import Project="kokkos_make.props" />
+  <ItemGroup>
+    <ClCompile Include="..\source\implicit\block_jacobi.cpp" />
+    <ClInclude Include="..\source\implicit\phase_timing.h" />
+    <ClInclude Include="..\source\implicit\bdf1_linear_system.h" />
+    <ClCompile Include="..\source\implicit\bdf1_step.cpp" />
+    <ClInclude Include="..\source\implicit\bdf1_step.h" />
+    <ClInclude Include="..\source\implicit\bicgstab_vectors.h" />
+    <ClCompile Include="..\source\implicit\bicgstab.cpp" />
+    <ClInclude Include="..\source\implicit\block_jacobi_detail.h" />
+    <ClInclude Include="..\source\implicit\block_jacobi.h" />
+    <ClInclude Include="..\source\implicit\block_layout.h" />
+    <ClInclude Include="..\source\implicit\boundary_jacobian.h" />
+    <ClInclude Include="..\source\implicit\csgs_order.h" />
+    <ClInclude Include="..\source\implicit\csgs_sweep.h" />
+    <ClInclude Include="..\source\implicit\edge_jacobian.h" />
+    <ClInclude Include="..\source\implicit\implicit_settings.h" />
+    <None Include="..\source\implicit\implicit.mk" />
+    <ClInclude Include="..\source\implicit\index_list.h" />
+    <ClInclude Include="..\source\implicit\krylov_scratch.h" />
+    <ClInclude Include="..\source\implicit\lf_edge_jacobian.h" />
+    <ClInclude Include="..\source\implicit\linear_iteration_report.h" />
+    <ClInclude Include="..\source\implicit\newton_vectors.h" />
+    <ClInclude Include="..\source\implicit\partition.h" />
+    <ClInclude Include="..\source\implicit\roe_edge_jacobian.h" />
+    <ClInclude Include="..\source\implicit\spatial_jacobian_detail.h" />
+    <ClCompile Include="..\source\implicit\spatial_jacobian.cpp" />
+    <ClInclude Include="..\source\implicit\spatial_jacobian.h" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

@@ -49,4 +49,4 @@ eulersolver-cuda-test:
 all: $(BIN)/$(notdir $(EULER_TEST))
 test: eulersolver-test
 debug-test: eulersolver-debug-test
-$(EULER_TEST) $(EULER_DEBUG_TEST): qa/test_checks.h
+$(EULER_TEST) $(EULER_DEBUG_TEST): tests/test_checks.h

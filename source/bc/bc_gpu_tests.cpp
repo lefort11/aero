@@ -1,7 +1,7 @@
-#include "../../qa/device_test_buffer.h"
+#include "../../tests/device_test_buffer.h"
 #include "bc_test_case.h"
 #include "periodic.h"
-#include "../../qa/device_cases.h"
+#include "../../tests/device_cases.h"
 #include <cstdio>
 #include <stdexcept>
 namespace aero {

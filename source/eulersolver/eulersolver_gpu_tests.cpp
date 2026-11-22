@@ -2,7 +2,7 @@
 #include "lax_friedrichs.h"
 #include "roe.h"
 #include "characteristic.h"
-#include "../../qa/device_cases.h"
+#include "../../tests/device_cases.h"
 #include "../parallel/device_scope.h"
 #include <stdio.h>
 

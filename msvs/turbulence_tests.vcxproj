@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003" DefaultTargets="Build">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{EF3F96C5-8CCF-48CC-A812-11C606F3FE5A}</ProjectGuid>
+    <Keyword>MakeFileProj</Keyword>
+    <MakeGoal>turbulence-test</MakeGoal>
+  </PropertyGroup>
+  <Import Project="kokkos_make.props" />
+  <ItemGroup>
+    <ClCompile Include="..\source\turbulence\tests\sa_tests.cpp" />
+    <None Include="..\source\turbulence\tests.mk" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

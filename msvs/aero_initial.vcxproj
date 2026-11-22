@@ -14,6 +14,7 @@
     <None Include="..\source\initial\README.txt" />
     <ClCompile Include="..\source\initial\initial.cpp" />
     <ClInclude Include="..\source\initial\initial.h" />
+    <None Include="..\source\initial\initial.mk" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

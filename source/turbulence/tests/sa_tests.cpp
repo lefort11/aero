@@ -1,6 +1,6 @@
-#include "../source/turbulence/transport.h"
-#include "../source/turbulence/convection.h"
-#include "test_checks.h"
+#include "../transport.h"
+#include "../convection.h"
+#include "../../../tests/test_checks.h"
 #include <iostream>
 #include <vector>
 using namespace aero::turbulence;

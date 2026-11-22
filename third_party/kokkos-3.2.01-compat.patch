@@ -78,7 +78,72 @@
  
 --- a/core/src/Cuda/Kokkos_Cuda_Instance.cpp
 +++ b/core/src/Cuda/Kokkos_Cuda_Instance.cpp
-@@ -830,8 +830,10 @@
+@@ -239,8 +239,30 @@
+ 
+ }  // namespace
+ 
+-unsigned long *CudaInternal::constantMemHostStaging = nullptr;
+-cudaEvent_t CudaInternal::constantMemReusable       = nullptr;
++// Создаём закреплённую память и событие на первом обращении к этой карте.
++void CudaConstantBuffer::acquire() {
++  std::lock_guard<std::mutex> guard(mutex);
++  if (users == 0) {
++    CUDA_SAFE_CALL(cudaMallocHost(reinterpret_cast<void**>(&staging),
++                                  CudaTraits::ConstantMemoryUsage));
++    const auto status = cudaEventCreateWithFlags(&reusable, cudaEventDisableTiming);
++    if (status != cudaSuccess) {
++      cudaFreeHost(staging);
++      CUDA_SAFE_CALL(status);
++    }
++  }
++  ++users;
++}
++
++void CudaConstantBuffer::release() {
++  std::lock_guard<std::mutex> guard(mutex);
++  if (--users == 0) {
++    // Последний запуск мог ещё читать аргументы из буфера этой карты.
++    CUDA_SAFE_CALL(cudaEventSynchronize(reusable));
++    CUDA_SAFE_CALL(cudaEventDestroy(reusable));
++    CUDA_SAFE_CALL(cudaFreeHost(staging));
++  }
++}
+ 
+ //----------------------------------------------------------------------------
+ 
+@@ -545,14 +567,9 @@
+   // Init the array for used for arbitrarily sized atomics
+   if (stream == nullptr) Impl::initialize_host_cuda_lock_arrays();
+ 
+-  // Allocate a staging buffer for constant mem in pinned host memory
+-  // and an event to avoid overwriting driver for previous kernel launches
+-  if (stream == nullptr) {
+-    CUDA_SAFE_CALL(cudaMallocHost((void **)&constantMemHostStaging,
+-                                  CudaTraits::ConstantMemoryUsage));
+-
+-    CUDA_SAFE_CALL(cudaEventCreate(&constantMemReusable));
+-  }
++  static CudaConstantBuffer buffers[CudaInternalDevices::MAXIMUM_DEVICE_COUNT];
++  constantBuffer = &buffers[m_cudaDev];
++  constantBuffer->acquire();
+ 
+   m_stream                    = stream;
+   m_team_scratch_current_size = 0;
+@@ -715,10 +732,9 @@
+     m_team_scratch_ptr          = nullptr;
+   }
+ 
+-  // only destroy these if we're finalizing the singleton
+-  if (this == &singleton()) {
+-    cudaFreeHost(constantMemHostStaging);
+-    cudaEventDestroy(constantMemReusable);
++  if (constantBuffer) {
++    constantBuffer->release();
++    constantBuffer = nullptr;
+   }
+ }
+ 
+@@ -830,8 +846,10 @@
      : m_space_instance(new Impl::CudaInternal), m_counter(new int(1)) {
    Impl::CudaInternal::singleton().verify_is_initialized(
        "Cuda instance constructor");
@@ -124,3 +189,130 @@
  
  template <class DriverType>
  __global__ static void cuda_parallel_launch_global_memory(
+@@ -261,11 +270,15 @@
+ 
+       KOKKOS_ENSURE_CUDA_LOCK_ARRAYS_ON_DEVICE();
+ 
++      // Потоки CPU по очереди заполняют общий буфер одной карты. Событие
++      // разрешает следующую запись после завершения предыдущего ядра на GPU.
++      auto& buffer = *cuda_instance->constantBuffer;
++      std::lock_guard<std::mutex> guard(buffer.mutex);
+       // Wait until the previous kernel that uses the constant buffer is done
+-      CUDA_SAFE_CALL(cudaEventSynchronize(cuda_instance->constantMemReusable));
++      CUDA_SAFE_CALL(cudaEventSynchronize(buffer.reusable));
+ 
+       // Copy functor (synchronously) to staging buffer in pinned host memory
+-      unsigned long* staging = cuda_instance->constantMemHostStaging;
++      unsigned long* staging = buffer.staging;
+       memcpy(staging, &driver, sizeof(DriverType));
+ 
+       // Copy functor asynchronously from there to constant memory on the device
+@@ -279,7 +292,7 @@
+           <<<grid, block, shmem, cuda_instance->m_stream>>>();
+ 
+       // Record an event that says when the constant buffer can be reused
+-      CUDA_SAFE_CALL(cudaEventRecord(cuda_instance->constantMemReusable,
++      CUDA_SAFE_CALL(cudaEventRecord(buffer.reusable,
+                                      cudaStream_t(cuda_instance->m_stream)));
+ 
+ #if defined(KOKKOS_ENABLE_DEBUG_BOUNDS_CHECK)
+@@ -340,11 +353,15 @@
+ 
+       KOKKOS_ENSURE_CUDA_LOCK_ARRAYS_ON_DEVICE();
+ 
++      // Потоки CPU по очереди заполняют общий буфер одной карты. Событие
++      // разрешает следующую запись после завершения предыдущего ядра на GPU.
++      auto& buffer = *cuda_instance->constantBuffer;
++      std::lock_guard<std::mutex> guard(buffer.mutex);
+       // Wait until the previous kernel that uses the constant buffer is done
+-      CUDA_SAFE_CALL(cudaEventSynchronize(cuda_instance->constantMemReusable));
++      CUDA_SAFE_CALL(cudaEventSynchronize(buffer.reusable));
+ 
+       // Copy functor (synchronously) to staging buffer in pinned host memory
+-      unsigned long* staging = cuda_instance->constantMemHostStaging;
++      unsigned long* staging = buffer.staging;
+       memcpy(staging, &driver, sizeof(DriverType));
+ 
+       // Copy functor asynchronously from there to constant memory on the device
+@@ -357,7 +374,7 @@
+           <<<grid, block, shmem, cuda_instance->m_stream>>>();
+ 
+       // Record an event that says when the constant buffer can be reused
+-      CUDA_SAFE_CALL(cudaEventRecord(cuda_instance->constantMemReusable,
++      CUDA_SAFE_CALL(cudaEventRecord(buffer.reusable,
+                                      cudaStream_t(cuda_instance->m_stream)));
+ 
+ #if defined(KOKKOS_ENABLE_DEBUG_BOUNDS_CHECK)
+--- a/cmake/kokkos_arch.cmake
++++ b/cmake/kokkos_arch.cmake
+@@ -367,6 +367,21 @@
+ CHECK_CUDA_ARCH(VOLTA72   sm_72)
+ CHECK_CUDA_ARCH(TURING75  sm_75)
+ CHECK_CUDA_ARCH(AMPERE80  sm_80)
++
++# Accept an explicit numeric target on build hosts without a GPU. Kokkos 3.2
++# has named architecture switches only up to sm_80.
++IF(KOKKOS_ENABLE_CUDA AND DEFINED Kokkos_CUDA_ARCH_NUMBER)
++  IF(NOT Kokkos_CUDA_ARCH_NUMBER MATCHES "^[0-9]+$")
++    MESSAGE(FATAL_ERROR "Expected a numeric Kokkos_CUDA_ARCH_NUMBER")
++  ENDIF()
++  LIST(FIND KOKKOS_CUDA_ARCH_FLAGS sm_${Kokkos_CUDA_ARCH_NUMBER} idx)
++  SET(arch_name CUDA_TARGET)
++  IF(NOT idx EQUAL -1)
++    LIST(GET KOKKOS_CUDA_ARCH_LIST ${idx} arch_name)
++  ENDIF()
++  SET(KOKKOS_ARCH_${arch_name} ON)
++  CHECK_CUDA_ARCH(${arch_name} sm_${Kokkos_CUDA_ARCH_NUMBER})
++ENDIF()
+ 
+ SET(AMDGPU_ARCH_ALREADY_SPECIFIED "")
+ FUNCTION(CHECK_CUDA_ARCH ARCH FLAG)
+--- a/bin/nvcc_wrapper
++++ b/bin/nvcc_wrapper
+@@ -15,1 +15,1 @@
+-default_arch="sm_35"
++default_arch=${NVCC_WRAPPER_DEFAULT_ARCH:-sm_35}
+@@ -27,1 +27,2 @@
+ fi
++nvcc_compiler=${NVCC_WRAPPER_NVCC:-$nvcc_compiler}
+
+--- a/core/src/Cuda/Kokkos_Cuda_Instance.hpp
++++ b/core/src/Cuda/Kokkos_Cuda_Instance.hpp
+@@ -2,6 +2,7 @@
+ #define KOKKOS_CUDA_INSTANCE_HPP_
+ 
+ #include <vector>
++#include <mutex>
+ #include <impl/Kokkos_Tools.hpp>
+ //----------------------------------------------------------------------------
+ //----------------------------------------------------------------------------
+@@ -74,6 +75,17 @@
+ //----------------------------------------------------------------------------
+ namespace Kokkos {
+ namespace Impl {
++
++// У всех потоков одной карты общий символ CUDA для аргументов ядра.
++struct CudaConstantBuffer {
++  std::mutex mutex;
++  unsigned users = 0;
++  unsigned long* staging = nullptr;
++  cudaEvent_t reusable = nullptr;
++
++  void acquire();
++  void release();
++};
+ 
+ class CudaInternal {
+  private:
+@@ -126,10 +138,7 @@
+   bool was_initialized = false;
+   bool was_finalized   = false;
+ 
+-  // FIXME_CUDA: these want to be per-device, not per-stream...  use of 'static'
+-  //  here will break once there are multiple devices though
+-  static unsigned long* constantMemHostStaging;
+-  static cudaEvent_t constantMemReusable;
++  CudaConstantBuffer* constantBuffer = nullptr;
+ 
+   static CudaInternal& singleton();
+ 

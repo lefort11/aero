@@ -1,5 +1,5 @@
 #include "fields.h"
-#include "../../qa/test_checks.h"
+#include "../../tests/test_checks.h"
 #include "sha256.h"
 #include "../mesh/mesh.h"
 #include "lzma_stream.h"

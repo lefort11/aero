@@ -1,6 +1,6 @@
 #include "timestep.h"
 #include "stabilization.h"
-#include "../../qa/test_checks.h"
+#include "../../tests/test_checks.h"
 #include "../bc/periodic.h"
 #include "../explicit/explicit.h"
 #include "../eulersolver/lax_friedrichs.h"

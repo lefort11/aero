@@ -3,6 +3,7 @@
 #include <memory>
 #include "partition.h"
 #include "implicit_settings.h"
+#include "phase_timing.h"
 
 namespace aero {
 class SpatialResidual;
@@ -32,7 +33,8 @@ public:
     // volumes содержит по одному положительному объёму на узел. initial —
     // фиксированное поле для граничных условий. Поля читаются во время сборки.
     void assemble(const double* state, const double* initial, const double* volumes, double dt,
-                  const MatrixSettings& settings = MatrixSettings(), bool cache_diagonal = false);
+                  const MatrixSettings& settings = MatrixSettings(), bool cache_diagonal = false,
+                  const PhaseTiming& timing = {});
     // Для нового шага BDF обновляет временную диагональ и её LU-разложение в BJ/CSGS.
     void update_time_diagonal(const double* volumes, double dt);
     // Сокращённая форма для существующих вызовов с якобианом LF и блочным Якоби.

@@ -1,5 +1,5 @@
-#ifndef AERO_QA_TEST_MESH_H
-#define AERO_QA_TEST_MESH_H
+#ifndef AERO_TESTS_TEST_MESH_H
+#define AERO_TESTS_TEST_MESH_H
 #include "../source/mesh/mesh.h"
 #include <stdexcept>
 

@@ -7,8 +7,8 @@ from pathlib import Path
 import random
 import re
 import shutil
-import struct
 
+from mdec_header import read_mdec_header
 from mpi_geometry import geometry, run
 from mpi_euler import (
     free_patch,
@@ -238,9 +238,7 @@ def check_partition_report(log, serial, ranks, archive, out, logical, axes, dim,
     def total(key):
         return sum(int(p[key]) for p in parts)
 
-    with archive.open("rb") as file:
-        file.seek(80)
-        (leaves,) = struct.unpack("<Q", file.read(8))
+    leaves = read_mdec_header(archive).leaves
     reference = re.search(r"Computational nodes = (\d+)\s+edges = (\d+)", serial)
     if (total("owned"), total("edges"), total("leaves")) != (*map(int, reference.groups()), leaves):
         raise AssertionError("Distributed workload differs from serial grid or archive")

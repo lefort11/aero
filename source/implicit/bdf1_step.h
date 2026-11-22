@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include "partition.h"
 #include "implicit_settings.h"
+#include "phase_timing.h"
 
 namespace aero {
 struct EulerFluxResult;
@@ -43,7 +44,7 @@ public:
                          const EulerFluxResult* flux, double dt, const NewtonSettings& settings,
                          const std::function<void()>& refresh_fluxes,
                          const std::function<bool()>& try_prediction_fluxes = {},
-                         const std::function<bool()>& confirm_prediction = {});
+                         const std::function<bool()>& confirm_prediction = {}, const PhaseTiming& timing = {});
     // Необязательный обработчик пробного поля пересчитывает те же потоки.
     // false означает физически недопустимую пробу, которую надо откатить.
 private:

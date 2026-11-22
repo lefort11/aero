@@ -1,5 +1,5 @@
 #include "weno.h" // Заголовок должен компилироваться и при первом включении.
-#include "../../qa/test_checks.h"
+#include "../../tests/test_checks.h"
 #include "reconstruction.h"
 #include "mp6_hybrid.h"
 #include "curved_stencil.h"
@@ -11,7 +11,7 @@
 #include <map>
 #include <numeric>
 #ifdef AERO_WITH_KOKKOS_GPU
-#include "../../qa/device_test_buffer.h"
+#include "../../tests/device_test_buffer.h"
 #include "../parallel/device_memory.h"
 #endif
 

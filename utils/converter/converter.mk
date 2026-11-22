@@ -37,11 +37,11 @@ converter-test: $(BUILD)/mesh.o $(CONVERTER_OBJECTS) $(BUILD)/converter_converte
 	$(call action,Linking,$(BIN)/converter_tests$(EXE))
 	$(CXX) $(LDFLAGS) $^ $(CONVERTER_LDLIBS) $(LDLIBS) -o $(BIN)/converter_tests$(EXE)
 	$(running_test)
-	./$(BIN)/converter_tests$(EXE)
+	"$(BIN)/converter_tests$(EXE)"
 
 converter-debug-test: $(LZMA_OBJECTS) | $(BUILD) bin-runtime $(CGNS_BUILD_DEPS)
 	$(call action,Compiling and linking,$(BIN)/converter_tests_debug$(EXE))
 	$(CXX) $(CPPFLAGS) $(CONVERTER_CPPFLAGS) -std=c++11 -pedantic-errors -O0 -g -Wall -Wextra -Wpedantic -Wconversion -Wshadow -D_GLIBCXX_DEBUG -D_GLIBCXX_ASSERTIONS $(MESH_SOURCE)/mesh.cpp $(CONVERTER_SOURCES) $(CONVERTER_SOURCE)/converter_tests.cpp source/io/lzma_stream.cpp $(LZMA_OBJECTS) $(LDFLAGS) $(CONVERTER_LDLIBS) $(LDLIBS) -o $(BIN)/converter_tests_debug$(EXE)
 	$(running_test)
-	./$(BIN)/converter_tests_debug$(EXE)
-$(BUILD)/converter_converter_tests_$(WITH_CGNS).o: qa/test_checks.h
+	"$(BIN)/converter_tests_debug$(EXE)"
+$(BUILD)/converter_converter_tests_$(WITH_CGNS).o: tests/test_checks.h

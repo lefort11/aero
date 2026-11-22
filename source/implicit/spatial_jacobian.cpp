@@ -579,7 +579,11 @@ void SpatialJacobian::prepare_jacobi(BlockJacobi& jacobi) const {
     jacobi.prepare(b.values, b.layout.first ? nullptr : b.rows);
 }
 
-void SpatialJacobian::assemble_matrix(const double* u, const double* initial, const double* volumes, double dt, bool simplified, bool roe) {
+void SpatialJacobian::assemble_matrix(const double* u, const double* initial, const double* volumes, double dt,
+                                     bool simplified, bool roe, const PhaseTiming& timing) {
+#ifndef AERO_HAS_VISCOSITY
+    (void)timing;
+#endif
     auto& s = *storage_;
     s.ready = false;
     auto& b = s.blocks;
@@ -599,7 +603,7 @@ void SpatialJacobian::assemble_matrix(const double* u, const double* initial, co
         }
 #endif
 #ifdef AERO_HAS_VISCOSITY
-        if (b.viscous && b.row_count) {
+        if (b.viscous && b.row_count) timing.measure(PhaseTiming::ViscousMatrix,[&] {
             // Заполняем вязкую часть первой. Строки конвекции затем добавят свои блоки,
             // закрепят импульс на стенке и сохранят полную пространственную диагональ.
             const auto& v = s.viscous;
@@ -617,7 +621,7 @@ void SpatialJacobian::assemble_matrix(const double* u, const double* initial, co
                     for (unsigned c = 0; c < b.grid.components(); ++c) v.assemble_column(n,c);
                 });
             }
-        }
+        });
 #endif
         if (b.direct_faces) {
             b.assembly_state=u;

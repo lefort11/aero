@@ -1,5 +1,5 @@
-#ifndef AERO_QA_TEST_CHECKS_H
-#define AERO_QA_TEST_CHECKS_H
+#ifndef AERO_TESTS_TEST_CHECKS_H
+#define AERO_TESTS_TEST_CHECKS_H
 
 #include <stdexcept>
 

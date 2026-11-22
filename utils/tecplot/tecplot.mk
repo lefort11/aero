@@ -24,13 +24,13 @@ tecplot-test: $(BUILD)/tecplot_tecplot_tests_omp$(WITH_OPENMP).o $(TECPLOT_OBJEC
 	$(call action,Linking,$(BIN)/tecplot_tests$(EXE))
 	$(CXX) $(LDFLAGS) $^ $(LDLIBS) -o $(BIN)/tecplot_tests$(EXE)
 	$(running_test)
-	./$(BIN)/tecplot_tests$(EXE)
+	"$(BIN)/tecplot_tests$(EXE)"
 tecplot-debug-test: $(LZMA_OBJECTS) | $(BUILD) bin-runtime
 	$(call action,Compiling and linking,$(BIN)/tecplot_tests_debug$(EXE))
 	$(CXX) $(CPPFLAGS) -std=c++11 -pedantic-errors -O0 -g -Wall -Wextra -Wpedantic -Wconversion -Wshadow -D_GLIBCXX_DEBUG -D_GLIBCXX_ASSERTIONS $(TECPLOT_SOURCE)/tecplot.cpp $(TECPLOT_SOURCE)/cli.cpp $(TECPLOT_SOURCE)/tecplot_tests.cpp $(FIELD_SOURCES) source/io/staged_field_file.cpp $(MESH_SOURCE)/mesh.cpp source/io/lzma_stream.cpp $(LZMA_OBJECTS) $(LDFLAGS) $(LDLIBS) -o $(BIN)/tecplot_tests_debug$(EXE)
 	$(running_test)
-	./$(BIN)/tecplot_tests_debug$(EXE)
+	"$(BIN)/tecplot_tests_debug$(EXE)"
 all: tecplot
 test: tecplot-test
 debug-test: tecplot-debug-test
-$(BUILD)/tecplot_tecplot_tests_omp$(WITH_OPENMP).o: qa/test_checks.h
+$(BUILD)/tecplot_tecplot_tests_omp$(WITH_OPENMP).o: tests/test_checks.h

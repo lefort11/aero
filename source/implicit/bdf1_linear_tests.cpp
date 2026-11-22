@@ -1,9 +1,9 @@
-#include "../../qa/test_mesh.h"
+#include "../../tests/test_mesh.h"
 #include "bdf1_linear_system.h"
 #include "spatial_jacobian.h"
 #include "block_layout.h"
 #include "../residual/residual.h"
-#include "../../qa/test_field.h"
+#include "../../tests/test_field.h"
 #include <algorithm>
 #include <cmath>
 #include <iostream>

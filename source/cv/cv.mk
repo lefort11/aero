@@ -41,4 +41,4 @@ cv-cuda-test:
 	$(MAKE) KOKKOS_BACKEND=cuda $(BIN)/cv_tests_cuda1$(EXE)
 	$(running_test)
 	"$(BIN)/cv_tests_cuda1$(EXE)" --require-cuda
-$(CV_TEST) $(CV_DEBUG): qa/test_checks.h
+$(CV_TEST) $(CV_DEBUG): tests/test_checks.h

@@ -1,7 +1,7 @@
 # Модель можно полностью удалить вместе с её тестовыми целями.
 SA_TEST := $(BUILD)/sa_tests$(EXE)
 $(SA_TEST): source/turbulence/diffusion_geometry.h source/viscosity/grad.h
-$(SA_TEST): qa/sa_tests.cpp qa/test_checks.h source/turbulence/convection.h source/turbulence/transport.h source/turbulence/sa.h source/turbulence/sigma.h source/turbulence/ddes.h source/turbulence/hex_filter.h source/turbulence/model_math.h | $(BUILD)
+$(SA_TEST): source/turbulence/tests/sa_tests.cpp tests/test_checks.h source/turbulence/convection.h source/turbulence/transport.h source/turbulence/sa.h source/turbulence/sigma.h source/turbulence/ddes.h source/turbulence/hex_filter.h source/turbulence/model_math.h | $(BUILD)
 	$(call action,Compiling and linking,$@)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) "$<" -o "$@"
 .PHONY: turbulence-test turbulence-qa sa-convection-qa

@@ -1,12 +1,12 @@
 #include "aes.h"
 #include "../implicit/spatial_jacobian.h"
 #include "../residual/residual_detail.h"
-#include "../../qa/test_field.h"
+#include "../../tests/test_field.h"
 #ifdef AERO_WITH_KOKKOS_GPU
 #include "../parallel/device_arrays.h"
 #include "../parallel/device_work.h"
 #endif
-#include "../../qa/test_checks.h"
+#include "../../tests/test_checks.h"
 #include <cmath>
 #include <cstring>
 #include <iostream>
@@ -80,10 +80,38 @@ void check_coordinate_pairs(const viscosity::Aes& aes,MeshIndex nodes,bool share
     }
 }
 
+// В короткой сетке из 12 узлов свободных строк невязки не хватает на тензоры
+// даже одной ячейки. Четыре копии дают 48 реальных узлов и место для одной
+// ячейки в плитке. В каждой копии сохраняются общие грани разных типов.
+Mesh tiled_mixed_mesh(const Mesh& seed) {
+    MeshData mesh;
+    const auto& data=seed.data();
+    mesh.dimension=data.dimension;
+    mesh.patch_names=data.patch_names;
+    const auto append_rows=[](MeshCsr& to,const MeshCsr& from,MeshIndex shift) {
+        const auto old_end=to.indices.size();
+        for (auto index:from.indices) to.indices.push_back(index+shift);
+        for (std::size_t i=1;i<from.offsets.size();++i) to.offsets.push_back(old_end+from.offsets[i]);
+    };
+    for (unsigned copy=0;copy<4;++copy) {
+        const auto nodes=mesh.x.size(),faces=mesh.face_nodes.offsets.size()-1;
+        for (double x:data.x) mesh.x.push_back(x+4.*copy);
+        mesh.y.insert(mesh.y.end(),data.y.begin(),data.y.end());
+        mesh.z.insert(mesh.z.end(),data.z.begin(),data.z.end());
+        append_rows(mesh.face_nodes,data.face_nodes,nodes);
+        append_rows(mesh.cell_faces,data.cell_faces,faces);
+        mesh.cell_face_orientation.insert(mesh.cell_face_orientation.end(),data.cell_face_orientation.begin(),
+                                          data.cell_face_orientation.end());
+        for (auto i:data.boundary_faces) mesh.boundary_faces.push_back(faces+i);
+        mesh.boundary_patch.insert(mesh.boundary_patch.end(),data.boundary_patch.begin(),data.boundary_patch.end());
+    }
+    return Mesh(std::move(mesh));
+}
 // Три общие грани: пирамида примыкает к кубу и тетраэдру, призма — к кубу.
 // Пирамида идёт первой, поэтому у следующих ячеек смещение уже отлично от 8*e.
-void check_mixed_coordinates(const Processes& world,bool implicit,bool renumbered=false) {
-    const auto part=local_partition(Mesh::read("qa/cases/mixed_3d/grid.mesh"));
+void check_mixed_coordinates(const Processes& world,bool implicit,bool renumbered=false,bool tiled=false) {
+    auto mesh=Mesh::read("qa/cases/mixed_3d/grid.mesh");
+    const auto part=local_partition(tiled ? tiled_mixed_mesh(mesh) : std::move(mesh));
     const auto nodes=part.mesh.view().node_count;
     ViscositySettings settings;
     settings.law="normal";
@@ -137,6 +165,14 @@ void check_mixed_coordinates(const Processes& world,bool implicit,bool renumbere
         arrays.device=device;
         const auto op=aes.upload(arrays,nodes);
         aero_test::require(op.tetra.cells && !op.tetra.all_hex,"mixed GPU geometry");
+        if (tiled) {
+            // Проверяем условия выбора компактного ядра независимо от значений результата.
+            // При одном элементе на плитку второй варп группы дойдёт до обоих барьеров впустую.
+            aero_test::require(op.rows && viscosity::CoordinatePairTile::capacity(op.row_count*sizeof(viscosity::Row))==1,
+                               "one mixed AES cell fits in the reusable row buffer");
+            aero_test::require(op.gradient_tile_count==op.cell_count && op.gradient_cache && op.cell_count==16,
+                               "tiled mixed AES must build sixteen one-cell tiles");
+        }
         auto* state=arrays.upload(field);
         const auto evaluate=[&](viscosity::Evaluation phase) {
             if (const auto* error=device_work::aero_device_viscosity(op,state,nullptr,phase))
@@ -197,6 +233,8 @@ void check_mixed_coordinates(const Processes& world,bool implicit,bool renumbere
         // эталон содержит все пары полной невязки, включая диагонали призм и пирамид.
         if (implicit) {
             check_jacobian(aes,part.mesh,field,device,true,true);
+            if (tiled) std::cout << "Tiled mixed AES GPU " << device << ": " << op.gradient_tile_count
+                                 << " one-cell tiles, " << field.size() << " Jacobian columns passed.\n";
             // Центральные разности изменили рабочие массивы CPU. Восстановим эталон
             // перед сверкой со следующей картой, если в машине несколько устройств.
 #ifdef AERO_HAS_TURBULENCE
@@ -476,6 +514,7 @@ int main(int argc, char** argv) {
         check_mixed_coordinates(world,false);
         check_mixed_coordinates(world,true);
         check_mixed_coordinates(world,true,true);
+        check_mixed_coordinates(world,true,false,true);
         const Vertex a{0,0,0}, b{1,0,0}, c{1,1,0}, d{0,1,0}, e{0,0,1}, f{1,0,1}, g{1,1,1}, h{0,1,1};
         check_element(world,element(1,{a,b},{{0},{1}}),1.);
         check_element(world,element(2,{a,b,d},{{0,1},{1,2},{2,0}}),.5);

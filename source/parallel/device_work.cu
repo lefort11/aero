@@ -227,8 +227,17 @@ const char* aero_device_viscous_matrix(int device, const viscosity::Jacobian& ma
             if (v.column_nodes && aes.gradient_tile_count) {
                 // Разные потоки GPU заполняют разные компоненты столбца. Внутри
                 // столбца обходим группы по номеру элемента, как при полной сборке.
-                affine_aes::for_gradient_tiles(exec,aes,[&](viscosity::GradientTile tile) {
-                    const auto pairs=coordinate_aes::prepare_pairs(exec,v,tile.first_cell,tile.cells);
+                affine_aes::for_tiles(aes,[&](viscosity::GradientTile tile) {
+                    const auto pairs=coordinate_aes::jacobian_pair_storage(aes,tile);
+                    if (pairs.pairs) {
+                        // В этой же группе площадки тетраэдров идут на напряжения и на производные.
+                        coordinate_aes::apply(exec,aes,aes.gradient_cache,tile.first_cell,tile.cells,tile.first_vertex,
+                                              coordinate_aes::JacobianPairs{pairs,v.column_graph()});
+                    } else {
+                        // При иной геометрии или недостатке свободных строк add_column
+                        // по-прежнему получает коэффициенты из представления самой сетки.
+                        affine_aes::gradients(exec,aes,aes.gradient_cache,tile.first_cell,tile.cells,tile.first_vertex);
+                    }
                     for_indices(exec,"Aero: viscous Jacobian column slices",tile.slices*width,KOKKOS_LAMBDA(Index k) {
                         const auto slice=aes.gradient_slices[tile.first_slice+k/width];
                         v.add_column<3>(slice,static_cast<unsigned>(k%width),tile.first_vertex,pairs);
@@ -370,10 +379,13 @@ void sa_rows(const Execution& exec,const turbulence::Transport& transport,bool s
 }
 template<bool same_gas>
 void sa_residual(const Execution& exec,const turbulence::Step& step) {
+    // На первом обходе неявного газа сохраняем ротор. Во внутренних итерациях
+    // меняется только nu_tilde, поэтому берём уже сохранённый ротор.
+    const bool save_rotation=!same_gas && step.keep_gas;
     switch (step.transport.dim) {
-    case 1: sa_rows<1,same_gas>(exec,step.transport,step.keep_gas); break;
-    case 2: sa_rows<2,same_gas>(exec,step.transport,step.keep_gas); break;
-    default: sa_rows<3,same_gas>(exec,step.transport,step.keep_gas); break;
+    case 1: sa_rows<1,same_gas>(exec,step.transport,save_rotation); break;
+    case 2: sa_rows<2,same_gas>(exec,step.transport,save_rotation); break;
+    default: sa_rows<3,same_gas>(exec,step.transport,save_rotation); break;
     }
 }
 const char* aero_device_sa_convection(const turbulence::SaEdgeConvection& edges,MeshIndex count) {
@@ -395,14 +407,13 @@ const char* aero_device_sa_step(const turbulence::Step& input,turbulence::Operat
         for_indices(exec,"Aero: SA transport",step.transport.count,KOKKOS_LAMBDA(Index i){step.apply(op,i);});
     });
 }
-template<unsigned dim,bool refresh>
 double sa_norm(const Execution& exec,const turbulence::Step& step,turbulence::Norm mode) {
     double norm=0.;
     if (step.transport.count) {
         using Range=Kokkos::RangePolicy<Execution,Kokkos::IndexType<Index>,Kokkos::LaunchBounds<128>>;
         Kokkos::parallel_reduce("Aero: SA maximum",Range(exec,0,step.transport.count),
             KOKKOS_LAMBDA(Index i,double& best) {
-                const double v=refresh ? step.updated_defect<dim,false>(i) : step.magnitude(mode,i);
+                const double v=step.magnitude(mode,i);
                 if (v>best) best=v;
             },Kokkos::Max<double>(norm));
     }
@@ -411,14 +422,15 @@ double sa_norm(const Execution& exec,const turbulence::Step& step,turbulence::No
 const char* aero_device_sa_norm(const turbulence::Step& input,turbulence::Norm mode,bool refresh,double* result) {
     const auto step=input;
     return on_device(nullptr,[&](const Execution& exec){
-        if (!refresh) { *result=sa_norm<0,false>(exec,step,mode); return; }
-        for_indices(exec,"Aero: SA element diffusivity",step.transport.cell_count,
-                    KOKKOS_LAMBDA(Index e){step.transport.refresh_diffusivity(e);});
-        switch (step.transport.dim) {
-        case 1: *result=sa_norm<1,true>(exec,step,mode); break;
-        case 2: *result=sa_norm<2,true>(exec,step,mode); break;
-        default: *result=sa_norm<3,true>(exec,step,mode); break;
+        if (refresh) {
+            for_indices(exec,"Aero: SA element diffusivity",step.transport.cell_count,
+                        KOKKOS_LAMBDA(Index e){step.transport.refresh_diffusivity(e);});
+            // Сборка строки читает площадки и пары AES. Её запускаем по всем
+            // узлам обычным parallel_for, у которого достаточно блоков и на
+            // большой сетке. Максимум использует готовые rate и diagonal.
+            sa_residual<true>(exec,step);
         }
+        *result=sa_norm(exec,step,refresh ? turbulence::Norm::Bdf : mode);
     });
 }
 #endif

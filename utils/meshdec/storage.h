@@ -2,6 +2,8 @@
 #define AERO_MESHDEC_STORAGE_H
 #include <algorithm>
 #include <array>
+#include <cerrno>
+#include <cstring>
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
@@ -40,9 +42,12 @@ inline std::ifstream input(const std::string& path) {
     f.exceptions(std::ios::badbit | std::ios::failbit);
     return f;
 }
-inline std::ofstream output(const std::string& path) {
-    std::ofstream f(path.c_str(), std::ios::binary);
-    require(f.is_open(), "Cannot create " + path);
+inline std::ofstream output(const std::string& path, std::ios::openmode mode = std::ios::trunc) {
+    std::ofstream f(path.c_str(), std::ios::binary | mode);
+    if (!f.is_open()) {
+        const int error = errno;
+        throw std::runtime_error("Cannot open for writing " + path + ": " + std::strerror(error));
+    }
     f.exceptions(std::ios::badbit | std::ios::failbit);
     return f;
 }
@@ -121,7 +126,10 @@ public:
         std::string src = path_, dst = path_ + ".merge";
         for (Id width = capacity_; width < count_;) {
             auto left = input(src), right = input(src);
-            auto out = output(dst);
+            // Первый проход создаёт второй файл. Дальше оба файла уже имеют
+            // ровно count_ записей: переписываем их с начала без усечения.
+            // Windows может запретить усечение недавно прочитанного файла (ошибка 1224).
+            auto out = output(dst, width == capacity_ ? std::ios::trunc : std::ios::in);
             for (Id first = 0; first < count_;) {
                 const Id mid = first + std::min(width, count_ - first);
                 const Id end = mid + std::min(width, count_ - mid);

@@ -14,6 +14,9 @@
     <ClCompile Include="..\source\mesh\mesh.cpp" />
     <ClInclude Include="..\source\mesh\mesh.h" />
     <ClInclude Include="..\source\mesh\mesh_reader.h" />
+    <ClInclude Include="..\source\mesh\coordinate.h" />
+    <ClInclude Include="..\source\mesh\mesh_index.h" />
+    <ClInclude Include="..\source\mesh\node_incidence.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

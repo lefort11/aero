@@ -1,5 +1,5 @@
 #include "partition_kernels.h"
-#include "../../qa/test_checks.h"
+#include "../../tests/test_checks.h"
 #include "../mesh/mesh.h"
 #include "../mesh/leaf_balance.h"
 #include "../io/fields.h"
@@ -153,7 +153,7 @@ std::string run_case(const std::string& program, const std::string& device, bool
 #endif
     const std::string backend = device.empty() ? "cpu" : "cuda";
     write(dir + "/main.txt",
-          "mesh=../../examples/tecplot/demo_1d.mesh\nreconstruction=first_order\n"
+          "mesh=../../qa/cases/sod_1d/grid.mesh\nreconstruction=first_order\n"
           "cfl=.35\nomp_threads=2\nreport_every=1\nfinal_time=.008\nbackend=" +
               backend +
               (interactive
@@ -169,7 +169,7 @@ std::string run_case(const std::string& program, const std::string& device, bool
     if (implicit) write(dir + "/implicit.txt", read("templates/implicit.txt"));
     const std::string launch = command + " --input=" + dir + " --output=" + out +
         (implicit ? " main:time_scheme=BDF1" : "");
-    const auto mesh = aero::Mesh::read("examples/tecplot/demo_1d.mesh");
+    const auto mesh = aero::Mesh::read("qa/cases/sod_1d/grid.mesh");
     std::string rules;
     for (const auto& name : mesh.data().patch_names)
         rules += "[" + name + "]\nbc_type wall\n";

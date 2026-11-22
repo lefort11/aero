@@ -1,7 +1,7 @@
 #include "block_jacobi.h"
 #include "csgs_order.h"
 #include "csgs_sweep.h"
-#include "../../qa/test_field.h"
+#include "../../tests/test_field.h"
 #ifdef AERO_WITH_KOKKOS_GPU
 #include "../parallel/device_arrays.h"
 #include "../parallel/device_api.h"

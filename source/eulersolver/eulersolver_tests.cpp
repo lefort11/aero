@@ -1,5 +1,5 @@
 #include "lax_friedrichs.h"
-#include "../../qa/test_checks.h"
+#include "../../tests/test_checks.h"
 #include "roe.h"
 #include "linear_euler.h"
 #include "characteristic.h"

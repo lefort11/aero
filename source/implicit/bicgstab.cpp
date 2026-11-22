@@ -140,7 +140,8 @@ BdfLinearSystem::BdfLinearSystem(const residual_detail::Geometry& host, const re
 double BdfLinearSystem::infinity_norm(const double* values) const { return storage_->norm(values); }
 BdfLinearSystem::~BdfLinearSystem() = default;
 
-void BdfLinearSystem::assemble(const double* state, const double* initial, const double* volumes, double dt, const MatrixSettings& settings, bool cache_diagonal) {
+void BdfLinearSystem::assemble(const double* state, const double* initial, const double* volumes, double dt,
+                               const MatrixSettings& settings, bool cache_diagonal, const PhaseTiming& timing) {
     auto& s = *storage_;
     s.ready = false;
     s.matrix.partition().local([&] {
@@ -148,10 +149,16 @@ void BdfLinearSystem::assemble(const double* state, const double* initial, const
         if ((!volumes && s.count) || !(dt > 0.) || !std::isfinite(dt))
             throw std::invalid_argument("BDF: volumes and a finite positive time step are required");
     });
-    s.matrix.assemble_matrix(state, initial, volumes, dt, settings.simplified_jacobian, settings.roe);
+    timing.measure(PhaseTiming::Matrix,[&] {
+        s.matrix.assemble_matrix(state,initial,volumes,dt,settings.simplified_jacobian,settings.roe,timing);
+    });
     s.csgs = settings.csgs;
-    s.matrix.partition().local([&] { s.matrix.prepare_jacobi(s.jacobi);
-        if (s.csgs) s.matrix.prepare_csgs(); });
+    timing.measure(PhaseTiming::PreconditionerSetup,[&] {
+        s.matrix.partition().local([&] {
+            s.matrix.prepare_jacobi(s.jacobi);
+            if (s.csgs) s.matrix.prepare_csgs();
+        });
+    });
     s.ready = true;
 }
 void BdfLinearSystem::update_time_diagonal(const double* volumes, double dt) {

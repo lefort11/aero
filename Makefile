@@ -42,6 +42,11 @@ endif
 override CPPFLAGS += -DAERO_MIXED_LINEAR=$(MIXED_LINEAR)
 build_optimization := -O3
 STATIC_LINK ?= 1
+ifeq ($(OS)/$(kokkos_gpu),Windows_NT/1)
+ifneq ($(STATIC_LINK),1)
+$(error Windows CUDA builds require STATIC_LINK=1)
+endif
+endif
 CUDA_LIBDIR ?= $(if $(wildcard $(CUDA_HOME)/lib64),$(CUDA_HOME)/lib64,$(CUDA_HOME)/lib)
 ifeq ($(STATIC_LINK),1)
 ifeq ($(OS),Windows_NT)
@@ -172,7 +177,7 @@ $(BIN)/%: $(BUILD)/% publish-programs | bin-runtime
 $(BUILD):
 	mkdir -p "$(BUILD)"
 
-$(BUILD)/mesh_tests.o $(DEBUG_TEST): qa/test_checks.h
+$(BUILD)/mesh_tests.o $(DEBUG_TEST): tests/test_checks.h
 
 include source/io/io.mk
 
@@ -249,7 +254,7 @@ $(BUILD)/mesh.o $(BUILD)/cv.o $(BUILD)/periodic.o $(BUILD)/initial.o $(BUILD)/io
 ifeq ($(kokkos_gpu),1)
 gpu_objects := $(AERO_GPU) $(EBR_CUDA_OBJECT) $(RECONSTRUCTION_CUDA_TEST_OBJECT) $(EULER_CUDA_TEST_OBJECT) $(BC_GPU) $(CV_GPU) $(RES_GPU) $(EXPLICIT_GPU) $(EXPLICIT_TEST_GPU) $(TIMESTEP_GPU) $(TIMESTEP_TEST_GPU)
 $(gpu_objects): source/parallel/device_api.h source/parallel/device_memory.h source/parallel/device_check.h source/parallel/device_work.h
-$(RECONSTRUCTION_CUDA_TEST_OBJECT) $(EULER_CUDA_TEST_OBJECT) $(BC_GPU) $(CV_GPU) $(EXPLICIT_TEST_GPU) $(TIMESTEP_TEST_GPU): qa/device_cases.h qa/device_test_buffer.h
+$(RECONSTRUCTION_CUDA_TEST_OBJECT) $(EULER_CUDA_TEST_OBJECT) $(BC_GPU) $(CV_GPU) $(EXPLICIT_TEST_GPU) $(TIMESTEP_TEST_GPU): tests/device_cases.h tests/device_test_buffer.h
 $(AERO_PROGRAM) $(IMPLICIT_TEST) $(RES_TEST) $(RES_DEBUG) $(TIMESTEP_TEST) $(TIMESTEP_DEBUG) $(EXPLICIT_TEST) $(EXPLICIT_DEBUG) $(EBR_TEST) $(EBR_DEBUG_TEST) $(EULER_TEST) $(EULER_DEBUG_TEST) $(BC_TEST) $(CV_TEST) $(REPORT_TEST): $(KOKKOS_DEVICE_LIBRARY)
 endif
 endif

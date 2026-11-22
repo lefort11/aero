@@ -1,5 +1,5 @@
 #include "mesh.h"
-#include "../../qa/test_checks.h"
+#include "../../tests/test_checks.h"
 #include "../io/lzma_stream.h"
 
 #include <algorithm>

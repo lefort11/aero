@@ -1,5 +1,5 @@
 #include "settings.h"
-#include "../../qa/test_checks.h"
+#include "../../tests/test_checks.h"
 #include "settings_boundary.h"
 #include "fields.h"
 #include "scheduled_output.h"

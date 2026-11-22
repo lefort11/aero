@@ -1,7 +1,7 @@
 #include "bc_test_case.h"
 #include "linear_boundary.h"
 #include "../implicit/boundary_jacobian.h"
-#include "../../qa/test_checks.h"
+#include "../../tests/test_checks.h"
 
 #include <algorithm>
 #include <cmath>

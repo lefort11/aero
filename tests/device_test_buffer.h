@@ -1,5 +1,5 @@
-#ifndef AERO_QA_DEVICE_TEST_BUFFER_H
-#define AERO_QA_DEVICE_TEST_BUFFER_H
+#ifndef AERO_TESTS_DEVICE_TEST_BUFFER_H
+#define AERO_TESTS_DEVICE_TEST_BUFFER_H
 
 #include "../source/parallel/device_check.h"
 #include <cstddef>

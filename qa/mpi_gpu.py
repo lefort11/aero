@@ -7,6 +7,7 @@ import re
 import shutil
 import struct
 
+from mdec_header import MdecHeader
 from mpi_euler import check_output, launch, stamp
 from mpi_geometry import run
 from mpi_periodic import report_rows
@@ -44,8 +45,8 @@ def check_gpu_weights(log, archive, devices):
         raise AssertionError((scores, plan))
     # Сверяем разрез с независимой суммой работы по записям каталога листьев.
     data = archive.read_bytes()
-    (leaves,) = struct.unpack_from("<Q", data, 72)
-    (directory,) = struct.unpack_from("<Q", data, 104)
+    header = MdecHeader.unpack(data)
+    leaves, directory = header.leaves, header.index
     work = [0]
     for leaf in range(leaves):
         raw, nodes = struct.unpack_from("<QQ", data, directory + 48 * leaf + 16)
@@ -100,7 +101,8 @@ def verify(case, aero, meshdec, launcher, devices, fixture, scheme, recon, empty
     reference = case / "native"
     launch(aero, case, reference, launcher, 1)
     deadlines = sorted(stamp(p)[1] for p in reference.glob("clock_*.fields"))
-    if deadlines != [0.0017, 0.0034]:
+    # Зона пишется по расписанию и ещё раз на последнем принятом шаге.
+    if deadlines != [0.0017, 0.0034, options["final_time"]]:
         raise AssertionError(f"Unexpected output times: {deadlines}")
     configure(mesh="grid.mdec", backend="cuda", recovery_every_steps=3)
     if recon == "weno5":
@@ -225,7 +227,9 @@ def main():
         for fixture, scheme, recon, empty in (
             ("sod_1d", "euler", "first_order", False),
             ("shear_jump_2d", "ssprk3", "weno5", False),
-            ("sod_1d", "ssprk3", "ebr3", True),
+            # EBR3 переносит гладкое возмущение плотности. Один лист архива
+            # оставляет второй ранг пустым и позволяет проверить лимит памяти.
+            ("pulse_1d", "ssprk3", "ebr3", True),
         ):
             verify(
                 Path(directory) / recon,

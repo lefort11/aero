@@ -21,6 +21,7 @@
     <ClInclude Include="..\source\eulersolver\lax_friedrichs.h" />
     <ClCompile Include="..\source\eulersolver\roe.cpp" />
     <ClInclude Include="..\source\eulersolver\roe.h" />
+    <ClInclude Include="..\source\eulersolver\linear_euler.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

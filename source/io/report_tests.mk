@@ -23,4 +23,4 @@ io-report-cuda-test:
 	$(MAKE) KOKKOS_BACKEND=cuda $(BIN)/io_report_tests_cuda1_omp$(WITH_OPENMP)$(EXE)
 	$(running_test)
 	./$(BIN)/io_report_tests_cuda1_omp$(WITH_OPENMP)$(EXE) --require-cuda
-$(REPORT_TEST) $(REPORT_DEBUG): qa/test_checks.h
+$(REPORT_TEST) $(REPORT_DEBUG): tests/test_checks.h

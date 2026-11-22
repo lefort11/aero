@@ -1,7 +1,7 @@
-#include "../../qa/test_mesh.h"
+#include "../../tests/test_mesh.h"
 #include "residual_detail.h"
 #include "flux_cfl.h"
-#include "../../qa/test_checks.h"
+#include "../../tests/test_checks.h"
 #include "../eulersolver/roe.h"
 #include "../eulersolver/lax_friedrichs.h"
 #ifndef AERO_RESIDUAL_NO_TIME_TEST
@@ -17,7 +17,7 @@
 #include <omp.h>
 #endif
 #ifdef AERO_WITH_KOKKOS_GPU
-#include "../../qa/device_test_buffer.h"
+#include "../../tests/device_test_buffer.h"
 #include "../parallel/device_arrays.h"
 #include "../parallel/device_memory.h"
 #endif
@@ -178,7 +178,7 @@ void local_steady_cfl() {
     Geometry grid{};
     grid.offsets = offsets; grid.incidence = incidence; grid.surfaces = faces;
     const double volumes[] = {1.,4.}, sa_rate[] = {0.,4.};
-    const Index owned[] = {1,0};
+    const MeshIndex owned[] = {1,0};
     double dt[2]{};
     double expected_gas = 1.;
 #ifdef AERO_HAS_VISCOSITY
@@ -302,6 +302,19 @@ void trace_limiter_test() {
     require(!residual_detail::limit_trace(2, options, node, nan_trace, normal, nullptr),
             "nonfinite trace accepted");
 }
+// Незадействованные оси сохраняют исходное значение. При ошибке размерности
+// буфер назначения должен остаться целиком нетронутым.
+void face_normal_dimensions() {
+    const double source[3] = {.36, -.48, .8};
+    for (unsigned dim : {0u, 1u, 2u, 3u, 4u}) {
+        double target[3] = {7., 7., 7.};
+        const bool valid = dim >= 1 && dim <= 3;
+        require(residual_detail::copy_face_normal(dim, source, target) == valid, "normal dimension check");
+        for (unsigned k = 0; k < 3; ++k)
+            require(target[k] == (valid && k < dim ? source[k] : 7.), "normal component overwritten");
+    }
+}
+
 // Расчёт с меткой должен давать тот же поток, что и явная подстановка
 // узлового состояния с выбранной стороны. По отдельности проверяем оба конца.
 void first_order_side_flux() {
@@ -502,6 +515,41 @@ void edge_modes(int device) {
 }
 // Плотности запрещён сдвиг 1. По правилу общего веса это может убрать
 // не более единицы из нормальной поправки. Касательная поправка независима.
+// Сравниваем один и тот же поток на наклонном ребре: пять общих строк и
+// восемь строк, в которых центральная и обе ближние явно записаны дважды.
+void shared_characteristic_mp5() {
+    using namespace residual_detail;
+    const Surface face{2,3,0,{1./3.,2./3.,2./3.},1.,0};
+    const TwoNodeSlope shared[] = {{2,3,1.},{1,2,.8},{3,4,1.2},{0,1,.75},{4,5,.9}};
+    const TwoNodeSlope separate[] = {shared[0],shared[1],shared[2],shared[3],
+                                      shared[0],shared[2],shared[1],shared[4]};
+    const ReconstructionIndex owner[] = {2,3};
+    const double epsilon[] = {.01,.02};
+    unsigned char orders[2] = {5,5};
+    Geometry g{};
+    g.dim=3; g.nodes=6; g.faces=g.edges=1; g.surfaces=&face;
+    g.options=ResidualOptions(ResidualVariables::Characteristic,ResidualSolver::Roe,1.4);
+    auto& s=g.stencil;
+    s.node_count=g.nodes; s.edge_count=g.edges; s.row_owner=owner;
+    s.weno_order=orders; s.weno_epsilon_scale=epsilon; s.mp5={true,false,false,4.};
+    for (unsigned left : {5u,3u,0u}) for (unsigned right : {5u,3u,0u}) {
+        orders[0]=static_cast<unsigned char>(left); orders[1]=static_cast<unsigned char>(right);
+        for (unsigned sample=1; sample<=32; ++sample) {
+            FixedMatrix<double,6,5> field;
+            for (unsigned n=0;n<6;++n) for (unsigned k=0;k<5;++k)
+                field(n,k)=(k==0 ? 1. : (k==4 ? 3. : 0.)) + .25*std::sin(.13*sample*(k+1)*(n+1));
+            EulerFluxResult reference{}, result{};
+            s.pairs=separate; s.shared_edge_slopes=false;
+            require(integrated_edge_flux(g,0,field.values,reference),"separate characteristic slopes");
+            s.pairs=shared; s.shared_edge_slopes=true;
+            require(integrated_edge_flux(g,0,field.values,result),"shared characteristic slopes");
+            for (unsigned k=0;k<5;++k)
+                require(double_bits(reference.flux[k])==double_bits(result.flux[k]),"MP5 shared flux bits");
+            require(reference.max_wave_speed==result.max_wave_speed,"MP5 shared wave speed");
+        }
+    }
+}
+
 void oblique_mp_limit() {
     for (unsigned d : {2u, 3u}) {
         const double normal[3] = {d == 2 ? .6 : 2./3., d == 2 ? .8 : 1./3., d == 2 ? 0. : 2./3.};
@@ -760,8 +808,10 @@ int main(int argc, char** argv) {
         local_steady_cfl();
         adaptive_steady_step();
         basis_test();
+        face_normal_dimensions();
         first_order_side_flux();
         trace_limiter_test();
+        shared_characteristic_mp5();
         oblique_mp_limit();
         const int devices = ReconstructionContext::cuda_device_count();
         if (argc > 1 && std::string(argv[1]) == "--require-cuda")

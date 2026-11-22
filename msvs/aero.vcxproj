@@ -12,7 +12,19 @@
   </PropertyGroup>
   <Import Project="kokkos_make.props" />
   <ItemGroup>
+    <None Include="..\Makefile" />
+    <None Include="..\source\aero\aero.mk" />
+    <None Include="..\source\parallel\kokkos.mk" />
+    <None Include="..\source\parallel\kokkos_gpu.mk" />
+    <None Include="..\source\parallel\kokkos_gpu_mingw.mk" />
+    <None Include="..\source\parallel\kokkos_mingw.ps1" />
+    <None Include="..\source\parallel\mpi.mk" />
     <None Include="..\source\aero\README.txt" />
+    <ClInclude Include="..\source\aero\compact_slopes.h" />
+    <ClInclude Include="..\source\aero\console_log.h" />
+    <ClInclude Include="..\source\aero\exact_error.h" />
+    <ClCompile Include="..\source\aero\run_control.cpp" />
+    <ClInclude Include="..\source\aero\run_control.h" />
     <ClCompile Include="..\source\aero\case_geometry.cpp" />
     <ClInclude Include="..\source\aero\case_geometry.h" />
     <ClCompile Include="..\source\aero\geometry.cpp" />
@@ -40,6 +52,7 @@
     <ClCompile Include="..\source\turbulence\wall.cpp" Condition="Exists('..\source\turbulence\sa.h') And Exists('..\source\viscosity\transport.h')" />
     <ClCompile Include="..\source\turbulence\partition.cpp" Condition="Exists('..\source\turbulence\sa.h') And Exists('..\source\viscosity\transport.h')" />
     <ClCompile Include="..\source\viscosity\aes.cpp" Condition="Exists('..\source\viscosity\aes.cpp')" />
+    <ClCompile Include="..\source\viscosity\affine_hex.cpp" Condition="Exists('..\source\viscosity\affine_hex.cpp')" />
     <ClCompile Include="..\source\viscosity\grad.cpp" Condition="Exists('..\source\viscosity\grad.cpp')" />
     <ClInclude Include="..\source\aero\partition_operator.h" />
     <ClCompile Include="..\source\aero\partition_output.cpp" />
@@ -60,7 +73,6 @@
     <ClInclude Include="..\source\aero\startup.h" />
     <ClCompile Include="..\source\aero\time_loop.cpp" />
     <ClInclude Include="..\source\aero\time_loop.h" />
-    <ClCompile Include="..\source\implicit\block_jacobi.cpp" />
     <ClInclude Include="..\source\mesh\archive_format.h" />
     <ClCompile Include="..\source\mesh\leaf_balance.cpp" />
     <ClInclude Include="..\source\mesh\leaf_balance.h" />
@@ -69,6 +81,19 @@
     <ClCompile Include="..\source\mesh\partition.cpp" />
     <ClInclude Include="..\source\mesh\partition.h" />
     <ClInclude Include="..\source\parallel\device_api.h" />
+    <ClInclude Include="..\source\parallel\device_affine_aes.h" />
+    <ClInclude Include="..\source\parallel\device_arrays.h" />
+    <ClInclude Include="..\source\parallel\device_faces.h" />
+    <ClInclude Include="..\source\parallel\device_volume_coordinates.h" />
+    <ClInclude Include="..\source\parallel\fixed_matrix.h" />
+    <ClInclude Include="..\source\parallel\kernel_math.h" />
+    <ClInclude Include="..\source\parallel\kokkos_host.h" />
+    <ClInclude Include="..\source\parallel\modules.h" />
+    <ClInclude Include="..\source\parallel\mpweno5_edges.h" />
+    <ClInclude Include="..\source\parallel\parallel_for.h" />
+    <ClInclude Include="..\source\parallel\pinned_buffer.h" />
+    <ClInclude Include="..\source\parallel\row_table.h" />
+    <ClInclude Include="..\source\parallel\small_weight_row.h" />
     <ClInclude Include="..\source\parallel\device_check.h" />
     <ClInclude Include="..\source\parallel\device_execution.h" />
     <None Include="..\source\parallel\device_memory.cu" />
@@ -79,6 +104,30 @@
     <ClCompile Include="..\source\parallel\processes.cpp" />
     <ClInclude Include="..\source\parallel\processes.h" />
     <ClInclude Include="..\source\parallel\wall_timer.h" />
+    <ClInclude Include="..\source\turbulence\convection.h" />
+    <ClInclude Include="..\source\turbulence\ddes.h" />
+    <ClInclude Include="..\source\turbulence\diffusion_geometry.h" />
+    <ClInclude Include="..\source\turbulence\face_geometry.h" />
+    <ClInclude Include="..\source\turbulence\hex_filter.h" />
+    <ClInclude Include="..\source\turbulence\model_math.h" />
+    <ClInclude Include="..\source\turbulence\nodal_filter.h" />
+    <ClInclude Include="..\source\turbulence\sa.h" />
+    <ClInclude Include="..\source\turbulence\sigma.h" />
+    <ClInclude Include="..\source\turbulence\storage.h" />
+    <ClInclude Include="..\source\turbulence\transport.h" />
+    <ClInclude Include="..\source\viscosity\aes.h" />
+    <ClInclude Include="..\source\viscosity\affine_hex.h" />
+    <ClInclude Include="..\source\viscosity\grad.h" />
+    <ClInclude Include="..\source\viscosity\jacobian_pattern.h" />
+    <ClInclude Include="..\source\viscosity\jacobian.h" />
+    <ClInclude Include="..\source\viscosity\mean_area.h" />
+    <ClInclude Include="..\source\viscosity\settings.h" />
+    <ClInclude Include="..\source\viscosity\transport.h" />
+    <ClInclude Include="..\source\viscosity\volume_coordinates.h" />
+    <ClInclude Include="..\source\viscosity\volume_simplices.h" />
+    <None Include="..\utils\build_output.mk" />
+    <None Include="..\utils\clean.mk" />
+    <None Include="..\utils\module.mk" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

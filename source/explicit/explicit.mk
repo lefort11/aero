@@ -47,4 +47,4 @@ explicit-cuda-test:
 	$(MAKE) KOKKOS_BACKEND=cuda $(BIN)/explicit_tests_cuda1_omp$(WITH_OPENMP)$(EXE)
 	$(running_test)
 	./$(BIN)/explicit_tests_cuda1_omp$(WITH_OPENMP)$(EXE) --require-cuda
-$(EXPLICIT_TEST) $(EXPLICIT_DEBUG): qa/test_checks.h
+$(EXPLICIT_TEST) $(EXPLICIT_DEBUG): tests/test_checks.h

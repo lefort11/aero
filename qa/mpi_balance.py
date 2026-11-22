@@ -5,6 +5,7 @@ import shutil
 import struct
 from pathlib import Path
 
+from mdec_header import MdecHeader
 from mpi_euler import check_output, check_report, launch
 from mpi_geometry import compare, geometry, legacy_archive, run
 from mpi_periodic import report_rows
@@ -19,18 +20,17 @@ def check_estimates(archive, plan, factor):
     def word(offset):
         return struct.unpack_from("<Q", data, offset)[0]
 
-    dim, cells, leaves = word(24), word(56), word(80)
-    index, tree = word(112), word(120)
-    raw = [word(index + 48 * i + 16) for i in range(leaves)]
-    nodes_per_leaf = [word(index + 48 * i + 24) for i in range(leaves)]
-    header = tree + 112 * word(88)
-    near = header + 16 + 8 * (word(40) + 1) + 16 * word(header)
-    far = near + 8 * (2 * leaves + 1) + 16 * word(header + 8) + 8
-    cell_bytes = (sum(raw) + cells - 1) // cells
+    header = MdecHeader.unpack(data)
+    raw = [word(header.index + 48 * i + 16) for i in range(header.leaves)]
+    nodes_per_leaf = [word(header.index + 48 * i + 24) for i in range(header.leaves)]
+    directory = header.tree + 112 * header.branches
+    near = directory + 16 + 8 * (header.nodes + 1) + 16 * word(directory)
+    far = near + 8 * (2 * header.leaves + 1) + 16 * word(directory + 8) + 8
+    cell_bytes = (sum(raw) + header.cells - 1) // header.cells
     for row in plan:
         a, b = int(row["first_leaf"]), int(row["end_leaf"])
         links = word(near + 16 * b) - word(near + 16 * a) + word(far + 8 * b) - word(far + 8 * a)
-        base = sum(raw[a:b]) + sum(nodes_per_leaf[a:b]) * 8 * (dim + 2) * 3 + links * cell_bytes
+        base = sum(raw[a:b]) + sum(nodes_per_leaf[a:b]) * 8 * (header.dimension + 2) * 3 + links * cell_bytes
         expected = base * factor / 1048576
         if abs(float(row["estimated_mesh_MiB"]) - expected) > max(expected * 6e-6, 1e-12):
             raise AssertionError(f"Incorrect estimate for leaf range [{a},{b}): {row}")
@@ -99,22 +99,28 @@ def verify(case, aero, meshdec, launcher):
     if [int(r["leaves"]) for r in ranks] != [0, 1, 0, 0]:
         raise AssertionError("The fastest CPU did not receive the single leaf")
     configure(mesh="legacy.mdec", reconstruction="first_order", mpi_rank_weights="1,3")
+    # Проверяем независимый старт со старым архивом. В каталоге предыдущего
+    # расчёта уже есть обязательный финальный recovery.
+    out = case / "legacy"
     launch(aero, case, out, launcher, 2, "--geometry-only")
     actual, _ = geometry(out, 2)
     compare(expected, actual)
     launch(aero, case, out, launcher, 2)
     print("OK empty ranges and legacy archive with weighted cuts")
 
-    cmd = [launcher, "-n", 2, aero, f"--input={case}", f"--output={case/'invalid'}", "--geometry-only"]
-    for extra, message in (
+    for index, (extra, message) in enumerate((
         (dict(mpi_rank_weights="1,2,3"), "one weight per MPI rank"),
         (dict(mpi_rank_weights="1,0"), "expected finite value > 0"),
         (dict(mpi_node_memory_mib=".001"), "initial process RSS"),
         (dict(mpi_memory_factor="1e15", mpi_node_memory_mib="4096"), "first unplaced leaf"),
-    ):
+    )):
         configure(**extra)
-        log = run(cmd, success=False)
-        if message not in log or (case / "invalid").exists():
+        out = case / f"invalid-{index}"
+        log = run([launcher, "-n", 2, aero, f"--input={case}", f"--output={out}", "--geometry-only"], success=False)
+        # Диагностика появляется и в терминале, и в журнале, который создаётся
+        # ещё до проверки настроек. Геометрии или полей при отказе быть не должно.
+        journal = out / "aero.log"
+        if message not in log or set(out.iterdir()) != {journal} or message not in journal.read_text():
             raise AssertionError(f"Failure before mesh loading expected: {log}")
     print("OK collective diagnostics for invalid weights and insufficient node RAM")
 

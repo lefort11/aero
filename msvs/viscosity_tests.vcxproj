@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003" DefaultTargets="Build">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{FC3FB789-AF40-4458-8860-E3863A7F4569}</ProjectGuid>
+    <Keyword>MakeFileProj</Keyword>
+    <MakeGoal>viscosity-test</MakeGoal>
+  </PropertyGroup>
+  <Import Project="kokkos_make.props" />
+  <ItemGroup>
+    <None Include="..\source\viscosity\tests.mk" />
+    <ClCompile Include="..\source\viscosity\viscosity_tests.cpp" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

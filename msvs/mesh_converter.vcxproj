@@ -21,6 +21,8 @@
     <ClCompile Include="..\utils\converter\gmsh.cpp" />
     <ClCompile Include="..\utils\converter\main.cpp" />
     <ClCompile Include="..\utils\converter\topology.cpp" />
+    <None Include="..\utils\converter\converter.mk" />
+    <None Include="..\utils\converter\linux_dependencies.mk" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

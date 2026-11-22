@@ -17,6 +17,8 @@
     <ClCompile Include="..\source\bc\periodic.cpp" />
     <ClInclude Include="..\source\bc\periodic.h" />
     <ClCompile Include="..\source\bc\periodic_stencil.cpp" />
+    <ClInclude Include="..\source\bc\linear_boundary.h" />
+    <ClInclude Include="..\source\bc\profile.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>
