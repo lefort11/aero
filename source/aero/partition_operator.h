@@ -43,7 +43,9 @@ public:
     void enable_pressure_rate() { need_pressure_rate_ = true; }
     // Берёт потоки записываемого слоя и возвращает dp/dt в нумерации полей вывода.
     std::vector<double> output_pressure_rate(const std::vector<double>& state);
-    std::vector<double> output_vorticity(const std::vector<double>& state);
+    // Заполняет запрошенные поля из одного обхода площадок контрольного объёма.
+    void output_gradients(const std::vector<double>& state, std::vector<double>* rotation,
+                          std::vector<double>* schlieren);
     Id global_node(Id local) const { return ids_[local]; }
     // Возвращает объём работы и обменов процесса для отчёта о разбиении.
     PartitionWork work(Id leaves) const;

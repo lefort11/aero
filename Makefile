@@ -231,6 +231,7 @@ debug-test: converter-debug-test
 include utils/tecplot/tecplot.mk
 include source/parallel/mpi.mk
 include utils/meshdec/meshdec.mk
+include utils/submesh/submesh.mk
 
 include source/reconstruction/reconstruction.mk
 

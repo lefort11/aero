@@ -29,7 +29,7 @@ void check_mesh(unsigned d, int device) {
     BoundaryPatches patches;
     patches.by_patch.resize(mesh.data().patch_names.size());
     SpatialResidual op(mesh.view(), cv, prepare_reconstruction(mesh, reconstruction), patches,
-                       residual_options("conservative","lf",1.4), device);
+                       residual_options("characteristic","lf",1.4), device);
     BdfLinearSystem system(op);
     SpatialJacobian spatial(op);
     TestField state(device,size), volumes(device,cv.node_count), x(device,size), b(device,size), ax(device,size);

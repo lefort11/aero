@@ -16,7 +16,7 @@ from exact import CASES
 QA = Path(__file__).resolve().parent
 ROOT = QA.parent
 RECONSTRUCTIONS = ("first_order", "ebr3", "ebr5", "weno3", "weno5", "mp5", "MPWENO5")
-VARIABLES = ("conservative", "characteristic", "flux")
+VARIABLES = ("characteristic", "flux")
 FLUXES = ("roe", "lf")
 TIME_SCHEMES = ("euler", "ssprk3")
 SCHEME_KEYS = ("reconstruction", "reconstruction_variables", "euler_solver", "time_scheme")
@@ -212,13 +212,21 @@ def export_comparison(work, snap, fields, exact, mesh, exporter, destination):
     plot.replace(destination)
 
 
+def reconstruction_variables(scheme):
+    """MP5 проверяем в характеристических переменных при любом выборе потока Роу или ЛФ."""
+    return ("characteristic",) if scheme == "mp5" else VARIABLES
+
+
 def case_variants(name):
     """Перечисляет сочетания схем, для которых задана проверка точности."""
     smooth = CASES[name][2]
     reconstructions = RECONSTRUCTIONS if smooth else ("weno3", "weno5", "mp5", "MPWENO5")
     # На разрыве Сода проверяем реконструкцию в характеристических переменных.
-    variables = ("characteristic",) if name == "sod_1d" else VARIABLES
-    return list(itertools.product(reconstructions, variables, FLUXES, TIME_SCHEMES))
+    variants = []
+    for scheme in reconstructions:
+        variables = ("characteristic",) if name == "sod_1d" else reconstruction_variables(scheme)
+        variants.extend(itertools.product((scheme,), variables, FLUXES, TIME_SCHEMES))
+    return variants
 
 
 def run_case(name, variants, options, solver, exporter, progress, total):

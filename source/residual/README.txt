@@ -45,7 +45,7 @@ signed_surface_balance в residual_tests.cpp.
 
 В main.txt reconstruction выбирает схему, reconstruction_variables — величину.
 
-  conservative      U_L = U_i + delta2_L/2, U_R = U_j - delta2_R/2.
+  conservative (внутренний режим, доступен только из кода): U_L = U_i + delta2_L/2, U_R = U_j - delta2_R/2.
   characteristic    На ребре строится один базис Роу по U_i и U_j. Для WENO
                     sum_slope собирает наклон по узловым разностям, затем
                     project_characteristic переводит его в амплитуды волн.

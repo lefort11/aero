@@ -1,4 +1,5 @@
 #include "tecplot.h"
+#include "../../source/io/submesh.h"
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -39,7 +40,7 @@ bool same_file(const char* input, const char* output) {
 }
 void usage(std::ostream& out) {
     out << "Usage: fields_to_tecplot MESH [FIELDS] OUTPUT.plt [--threads N]\n\n"
-           "  MESH        Native AEROMESH v2/v3: text, binary or LZMA.\n"
+           "  MESH        Native AEROMESH v2/v3 or a .submesh plane slice.\n"
            "  FIELDS      Optional AEROFIELDS v1: text, binary or LZMA.\n"
            "  OUTPUT.plt  Binary Tecplot file with geometry and any supplied fields.\n"
            "  --threads N Positive thread count (default: OpenMP runtime settings).\n"
@@ -92,7 +93,9 @@ int run_cli(int argc, const char* const* argv, std::ostream& out, std::ostream& 
         }
         if (!openmp_available() && options.threads > 1)
             throw ExportError("This build has no OpenMP; use --threads 1");
-        const Mesh mesh = Mesh::read(argv[1]);
+        const std::string input=argv[1];
+        const bool slice=input.size()>=8 && input.compare(input.size()-8,8,".submesh")==0;
+        const Mesh mesh = slice ? Submesh::read(input).mesh : Mesh::read(input);
         const char* path = argv[end_paths - 1];
         for (int i = 1; i < end_paths - 1; ++i)
             if (same_file(argv[i], path)) throw ExportError("Output path refers to an input file");

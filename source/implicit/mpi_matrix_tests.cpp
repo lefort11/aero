@@ -26,7 +26,7 @@ void compare(const Processes& world, const char* mesh_path, const char* archive,
     const unsigned width = whole.dimension + 2;
     BoundaryPatches patches;
     patches.by_patch.resize(part.physical_patches);
-    const auto physics = residual_options("conservative", "lf", 1.4);
+    const auto physics = residual_options("characteristic", "lf", 1.4);
     ReconstructionOptions options;
     options.scheme = ReconstructionScheme::FirstOrder;
     SpatialResidual reference(mesh.view(), whole, prepare_reconstruction(mesh, options), patches, physics);

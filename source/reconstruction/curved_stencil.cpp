@@ -9,18 +9,9 @@ namespace detail {
 namespace {
 using Id = MeshIndex;
 using List = std::vector<Id>;
-double dot(Coordinate a, Coordinate b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
-Coordinate cross(Coordinate a, Coordinate b) {
-    return {{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]}};
-}
-Coordinate scaled(Coordinate a, double s) {
-    for (double& value : a)
-        value *= s;
-    return a;
-}
 Coordinate unit(Coordinate a) {
     const double length = coordinate_length(a);
-    return length > 0. ? scaled(a, 1. / length) : Coordinate{};
+    return length > 0. ? a * (1. / length) : Coordinate{};
 }
 Id other(MeshView m, Id edge, Id node) {
     return m.edge_begin[edge] == node ? m.edge_end[edge] : m.edge_begin[edge];
@@ -60,7 +51,7 @@ template <class Visit> void for_bases(MeshView m, Id cell, Visit visit) {
 Coordinate position(MeshView m, const RayPoint& point) {
     Coordinate x{};
     for (const auto& w : point.weights)
-        x = x + scaled(m.coordinate(w.first), w.second);
+        x = x + m.coordinate(w.first) * w.second;
     return x;
 }
 } // namespace
@@ -194,7 +185,7 @@ bool CurvedStencil::follow_line(Id edge, bool fifth, bool limit_each_turn, Next 
         const auto forward = unit(origin - m.coordinate(other(m, edge, node)));
         const auto step = m.coordinate(first) - origin;
         const double length = coordinate_length(step);
-        if (!(length > 0.) || dot(step, forward) < cosine_ * length)
+        if (!(length > 0.) || dot3(step, forward) < cosine_ * length)
             return false;
         points.near[side].distance = length;
         points.near[side].weights[first] = 1.;
@@ -208,9 +199,9 @@ bool CurvedStencil::follow_line(Id edge, bool fifth, bool limit_each_turn, Next 
         const auto along = m.coordinate(second) - origin;
         const auto last = m.coordinate(second) - m.coordinate(first);
         const double spacing = coordinate_length(last);
-        if (!(spacing > 0.) || dot(along, forward) < cosine_ * coordinate_length(along))
+        if (!(spacing > 0.) || dot3(along, forward) < cosine_ * coordinate_length(along))
             continue;
-        if (limit_each_turn && dot(step, last) < cosine_ * length * spacing)
+        if (limit_each_turn && dot3(step, last) < cosine_ * length * spacing)
             continue;
         points.far[side].distance = length + spacing;
         points.far[side].weights[second] = 1.;
@@ -270,7 +261,7 @@ void CurvedStencil::prepare_pl(const Mesh& mesh, const ReconstructionOptions& o)
                 if (layer_[n] != next)
                     return;
             const auto growth =
-                scaled(m.coordinate(m.face_nodes(b)[0]) - m.coordinate(m.face_nodes(a)[0]), next - depth);
+                (m.coordinate(m.face_nodes(b)[0]) - m.coordinate(m.face_nodes(a)[0])) * (next - depth);
             for (Id face : {a, b}) {
                 if (marked[face])
                     continue;
@@ -279,11 +270,11 @@ void CurvedStencil::prepare_pl(const Mesh& mesh, const ReconstructionOptions& o)
                 for (Id n : nodes) layer_faces_[n].push_back(face);
                 Coordinate area{};
                 for (Id k = 1; k + 1 < nodes.size; ++k)
-                    area = area + cross(m.coordinate(nodes[k]) - m.coordinate(nodes[0]),
+                    area = area + cross3(m.coordinate(nodes[k]) - m.coordinate(nodes[0]),
                                         m.coordinate(nodes[k + 1]) - m.coordinate(nodes[0]));
                 // Одна нормаль на грань. Все её рёбра используют тот же единичный
                 // вектор, в том числе на искривлённой четырёхугольной поверхности.
-                const auto outward = scaled(unit(area), dot(area, growth) < 0. ? -1. : 1.);
+                const auto outward = unit(area) * (dot3(area, growth) < 0. ? -1. : 1.);
                 for (Id edge : m.face_edges(face)) {
                     if (!counts[edge]++) {
                         layer_edges_[m.edge_begin[edge]].push_back(edge);
@@ -322,7 +313,7 @@ bool CurvedStencil::pl_points(Id e, bool fifth, CurvedPoints& p) const {
         const auto direction = unit(origin - m.coordinate(other(m, e, n)));
         // Сечение содержит ребро и внешнюю нормаль слоя. Его пересечение с
         // контуром кольца даёт координату и два линейных веса опорной точки.
-        const auto plane = unit(cross(direction, normal_[e]));
+        const auto plane = unit(cross3(direction, normal_[e]));
         if (coordinate_length(plane) == 0.)
             return false;
         // Для пятого порядка нужны два кольца. Храним номера подряд в порядке
@@ -341,11 +332,11 @@ bool CurvedStencil::pl_points(Id e, bool fifth, CurvedPoints& p) const {
             double best_distance = 0.;
             for (Id v : next) {
                 const auto delta = m.coordinate(v) - origin;
-                const double vertex_distance = coordinate_length(delta), height = dot(plane, delta);
+                const double vertex_distance = coordinate_length(delta), height = dot3(plane, delta);
                 auto consider = [&](Id w, double fraction) {
-                    const auto offset = delta + scaled(m.coordinate(w) - m.coordinate(v), fraction);
+                    const auto offset = delta + (m.coordinate(w) - m.coordinate(v)) * fraction;
                     const double distance = coordinate_length(offset);
-                    if (!(distance > best_distance && dot(direction, offset) >= cosine_ * distance))
+                    if (!(distance > best_distance && dot3(direction, offset) >= cosine_ * distance))
                         return;
                     best_distance = distance;
                     best.weights.clear();
@@ -357,14 +348,14 @@ bool CurvedStencil::pl_points(Id e, bool fifth, CurvedPoints& p) const {
                 };
                 for (Id candidate : layer_edges_[v]) {
                     const Id w = other(m, candidate, v);
-                    if (w < v || !std::binary_search(next.begin(), next.end(), w) || dot(normal_[candidate], normal_[e]) <= 0.)
+                    if (w < v || !std::binary_search(next.begin(), next.end(), w) || dot3(normal_[candidate], normal_[e]) <= 0.)
                         continue;
                     const auto other_offset = m.coordinate(w) - origin;
                     // При повороте сетки вершина в плоскости сечения может
                     // отклониться от нуля на ошибку округления скалярного произведения.
                     const double tolerance = 32. * std::numeric_limits<double>::epsilon() *
                                              std::max(vertex_distance, coordinate_length(other_offset));
-                    double h1 = height, h2 = dot(plane, other_offset);
+                    double h1 = height, h2 = dot3(plane, other_offset);
                     if (std::abs(h1) <= tolerance) h1 = 0.;
                     if (std::abs(h2) <= tolerance) h2 = 0.;
                     if (h1 == 0.)

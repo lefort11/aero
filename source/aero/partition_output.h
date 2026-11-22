@@ -1,6 +1,7 @@
 #ifndef AERO_PARTITION_OUTPUT_H
 #define AERO_PARTITION_OUTPUT_H
 #include "../io/diagnostic_fields.h"
+#include "../io/submesh.h"
 #include "indexed_io.h"
 #include "../bc/bc.h"
 #include <map>
@@ -37,6 +38,15 @@ public:
     void write(std::uint64_t step, double time, const std::vector<double>& state, bool final_field = false,const diagnostic::Fields& scalars={});
 
 private:
+    struct SliceOutput {
+        FieldSnapshot metadata;             // Геометрия и отпечаток именно подсетки.
+        std::vector<SlicePoint> points;     // Номера концов в компактном списке источников.
+        std::vector<OwnedNode> sources;     // На каждом ранге только принадлежащие ему строки.
+        std::size_t source_count;
+    };
+    std::map<std::string,SliceOutput> slices_;
+    void write_slice(const OutputZone&,const std::vector<unsigned>&,std::uint64_t,double,
+                     const std::vector<double>&,const diagnostic::Fields&);
     struct WallNode {
         MeshIndex id, slot; // Исходный номер узла и его номер в массиве расчётных значений.
         Coordinate point;

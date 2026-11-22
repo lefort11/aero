@@ -314,7 +314,7 @@ void check_jacobian(viscosity::Aes& aes, const Mesh& mesh, const std::vector<dou
     std::vector<OrientedFace> incidence;
     build_incidence(topology.node_count,topology.edge_count,faces,offsets,incidence);
     const auto viscous = aes.view();
-    auto options = residual_options("conservative","lf",viscous.law.gamma);
+    auto options = residual_options("characteristic","lf",viscous.law.gamma);
     options.upw_coeff = .65;
     options.diffusion = viscous.rows;
     options.wall = aes.wall.data();

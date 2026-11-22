@@ -10,29 +10,23 @@ namespace {
 struct Face {
     Coordinate a, b, c;
 }; // Повтор вершины обозначает отрезок или точку в 2D и 1D.
-double dot(Coordinate a, Coordinate b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
-Coordinate scaled(Coordinate a, double w) {
-    for (double &x : a)
-        x *= w;
-    return a;
-}
 double segment(Coordinate x, Coordinate a, Coordinate b) {
     const auto edge = b - a;
-    const double length = dot(edge, edge);
-    const double t = length ? std::max(0., std::min(1., dot(x - a, edge) / length)) : 0.;
-    const auto dx = x - a - scaled(edge, t);
-    return dot(dx, dx);
+    const double length = dot3(edge, edge);
+    const double t = length ? std::max(0., std::min(1., dot3(x - a, edge) / length)) : 0.;
+    const auto dx = x - a - edge * t;
+    return dot3(dx, dx);
 }
 double squared_distance(Coordinate p, const Face &f) {
     // Если проекция лежит внутри треугольника, ближайшая точка находится в его плоскости.
     const auto e = f.b - f.a, h = f.c - f.a, x = p - f.a;
-    const double ee = dot(e, e), hh = dot(h, h), eh = dot(e, h), xe = dot(x, e), xh = dot(x, h);
+    const double ee = dot3(e, e), hh = dot3(h, h), eh = dot3(e, h), xe = dot3(x, e), xh = dot3(x, h);
     const double det = ee * hh - eh * eh;
     if (det > 0.) {
         const double s = (hh * xe - eh * xh) / det, t = (ee * xh - eh * xe) / det;
         if (s >= 0. && t >= 0. && s + t <= 1.) {
-            const auto d = x - scaled(e, s) - scaled(h, t);
-            return dot(d, d);
+            const auto d = x - e * s - h * t;
+            return dot3(d, d);
         }
     }
     return std::min(segment(p, f.a, f.b), std::min(segment(p, f.b, f.c), segment(p, f.c, f.a)));
@@ -124,7 +118,7 @@ std::vector<double> wall_distances(const MeshPartition &part, const PeriodicPart
                 Coordinate center{};
                 for (auto i : v)
                     center = center + mesh.coordinate(i);
-                center = scaled(center, 1. / static_cast<double>(v.size));
+                center = center * (1. / static_cast<double>(v.size));
                 for (MeshIndex k = 0; k < v.size; ++k)
                     emit(center, mesh.coordinate(v[k]), mesh.coordinate(v[(k + 1) % v.size]));
             }

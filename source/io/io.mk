@@ -16,7 +16,7 @@ FIELD_DEBUG_TEST := $(BUILD)/io_fields_tests_debug$(EXE)
 SETTINGS_OBJECTS := $(BUILD)/settings.o $(BUILD)/io_output_settings.o
 $(BUILD)/settings.o $(BUILD)/report_explicit.o: source/eulersolver/linear_euler.h
 $(BUILD)/settings.o: source/timestep/stabilization.h source/implicit/implicit_settings.h source/implicit/bdf1_step.h
-OUTPUT_HEADERS := $(IO_DIR)/output_settings.h $(IO_DIR)/scheduled_output.h $(IO_DIR)/fields.h
+OUTPUT_HEADERS := $(IO_DIR)/output_settings.h $(IO_DIR)/scheduled_output.h $(IO_DIR)/fields.h $(IO_DIR)/diagnostic_fields.h
 $(BUILD)/io_output_settings.o: $(NUMBER_CODEC) $(OUTPUT_HEADERS) $(IO_DIR)/settings_text.h
 ifneq ($(wildcard source/eulersolver/euler.h),)
 SETTINGS_OBJECTS += $(BUILD)/io_staged_field_file.o $(BUILD)/io_scheduled_output.o

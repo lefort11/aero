@@ -135,9 +135,7 @@ def check_steady_steps(args, work, parallel):
         ratios.update((int(i), 0.) for (i,) in report_rows(log, r"^Pseudo-time = .*?\bdt = "))
         assert set(ratios) == set(range(start + 1, start + 4)), log
         for i, value in enumerate(expected, start + 1):
-            if value == "local":
-                assert ratios[i] >= 1., log
-            elif value is None:
+            if value is None:
                 assert ratios[i] > 1.06, log
             else:
                 assert abs(ratios[i] - value) < 2e-6, log
@@ -148,8 +146,10 @@ def check_steady_steps(args, work, parallel):
     # Ошибка в ограничении отменяет и включение режима. Проверяем также, что
     # при старте восстановлен сохранённый off, хотя в параметрах теперь on.
     phase(9, "local_time_step=on\nlocal_time_step_max_ratio=.5\n", [0., 0., 0.], initial="on", reject=True)
-    phase(12, "local_time_step=auto\n", [0., "local", "local"])
-    phase(15, "local_time_step=off\n", ["local", 0., 0.])
+    # После первого шага auto уже меняет значения по узлам. Отношение 1 требует
+    # равенства максимума и минимума и при адаптации, и после чтения recovery.
+    phase(12, "local_time_step=auto\nlocal_time_step_max_ratio=1\n", [0., 1., 1.])
+    phase(15, "local_time_step=off\n", [1., 0., 0.])
     print(f"OK live steady time steps, limits and recovery, MPI={parallel}", flush=True)
 
 

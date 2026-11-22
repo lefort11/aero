@@ -3,9 +3,7 @@
 #include "spatial_jacobian.h"
 #include "../parallel/parallel_for.h"
 #include "bicgstab_vectors.h"
-#ifdef AERO_WITH_KOKKOS_GPU
-#include "../parallel/device_arrays.h"
-#endif
+#include "workspace.h"
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
@@ -23,9 +21,7 @@ struct BdfLinearSystem::Storage {
     bool ready = false;         // Система готова после успешной сборки и разложения.
     KrylovVectors work{};       // Шесть непересекающихся участков рабочего буфера.
     std::vector<double> host;   // Рабочая память CPU.
-#ifdef AERO_WITH_KOKKOS_GPU
-    gpu::DeviceArrays arrays;   // Рабочая память выбранной карты.
-#endif
+    Workspace workspace;
     template<class... GeometryArgs>
     explicit Storage(GeometryArgs&&... geometry)
         : matrix(std::forward<GeometryArgs>(geometry)..., true),
@@ -37,19 +33,7 @@ struct BdfLinearSystem::Storage {
         const auto remaining = KrylovFieldCount - scratch.count;
         // На пустом ранге оставляем один допустимый адрес для коллективных операций.
         const auto size = count ? remaining*count : MeshIndex(1);
-        double* buffer;
-#ifdef AERO_WITH_KOKKOS_GPU
-        if (device >= 0) {
-            gpu::DeviceScope scope(device);
-            gpu::checked(scope.status);
-            arrays.device = device;
-            buffer = arrays.allocate<double>(size);
-        } else
-#endif
-        {
-            host.resize(size);
-            buffer = host.data();
-        }
+        double* buffer = workspace.allocate(device, host, size);
         for (unsigned i=0; i<remaining; ++i) scratch.field[scratch.count+i] = buffer+i*count;
         work = {scratch.field[0], scratch.field[1], scratch.field[2],
                 scratch.field[3], scratch.field[4], scratch.field[5]};

@@ -1,6 +1,7 @@
 #include "../aero/partition_operator.h"
 #include "../parallel/parallel_for.h"
 #include "convection.h"
+#include "../timestep/bdf_weights.h"
 #ifdef AERO_WITH_KOKKOS_GPU
 #include "../parallel/device_work.h"
 #include "../parallel/device_check.h"
@@ -58,13 +59,12 @@ turbulence::Step PartitionOperator::sa_step() const {
     t.cell_count = aes.cell_count;
     t.dim = grid_.dim;
     t.edges = grid_.edges;
-    const double ratio = sa_bdf2_ && sa_previous_dt_ > 0. ? sa_dt_ / sa_previous_dt_ : 0.;
-    const double fraction = ratio / (1. + ratio);
+    const auto weights = BdfWeights::for_step(sa_bdf2_, sa_dt_, sa_previous_dt_);
     s.keep_gas = sa_implicit_time_;
     s.dt = sa_dt_;
     s.local_steps = SteadyNodeSteps::active(steady_steps_.get());
-    s.leading = 1. + fraction;
-    s.history = ratio * fraction;
+    s.leading = weights.leading;
+    s.history = weights.history;
     return s;
 }
 namespace {
@@ -82,25 +82,16 @@ template <unsigned dim, bool same_gas> void host_sa_rows(const turbulence::Step 
 }
 
 template <bool same_gas> void host_sa_residual(const turbulence::Step &step) {
-    switch (step.transport.dim) {
-    case 1:
-        host_sa_rows<1, same_gas>(step);
-        break;
-    case 2:
-        host_sa_rows<2, same_gas>(step);
-        break;
-    default:
-        host_sa_rows<3, same_gas>(step);
-        break;
-    }
+    const auto launch = for_dimension(step.transport.dim, host_sa_rows<1,same_gas>,
+                                      host_sa_rows<2,same_gas>, host_sa_rows<3,same_gas>);
+    launch(step);
 }
 }
 
 void PartitionOperator::sa_apply(const turbulence::Step &s, Operation op) const {
 #ifdef AERO_WITH_KOKKOS_GPU
     if (gpu_) {
-        if (const char *error = device_work::aero_device_sa_step(s, op))
-            throw std::runtime_error(error);
+        device_work::check(device_work::aero_device_sa_step(s, op));
         return;
     }
 #endif
@@ -138,18 +129,15 @@ double PartitionOperator::sa_max(const turbulence::Step &s, Norm which,bool refr
     world_.local([&] {
 #ifdef AERO_WITH_KOKKOS_GPU
         if (gpu_) {
-            if (const char *error = device_work::aero_device_sa_norm(s, which, refresh, &value))
-                throw std::runtime_error(error);
+            device_work::check(device_work::aero_device_sa_norm(s, which, refresh, &value));
             return;
         }
 #endif
         if (!refresh) { value=host_sa_norm<0,false>(s,which); return; }
         parallel_for(s.transport.cell_count,[&](MeshIndex e){s.transport.refresh_diffusivity<true>(e);});
-        switch (s.transport.dim) {
-        case 1: value=host_sa_norm<1,true>(s,which); break;
-        case 2: value=host_sa_norm<2,true>(s,which); break;
-        default: value=host_sa_norm<3,true>(s,which); break;
-        }
+        const auto norm = for_dimension(s.transport.dim, host_sa_norm<1,true>,
+                                        host_sa_norm<2,true>, host_sa_norm<3,true>);
+        value = norm(s, which);
     });
     return world_.reduce_double(value, true);
 }
@@ -283,9 +271,8 @@ void PartitionOperator::solve_sa_stage(const std::vector<double> &state, bool ra
 #ifdef AERO_WITH_KOKKOS_GPU
         if (gpu_) {
             const auto &g = gpu_->active_grid();
-            if (const char *error = device_work::aero_device_viscosity(gpu_->viscosity_view(), g.state,
-                                                                       g.geometry.packed.gas, phase))
-                throw std::runtime_error(error);
+            device_work::check(device_work::aero_device_viscosity(gpu_->viscosity_view(), g.state,
+                                                                       g.geometry.packed.gas, phase));
             return;
         }
 #endif
@@ -336,8 +323,7 @@ void PartitionOperator::sa_checkpoint(std::vector<double> &current, std::vector<
         if (gpu_) {
             const auto status = restore ? gpu::copy(field, host.data(), n * sizeof(double), gpu::Copy::ToDevice)
                                         : gpu::copy(host.data(), field, n * sizeof(double), gpu::Copy::ToHost);
-            if (status != gpu::Status::Success)
-                throw std::runtime_error(gpu::message(status));
+            gpu::checked(status);
             return;
         }
 #endif

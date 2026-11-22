@@ -103,12 +103,6 @@ void failure(Index bad, const Geometry& g) {
         throw std::domain_error("residual: invalid boundary flux at piece " + std::to_string(bad - g.edges));
     throw std::domain_error("residual: nonfinite sum at node " + std::to_string(bad - g.faces));
 }
-#ifdef AERO_WITH_KOKKOS_GPU
-void check(aero::gpu::Status e) {
-    if (e != aero::gpu::Status::Success)
-        throw std::runtime_error(aero::gpu::message(e));
-}
-#endif
 }
 #ifdef AERO_WITH_KOKKOS_GPU
 void launch_residual(Geometry, const double*, const double*, EulerFluxResult*, double*, double*, double*,
@@ -184,7 +178,7 @@ void residual_detail::cpu_face_fluxes(const FaceBatch& batch, const MeshIndex* g
     if (geometry.options.background.active()) {
         compute_cpu_faces<cpu_linear_flux>(batch, global_nodes);
     } else if (batch.nodal_lf()) {
-        const auto launch = batch.select_by_dimension(compute_cpu_faces<cpu_nodal_lf<1>>,
+        const auto launch = for_dimension(batch.geometry.dim, compute_cpu_faces<cpu_nodal_lf<1>>,
                                                        compute_cpu_faces<cpu_nodal_lf<2>>,
                                                        compute_cpu_faces<cpu_nodal_lf<3>>);
         launch(batch,global_nodes);
@@ -311,7 +305,7 @@ struct SpatialResidual::Impl {
         }
 #ifdef AERO_WITH_KOKKOS_GPU
         gpu::DeviceScope scope(device);
-        check(scope.status);
+        gpu::checked(scope.status);
         storage.device = device;
         g.surfaces = storage.allocate(surfaces.size(), surfaces.data());
         g.offsets = storage.allocate(offsets.size(), offsets.data());
@@ -321,7 +315,7 @@ struct SpatialResidual::Impl {
         device_flux = storage.allocate<EulerFluxResult>(surfaces.size());
         device_error = storage.allocate<Index>(1);
         // Сразу после возврата сборка может читать геометрию в неблокирующем потоке CUDA.
-        check(aero::gpu::wait(nullptr));
+        gpu::checked(aero::gpu::wait(nullptr));
 #endif
     }
 };
@@ -391,7 +385,7 @@ double SpatialResidual::assemble_cfl(const double* u, const double* u0, double* 
 #ifdef AERO_WITH_KOKKOS_GPU
     if (p_->device >= 0) {
         gpu::DeviceScope scope(p_->device);
-        check(scope.status);
+        gpu::checked(scope.status);
         dt = gpu_flux_cfl({g, p_->device_flux, volumes, nullptr, g.nodes}, courant, stream);
     } else
 #endif
@@ -407,13 +401,13 @@ void SpatialResidual::Impl::assemble(const double* u, const double* u0, double* 
 #ifdef AERO_WITH_KOKKOS_GPU
     if (device >= 0) {
         gpu::DeviceScope scope(device);
-        check(scope.status);
+        gpu::checked(scope.status);
         const auto queue = static_cast<aero::gpu::Stream>(stream);
-        check(aero::gpu::fill_async(device_error, 0xff, sizeof(Index), queue));
+        gpu::checked(aero::gpu::fill_async(device_error, 0xff, sizeof(Index), queue));
         launch_residual(g, u, u0, device_flux, r, edge, boundary, device_error, queue);
         Index bad;
-        check(aero::gpu::copy_async(&bad, device_error, sizeof(bad), aero::gpu::Copy::ToHost, queue));
-        check(aero::gpu::wait(queue));
+        gpu::checked(aero::gpu::copy_async(&bad, device_error, sizeof(bad), aero::gpu::Copy::ToHost, queue));
+        gpu::checked(aero::gpu::wait(queue));
         if (bad != ~Index(0))
             failure(bad, g);
         return;

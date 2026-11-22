@@ -2,7 +2,7 @@
 #include "startup.h"
 #include "../explicit/explicit.h"
 #ifdef AERO_WITH_KOKKOS_GPU
-#include "../parallel/device_memory.h"
+#include "../parallel/device_check.h"
 #endif
 #include <fstream>
 #include <iostream>
@@ -42,10 +42,7 @@ void select_single_device(RunSettings& run) {
         throw std::invalid_argument("Unavailable CUDA device " + std::to_string(device));
     }
 #ifdef AERO_WITH_KOKKOS_GPU
-    const auto status = aero::gpu::select(device);
-    if (status != aero::gpu::Status::Success) {
-        throw std::runtime_error(aero::gpu::message(status));
-    }
+    gpu::checked(gpu::select(device));
 #endif
 }
 }

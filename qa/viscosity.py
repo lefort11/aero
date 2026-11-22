@@ -22,7 +22,7 @@ def setup(case, mpi, dim=2):
         shutil.copy(sample / name, case / name)
     (case / "main.txt").write_text(
         "mesh=grid.mesh\nbackend=cpu\nviscosity=normal\nreconstruction=first_order\n"
-        "reconstruction_variables=conservative\neuler_solver=lf\nupw_coeff=0\n"
+        "reconstruction_variables=characteristic\neuler_solver=lf\nupw_coeff=0\n"
         f"time_scheme=ssprk3\nfinal_time={END}\ncfl=.45\n"
     )
     (case / "gas.txt").write_text(f"gamma=1.4\nmach=.5\nreynolds={REYNOLDS}\nprandtl=.72\nt_amb=300\n")

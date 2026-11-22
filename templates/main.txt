@@ -41,9 +41,9 @@ mesh           = "../examples/tecplot/demo_2d.mesh"
 # При BDF1, BDF2 и steady обе схемы используют alpha = 4 при любом CFL.
 # Если дальняя точка недоступна, используется WENO3; без ближней точки — среднее на ребре.
 reconstruction = ebr3
-# reconstruction_variables — conservative (консервативные переменные),
+# reconstruction_variables — выбор переменных реконструкции:
 # characteristic (характеристические переменные) или flux (потоки).
-reconstruction_variables = conservative
+reconstruction_variables = characteristic
 # time_scheme — euler, ssprk3, BDF1 (неявный Эйлер), BDF2 или steady (установление). Для неявного расчёта заполните implicit.txt.
 time_scheme    = ssprk3
 # euler_solver — roe или lf (локальный поток Лакса — Фридрихса).

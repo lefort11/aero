@@ -19,7 +19,7 @@ clean_modules := aero bc converter cv eulersolver explicit implicit initial io_f
 clean_tags := cuda0 cuda1 $(foreach gpu,0 1,$(foreach omp,0 1,cuda$(gpu)_omp$(omp)))
 clean_suffixes := $(addprefix _,$(clean_tags) cuda)
 clean_tests := $(foreach mod,$(clean_modules),$(foreach base,$(mod)_tests $(mod)_tests_debug,$(base) $(addprefix $(base),$(clean_suffixes))))
-clean_programs := aero mesh_converter fields_to_tecplot mesh_to_tecplot meshdec
+clean_programs := aero mesh_converter fields_to_tecplot mesh_to_tecplot meshdec mesh_slice
 clean_exes := $(addsuffix $(EXE),$(clean_programs) $(clean_tests) $(addprefix aero_,$(clean_tags) $(addsuffix _mpi,$(clean_tags))))
 clean_exes += $(addsuffix $(EXE),$(addprefix viscosity_tests_aero_,$(clean_tags) $(addsuffix _mpi,$(clean_tags))))
 # Только эти подкаталоги создаются самой сборкой. Здесь лежат в том числе
@@ -42,5 +42,5 @@ endef
 clean:
 	$(call action,Cleaning,generated build files)
 	$(call remove_files,$(clean_bin_files))
-	$(call remove_files,$(foreach dir,$(clean_dirs),$(call clean_files,$(dir),*.o aero_*_objects/*/*.o libaero*.a libaero_kokkos_cuda.so aero_kokkos_cuda.dll $(clean_exes))))
+	$(call remove_files,$(foreach dir,$(clean_dirs),$(call clean_files,$(dir),*.o slice/*/*/*.o aero_*_objects/*/*.o libaero*.a libaero_kokkos_cuda.so aero_kokkos_cuda.dll $(clean_exes))))
 	$(if $(clean_generated_dirs),$(RM) -r -- $(clean_generated_dirs))

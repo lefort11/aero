@@ -8,6 +8,8 @@ from mpi_fields import binary_snapshot
 from mpi_geometry import run
 from viscosity import setup, max_difference
 
+FLOW_VARIABLES = "primary,fluctuations,dp/dt,vorticity,schlieren,mach"
+
 
 def check_pressure_rhs(coords, fields, linear):
     """Независимый баланс по снимку на прямоугольной сетке: первый порядок, LF с upw_coeff=0."""
@@ -70,7 +72,7 @@ def check(case, args, linear=False):
     (case / "init.txt").write_text("initial_type=formula\nux=.1*y\nuy=0\n"+initial_gas)
     (case / "output.txt").write_text(
         "[flow]\nfile=state.fields\nformat=binary\nlayout=global\nevery_steps=1\nmulti=1\n"
-        "variables=primary,fluctuations,dp/dt,vorticity\n"
+        f"variables={FLOW_VARIABLES}\n"
         "[surface]\nfile=wall.fields\nformat=binary\nlayout=global\nevery_steps=1\nvariables=Cp\nwall_label=ymin\n")
     def solve(folder, end, gpu=False, mpi=False, recover=False, scheme='ssprk3', viscosity='off'):
         command=[args.aero.resolve(), f"--input={case}", f"--output={folder}",f"main:final_time={end}",
@@ -100,10 +102,23 @@ def check(case, args, linear=False):
     old=initial[0][1]
     assert max(abs(value) for value in old["dp_dt"]) > .01
     rhs_error = check_pressure_rhs(coords, old, linear)
-    for i,(_,y,_) in enumerate(coords):
+    xs = sorted({x for x, _, _ in coords})
+    dx = xs[1] - xs[0]
+    amplitude = .01 if linear else 0.
+    for i,(x,y,_) in enumerate(coords):
+        # В исходной постановке плотность Euler постоянна, а пульсация Linear зависит только от x.
+        gx = -amplitude * math.sin(2*math.pi*x) * math.sin(2*math.pi*dx) / dx
+        assert abs(old["schlieren"][i] - abs(gx)) < 1.e-12
         if 0.<y<1.:
             assert abs(old["vorticity"][i]-.1)<1.e-13
     quantities=("rho","ux","uy","p","E")
+    # В Linear снимок основных величин содержит пульсации, а число Маха относится к полному потоку.
+    for _, fields in initial + ref:
+        for i, mach in enumerate(fields["mach"]):
+            speed = math.hypot(fields["ux"][i] + (.4 if linear else 0.), fields["uy"][i])
+            rho = fields["rho"][i] + (1.2 if linear else 0.)
+            pressure = fields["p"][i] + (1. if linear else 0.)
+            assert abs(mach - speed / math.sqrt(1.4 * pressure / rho)) < 1.e-13
     integrals={q:[0.]*len(coords) for q in quantities}
     start=0.
     for meta, fields in ref:
@@ -153,14 +168,14 @@ def check(case, args, linear=False):
         by_backend = []
         for gpu in ([False, True] if args.gpu else [False]):
             target = case / f"{scheme}-{gpu}"
-            output.write_text(config.replace("primary,fluctuations,dp/dt,vorticity", "primary,dp_dt"))
+            output.write_text(config.replace(FLOW_VARIABLES, "primary,dp_dt"))
             records, _ = solve(target, .012, gpu=gpu, scheme=scheme)
             for _, fields in records:
                 check_pressure_rhs(coords, fields, linear)
             by_backend.append(records)
             if scheme.startswith("bdf"):
                 plain = case / f"{scheme}-{gpu}-plain"
-                output.write_text(config.replace("primary,fluctuations,dp/dt,vorticity", "primary"))
+                output.write_text(config.replace(FLOW_VARIABLES, "primary"))
                 baseline, _ = solve(plain, .012, gpu=gpu, scheme=scheme)
                 assert flux_counts[target] == flux_counts[plain]
                 assert len(records) == len(baseline)
@@ -178,7 +193,7 @@ def check(case, args, linear=False):
         # а производная кинетической энергии равна нулю. Один шаг явного Эйлера
         # даёт независимую проверку dp/dt(t=0) через приращение полной энергии.
         (case / "init.txt").write_text("initial_type=formula\nrho=1\nux=0\nuy=0\np=2+.1*cos(2*pi*x)\n")
-        output.write_text(config.replace("primary,fluctuations,dp/dt,vorticity", "primary,dp_dt"))
+        output.write_text(config.replace(FLOW_VARIABLES, "primary,dp_dt"))
         dt = .0001
         for gpu in ([False, True] if args.gpu else [False]):
             def heat_snapshot(end):

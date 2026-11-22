@@ -774,8 +774,7 @@ std::vector<double> PartitionOperator::output_pressure_rate(const std::vector<do
             const auto& g = gpu_->active_grid();
             const partition_detail::PressureRate rate{
                 g.geometry, g.flux, g.volumes, g.state, g.owned, device_pressure_rate_};
-            if (const char* error = device_work::aero_device_pressure_rate(rate, owned.size()))
-                throw std::runtime_error(error);
+            device_work::check(device_work::aero_device_pressure_rate(rate, owned.size()));
             // Потоки и вязкие члены остаются на карте. Для вывода нужен лишь один скаляр на узел.
             if (!compact.empty())
                 gpu::checked(gpu::copy(compact.data(), device_pressure_rate_, compact.size()*sizeof(double),
@@ -800,9 +799,10 @@ std::vector<double> PartitionOperator::output_pressure_rate(const std::vector<do
     return result;
 }
 
-// Снимок уже находится на CPU. По теореме Гаусса собираем ротор из скоростей
-// на внутренних площадках. На физической границе скорость площадки равна узловой.
-std::vector<double> PartitionOperator::output_vorticity(const std::vector<double>& state) {
+// Снимок уже находится на CPU. На физической границе берём значение самого узла,
+// поэтому разность между значениями на граничной площадке и в узле равна нулю.
+void PartitionOperator::output_gradients(const std::vector<double>& state, std::vector<double>* rotation,
+                                         std::vector<double>* schlieren) {
     std::vector<double> buffer(state.size(),0.);
     const auto velocity=[&](Id i,unsigned axis) {
         const double* u=state.data()+i*width_;
@@ -811,21 +811,35 @@ std::vector<double> PartitionOperator::output_vorticity(const std::vector<double
     parallel_for(owned.size(),[&](Id row){
         const auto i=owned[row];
         diagnostic::Curl curl{};
+        double gradient[3]{};
         for (auto k=offsets_[i];k<offsets_[i+1];++k) {
             const auto entry=incidence_[k];
             if (entry.face()>=grid_.edges) continue;
             const auto& face=surfaces_[entry.face()];
             const Id j=i==face.begin?face.end:face.begin;
-            double jump[3]{};
-            for (unsigned a=0;a<grid_.dim;++a) jump[a]=velocity(j,a)-velocity(i,a);
-            curl.add(face.area,jump,entry.outward_flux(.5));
+            // Значение в середине ребра отличается от узлового на половину скачка.
+            const double factor=entry.outward_flux(.5);
+            if (schlieren) {
+                // Первая компонента состояния — плотность Euler или пульсация плотности Linear.
+                const double density_jump=state[j*width_]-state[i*width_];
+                for (unsigned a=0;a<grid_.dim;++a) gradient[a]+=factor*density_jump*face.area[a];
+            }
+            if (rotation) {
+                double jump[3]{};
+                for (unsigned a=0;a<grid_.dim;++a) jump[a]=velocity(j,a)-velocity(i,a);
+                curl.add(face.area,jump,factor);
+            }
         }
-        buffer[i*width_]=curl.magnitude(1./volumes_[i]);
+        if (rotation) buffer[i*width_]=curl.magnitude(1./volumes_[i]);
+        if (schlieren) buffer[i*width_+1]=std::sqrt(euler_detail::dot(grid_.dim,gradient,gradient))/volumes_[i];
     });
     if (world_.size>1) halo_host(buffer);
-    std::vector<double> result(grid_.nodes);
-    for (Id i=0;i<grid_.nodes;++i) result[i]=buffer[i*width_];
-    return result;
+    if (rotation) rotation->resize(grid_.nodes);
+    if (schlieren) schlieren->resize(grid_.nodes);
+    for (Id i=0;i<grid_.nodes;++i) {
+        if (rotation) (*rotation)[i]=buffer[i*width_];
+        if (schlieren) (*schlieren)[i]=buffer[i*width_+1];
+    }
 }
 
 void PartitionOperator::halo_host(std::vector<double>& u) {
@@ -999,8 +1013,7 @@ double PartitionOperator::prepare_local_steps(double cfl) {
         const residual_detail::LocalSteadySteps steps{cfl_grid(), cfl, change, steady_steps_->values};
 #ifdef AERO_WITH_KOKKOS_GPU
         if (gpu_) {
-            if (const char* error = device_work::aero_device_local_steps(steps, &range))
-                throw std::runtime_error(error);
+            device_work::check(device_work::aero_device_local_steps(steps, &range));
             return;
         }
 #endif
@@ -1013,7 +1026,8 @@ double PartitionOperator::prepare_local_steps(double cfl) {
         throw std::domain_error("Invalid local steady time step");
     // Минимум уже учитывает и газ, и SA на всех процессах. Ограничиваем поле один
     // раз перед Ньютоном: матрица, невязка и перенос SA затем читают один шаг узла.
-    if (!adapting && steady_steps_->max_ratio >= 1. && minimum_step_ <= max_finite_double / steady_steps_->max_ratio) {
+    // В auto ограничиваем уже адаптированный шаг относительно минимума текущего слоя.
+    if (steady_steps_->max_ratio >= 1. && minimum_step_ <= max_finite_double / steady_steps_->max_ratio) {
         const double ceiling = minimum_step_ * steady_steps_->max_ratio;
         if (maximum_step_ > ceiling) {
             world_.local([&] {

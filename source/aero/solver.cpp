@@ -734,10 +734,9 @@ void integrate_partition(const RunSettings& run, const Processes& world, unsigne
             return norm;
         };
     }
-    bool sample_time=false, write_rotation=false, write_sa=false;
+    bool sample_time=false, write_sa=false;
     for (const auto& zone:run.output_zones) for (const auto& name:zone.variables) {
         sample_time |= diagnostic::needs_time(name);
-        write_rotation |= name=="vorticity";
         write_sa |= diagnostic::turbulent(name);
     }
     op.start_samples(fields.current,recovery.samples,recovery.has_samples);
@@ -782,7 +781,14 @@ void integrate_partition(const RunSettings& run, const Processes& world, unsigne
             data.pressure_rate = pressure_rate.data();
         }
         if (sample_time) world.local([&]{op.copy_samples(samples);data.moments=samples.data();});
-        if (write_rotation) { rotation=op.output_vorticity(snapshot);data.rotation=rotation.data(); }
+        const bool write_rotation=output.schedule.column_due(diagnostic::Vorticity,step.number,step.end,final_field);
+        const bool write_schlieren=output.schedule.column_due(diagnostic::Schlieren,step.number,step.end,final_field);
+        std::vector<double> schlieren;
+        if (write_rotation || write_schlieren) {
+            op.output_gradients(snapshot,write_rotation ? &rotation : nullptr,write_schlieren ? &schlieren : nullptr);
+            data.rotation=rotation.data();
+            data.schlieren=schlieren.data();
+        }
 #ifdef AERO_HAS_TURBULENCE
         if (write_sa && dimension==3 && run.turbulence.uses_sigma()) stepper.prepare_state_fluxes(run.first_order_start(step.end),timing);
         if(write_sa) world.local([&]{scalars=op.sa_output(snapshot);data.sa=scalars.data();});

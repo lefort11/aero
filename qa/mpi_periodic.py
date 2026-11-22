@@ -19,7 +19,7 @@ from mpi_euler import (
     stamp,
     verify as verify_euler,
 )
-from run import nodes, read_snapshot, settings
+from run import nodes, read_snapshot, reconstruction_variables, settings
 
 
 def square(mesh):
@@ -379,7 +379,7 @@ def verify(
         mesh="grid.mesh",
         reconstruction=reconstruction,
         euler_solver="lf" if tilted else "roe",
-        reconstruction_variables=("conservative", "flux", "characteristic")[dim - 1],
+        reconstruction_variables="flux" if dim == 2 and "flux" in reconstruction_variables(reconstruction) else "characteristic",
         report_every=1,
         final_time=final,
         omp_threads=2,

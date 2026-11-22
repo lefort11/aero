@@ -29,6 +29,7 @@
     <None Include="..\source\implicit\implicit.mk" />
     <ClInclude Include="..\source\implicit\index_list.h" />
     <ClInclude Include="..\source\implicit\krylov_scratch.h" />
+    <ClInclude Include="..\source\implicit\workspace.h" />
     <ClInclude Include="..\source\implicit\lf_edge_jacobian.h" />
     <ClInclude Include="..\source\implicit\linear_iteration_report.h" />
     <ClInclude Include="..\source\implicit\newton_vectors.h" />

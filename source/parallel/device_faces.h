@@ -21,7 +21,7 @@ void full_edges(const Execution& exec, FaceBatch batch, Index* bad, const FaceBa
     if (device_faces) {
         const MeshIndex* indices = batch.indices;
         for_indices<use_mpweno ? 4 : 0>(exec, "Aero: WENO edges", batch.count, KOKKOS_LAMBDA(Index k) {
-            packed_flux<order, use_mp5, use_mpweno, hybrid>(*device_faces, indices ? indices[k] : k, bad);
+            packed_flux<order, use_mp5, use_mpweno, hybrid>(*device_faces, FaceBatch::face(indices, k), bad);
         });
     } else {
         for_indices<use_mpweno ? 4 : 0>(exec, "Aero: WENO edges", batch.count, KOKKOS_LAMBDA(Index k) {
@@ -40,12 +40,12 @@ void process_mpweno_edges(const Execution& exec, const FaceBatch& batch, Index* 
     for (Index first = 0; first < batch.count; ) {
         const Index count = std::min(batch.count - first, Index(MpEdgeTile::batch_limit));
         for_indices(exec, "Aero: MPWENO5 projected stencil", count, KOKKOS_LAMBDA(Index k) {
-            const Index face = indices ? indices[first + k] : first + k;
+            const Index face = FaceBatch::face(indices, first + k);
             mpweno_edges::project(*stored, face, work[edge_tile::index(k)], edge_tile::lane(k), bad);
         });
         mpweno_edges::reconstruct(exec, work, count, batch.geometry.stencil.mp5);
         for_indices(exec, "Aero: MPWENO5 complete edge flux", count, KOKKOS_LAMBDA(Index k) {
-            const Index face = indices ? indices[first + k] : first + k;
+            const Index face = FaceBatch::face(indices, first + k);
             mpweno_edges::write_flux(*stored, face, work[edge_tile::index(k)], edge_tile::lane(k), bad);
         });
         first += count;
@@ -118,7 +118,7 @@ void cartesian_edges(const Execution& exec, FaceBatch batch, Index* bad, const F
     // У MPWENO5 больше временных весов. Ограничиваем число регистров на
     // поток, чтобы несколько блоков одновременно загружали соседние шаблоны.
     for_indices<mpweno ? 4 : 0>(exec,"Aero: Cartesian reconstructed edges",batch.count,KOKKOS_LAMBDA(Index k) {
-        const Index edge = ids ? ids[k] : k;
+        const Index edge = FaceBatch::face(ids, k);
         const auto* tile = complete_tile<order>(stored->geometry, edge);
         if (tile && !cartesian_packed_flux<physical,order,mp,mpweno,hybrid>(*stored,edge,*tile))
             Kokkos::atomic_fetch_min(bad,edge);
@@ -190,7 +190,7 @@ void compute_unpacked_fluxes(const Execution& exec, FaceBatch batch, Index* bad)
     // Как и на CPU, LF первого порядка получает состояния прямо из узлов.
     // Постоянная размерность исключает реконструкцию из кода ядра этого запуска.
     if (batch.nodal_lf()) {
-        const auto launch = batch.select_by_dimension(other_faces<false,true,0,1>,
+        const auto launch = for_dimension(batch.geometry.dim, other_faces<false,true,0,1>,
                                                        other_faces<false,true,0,2>,
                                                        other_faces<false,true,0,3>);
         launch(exec,batch,bad);

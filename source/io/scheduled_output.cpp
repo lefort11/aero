@@ -165,11 +165,10 @@ void LocalFieldOutput::write(const OutputZone& zone, const std::vector<unsigned>
         snap.fields.push_back(output_field(name));
         snap.fields.back().values.resize(count);
     }
+    const FieldRows rows{state.data(), snap.dimension, gamma_, background_, scalars, columns};
     parallel_for(count, [&](std::size_t i) {
         const auto node = node_dof_.empty() ? i : static_cast<std::size_t>(node_dof_[i]);
-        const auto values = output_values(snap.dimension, state.data() + node * width, gamma_, node, background_);
-        for (std::size_t k = 0; k < columns.size(); ++k)
-            snap.fields[k].values[i] = field_column(values,columns[k],scalars,node);
+        rows.visit(node, node, [&](std::size_t k, double value) { snap.fields[k].values[i] = value; });
     });
     auto name = output_filename(zone, step);
     std::replace(name.begin(), name.end(), '\\', '/');

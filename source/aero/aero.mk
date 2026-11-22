@@ -9,6 +9,7 @@ AERO_HEADERS := source/aero/run_control.h source/aero/exact_error.h source/io/ex
 AERO_LIBS := $(IMPLICIT_LIBRARY) $(RES_LIB) $(INITIAL_LIB) $(TIMESTEP_LIBRARY) $(EXPLICIT_LIBRARY) $(IO_LIBRARY) $(RES_DEPS)
 AERO_SOURCES += $(wildcard source/viscosity/aes.cpp source/viscosity/grad.cpp source/viscosity/affine_hex.cpp) $(if $(wildcard source/viscosity/transport.h),$(wildcard source/turbulence/*.cpp))
 AERO_HEADERS += source/io/flow_values.h
+AERO_HEADERS += source/io/submesh.h source/aero/partition_output.h
 AERO_HEADERS += source/aero/console_log.h
 AERO_HEADERS += source/implicit/implicit_settings.h source/implicit/bdf1_step.h source/implicit/partition.h
 AERO_HEADERS += source/aero/geometry.h source/aero/case_geometry.h source/mesh/mdec.h source/mesh/partition.h source/mesh/mesh_reader.h source/parallel/processes.h
@@ -33,6 +34,7 @@ AERO_OBJECT_DIR := $(BUILD)/$(AERO_VARIANT)_objects
 AERO_OBJECTS := $(patsubst source/%.cpp,$(AERO_OBJECT_DIR)/%.o,$(AERO_SOURCES))
 $(AERO_OBJECT_DIR)/aero/partition_gpu.o: source/reconstruction/device_stencil.h
 $(AERO_OBJECT_DIR)/mesh/mdec.o: $(NATIVE_FORMAT)
+$(AERO_OBJECT_DIR)/turbulence/partition.o: source/timestep/bdf_weights.h
 $(AERO_OBJECT_DIR)/%.o: source/%.cpp $(AERO_HEADERS) | $(BUILD)
 	mkdir -p "$(@D)"
 	$(compiling)

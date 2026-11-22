@@ -28,5 +28,18 @@ KOKKOS_INLINE_FUNCTION unsigned high_word(double x) {
 }
 KOKKOS_INLINE_FUNCTION double inverse_value(double x) { return 1. / x; }
 constexpr double max_finite_double = DBL_MAX;
+// Неконечная компонента должна прервать итерацию. Обычный max с NaN
+// мог бы оставить прежнюю норму и дать ложную сходимость.
+KOKKOS_INLINE_FUNCTION void accumulate_infinity_norm(double component, double& largest) {
+    const double magnitude = ::fabs(component);
+    if (!(magnitude <= max_finite_double)) largest = HUGE_VAL;
+    else if (magnitude > largest) largest = magnitude;
+}
+
+// Размерность известна до запуска параллельного цикла. Выбранная функция
+// специализируется на 1D, 2D или 3D без ветвления в каждой строке.
+template<class Launcher> inline Launcher for_dimension(unsigned dim, Launcher one, Launcher two, Launcher three) {
+    return dim == 1 ? one : (dim == 2 ? two : three);
+}
 }
 #endif

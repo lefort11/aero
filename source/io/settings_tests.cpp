@@ -141,7 +141,7 @@ void templates_case() {
     }
     PeriodicDomain domain(mesh, boundary.periodic_pairs);
     const auto grid = domain.view();
-    require(run.gamma == 1.4 && run.reconstruction_variables == "conservative",
+    require(run.gamma == 1.4 && run.reconstruction_variables == "characteristic",
             "gas and reconstruction variables");
     const auto initial = read_initial_file(mesh, run.gamma, run.initial_path, &grid);
     require(grid.node_count < mesh.view().node_count && initial.size() == grid.node_count * 4 &&
@@ -279,7 +279,7 @@ void output_zones(const CaseFiles& files) {
 // дополнительную константу, включая ноль — предел, совпадающий с законом normal.
 #ifdef AERO_HAS_VISCOSITY
 void viscosity_settings(const CaseFiles& files) {
-    files.write("main.txt", "mesh=grid.mesh\nreconstruction=first_order\nreconstruction_variables=conservative\n"
+    files.write("main.txt", "mesh=grid.mesh\nreconstruction=first_order\nreconstruction_variables=characteristic\n"
                             "time_scheme=euler\ncfl=.5\neuler_solver=roe\nfinal_time=0\nbackend=cpu");
     const std::string gas = "gamma=1.4\n";
     const std::string reference = gas + "mach=0.5\nreynolds=1e6\nprandtl=0.72\nt_amb=273.15\n";
@@ -321,7 +321,7 @@ void viscosity_settings(const CaseFiles& files) {
 #endif
 #ifdef AERO_HAS_TURBULENCE
 void turbulence_settings(const CaseFiles& files) {
-    files.write("main.txt","mesh=grid.mesh\nreconstruction=first_order\nreconstruction_variables=conservative\n"
+    files.write("main.txt","mesh=grid.mesh\nreconstruction=first_order\nreconstruction_variables=characteristic\n"
                            "backend=cpu\ntime_scheme=euler\ncfl=.5\neuler_solver=lf\nfinal_time=0\nviscosity=normal");
     files.write("gas.txt","gamma=1.4\nmach=.5\nreynolds=1000\nprandtl=.72\nt_amb=300");
     require(!files.load().turbulence.enabled,"turbulence defaults to Off");
@@ -365,7 +365,15 @@ void main_and_cuda(const CaseFiles& files) {
     const std::string common =
         "time_scheme=euler\ncfl=2e-1\neuler_solver=lf\nfinal_time=0\nreconstruction_variables=flux\n";
     const std::string base = head + common + "reconstruction=weno5\n";
+    auto rejected = base;
+    rejected.replace(rejected.find("=flux"), 5, "=conservative");
+    files.write("main.txt", rejected + "backend=cpu\n");
+    rejects([&] { files.load(); }, "unknown value conservative");
     files.write("main.txt", base + "backend=cpu\n");
+    const char* override_args[] = {"aero", "main:reconstruction_variables=conservative"};
+    auto override_dirs = parse_run_arguments(2, override_args);
+    override_dirs.input = files.dir;
+    rejects([&] { read_run_settings(override_dirs); }, "unknown value conservative");
     require(!files.load().background.active(), "old cases default to Euler");
     files.write("main.txt", base + "backend=cpu\nEquations=Linear\n");
     rejects([&] { files.load(); }, "linear.txt");

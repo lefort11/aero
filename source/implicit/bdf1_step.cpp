@@ -3,9 +3,10 @@
 #include <utility>
 #include "bdf1_linear_system.h"
 #include "newton_vectors.h"
+#include "workspace.h"
+#include "../timestep/bdf_weights.h"
 #include "../parallel/parallel_for.h"
 #ifdef AERO_WITH_KOKKOS_GPU
-#include "../parallel/device_arrays.h"
 #include "../parallel/device_api.h"
 #endif
 #include <cmath>
@@ -74,9 +75,7 @@ struct BdfStep::Storage {
     MeshIndex rows;                 // Число узлов, за которые отвечает процесс.
     int device;                     // Отрицательный номер означает расчёт на CPU.
     std::vector<double> host;       // Три непересекающихся поля для расчёта на CPU.
-#ifdef AERO_WITH_KOKKOS_GPU
-    gpu::DeviceArrays arrays;       // Те же поля в памяти выбранной карты.
-#endif
+    Workspace workspace;
     double* start;       // Копия принятого поля в начале текущего шага.
     std::vector<double> history_host; // Выделяется только при первом использовании BDF2 на CPU.
     double* previous = nullptr;    // Предыдущий слой BDF2. После принятия шага меняется местами со start.
@@ -94,18 +93,7 @@ struct BdfStep::Storage {
             throw std::length_error("BDF: field too large");
         const auto size = rows * grid.components();
         const auto capacity = std::max<MeshIndex>(1, NewtonFieldCount*size);
-#ifdef AERO_WITH_KOKKOS_GPU
-        if (device >= 0) {
-            gpu::DeviceScope scope(device);
-            gpu::checked(scope.status);
-            arrays.device = device;
-            start = arrays.allocate<double>(capacity);
-        } else
-#endif
-        {
-            host.resize(capacity);
-            start = host.data();
-        }
+        start = workspace.allocate(device, host, capacity);
         rhs = start + size;
         correction = rhs + size;
     }
@@ -144,16 +132,7 @@ struct BdfStep::Storage {
     void ensure_history() {
         if (previous) return;
         const auto size = std::max<MeshIndex>(1, rows * grid.components());
-#ifdef AERO_WITH_KOKKOS_GPU
-        if (device >= 0) {
-            gpu::DeviceScope scope(device);
-            gpu::checked(scope.status);
-            previous = arrays.allocate<double>(size);
-            return;
-        }
-#endif
-        history_host.resize(size);
-        previous = history_host.data();
+        previous = workspace.allocate(device, history_host, size);
     }
 
     double residual_norm(const NewtonUpdate& operation) const {
@@ -260,14 +239,12 @@ NewtonResult BdfStep::advance(double* state, const double* initial, const double
             throw std::invalid_argument("BDF: invalid solver tolerance or Newton iteration limit");
     });
     // Интерполяция по трём последним моментам времени. При равных шагах a=3/2, b=1/2.
-    const double ratio = settings.second_order && s.previous_dt > 0. ? dt/s.previous_dt : 0.;
-    const double fraction = ratio/(1.+ratio);
-    const double leading = 1.+fraction, history_weight = ratio*fraction;
-    if (!std::isfinite(history_weight)) throw std::domain_error("BDF: invalid time step ratio");
+    const auto weights = BdfWeights::for_step(settings.second_order, dt, s.previous_dt);
+    if (!std::isfinite(weights.history)) throw std::domain_error("BDF: invalid time step ratio");
     const NodeSteps node_steps = SteadyNodeSteps::active(s.partition.steady_steps);
     const auto operation = [&](NewtonUpdate::Operation op, double relaxation) {
         return NewtonUpdate{s.grid, flux, volumes, state, s.start, s.rhs, s.correction, s.previous, dt,
-                            leading, history_weight, op, s.partition.owned, relaxation, node_steps};
+                            weights.leading, weights.history, op, s.partition.owned, relaxation, node_steps};
     };
     const auto update_trial = [&](NewtonUpdate::Operation op, double relaxation) {
         s.partition.local([&] { s.update(operation(op,relaxation)); });
@@ -305,7 +282,7 @@ NewtonResult BdfStep::advance(double* state, const double* initial, const double
         spatial_predictor = initial_norm > 0. && s.partition.steady_steps && confirm_prediction &&
                             !s.partition.host_aes.c_des && settings.simplified_newton() && settings.max_iterations > 1;
 #endif
-        if (spatial_predictor) assemblies += s.prepare_matrix(state,initial,volumes,dt/leading,settings,0,timing);
+        if (spatial_predictor) assemblies += s.prepare_matrix(state,initial,volumes,dt/weights.leading,settings,0,timing);
         const auto predictor_update = [&](NewtonUpdate::Operation op, double relaxation) {
             if (spatial_predictor && op == NewtonUpdate::Predict) {
                 timing.measure(PhaseTiming::Prediction,[&] { s.linear.predict(s.rhs,s.correction); });
@@ -329,7 +306,7 @@ NewtonResult BdfStep::advance(double* state, const double* initial, const double
             // Диагональ пространственной части берётся из баланса потоков. Временной
             // вклад a*V/dt добавляется при сборке системы для текущей поправки.
             if (!spatial_predictor || iteration != 0)
-                assemblies += s.prepare_matrix(state,initial,volumes,dt/leading,settings,iteration,timing);
+                assemblies += s.prepare_matrix(state,initial,volumes,dt/weights.leading,settings,iteration,timing);
             // Время BiCGSTAB включает обмены вектора, предобусловливание и
             // коллективные редукции всех скалярных произведений этой поправки.
             LinearResult result;

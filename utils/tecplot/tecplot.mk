@@ -1,6 +1,7 @@
 # Конвертер Tecplot использует общие библиотеки сетки и полей и может выгружать зоны параллельно.
 TECPLOT_SOURCE := utils/tecplot
 TECPLOT_HEADERS := $(TECPLOT_SOURCE)/tecplot.h $(MESH_HEADERS) $(FIELD_HEADERS)
+TECPLOT_HEADERS += source/io/submesh.h
 TECPLOT_OBJECTS := $(BUILD)/tecplot_writer_omp$(WITH_OPENMP).o $(BUILD)/tecplot_cli_omp$(WITH_OPENMP).o
 
 .PHONY: generate-tecplot-examples

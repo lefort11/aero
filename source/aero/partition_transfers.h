@@ -6,6 +6,7 @@
 #include "../parallel/wall_timer.h"
 #ifdef AERO_WITH_KOKKOS_GPU
 #include "partition_gpu.h"
+#include "../parallel/device_check.h"
 #endif
 
 namespace aero {
@@ -80,9 +81,7 @@ private:
     double* allocate_storage(std::size_t total, bool cuda) {
 #ifdef AERO_WITH_KOKKOS_GPU
         if (cuda) {
-            const auto status = pinned_.allocate(total);
-            if (status != aero::gpu::Status::Success)
-                throw std::runtime_error(std::string("MPI pinned buffer: ") + aero::gpu::message(status));
+            gpu::checked(pinned_.allocate(total), "MPI pinned buffer: ");
             return pinned_.host();
         }
 #else

@@ -19,6 +19,7 @@ void entry(OutputZone& z, const std::string& key, const std::string& value, cons
     if (key == "file")
         z.file = label(value, where);
     else if (key == "wall_label") z.wall_label=label(value,where);
+    else if (key == "submesh") z.submesh=label(value,where);
     else if (key == "every_steps") {
         z.every_steps = number_codec::parse_decimal(value, [&](const char* reason) {
             throw std::invalid_argument(where + ": " + reason);
@@ -137,6 +138,8 @@ void validate_output_zones(const std::vector<OutputZone>& zones) {
             throw std::invalid_argument(prefix+"Cp needs a separate zone with wall_label");
         if(!used.count("Cp") && !z.wall_label.empty())
             throw std::invalid_argument(prefix+"wall_label requires variables = Cp");
+        if (!z.submesh.empty() && !z.wall_label.empty())
+            throw std::invalid_argument(prefix+"choose wall_label or submesh");
         // Проверяем, могут ли две зоны при каком-либо шаге записать в один и тот же файл.
         const auto key = output_path_key(z.file);
         const auto snapshot = output_path_key(output_filename(z, 1));
@@ -144,7 +147,7 @@ void validate_output_zones(const std::vector<OutputZone>& zones) {
         if (first == "aero.log" || first == "control.txt")
             throw std::invalid_argument(prefix + "field output overlaps a solver file: " + z.file);
         if (z.global) {
-            if (z.format != FieldFormat::Binary)
+            if (z.submesh.empty() && z.format != FieldFormat::Binary)
                 throw std::invalid_argument(prefix + "layout = global requires format = binary");
             if (first == "recovery-0.bin" || first == "recovery-1.bin" || first == "recovery.lock")
                 throw std::invalid_argument(prefix + "field output overlaps recovery data: " + z.file);
@@ -191,9 +194,13 @@ std::vector<OutputZone> read_output_zones(const std::string& path, std::vector<s
         if (!keys.insert(key).second)
             throw std::invalid_argument(where + ": duplicate " + key);
         entry(zones.back(), key, settings_detail::trim(line.substr(eq + 1)), where, warnings);
+        // Нумерация .submesh общая для всех процессов, включая точки на стыке разделов.
+        if (!zones.back().submesh.empty() && keys.count("layout") && !zones.back().global)
+            throw std::invalid_argument(where + ": submesh requires layout = global (or omit layout)");
     }
     if (input.bad() || !input.eof())
         throw std::runtime_error("error reading output settings: " + path);
+    for (auto& zone : zones) if (!zone.submesh.empty()) zone.global = true;
     try {
         validate_output_zones(zones);
     } catch (const std::invalid_argument& e) {

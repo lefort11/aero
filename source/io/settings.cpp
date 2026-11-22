@@ -301,7 +301,7 @@ RunSettings read_run_settings(const RunDirectories& directories) {
         throw std::invalid_argument("scheme.txt: mp6_hybrid must be in [0, 1]");
     scheme_settings.finish(&run.input_warnings);
     run.reconstruction_variables =
-        choice(main.take("reconstruction_variables"), {"conservative", "characteristic", "flux"});
+        choice(main.take("reconstruction_variables"), {"characteristic", "flux"});
     const bool linear = main.contains("Equations") &&
         choice(lowercase(main.take("Equations")), {"euler","linear"}) == "linear";
     if (linear) {
@@ -485,6 +485,8 @@ RunSettings read_run_settings(const RunDirectories& directories) {
     run.initial_path = resolve(directories.input, "init.txt");
     run.boundary_path = resolve(directories.input, "bc.txt");
     run.output_zones = read_output_zones(resolve(directories.input, "output.txt"), &run.input_warnings);
+    for (auto& zone : run.output_zones)
+        if (!zone.submesh.empty()) zone.submesh=resolve(directories.input,zone.submesh);
 #ifdef AERO_HAS_TURBULENCE
     if (run.turbulence.uses_sigma()) {
         for (auto& zone:run.output_zones) for (auto& field:zone.variables) {

@@ -25,12 +25,14 @@ enum Column {
     DpDt,
     Vorticity,
     Cp,
+    Schlieren,
+    Mach,
     ColumnCount
 };
 inline const char *name(unsigned i) {
     static const char *const names[] = {"rho",      "ux",      "uy",        "uz",        "p",        "E",
                                         "nu_tilde", "nut",     "rho_prime", "ux_prime",  "uy_prime", "uz_prime",
-                                        "p_prime",  "E_prime", "dp_dt",     "vorticity", "Cp"};
+                                        "p_prime",  "E_prime", "dp_dt",     "vorticity", "Cp", "schlieren", "mach"};
     return names[i];
 }
 inline unsigned column(const std::string &key) {
@@ -65,6 +67,30 @@ struct Moments {
             duration = value;
     }
 };
+// Во всех файлах и средних есть три места под скорость, включая нулевые
+// компоненты на линии и на плоскости. Порядок столбцов совпадает с Column.
+AERO_HOST_DEVICE inline void store_primary(double rho, unsigned dim, const double* velocity,
+                                           double pressure, double energy, double* q) {
+    q[Density] = rho;
+    for (unsigned k = 0; k < 3; ++k) q[Ux + k] = k < dim ? velocity[k] : 0.;
+    q[Pressure] = pressure;
+    q[Energy] = energy;
+}
+
+// В Linear состояние уже хранит пульсации примитивных величин. В Euler сначала
+// восстанавливаем давление и скорость. Полная энергия уже есть в самом состоянии.
+AERO_HOST_DEVICE inline bool primary_from_state(unsigned dim, const double* u, double gamma,
+                                                const LinearBackground& background, double* q) {
+    if (background.active()) {
+        store_primary(u[0], dim, u + 1, u[dim + 1], background.energy(dim, u, gamma), q);
+        return true;
+    }
+    EulerState gas;
+    if (euler_state(dim, u, gamma, &gas) != EulerStatus::Success) return false;
+    store_primary(u[0], dim, gas.velocity, gas.pressure, u[dim + 1], q);
+    return true;
+}
+
 struct Sample {
     unsigned dim;
     double gamma, dt;
@@ -73,20 +99,10 @@ struct Sample {
     const double *state;
     AERO_HOST_DEVICE void operator()(size_t i) const {
         const auto *u = state + i * (dim + 2);
-        double q[6] = {u[0], 0., 0., 0., u[dim + 1], u[dim + 1]};
-        if (background.active()) {
-            for (unsigned k = 0; k < dim; ++k)
-                q[k + 1] = u[k + 1];
-            q[Energy] = background.energy(dim, u, gamma);
-        } else {
-            EulerState gas;
-            if (euler_state(dim, u, gamma, &gas) != EulerStatus::Success) {
-                values[i].duration = -1.;
-                return;
-            }
-            for (unsigned k = 0; k < dim; ++k)
-                q[k + 1] = gas.velocity[k];
-            q[Pressure] = gas.pressure;
+        double q[6];
+        if (!primary_from_state(dim, u, gamma, background, q)) {
+            values[i].duration = -1.;
+            return;
         }
         auto &history = values[i];
         if (dt == 0.) {
@@ -110,6 +126,7 @@ struct Fields {
     const Moments *moments = nullptr;
     const double *pressure_rate = nullptr; // Мгновенная производная давления в неподвижном узле.
     const double *rotation = nullptr;
+    const double *schlieren = nullptr; // Модуль пространственного градиента плотности.
 };
 // Теорема Гаусса: вклад в ротор равен векторному произведению площади
 // площадки на разность между скоростью на площадке и скоростью в узле.

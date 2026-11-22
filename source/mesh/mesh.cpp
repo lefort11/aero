@@ -384,6 +384,21 @@ private:
     std::ostringstream numeric_;
 };
 
+// Порядок массивов — часть формата сетки и отпечатка её полей. Один обход
+// используется при записи и чтении; способ передачи данных задаёт архив.
+template<class Archive, class Data> void transfer_mesh_arrays(Archive& archive, Data& data) {
+    archive.array("X", data.x, &Archive::real);
+    archive.array("Y", data.y, &Archive::real);
+    archive.array("Z", data.z, &Archive::real);
+    archive.array("FACE_OFFSETS", data.face_nodes.offsets, &Archive::u64);
+    archive.array("FACE_NODES", data.face_nodes.indices, &Archive::u64);
+    archive.array("CELL_OFFSETS", data.cell_faces.offsets, &Archive::u64);
+    archive.array("CELL_FACES", data.cell_faces.indices, &Archive::u64);
+    archive.array("CELL_ORIENTATIONS", data.cell_face_orientation, &Archive::orientation);
+    archive.array("BOUNDARY_FACES", data.boundary_faces, &Archive::u64);
+    archive.array("BOUNDARY_PATCH", data.boundary_patch, &Archive::u64);
+}
+
 void write_payload(const MeshData& d, std::ostream& output, MeshFormat format,
                    const std::uint64_t* fingerprint_word = nullptr) {
     Writer writer(output, format, fingerprint_word ? mesh_format::legacy_version : mesh_format::current_version);
@@ -399,18 +414,7 @@ void write_payload(const MeshData& d, std::ostream& output, MeshFormat format,
     // Это слово требуется только хеширующему потоку формата полей v1.
     if (fingerprint_word)
         writer.u64(*fingerprint_word);
-    writer.array("X", d.x, &Writer::real);
-    writer.array("Y", d.y, &Writer::real);
-    writer.array("Z", d.z, &Writer::real);
-    const auto write_csr = [&](const MeshCsr& csr, const char* offsets, const char* indices) {
-        writer.array(offsets, csr.offsets, &Writer::u64);
-        writer.array(indices, csr.indices, &Writer::u64);
-    };
-    write_csr(d.face_nodes, "FACE_OFFSETS", "FACE_NODES");
-    write_csr(d.cell_faces, "CELL_OFFSETS", "CELL_FACES");
-    writer.array("CELL_ORIENTATIONS", d.cell_face_orientation, &Writer::orientation);
-    writer.array("BOUNDARY_FACES", d.boundary_faces, &Writer::u64);
-    writer.array("BOUNDARY_PATCH", d.boundary_patch, &Writer::u64);
+    transfer_mesh_arrays(writer, d);
     writer.block("PATCH_NAMES");
     for (const std::string& name : d.patch_names)
         writer.name(name);
@@ -694,19 +698,7 @@ Mesh Mesh::read(std::istream& input, const MeshReadLimits& limits) try {
     reader.resize(d.boundary_patch, counts[5]);
     reader.resize(d.patch_names, counts[6]);
     const auto fingerprint_word = reader.read_fingerprint_word();
-    using mesh_input::Reader;
-    reader.array("X", d.x, &Reader::real);
-    reader.array("Y", d.y, &Reader::real);
-    reader.array("Z", d.z, &Reader::real);
-    const auto read_csr = [&](MeshCsr& csr, const char* offsets, const char* indices) {
-        reader.array(offsets, csr.offsets, &Reader::u64);
-        reader.array(indices, csr.indices, &Reader::u64);
-    };
-    read_csr(d.face_nodes, "FACE_OFFSETS", "FACE_NODES");
-    read_csr(d.cell_faces, "CELL_OFFSETS", "CELL_FACES");
-    reader.array("CELL_ORIENTATIONS", d.cell_face_orientation, &Reader::orientation);
-    reader.array("BOUNDARY_FACES", d.boundary_faces, &Reader::u64);
-    reader.array("BOUNDARY_PATCH", d.boundary_patch, &Reader::u64);
+    transfer_mesh_arrays(reader, d);
     reader.block("PATCH_NAMES");
     for (std::string& name : d.patch_names)
         name = reader.name();

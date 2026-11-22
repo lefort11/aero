@@ -120,7 +120,10 @@ def verify(case, aero, meshdec, launcher):
         # Диагностика появляется и в терминале, и в журнале, который создаётся
         # ещё до проверки настроек. Геометрии или полей при отказе быть не должно.
         journal = out / "aero.log"
-        if message not in log or set(out.iterdir()) != {journal} or message not in journal.read_text():
+        # В MSYS2 WindowsPath может получить разные разделители из iterdir() и из "/".
+        # Проверяем состав каталога и сам файл, сохраняя требование единственной записи.
+        if (message not in log or len(list(out.iterdir())) != 1
+                or not journal.is_file() or message not in journal.read_text()):
             raise AssertionError(f"Failure before mesh loading expected: {log}")
     print("OK collective diagnostics for invalid weights and insufficient node RAM")
 

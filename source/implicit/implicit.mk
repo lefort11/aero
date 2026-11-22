@@ -5,6 +5,8 @@ SPATIAL_OBJECT := $(BUILD)/spatial_jacobian_$(EBR_TAG).o
 BICGSTAB_OBJECT := $(BUILD)/bicgstab_$(EBR_TAG).o
 NEWTON_OBJECT := $(BUILD)/bdf1_step_$(EBR_TAG).o
 BICGSTAB_HEADERS := source/implicit/bdf1_linear_system.h source/implicit/bicgstab_vectors.h
+$(BICGSTAB_OBJECT) $(NEWTON_OBJECT): source/implicit/workspace.h
+$(NEWTON_OBJECT): source/timestep/bdf_weights.h
 SPATIAL_HEADERS := source/implicit/edge_jacobian.h source/implicit/csgs_order.h source/implicit/csgs_sweep.h source/implicit/roe_edge_jacobian.h source/implicit/spatial_jacobian.h source/implicit/spatial_jacobian_detail.h source/implicit/boundary_jacobian.h source/implicit/lf_edge_jacobian.h source/parallel/device_arrays.h $(RES_HDR)
 IMPLICIT_LIBRARY := $(BUILD)/libaero_implicit_$(EBR_TAG).a
 IMPLICIT_HEADERS += source/implicit/krylov_scratch.h

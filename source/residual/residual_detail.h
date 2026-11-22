@@ -846,7 +846,10 @@ struct FaceBatch {
         geometry.packed.tiles = nullptr;
     }
     bool needs_gas_update() const { return geometry.packed.gas && !gas_current; }
-    AERO_HOST_DEVICE Index face(Index k) const { return indices ? indices[k] : k; }
+    // При плотном обходе k уже является номером грани. Выделенная группа
+    // или подобласть MPI передаёт свой список; для GPU достаточно его адреса.
+    AERO_HOST_DEVICE static Index face(const MeshIndex* selected, Index k) { return selected ? selected[k] : k; }
+    AERO_HOST_DEVICE Index face(Index k) const { return face(indices, k); }
     // Для первого порядка размерность и решатель известны до обхода. Проверки и формулы потока общие.
     AERO_HOST_DEVICE bool roe_2d() const {
         return geometry.dim == 2 && geometry.options.solver == ResidualSolver::Roe;
@@ -854,10 +857,6 @@ struct FaceBatch {
     // Первый порядок LF читает только два узла. Размерность выбираем один раз
     // до обхода всего списка, чтобы ядро работало с постоянной шириной состояния.
     bool nodal_lf() const { return !geometry.stencil.has_owners() && geometry.options.solver == ResidualSolver::LocalLF; }
-    template<class Launcher>
-    Launcher select_by_dimension(Launcher one, Launcher two, Launcher three) const {
-        return geometry.dim == 1 ? one : (geometry.dim == 2 ? two : three);
-    }
     AERO_HOST_DEVICE bool nodal_roe_2d() const {
         return roe_2d() && !geometry.stencil.has_owners();
     }

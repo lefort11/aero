@@ -34,12 +34,10 @@ void write_global_fields(const Processes& world, const std::string& directory, c
     // Всем владельцам нужны одинаковые путь и начальные смещения столбцов.
     world.broadcast(temporary, 0);
     world.broadcast(offsets.data(), static_cast<int>(offsets.size()), 0);
-    const unsigned width = mesh.dimension + 2;
+    const FieldRows rows{state.data(), mesh.dimension, gamma, background, scalars, columns};
     const auto encode = [&](const OwnedNode& n, char* dst, std::size_t pitch) {
         // Один раз восстанавливаем физические величины узла, затем раскладываем запрошенные столбцы.
-        const auto values = output_values(mesh.dimension, state.data() + n.slot * width, gamma, n.id, background);
-        for (std::size_t k = 0; k < columns.size(); ++k)
-            indexed_io::put_real(dst + k * pitch, field_column(values,columns[k],scalars,n.slot));
+        rows.visit(n.slot, n.id, [&](std::size_t k, double value) { indexed_io::put_real(dst + k * pitch, value); });
     };
     // Исходный номер узла определяет позицию в файле независимо от разбиения сетки.
     indexed_io::transfer(world, temporary, indexed_io::Access::Write, 8, nodes, offsets, std::ref(encode));

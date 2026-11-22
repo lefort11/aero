@@ -25,6 +25,11 @@ AERO_HOST_DEVICE inline Coordinate operator-(Coordinate a, const Coordinate& b) 
     for (unsigned axis = 0; axis < 3; ++axis) a[axis] -= b[axis];
     return a;
 }
+// Умножаем все три координаты на один коэффициент, сохраняя порядок осей.
+AERO_HOST_DEVICE inline Coordinate operator*(Coordinate a, double factor) {
+    for (double& value : a) value *= factor;
+    return a;
+}
 // Скалярное и векторное произведения нужны геометрии AES и направленным фильтрам LES/DDES.
 AERO_HOST_DEVICE inline double dot3(const Coordinate& a, const Coordinate& b) {
     return a[0]*b[0]+a[1]*b[1]+a[2]*b[2];

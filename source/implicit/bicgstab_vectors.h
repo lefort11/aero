@@ -65,10 +65,7 @@ inline double krylov_reduce(const Execution& exec, MeshIndex size, const double*
         }, result);
     } else {
         Kokkos::parallel_reduce("Aero: BiCGSTAB infinity norm", range, KOKKOS_LAMBDA(MeshIndex i, double& largest) {
-            const double value = ::fabs(x[i]);
-            // NaN не должен превратиться в нулевую норму при сравнении.
-            if (!(value <= max_finite_double)) largest = HUGE_VAL;
-            else if (value > largest) largest = value;
+            accumulate_infinity_norm(x[i], largest);
         }, Kokkos::Max<double>(result));
     }
     return result;
@@ -100,9 +97,7 @@ inline double krylov_update_norm(const Execution& exec,MeshIndex count,KrylovUpd
     if (count) Kokkos::parallel_reduce("Aero: BiCGSTAB correction and norm",Range(exec,0,count),
         KOKKOS_LAMBDA(MeshIndex i,double& largest) {
             step(i);
-            const double value=::fabs(step.work.r[i]);
-            if (!(value<=max_finite_double)) largest=HUGE_VAL;
-            else if (value>largest) largest=value;
+            accumulate_infinity_norm(step.work.r[i], largest);
         },Kokkos::Max<double>(norm));
     return norm;
 }

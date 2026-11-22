@@ -473,7 +473,7 @@ def main():
             devices = tuple(map(int, args.devices.split(","))) if args.devices else ()
             for simplified in (False, True):
                 label = "frozen" if simplified else "full"
-                verify(root, f"sod-cut-{label}", "sod_1d", 1, .004, "conservative", "lf", *programs,
+                verify(root, f"sod-cut-{label}", "sod_1d", 1, .004, "characteristic", "lf", *programs,
                        cut=True, simplified=simplified, devices=devices,
                        matrix_test=args.matrix_test.resolve() if args.matrix_test and not simplified else None)
             verify(root, "weno-roe", "sod_1d", 1, .005, "characteristic", "roe", *programs,
@@ -481,17 +481,17 @@ def main():
             verify(root, "tilted", "shear_jump_2d", 2, .003, "characteristic", "lf", *programs,
                    simplified=True, devices=devices)
             verify(root, "wave", "wave_3d", 3, .006, "flux", "roe", *programs, devices=devices)
-            verify(root, "one-leaf", "sod_1d", 1, .002, "conservative", "lf", *programs,
+            verify(root, "one-leaf", "sod_1d", 1, .002, "characteristic", "lf", *programs,
                    empty=True, devices=devices)
             return
-        verify(root, "sod-cut", "sod_1d", 1, 0.004, "conservative", "roe", *programs, cut=True)
+        verify(root, "sod-cut", "sod_1d", 1, 0.004, "characteristic", "roe", *programs, cut=True)
         verify(
             root, "sod-cut-reversed", "sod_1d", 1, 0.004, "flux", "lf", *programs, cut=True, reverse=True
         )
-        verify(root, "sod", "sod_1d", 1, 0.12, "conservative", "roe", *programs)
+        verify(root, "sod", "sod_1d", 1, 0.12, "characteristic", "roe", *programs)
         verify(root, "tilted", "shear_jump_2d", 2, 0.015, "characteristic", "lf", *programs)
         verify(root, "wave", "wave_3d", 3, 0.018, "flux", "roe", *programs)
-        verify(root, "one-leaf", "sod_1d", 1, 0.002, "conservative", "lf", *programs, empty=True)
+        verify(root, "one-leaf", "sod_1d", 1, 0.002, "characteristic", "lf", *programs, empty=True)
 
 
 if __name__ == "__main__":

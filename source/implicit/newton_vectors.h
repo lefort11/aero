@@ -47,9 +47,7 @@ struct NewtonUpdate {
                 rhs[i] = value;
             }
             // Любая неконечная компонента должна прервать принятие шага на всех процессах.
-            const double magnitude = ::fabs(value);
-            if (!(magnitude <= max_finite_double)) largest = HUGE_VAL;
-            else if (magnitude > largest) largest = magnitude;
+            accumulate_infinity_norm(value, largest);
         }
         return largest;
     }

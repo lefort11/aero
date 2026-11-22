@@ -37,7 +37,7 @@ def prepare(case):
     )
     (case / "main.txt").write_text(
         "Equations=Linear\nmesh=grid.mesh\nbackend=cpu\ncfl=.35\n"
-        "reconstruction=first_order\nreconstruction_variables=conservative\n"
+        "reconstruction=first_order\nreconstruction_variables=characteristic\n"
         f"euler_solver=lf\ntime_scheme=ssprk3\nfinal_time={END}\nreport_every=1\nomp_threads=2\n"
     )
     (case / "output.txt").write_text(
@@ -250,14 +250,14 @@ def check_modes(args, case):
     check_exact_report(aero, mpi, case, distributed)
     # Проверяем каждый путь реконструкции. На одной сетке сравниваем обычный CPU и MPI.
     variants = [
-        ("first_order", "conservative", "lf", "euler"),
+        ("first_order", "characteristic", "lf", "euler"),
         ("first_order", "characteristic", "roe", "bdf1"),
         ("ebr3", "flux", "lf", "bdf2"),
         ("ebr5", "characteristic", "roe", "ssprk3"),
-        ("weno3", "conservative", "lf", "ssprk3"),
+        ("weno3", "characteristic", "lf", "ssprk3"),
         ("weno5", "characteristic", "roe", "ssprk3"),
-        ("mp5", "flux", "roe", "ssprk3"),
-        ("MPWENO5", "conservative", "roe", "ssprk3"),
+        ("mp5", "characteristic", "roe", "ssprk3"),
+        ("MPWENO5", "characteristic", "roe", "ssprk3"),
     ]
     for i, (scheme, variables, flux, time) in enumerate(variants):
         options = [

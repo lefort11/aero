@@ -138,7 +138,7 @@ void test_spatial_jacobian(int device) {
     if (device<0) check_matrix_budget();
     ReconstructionOptions reconstruction;
     reconstruction.scheme = ReconstructionScheme::FirstOrder;
-    auto options = residual_options("conservative","lf",1.4);
+    auto options = residual_options("characteristic","lf",1.4);
     options.upw_coeff = .65;
     for (unsigned d = 1; d <= 3; ++d) {
         const Mesh mesh = aero_test::test_mesh(d);

@@ -10,17 +10,8 @@
 namespace aero {
 detail::RayPoint::RayPoint() : distance((std::numeric_limits<double>::infinity)()), outward(false) {}
 namespace {
-Coordinate operator*(Coordinate a, double t) {
-    return {{a[0] * t, a[1] * t, a[2] * t}};
-}
 Coordinate operator/(Coordinate a, double t) {
     return a * (1.0 / t);
-}
-double dot(Coordinate a, Coordinate b) {
-    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-}
-Coordinate cross(Coordinate a, Coordinate b) {
-    return {{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]}};
 }
 typedef std::array<MeshIndex, 3> Triangle;
 struct Surface {
@@ -66,7 +57,7 @@ private:
 };
 
 double turn(Coordinate a, Coordinate b, Coordinate c, Coordinate normal) {
-    return dot(cross(b - a, c - a), normal);
+    return dot3(cross3(b - a, c - a), normal);
 }
 
 // Переносим начало в вершину грани и приводим координаты к её масштабу.
@@ -110,7 +101,7 @@ void validate_polygon(const std::vector<Coordinate>& p, Coordinate normal, doubl
             const Coordinate ends[4] = {a, b, c, d};
             for (unsigned k = 0; k < 4; ++k) {
                 const Coordinate q = ends[k], r = ends[k < 2 ? 2 : 0], t = ends[k < 2 ? 3 : 1];
-                if (std::abs(turn(r, t, q, normal)) <= eps && dot(q - r, q - t) <= eps * eps) {
+                if (std::abs(turn(r, t, q, normal)) <= eps && dot3(q - r, q - t) <= eps * eps) {
                     throw ReconstructionError("Touching or overlapping polygon edges");
                 }
             }
@@ -172,7 +163,7 @@ Surface triangulate(MeshView mesh, MeshIndexSpan ids, double eps) {
     normalize_polygon(mesh, ids, points);
     Coordinate area{};
     for (std::size_t i = 0; i < points.size(); ++i) {
-        area = area + cross(points[i], points[(i + 1) % points.size()]);
+        area = area + cross3(points[i], points[(i + 1) % points.size()]);
     }
     const double magnitude = coordinate_length(area);
     if (!(magnitude > eps)) {
@@ -182,7 +173,7 @@ Surface triangulate(MeshView mesh, MeshIndexSpan ids, double eps) {
     validate_polygon(points, normal, eps);
     Surface surface(normal, ids);
     for (Coordinate point : points) {
-        if (std::abs(dot(point, normal)) <= eps)
+        if (std::abs(dot3(point, normal)) <= eps)
             continue;
         if (mesh.dimension == 2)
             throw ReconstructionError("EBR requires planar 2D cells");
@@ -247,7 +238,7 @@ public:
     // В 1D опорная грань состоит из одной вершины с единичным весом.
     void test_point(MeshView mesh, MeshIndex node) {
         const Coordinate offset = mesh.coordinate(node) - origin_;
-        const double distance = dot(offset, direction_);
+        const double distance = dot3(offset, direction_);
         if (coordinate_length(offset - direction_ * distance) <= eps_ * (std::max)(length_, coordinate_length(offset))) {
             consider(distance, true, {{node, 1}});
         }
@@ -257,25 +248,25 @@ public:
     void test_segment(MeshView mesh, MeshFace face, Coordinate normal, int orientation) {
         const MeshIndex a = face.node_id(0), b = face.node_id(1);
         const Coordinate edge = mesh.coordinate(b) - mesh.coordinate(a), from = mesh.coordinate(a) - origin_;
-        const double det = dot(cross(direction_, edge), normal);
+        const double det = dot3(cross3(direction_, edge), normal);
         if (std::abs(det) <= eps_ * coordinate_length(edge)) {
             return;
         }
         // На вытянутой ячейке малый вес длинного отрезка определяет положение точки.
         // Вычисляем его от ближайшего конца напрямую: разность 1-u теряет значащие цифры.
         const Coordinate to = mesh.coordinate(b) - origin_;
-        const double weight_a = dot(cross(direction_, to), normal) / det;
-        const double weight_b = dot(cross(from, direction_), normal) / det;
+        const double weight_a = dot3(cross3(direction_, to), normal) / det;
+        const double weight_b = dot3(cross3(from, direction_), normal) / det;
         if (weight_a < -eps_ || weight_b < -eps_) return;
         const bool near_a = weight_b < weight_a;
         const double small = (std::max)(0.0, near_a ? weight_b : weight_a);
         const Coordinate point = near_a ? from + edge * small : to - edge * small;
-        const double distance = dot(point, direction_);
+        const double distance = dot3(point, direction_);
         // Проверяем уже интерполированную точку относительно длины от начала луча.
         // Если ближайшая вершина заметно в стороне, продолжаем поиск по соседним граням.
         if (coordinate_length(point - direction_ * distance) > eps_ * std::abs(distance)) return;
-        const Coordinate outward = cross(edge, normal) * static_cast<double>(orientation);
-        consider(distance, dot(direction_, outward) > 0,
+        const Coordinate outward = cross3(edge, normal) * static_cast<double>(orientation);
+        consider(distance, dot3(direction_, outward) > 0,
                  {{a, near_a ? 1. - small : small}, {b, near_a ? small : 1. - small}});
     }
 
@@ -286,15 +277,15 @@ public:
         // Локальный масштаб сохраняет смысл допуска для больших и маленьких ячеек.
         const double scale = (std::max)(coordinate_length(b - a), coordinate_length(c - a));
         const Coordinate e1 = (b - a) / scale, e2 = (c - a) / scale, r = a / scale;
-        const Coordinate p = cross(direction_, e2);
-        const double det = dot(e1, p);
+        const Coordinate p = cross3(direction_, e2);
+        const double det = dot3(e1, p);
         if (std::abs(det) <= eps_ * coordinate_length(e1) * coordinate_length(e2)) {
             return;
         }
-        double u = dot(r * (-1), p) / det;
-        const Coordinate q = cross(r * (-1), e1);
-        double v = dot(direction_, q) / det;
-        const double distance = dot(e2, q) / det * scale;
+        double u = dot3(r * (-1), p) / det;
+        const Coordinate q = cross3(r * (-1), e1);
+        double v = dot3(direction_, q) / det;
+        const double distance = dot3(e2, q) / det * scale;
         if (u < -eps_ || v < -eps_ || u + v > 1 + eps_) {
             return;
         }
@@ -452,8 +443,8 @@ struct detail::ReconstructionGeometry::Impl {
             surface.visit_triangles(m.node_count, [&](const Triangle& t) {
                 const Coordinate third = surface.uses_center ? surface.center : m.coordinate(t[2]);
                 volume6 += cell.face_orientation(k) *
-                           dot((m.coordinate(t[0]) - origin) / scale,
-                               cross((m.coordinate(t[1]) - origin) / scale, (third - origin) / scale));
+                           dot3((m.coordinate(t[0]) - origin) / scale,
+                               cross3((m.coordinate(t[1]) - origin) / scale, (third - origin) / scale));
             });
         }
         if (!(volume6 > eps)) {
@@ -466,7 +457,7 @@ struct detail::ReconstructionGeometry::Impl {
         const Coordinate origin = m.coordinate(m.cell(0).node_id(0));
         for (MeshIndex node = 0; node < m.node_count; ++node) {
             const Coordinate offset = m.coordinate(node) - origin;
-            if (std::abs(dot(offset, normals[0])) > eps * coordinate_length(offset)) {
+            if (std::abs(dot3(offset, normals[0])) > eps * coordinate_length(offset)) {
                 throw ReconstructionError("2D EBR requires a planar mesh");
             }
         }

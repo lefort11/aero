@@ -382,11 +382,9 @@ void sa_residual(const Execution& exec,const turbulence::Step& step) {
     // На первом обходе неявного газа сохраняем ротор. Во внутренних итерациях
     // меняется только nu_tilde, поэтому берём уже сохранённый ротор.
     const bool save_rotation=!same_gas && step.keep_gas;
-    switch (step.transport.dim) {
-    case 1: sa_rows<1,same_gas>(exec,step.transport,save_rotation); break;
-    case 2: sa_rows<2,same_gas>(exec,step.transport,save_rotation); break;
-    default: sa_rows<3,same_gas>(exec,step.transport,save_rotation); break;
-    }
+    const auto launch = for_dimension(step.transport.dim, sa_rows<1,same_gas>,
+                                      sa_rows<2,same_gas>, sa_rows<3,same_gas>);
+    launch(exec, step.transport, save_rotation);
 }
 const char* aero_device_sa_convection(const turbulence::SaEdgeConvection& edges,MeshIndex count) {
     return on_device(nullptr,[&](const Execution& exec){

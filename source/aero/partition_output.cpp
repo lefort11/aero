@@ -89,6 +89,35 @@ PartitionOutput::PartitionOutput(const RunSettings& run, const MeshPartition& pa
       directory_(directory), background_(run.background), gamma_(run.gamma) {
     const bool single = world.size == 1;
     const auto mesh=part.mesh.view();
+    std::string parent_hash=part.mesh_sha256;
+    world.local([&] {
+        for (const auto& zone:run.output_zones) {
+            if (zone.submesh.empty() || slices_.count(zone.submesh)) continue;
+            const auto input=Submesh::read(zone.submesh);
+            if (parent_hash.empty() && single) parent_hash=FieldSnapshot::mesh_fingerprint(part.mesh);
+            if (input.parent_hash!=parent_hash || input.parent_nodes!=part.global_counts[0])
+                throw FieldError("Submesh belongs to a different parent mesh: "+zone.submesh);
+            auto& slice=slices_[zone.submesh];
+            slice.metadata=FieldSnapshot(input.mesh,0,0.);
+            std::map<MeshIndex,MeshIndex> compact;
+            // От одного исходного узла могут зависеть сразу несколько точек среза.
+            // При выводе его значения пересылаются ровно один раз.
+            slice.points=input.points;
+            for (auto& point:slice.points) {
+                for (auto* node:{&point.first,&point.second}) {
+                    const auto index=compact.size();
+                    *node=compact.emplace(*node,index).first->second;
+                }
+            }
+            slice.source_count=compact.size();
+            for (auto row:layout.rows) {
+                const auto found=compact.find(row.id);
+                if (found==compact.end()) continue;
+                row.id=found->second;
+                slice.sources.push_back(row);
+            }
+        }
+    });
     for (const auto& zone:run.output_zones) {
         if (zone.wall_label.empty() || walls_.count(zone.wall_label)) continue;
         const auto& names=part.mesh.data().patch_names;
@@ -198,8 +227,55 @@ void PartitionOutput::write_wall(const OutputZone& zone, std::uint64_t step, dou
     });
 }
 
+// Поля сначала вычисляются в размерности исходной задачи (в срез 3D входит и uz).
+// Интерполируем именно заказанные столбцы, включая производные и пульсации.
+void PartitionOutput::write_slice(const OutputZone& zone,const std::vector<unsigned>& columns,
+        std::uint64_t step,double time,const std::vector<double>& state,const diagnostic::Fields& scalars) {
+    const auto& slice=slices_.at(zone.submesh);
+    const FieldRows fields{state.data(), layout_.selection.dimension, gamma_, background_, scalars, columns};
+    Processes::Messages send(world_.size);
+    world_.local([&] {
+        auto& bytes=send[0];
+        for (const auto& row:slice.sources) {
+            bytes.append(reinterpret_cast<const char*>(&row.id),sizeof(row.id));
+            fields.visit(row.slot, row.id, [&](std::size_t, double value) {
+                bytes.append(reinterpret_cast<const char*>(&value),sizeof(value));
+            });
+        }
+    });
+    const auto received=world_.size==1 ? std::move(send) : world_.exchange(send);
+    world_.local([&] {
+        if (world_.rank) return;
+        std::vector<double> values(slice.source_count*columns.size());
+        const auto width=sizeof(double)*columns.size();
+        for (const auto& bytes:received) {
+            for (std::size_t pos=0;pos<bytes.size();pos+=sizeof(MeshIndex)+width) {
+                MeshIndex index;
+                std::memcpy(&index,bytes.data()+pos,sizeof(index));
+                std::memcpy(values.data()+index*columns.size(),bytes.data()+pos+sizeof(index),width);
+            }
+        }
+        auto snapshot=slice.metadata;
+        snapshot.step=step;
+        snapshot.time=time;
+        for (std::size_t c=0;c<columns.size();++c) {
+            auto field=output_field(zone.variables[c]);
+            field.values.reserve(slice.points.size());
+            for (const auto& p:slice.points) {
+                const double a=values[p.first*columns.size()+c], b=values[p.second*columns.size()+c];
+                field.values.push_back(p.first==p.second ? a : (1.-p.weight)*a+p.weight*b);
+            }
+            snapshot.fields.push_back(std::move(field));
+        }
+        StagedFieldFile file(directory_+"/"+output_filename(zone,step));
+        snapshot.write(file.temporary(),zone.format);
+        file.publish(!zone.multi);
+    });
+}
+
 void PartitionOutput::write(std::uint64_t step, double time, const std::vector<double>& state, bool final_field,const diagnostic::Fields& scalars) {
     schedule.write_due(step, time, [&](const OutputZone& zone, const std::vector<unsigned>& columns) {
+        if (!zone.submesh.empty()) { write_slice(zone,columns,step,time,state,scalars); return; }
         if (!zone.wall_label.empty()) { write_wall(zone,step,time,state); return; }
         if (world_.size > 1 && zone.global) {
             write_global_fields(world_, directory_, zone, columns, layout_.selection, layout_.rows, gamma_,

@@ -134,7 +134,7 @@ void mixed_face_list(int device) {
     g.dim = 1;
     g.nodes = g.edges = 2;
     g.faces = 3;
-    g.options = residual_options("conservative", "lf", 1.4);
+    g.options = residual_options("characteristic", "lf", 1.4);
     g.surfaces = surfaces;
     g.patches = {&wall, nullptr, 1, 0, nullptr, 0};
     batch.count = 2;
@@ -296,7 +296,7 @@ void trace_limiter_test() {
     // При γ = 2 в узле ρ = 2, u = (1,0), p = 4. Кандидат имеет ρ = 4, u = (3,2), p = 12.
     // Давление ограничивает коэффициент до 1/4, тогда как плотность допускает 1/2.
     const double node[] = {2, 2, 0, 5}, normal[] = {1, 0};
-    auto options = residual_options("conservative", "roe", 2, .5, 1.5);
+    auto options = residual_options("characteristic", "roe", 2, .5, 1.5);
     double state[] = {4, 12, 8, 38};
     double flux[] = {6, 10, 8, 17};
     require(residual_detail::limit_trace(2, options, node, state, normal, flux), "limited trace");
@@ -307,7 +307,7 @@ void trace_limiter_test() {
     require(residual_detail::limit_trace(2, options, node, low, normal, nullptr), "low density trace");
     compare(Values(low, low + 4), {1, 1, 0, 4.5});
     for (double lower : {0.0, 0.5}) {
-        auto bounds = residual_options("conservative", "roe", 2, lower, 1.5);
+        auto bounds = residual_options("characteristic", "roe", 2, lower, 1.5);
         double trace[] = {2, 4, 0, 1}; // p = -3
         EulerState gas;
         require(residual_detail::limit_trace(2, bounds, node, trace, normal, nullptr, nullptr, &gas),
@@ -484,6 +484,13 @@ Result reference(const Mesh& mesh, CvView cv, const ReconstructionStencil& stenc
     }
     return out;
 }
+// Для MP5 в тестах используем характеристическую реконструкцию. MPWENO5
+// и остальные схемы дополнительно проверяем с реконструкцией потоков.
+std::vector<const char*> tested_variables(ReconstructionScheme scheme) {
+    if (scheme == ReconstructionScheme::Mp5) return {"characteristic"};
+    return {"characteristic", "flux"};
+}
+
 void edge_modes(int device) {
     const Mesh mesh = aero_test::test_mesh(1);
     const auto m = mesh.view();
@@ -503,7 +510,7 @@ void edge_modes(int device) {
         ReconstructionOptions opts;
         opts.scheme = scheme;
         auto stencil = prepare_reconstruction(mesh, opts);
-        for (const char* vars : {"conservative", "characteristic", "flux"})
+        for (const char* vars : tested_variables(scheme))
             for (const char* solver : {"lf", "roe"}) {
                 auto o = residual_options(vars, solver, gamma_gas);
                 for (double weight : {0., .4, 1.}) {
@@ -631,7 +638,7 @@ void cartesian_hybrid_limit(unsigned d, int device) {
         ReconstructionOptions st;
         st.scheme = scheme;
         const auto stencil = prepare_reconstruction(mesh, st);
-        for (const char* variables : {"conservative", "flux", "characteristic"}) {
+        for (const char* variables : tested_variables(scheme)) {
             auto options = residual_options(variables, "roe", gamma_gas);
             const auto run = [&](double h, int backend) {
                 options.mp6_hybrid = h;
@@ -677,7 +684,7 @@ void constant_test(unsigned d, int device) {
         for (unsigned k = 0; k < d; ++k)
             u[(d + 2) * n + 1 + k] = .1 * (k + 1);
     }
-    for (const char* vars : {"conservative", "characteristic", "flux"}) {
+    for (const char* vars : {"characteristic", "flux"}) {
         SpatialResidual op(m, cv, stencil, bc, residual_options(vars, "roe", gamma_gas), device);
         Result out(u.size(), cv.edge_count, cv.boundary_count);
         evaluate(device, op, u, out);
@@ -803,7 +810,7 @@ void sod_step(int device) {
     ReconstructionOptions opts;
     opts.scheme = ReconstructionScheme::FirstOrder;
     SpatialResidual op(m, cv, prepare_reconstruction(mesh, opts), free_patches(mesh),
-                       residual_options("conservative", "lf", 1.4), device);
+                       residual_options("characteristic", "lf", 1.4), device);
     Values u(3 * m.node_count);
     for (size_t n = 0; n < m.node_count; ++n) {
         u[3 * n] = m.x[n] < .5 ? 1 : .125;

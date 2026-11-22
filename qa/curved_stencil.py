@@ -6,6 +6,7 @@ from pathlib import Path
 from mpi_common import mpi_parser, mpi_workspace
 from mpi_geometry import run
 from mpi_fields import binary_snapshot
+from run import reconstruction_variables
 
 
 def annulus(path, angles, layers, planes=1, hexahedra=False):
@@ -83,7 +84,7 @@ def annulus(path, angles, layers, planes=1, hexahedra=False):
 
 def setup(case, angles, layers, end, planes=1, hexahedra=False):
     annulus(case/"grid.mesh", angles, layers, planes, hexahedra)
-    (case/"main.txt").write_text(f"mesh=grid.mesh\nreconstruction=weno5\nreconstruction_variables=conservative\n"
+    (case/"main.txt").write_text(f"mesh=grid.mesh\nreconstruction=weno5\nreconstruction_variables=characteristic\n"
                                  f"time_scheme=ssprk3\neuler_solver=roe\ncfl=.45\nbackend=cpu\nomp_threads=2\n"
                                  f"mpi_timing=1\nfinal_time={end}\nexact_solution=formula\n")
     # Точное стационарное вращение: u_theta = 0.7 r, dp/dr = rho * 0.49 r.
@@ -117,8 +118,8 @@ def packed_edges(case, aero):
     case.mkdir()
     setup(case, 192, 24, .008)
     solver = [aero, f"--input={case}"]
-    for variables in ("flux", "conservative"):
-        for scheme in ("weno3", "weno5", "mp5", "MPWENO5"):
+    for scheme in ("weno3", "weno5", "mp5", "MPWENO5"):
+        for variables in reconstruction_variables(scheme):
             # Начало с первого порядка проверяет переключение уже подготовленного пакета.
             for hybrid in ((0, 1) if scheme in ("mp5", "MPWENO5") else (0,)):
                 options = [f"main:reconstruction={scheme}", f"main:reconstruction_variables={variables}",
