@@ -24,6 +24,13 @@ cuda12_env := $(lastword $(sort $(filter CUDA_PATH_V12_%,$(.VARIABLES))))
 CUDA_HOME ?= $(shell cygpath -u "$(or $($(cuda12_env)),$(CUDA_PATH))")
 endif
 endif
+ifeq ($(kokkos_gpu),1)
+ifneq ($(OS),Windows_NT)
+ifneq ($(MAKECMDGOALS),clean)
+include source/parallel/cuda_toolkit.mk
+endif
+endif
+endif
 CUDA_HOME ?= /usr/local/cuda
 NVCC ?= $(if $(wildcard $(CUDA_HOME)/bin/nvcc),$(CUDA_HOME)/bin/nvcc,nvcc)
 CPPFLAGS ?=
@@ -57,9 +64,9 @@ override LDFLAGS += -static-libgcc -static-libstdc++
 else
 override LDFLAGS += -static
 endif
-CUDA_RUNTIME_LINK = -L$(CUDA_LIBDIR) -lcudart_static -ldl -lrt -pthread
+CUDA_RUNTIME_LINK = -L"$(CUDA_LIBDIR)" -lcudart_static -ldl -lrt -pthread
 else ifeq ($(STATIC_LINK),0)
-CUDA_RUNTIME_LINK = -L$(CUDA_LIBDIR) -lcudart
+CUDA_RUNTIME_LINK = -L"$(CUDA_LIBDIR)" -lcudart
 else
 $(error STATIC_LINK must be 0 or 1)
 endif

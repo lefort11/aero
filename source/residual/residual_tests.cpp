@@ -225,6 +225,31 @@ void local_steady_cfl() {
     const FluxCfl without_cache(grid,flux,volumes,owned,2,sa_rate,heights,conserved);
     near(without_cache.local(1,.5).dt,height_cfl.local(1,.5).dt);
     near(without_cache.local(0,.5).dt,height_cfl.local(0,.5).dt);
+    // На принятом слое газ не изменился, поэтому auto предлагает рост на 25 %.
+    // История Ньютона идёт в порядке owned, поле газа и шаги — по номерам узлов.
+    double previous[8];
+    std::copy_n(conserved+4,4,previous);
+    std::copy_n(conserved,4,previous+4);
+    AdaptiveStepChange change{};
+    change.field=conserved; change.old_field=previous; change.dim=2; change.gamma=grid.options.gamma;
+    change.fraction=1.; change.ceiling=1.25;
+    double history[]={1.,1.};
+    const LocalSteadySteps adaptive{without_cache,.5,change,history};
+    adaptive.init(range);
+    adaptive(0,range);
+    adaptive(1,range);
+    near(history[1],.125); // Для узла 1 верхнюю границу задаёт SA.
+    near(history[0],height_cfl.local(1,.5).dt);
+    history[0]=.01;
+    near(adaptive.proposed_step(1,0),.0125); // Меньший шаг из истории сохраняем.
+    const LocalSteadySteps spectral{coupled,.5,change,history};
+    near(spectral.proposed_step(0,1),.125); // Шаг газа в узле 1 ограничивает перенос SA.
+    near(spectral.proposed_step(1,0),.0125); // Здесь auto предлагает меньше спектрального предела.
+    history[0]=1.;
+    near(spectral.proposed_step(1,0),.5*expected_gas);
+    // Ускорение распространения на грани должно сразу уменьшить шаг узла 0.
+    flux[0].max_wave_speed += 2.;
+    near(spectral.proposed_step(1,0),.5/(1./expected_gas + 1.));
     // Для Linear скорость распространения определяется фоном при любых пульсациях.
     grid.packed.gas = nullptr;
     grid.options.background.rho = 1.;

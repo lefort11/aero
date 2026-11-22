@@ -19,6 +19,7 @@ gpu_config_cxx := $(KOKKOS_GPU_CXX)
 else
 gpu_config_cxx := $(kokkos_source)/bin/nvcc_wrapper
 gpu_config_env := NVCC_WRAPPER_DEFAULT_ARCH=sm_$(CUDA_ARCH) NVCC_WRAPPER_NVCC="$(KOKKOS_GPU_CXX)" NVCC_WRAPPER_DEFAULT_COMPILER="$(CXX)"
+$(gpu_config): source/parallel/cuda_toolkit.mk
 endif
 $(gpu_config): $(kokkos_stamp) source/parallel/kokkos_gpu.mk | $(llvm_ready)
 	$(call action,Configuring,Kokkos CUDA)

@@ -109,9 +109,19 @@ struct LocalSteadySteps {
         if (next.minimum < range.minimum) range.minimum = next.minimum;
         if (next.maximum > range.maximum) range.maximum = next.maximum;
     }
+    // Верхний предел узла определяет выбранный метод CFL: по высоте ячеек
+    // или по скоростям на прилегающих площадках. Оба учитывают вязкость и SA.
+    AERO_HOST_DEVICE double proposed_step(Index row, Index node) const {
+        const double ceiling = gas.local(row, courant).dt;
+        if (!change.field) return ceiling;
+        // auto может предложить меньший шаг по изменению поля за принятый шаг.
+        // Даже если поле почти не изменилось, новый шаг остаётся в пределах CFL этого узла.
+        const double next = change.next(row, node, steps[node]);
+        return next > ceiling ? ceiling : next;
+    }
     AERO_HOST_DEVICE void operator()(Index row, StepRange& range) const {
         const Index node = gas.owned ? gas.owned[row] : row;
-        double dt = change.field ? change.next(row,node,steps[node]) : gas.local(row,courant).dt;
+        double dt = proposed_step(row, node);
         if (!(dt > 0. && dt < max_finite_double)) dt = -1.;
         steps[node] = dt;
         if (dt < range.minimum) range.minimum = dt;
