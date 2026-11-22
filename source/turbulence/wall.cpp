@@ -85,12 +85,13 @@ struct WallTree {
                 best = std::min(best, squared_distance(p, faces[j]));
         } else {
             size_t a = b.left, c = b.right;
-            if (lower(c, p) < lower(a, p))
-                std::swap(a, c);
-            if (lower(a, p) < best)
-                best = nearest(a, p, best);
-            if (lower(c, p) < best)
-                best = nearest(c, p, best);
+            double near_a = lower(a,p), near_c = lower(c,p);
+            if (near_c < near_a) {
+                std::swap(a,c);
+                std::swap(near_a,near_c);
+            }
+            if (near_a < best) best = nearest(a,p,best);
+            if (near_c < best) best = nearest(c,p,best);
         }
         return best;
     }
@@ -172,7 +173,9 @@ std::vector<double> wall_distances(const MeshPartition &part, const PeriodicPart
                 shifts.push_back(s - pair.translation);
             }
         }
-        std::vector<double> inv(mesh.node_count);
+        // Без периодической склейки узел записывает расстояние сразу на своё место.
+        std::vector<double> periodic_distance(seam ? mesh.node_count : 0);
+        auto& inv = seam ? periodic_distance : result;
         parallel_for(mesh.node_count, [&](MeshIndex i) {
             if (wall[i]) {
                 inv[i] = -1.;
@@ -183,8 +186,9 @@ std::vector<double> wall_distances(const MeshPartition &part, const PeriodicPart
                 best = tree.nearest(0, mesh.coordinate(i) + s, best);
             inv[i] = best == 0. ? -1. : 1. / (std::sqrt(best) * mesh.length_scale_to_meters);
         });
+        if (!seam) return;
         for (MeshIndex i = 0; i < mesh.node_count; ++i) {
-            auto &d = result[seam ? seam->node_dof[i] : i];
+            auto &d = result[seam->node_dof[i]];
             if (d >= 0.)
                 d = inv[i] < 0. ? -1. : std::max(d, inv[i]);
         }

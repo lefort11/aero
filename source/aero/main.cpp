@@ -1,4 +1,6 @@
 #include "geometry.h"
+#include "console_log.h"
+#include "startup.h"
 #include "solver.h"
 #include "../mesh/mdec.h"
 #include <iostream>
@@ -46,7 +48,7 @@ void print_usage(std::ostream& out) {
 }
 
 // Читает постановку на каждом процессе и запускает выбранный режим.
-int run_application(int argc, char** argv, const Processes& world) {
+int run_application(int argc, char** argv, const Processes& world, ConsoleLog& log) {
     const bool no_arguments = argc == 1;
     const bool help_requested = argc == 2 && (std::string(argv[1]) == "-h" || std::string(argv[1]) == "--help");
     if (no_arguments || help_requested) {
@@ -66,6 +68,12 @@ int run_application(int argc, char** argv, const Processes& world) {
     }
     RunSettings run{};
     bool archive = false;
+    world.local([&] {
+        if (!world.rank) {
+            create_output_directory(directories.output);
+            log.open(directories.output + "/aero.log");
+        }
+    });
     // Ошибка входного файла относится к постановке, поэтому сообщаем её отдельно.
     world.local([&] {
         run = read_run_settings(directories);
@@ -94,8 +102,9 @@ int run_application(int argc, char** argv, const Processes& world) {
 int main(int argc, char** argv) {
     try {
         aero::Processes world(argc, argv);
+        aero::ConsoleLog log;
         try {
-            return run_application(argc, argv, world);
+            return run_application(argc, argv, world, log);
         } catch (const std::exception& error) {
             // Выводим причину до коллективного завершения MPI.
             return report_error(error, world.rank);

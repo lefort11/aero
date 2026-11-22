@@ -139,11 +139,13 @@ void validate_output_zones(const std::vector<OutputZone>& zones) {
             throw std::invalid_argument(prefix+"wall_label requires variables = Cp");
         // Проверяем, могут ли две зоны при каком-либо шаге записать в один и тот же файл.
         const auto key = output_path_key(z.file);
+        const auto snapshot = output_path_key(output_filename(z, 1));
+        const auto first = snapshot.substr(0, snapshot.find('/'));
+        if (first == "aero.log" || first == "control.txt")
+            throw std::invalid_argument(prefix + "field output overlaps a solver file: " + z.file);
         if (z.global) {
             if (z.format != FieldFormat::Binary)
                 throw std::invalid_argument(prefix + "layout = global requires format = binary");
-            const auto path = output_path_key(output_filename(z, 1));
-            const auto first = path.substr(0, path.find('/'));
             if (first == "recovery-0.bin" || first == "recovery-1.bin" || first == "recovery.lock")
                 throw std::invalid_argument(prefix + "field output overlaps recovery data: " + z.file);
         }

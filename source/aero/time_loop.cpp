@@ -131,8 +131,11 @@ void integrate_time(const RunSettings& run, const Processes& world, OutputSchedu
                     const StepOperations& operations) {
     std::uint64_t number = recovery.step;
     double time = recovery.time;
-    if (!world.rank)
-        std::cout << "Starting time integration\n";
+    // Даже при выводе в файл сообщение должно появиться до первого шага на любом процессе MPI.
+    world.local([&] {
+        if (!world.rank)
+            std::cout << "Starting time integration" << std::endl;
+    });
     // При продолжении расчёта пропускаем уже записанные снимки.
     if (number)
         world.local([&] { output.resume(number, time); });

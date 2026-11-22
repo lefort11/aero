@@ -1,5 +1,6 @@
 #pragma once
 #include "sa.h"
+#include "../parallel/parallel_for.h"
 #include "../aero/mpi_periodic.h"
 
 namespace aero {
@@ -36,15 +37,16 @@ struct Storage {
                 longest = std::max(longest, static_cast<size_t>(rows[j].end - rows[j].first));
             return longest * lanes;
         };
-        size_t total = 0;
-        for (size_t i = 0; i < rows.size(); i += lanes)
-            total += padded(i);
-        if (total > terms.size() + terms.size() / 2)
+        // Отдельная группа из 32 строк пишет только в свой диапазон packed.
+        const size_t groups = (rows.size() + lanes - 1) / lanes;
+        std::vector<size_t> offsets(groups + 1);
+        for (size_t group = 0; group < groups; ++group)
+            offsets[group+1] = offsets[group] + padded(group*lanes);
+        if (offsets.back() > terms.size() + terms.size() / 2)
             return 1;
-        std::vector<T> packed(total);
-        size_t base = 0;
-        for (size_t i = 0; i < rows.size(); i += lanes) {
-            const auto block = padded(i);
+        std::vector<T> packed(offsets.back());
+        parallel_for(groups, [&](size_t group) {
+            const auto i = group * lanes, base = offsets[group];
             for (size_t j = i; j < std::min(i + lanes, rows.size()); ++j) {
                 auto cursor = base + j - i;
                 const auto row = rows[j];
@@ -52,15 +54,16 @@ struct Storage {
                     packed[cursor] = terms[k];
                 rows[j] = {base + j - i, cursor};
             }
-            base += block;
-        }
+        }, 32);
         terms.swap(packed);
         return lanes;
     }
 
     template <class Grid> void prepare_faces(const Grid &grid, View &view, bool host) {
-        for (MeshIndex i = 0; i < grid.nodes; ++i) {
-            const auto first = face_terms.size();
+        // В списке инцидентности уже есть место для каждого вклада, включая граничные.
+        face_terms.resize(grid.nodes ? grid.offsets[grid.nodes] : 0);
+        face_rows.resize(grid.nodes);
+        parallel_for(grid.nodes, [&](MeshIndex i) {
             for (auto k = grid.offsets[i]; k < grid.offsets[i + 1]; ++k) {
                 const auto link = grid.incidence[k];
                 const auto f = link.face();
@@ -70,10 +73,10 @@ struct Storage {
                 const double weight = link.outward_flux(interior ? .5 : 1.);
                 for (unsigned d = 0; d < grid.dim; ++d)
                     term.area[d] = weight * face.area[d];
-                face_terms.push_back(term);
+                face_terms[k] = term;
             }
-            face_rows.push_back({first, face_terms.size()});
-        }
+            face_rows[i] = {grid.offsets[i], grid.offsets[i+1]};
+        });
         face_stride = arrange(host, face_rows, face_terms);
         // Компактная запись допустима только при точном нуле двух компонент.
         // Уже одна косая площадка сохраняет общий обход для всей подобласти.
@@ -87,12 +90,13 @@ struct Storage {
             }
         }
         if (axial) {
-            axis_faces.reserve(face_terms.size());
-            for (const auto& f:face_terms) {
+            axis_faces.resize(face_terms.size());
+            parallel_for(face_terms.size(), [&](size_t i) {
+                const auto& f = face_terms[i];
                 const unsigned axis=f.area[1]!=0. ? 1 : (f.area[2]!=0. ? 2 : 0);
-                axis_faces.push_back({static_cast<std::uint32_t>(4*f.encoded+axis),
-                                      static_cast<std::uint32_t>(f.neighbour),f.area[axis]});
-            }
+                axis_faces[i] = {static_cast<std::uint32_t>(4*f.encoded+axis),
+                                      static_cast<std::uint32_t>(f.neighbour),f.area[axis]};
+            });
             std::vector<FaceTerm>().swap(face_terms);
         }
         if (!host && !axial && !face_terms.empty() &&
@@ -103,12 +107,12 @@ struct Storage {
             face_orientations.resize(count);
             face_neighbours.resize(count);
             face_areas.resize(grid.dim*count);
-            for (MeshIndex i=0; i<count; ++i) {
+            parallel_for(count, [&](MeshIndex i) {
                 const auto& f=face_terms[i];
                 face_orientations[i]=static_cast<std::uint32_t>(f.encoded);
                 face_neighbours[i]=static_cast<std::uint32_t>(f.neighbour);
                 for (unsigned d=0; d<grid.dim; ++d) face_areas[d*count+i]=f.area[d];
-            }
+            });
             std::vector<FaceTerm>().swap(face_terms);
         }
         view.face_stride = face_stride;

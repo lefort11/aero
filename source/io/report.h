@@ -30,6 +30,8 @@ struct ReportDetails {
     std::string scheme, stabilization, steady_criterion;
     double max_local_step = 0.; // Ненулевой при локальном установлении; dt отчёта хранит минимум.
     bool linear = false;
+    std::vector<unsigned> correction_iterations; // В порядке поправок текущего шага.
+    unsigned solver_max_iter = 0;
     unsigned iterations = 0, max_iterations = 0;
     double relative_steady_residual = 0.;
     double newton_residual = 0., newton_tol = 0., steady_residual = 0., steady_tol = 0.;

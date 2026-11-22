@@ -9,6 +9,7 @@ AERO_HEADERS := source/aero/run_control.h source/aero/exact_error.h source/io/ex
 AERO_LIBS := $(IMPLICIT_LIBRARY) $(RES_LIB) $(INITIAL_LIB) $(TIMESTEP_LIBRARY) $(EXPLICIT_LIBRARY) $(IO_LIBRARY) $(RES_DEPS)
 AERO_SOURCES += $(wildcard source/viscosity/aes.cpp source/viscosity/grad.cpp) $(if $(wildcard source/viscosity/transport.h),$(wildcard source/turbulence/*.cpp))
 AERO_HEADERS += source/io/flow_values.h
+AERO_HEADERS += source/aero/console_log.h
 AERO_HEADERS += source/implicit/implicit_settings.h source/implicit/bdf1_step.h source/implicit/partition.h
 AERO_HEADERS += source/aero/geometry.h source/aero/case_geometry.h source/mesh/mdec.h source/mesh/partition.h source/mesh/mesh_reader.h source/parallel/processes.h
 AERO_HEADERS += source/aero/recovery.h source/aero/indexed_io.h source/aero/mpi_fields.h source/aero/solver.h source/timestep/cfl_detail.h source/explicit/explicit_stage.h source/residual/residual_detail.h

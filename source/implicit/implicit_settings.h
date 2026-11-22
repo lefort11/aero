@@ -2,6 +2,8 @@
 #define AERO_IMPLICIT_SETTINGS_H
 namespace aero {
 namespace implicit {
+constexpr unsigned default_solver_max_iter = 200;
+
 // Три независимых настройки линейной системы. Их передают вместе, чтобы
 // порядок логических аргументов не мог случайно переключить численный метод.
 struct MatrixSettings {
@@ -21,6 +23,7 @@ struct NewtonSettings : MatrixSettings {
         else if (!jacobian_update_every) jacobian_update_every = 1;
     }
     bool second_order = false;      // BDF2 использует два последних принятых состояния.
+    unsigned linear_max_iterations = default_solver_max_iter; // Предел итераций BiCGSTAB для одной правой части.
     double linear_relative = 1.e-8; // Норма линейной невязки относительно нормы текущей правой части.
     double newton_relative = 1.e-6; // Норма невязки BDF относительно начального значения на этом шаге.
     unsigned max_iterations = 20;   // Предельное число поправок к состоянию за один шаг по времени.

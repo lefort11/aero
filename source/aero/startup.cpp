@@ -45,7 +45,7 @@ void stage(const char* name) {
     std::cout << name << "... " << std::flush;
 }
 void done() {
-    std::cout << "done\n";
+    std::cout << "done" << std::endl;
 }
 std::string settings_text(const std::string& path) {
     auto in = settings_detail::open(path);
@@ -126,7 +126,8 @@ void show_settings(const RunSettings& r) {
     if (r.uses_implicit_time())
         std::cout <<  "solver = BiCGSTAB\njacobian_flux = " << (r.implicit_settings.roe ? "Roe" : "LF")
                   << "\npreconditioner = " << (r.implicit_settings.csgs ? "CSGS" : "BJ") << "\nsolver_tol = "
-                  << r.implicit_settings.linear_relative << "\nnewton_tol = " << r.implicit_settings.newton_relative
+                  << r.implicit_settings.linear_relative << "\nsolver_max_iter = " << r.implicit_settings.linear_max_iterations
+                  << "\nnewton_tol = " << r.implicit_settings.newton_relative
                   << "\nsimplified_jacobian = " << (r.implicit_settings.simplified_jacobian ? "on" : "off")
                   << "\nsimplified_newton = " << (r.implicit_settings.simplified_newton() ? "on" : "off")
                   << "\njacobian_update_every = " << r.implicit_settings.jacobian_update_every

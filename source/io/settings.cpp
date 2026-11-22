@@ -354,6 +354,11 @@ RunSettings read_run_settings(const RunDirectories& directories) {
             if (!run.steady_max_steps) throw std::invalid_argument("implicit.txt: steady_max_steps must be positive");
         }
         controls.linear_relative = relative("solver_tol");
+        if (settings.contains("solver_max_iter")) {
+            controls.linear_max_iterations = settings.count<unsigned>("solver_max_iter");
+            if (!controls.linear_max_iterations)
+                throw std::invalid_argument("implicit.txt: solver_max_iter must be positive");
+        }
         controls.newton_relative = relative("newton_tol");
         controls.max_iterations = settings.count<unsigned>("newton_max_iter");
         if (!controls.max_iterations) throw std::invalid_argument("implicit.txt: newton_max_iter must be positive");

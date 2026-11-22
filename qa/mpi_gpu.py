@@ -205,7 +205,8 @@ def verify(case, aero, meshdec, launcher, devices, fixture, scheme, recon, empty
         configure(mpi_gpu_memory_mib=(required - 1) / 1048576)
         out = case / "too-small"
         failure = run([launcher, "-n", 2, aero, f"--input={case}", f"--output={out}"], success=False)
-        if "MPI GPU memory" not in failure or out.exists() or "Starting time integration" in failure:
+        if ("MPI GPU memory" not in failure or sorted(p.name for p in out.iterdir()) != ["aero.log"]
+                or "MPI GPU memory" not in (out / "aero.log").read_text() or "Starting time integration" in failure):
             raise AssertionError(failure)
         print("OK indivisible leaf exceeds both device budgets before output")
         (case / "cuda.txt").write_text("devices = 0\n")

@@ -79,25 +79,40 @@ bool Storage::pack_dense_rows(MeshIndex possible,std::vector<DiffusionBlock<lane
     if (!possible || diffusion_terms.size()<=possible-possible/3 ||
         distance.size()>UINT32_MAX || element_count>UINT32_MAX) return false;
     std::vector<RowRange> rows(diffusion_rows.size());
-    size_t tile_count=0;
-    for (size_t first=0;first<rows.size();first+=lanes) {
-        size_t longest=0;
+    // Сначала нумеруем строки внутри каждой независимой плитки. Глобальный
+    // адрес станет известен после суммирования высот плиток.
+    const size_t groups = (rows.size()+lanes-1)/lanes;
+    std::vector<size_t> offsets(groups+1);
+    std::vector<unsigned char> too_wide(groups);
+    parallel_for(groups,[&](size_t group) {
+        const size_t first = group*lanes;
+        size_t longest = 0;
         for (size_t i=first;i<std::min(first+lanes,rows.size());++i) {
             const auto row=diffusion_rows[i];
-            size_t groups=0;
-            for (auto p=row.first;p<row.end;++p)
-                groups+=p==row.first || diffusion_terms[p].element!=diffusion_terms[p-1].element;
-            const size_t begin=tile_count*lanes+i-first;
-            rows[i]={begin,begin+groups*lanes};
-            longest=std::max(longest,groups);
+            size_t elements=0, neighbours=0;
+            for (auto p=row.first;p<row.end;++p) {
+                if (p==row.first || diffusion_terms[p].element!=diffusion_terms[p-1].element) {
+                    ++elements;
+                    neighbours=0;
+                }
+                if (++neighbours>DiffusionBlock<lanes>::neighbours) too_wide[group]=1;
+            }
+            rows[i]={i-first,i-first+elements*lanes};
+            longest=std::max(longest,elements);
         }
-        tile_count+=longest;
-    }
+        offsets[group+1]=longest;
+    },32);
+    if (std::find(too_wide.begin(),too_wide.end(),1)!=too_wide.end()) return false;
+    for (size_t g=0;g<groups;++g) offsets[g+1]+=offsets[g];
+    const auto tile_count=offsets.back();
     // Плитка полезна лишь при плотном заполнении. Ограничиваем выделение
     // объёмом уже построенной таблицы пар даже для неоднородной сетки.
     if (tile_count>diffusion_terms.size()*sizeof(DiffusionTerm)/sizeof(DiffusionBlock<lanes>)) return false;
     blocks.resize(tile_count);
-    for (size_t i=0;i<rows.size();++i) {
+    parallel_for(rows.size(),[&](size_t i) {
+        const size_t base=offsets[i/lanes]*lanes;
+        rows[i].first+=base;
+        rows[i].end+=base;
         const auto row=diffusion_rows[i];
         size_t tile=rows[i].first/lanes, lane=i%lanes;
         for (auto p=row.first;p<row.end;++tile) {
@@ -110,14 +125,10 @@ bool Storage::pack_dense_rows(MeshIndex possible,std::vector<DiffusionBlock<lane
                 t.node[j][lane]=static_cast<std::uint32_t>(term.neighbour);
                 t.geometry[j++][lane]=term.geometry;
                 t.diagonal[lane]+=std::abs(term.geometry);
-            } while (p<row.end && diffusion_terms[p].element==element && j<DiffusionBlock<lanes>::neighbours);
-            if (p<row.end && diffusion_terms[p].element==element) {
-                std::vector<DiffusionBlock<lanes>>().swap(blocks);
-                return false;
-            }
+            } while (p<row.end && diffusion_terms[p].element==element);
             for (;j<DiffusionBlock<lanes>::neighbours;++j) t.node[j][lane]=static_cast<std::uint32_t>(i);
         }
-    }
+    });
     diffusion_rows.swap(rows);
     std::vector<DiffusionTerm>().swap(diffusion_terms);
     return true;
@@ -164,8 +175,10 @@ void Storage::prepare_lines(const std::vector<MeshIndex>& owned) {
     const Link none{missing,0.};
     using Pair=std::array<Link,2>;
     std::vector<Pair> preferred(distance.size(),Pair{{none,none}});
-    for (auto i:owned) {
-        if (distance[i]<0.) continue;
+    // Каждый исполнитель выбирает сильные связи только для своих строк.
+    parallel_for(owned.size(), [&](size_t row_index) {
+        const auto i = owned[row_index];
+        if (distance[i]<0.) return;
         std::map<MeshIndex,double> geometry;
         const auto row=diffusion_rows[i];
         for (auto p=row.first;p<row.end;++p) geometry[diffusion_terms[p].neighbour]+=diffusion_terms[p].geometry;
@@ -175,16 +188,19 @@ void Storage::prepare_lines(const std::vector<MeshIndex>& owned) {
             for (auto& current:strongest) if (next.weight>current.weight) std::swap(next,current);
         }
         // При сравнимой связи в третьем направлении точечные итерации остаются дешевле.
-        if (strongest[0].weight<=4.*strongest[2].weight) continue;
+        if (strongest[0].weight<=4.*strongest[2].weight) return;
         preferred[i][0]=strongest[0];
         if (strongest[1].weight>.125*strongest[0].weight) preferred[i][1]=strongest[1];
-    }
+    });
     std::vector<Pair> links(distance.size(),Pair{{none,none}});
-    for (auto i:owned) for (unsigned k=0;k<2;++k) {
-        const auto edge=preferred[i][k];
-        if (edge.node!=missing && (preferred[edge.node][0].node==i || preferred[edge.node][1].node==i))
-            links[i][k]=edge;
-    }
+    parallel_for(owned.size(), [&](size_t row_index) {
+        const auto i = owned[row_index];
+        for (unsigned k=0;k<2;++k) {
+            const auto edge=preferred[i][k];
+            if (edge.node!=missing && (preferred[edge.node][0].node==i || preferred[edge.node][1].node==i))
+                links[i][k]=edge;
+        }
+    });
     // Сначала посещаем свободные концы. Оставшиеся замкнутые линии (периодичность)
     // начинаем с первого ещё не посещённого узла. Между отрезками связь остаётся в невязке.
     std::vector<bool> seen(distance.size());
@@ -217,10 +233,12 @@ void Storage::prepare_lines(const std::vector<MeshIndex>& owned) {
 void Storage::prepare_diffusion(const viscosity::Operator& aes,View& view,bool host,bool implicit,
                                 const std::vector<MeshIndex>* steady_nodes) {
     element_count = aes.cell_count;
-    diffusion_rows.reserve(aes.row_count);
+    diffusion_rows.resize(aes.row_count);
     const double scale = (aes.law.gamma - 1.) * aes.law.prandtl / (aes.law.gamma * sigma);
-    for (MeshIndex node = 0; node < aes.row_count; ++node) {
-        const auto first = diffusion_terms.size();
+    // Одинаковый обход сначала определяет длину строки, затем заполняет её диапазон.
+    // Порядок слагаемых внутри узла совпадает с порядком элементов в таблице AES.
+    const auto build_row = [&](MeshIndex node, DiffusionTerm* output) {
+        size_t count = 0;
         for (auto pos = aes.offsets[node]; pos < aes.offsets[node + 1]; ++pos) {
             const auto entry = aes.incidence[pos], e = entry / 8;
             const unsigned i = static_cast<unsigned>(entry % 8);
@@ -228,12 +246,28 @@ void Storage::prepare_diffusion(const viscosity::Operator& aes,View& view,bool h
             for (unsigned j = 0; j < cell.count; ++j)
                 if (cell.node[j] != node) {
                     const double heat = aes.stencil.metric(cell, i, j).heat;
-                    if (heat != 0.)
-                        diffusion_terms.push_back({e, cell.node[j], -heat * scale});
+                    if (heat != 0.) {
+                        if (output) output[count] = {e, cell.node[j], -heat * scale};
+                        ++count;
+                    }
                 }
         }
-        diffusion_rows.push_back({first, diffusion_terms.size()});
+        return count;
+    };
+    parallel_for(aes.row_count, [&](MeshIndex node) {
+        diffusion_rows[node].end = build_row(node, nullptr);
+    });
+    size_t total = 0;
+    for (auto& row : diffusion_rows) {
+        row.first = total;
+        total += row.end;
+        row.end = total;
     }
+    diffusion_terms.resize(total);
+    parallel_for(aes.row_count, [&](MeshIndex node) {
+        const auto row = diffusion_rows[node];
+        if (row.first != row.end) build_row(node, diffusion_terms.data()+row.first);
+    });
     // В CPU-кэше удобно обходить вершины одного элемента. На GPU соседние
     // исполнители получают более короткое чтение из чередующихся строк пар.
     // В BDF при каждой скалярной итерации повторно считаем среднюю вязкость.
@@ -255,10 +289,12 @@ void Storage::prepare_diffusion(const viscosity::Operator& aes,View& view,bool h
         }
     }
     if (distance.size()<=UINT32_MAX && element_count<=UINT32_MAX && !diffusion_terms.empty()) {
-        local_terms.reserve(diffusion_terms.size());
-        for (const auto& term:diffusion_terms)
-            local_terms.push_back({static_cast<std::uint32_t>(term.element),
-                                   static_cast<std::uint32_t>(term.neighbour),term.geometry});
+        local_terms.resize(diffusion_terms.size());
+        parallel_for(local_terms.size(), [&](size_t i) {
+            const auto& term=diffusion_terms[i];
+            local_terms[i]={static_cast<std::uint32_t>(term.element),
+                                   static_cast<std::uint32_t>(term.neighbour),term.geometry};
+        });
         std::vector<DiffusionTerm>().swap(diffusion_terms);
     }
     view.diffusion.short_blocks = aes.cell_count && std::all_of(aes.cells,aes.cells+aes.cell_count,

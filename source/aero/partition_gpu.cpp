@@ -230,6 +230,8 @@ void PartitionGpu::layout(residual_detail::Geometry g,
     }
 }
 bool PartitionGpu::reserve(GpuMemoryFit& fit, MeshIndex implicit_bytes) {
+    fit.array_count = storage_.array_count;
+    fit.layout_bytes = storage_.used;
     fit.required = partition_bytes(storage_.used, 1, implicit_bytes);
     if (fit.required > fit.budget)
         return false;

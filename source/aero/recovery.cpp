@@ -317,6 +317,8 @@ void Recovery::restore(std::vector<double>& state, std::vector<double>& initial)
         if (!valid[s])
             continue;
         try {
+            if (!world_.rank)
+                std::cout << "Reading recovery file " << path(s) << "..." << std::endl;
             has_samples=valid[s]==2;
             history.dt=saved_dt[s];
             world_.local([&] {
@@ -364,7 +366,7 @@ void Recovery::restore(std::vector<double>& state, std::vector<double>& initial)
         step = steps[s];
         require(run_.steady() || time <= run_.final_time, "final_time precedes the saved time");
         if (!world_.rank)
-            std::cout << "Recovered step " << step << " at time " << time << " from " << path(s) << '\n';
+            std::cout << "Recovered step " << step << " at time " << time << " from " << path(s) << std::endl;
         if (!run_.output_zones.empty()) {
             const std::string prefix = run_.directories.output + "/resumed-" + std::to_string(step) + "-";
             Id number = 0;

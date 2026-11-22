@@ -1,4 +1,6 @@
 #include "bdf1_step.h"
+#include "linear_iteration_report.h"
+#include <utility>
 #include "bdf1_linear_system.h"
 #include "newton_vectors.h"
 #include "../parallel/parallel_for.h"
@@ -273,6 +275,7 @@ NewtonResult BdfStep::advance(double* state, const double* initial, const double
     const double initial_norm = s.residual_norm(operation(NewtonUpdate::InitialRhs, 1.));
     LinearTolerance tolerance;
     tolerance.relative = settings.linear_relative;
+    tolerance.max_iterations = settings.linear_max_iterations;
     const auto residual_norm = [&] {
         return s.residual_norm(operation(NewtonUpdate::FormRhs, 1.));
     };
@@ -284,6 +287,7 @@ NewtonResult BdfStep::advance(double* state, const double* initial, const double
         // числе если предиктор сразу дал хорошее начальное приближение.
         s.begin_matrix_step(settings);
         unsigned assemblies = 0, linear_iterations = 0;
+        std::vector<unsigned> correction_iterations;
         double norm = initial_norm;
         if (!std::isfinite(norm)) throw std::domain_error("BDF: nonfinite nonlinear residual");
         bool viscous = false;
@@ -317,19 +321,22 @@ NewtonResult BdfStep::advance(double* state, const double* initial, const double
                 if (settings.second_order) std::swap(s.previous, s.start);
                 s.previous_dt = settings.second_order ? dt : 0.;
                 if (s.cached && !s.grid.options.background.active()) ++s.accepted_since_build;
-                return {iteration, relative, linear_iterations, assemblies};
+                return {iteration, relative, linear_iterations, std::move(correction_iterations), assemblies};
             }
             // Диагональ пространственной части берётся из баланса потоков. Временной
             // вклад a*V/dt добавляется при сборке системы для текущей поправки.
             if (!spatial_predictor || iteration != 0)
                 assemblies += s.prepare_matrix(state, initial, volumes, dt / leading, settings, iteration);
             const auto result = s.linear.solve_with_rhs_norm(s.rhs, s.correction, tolerance, norm);
+            correction_iterations.push_back(result.iterations);
             linear_iterations += result.iterations;
             if (result.status != LinearStatus::Converged) {
                 std::ostringstream message;
                 message << "BiCGSTAB " << (result.status == LinearStatus::Breakdown ? "breakdown" : "iteration limit")
                         << " at Newton iteration " << iteration + 1 << ", linear relative residual = "
                         << result.residual_norm / norm;
+                message << ", BiCGSTAB iterations: ";
+                write_linear_iterations(message, correction_iterations, tolerance.max_iterations);
                 throw LinearSolveFailure(message.str());
             }
             update(NewtonUpdate::AddCorrection);

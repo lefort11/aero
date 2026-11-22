@@ -2,13 +2,46 @@
 #include "../io/settings_text.h"
 #include "../io/number_codec.h"
 #include "../parallel/processes.h"
-#include <cerrno>
 #include <cstdio>
 #include <iostream>
+#include <memory>
 #include <set>
 #include <sstream>
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace aero {
+void ControlFile::open(const std::string& directory) {
+    path_ = directory + "/control.txt";
+    // Режим добавления создаёт пустой файл и сохраняет заранее заданные команды.
+    std::ofstream create(path_, std::ios::app);
+    if (!create) throw std::runtime_error("Cannot create " + path_);
+}
+
+std::string ControlFile::read_and_clear() const {
+    std::unique_ptr<std::FILE, decltype(&std::fclose)> file(std::fopen(path_.c_str(), "r+b"), &std::fclose);
+    if (!file) throw std::runtime_error("Cannot open " + path_);
+    std::string commands;
+    char block[4096];
+    while (const auto count = std::fread(block, 1, sizeof(block), file.get()))
+        commands.append(block, count);
+    if (std::ferror(file.get())) throw std::runtime_error("Cannot read " + path_);
+    if (commands.empty()) return commands;
+
+    // Очищаем именно прочитанный файл. Если редактор подменил его новым при сохранении,
+    // новый набор команд останется по исходному пути до следующей проверки.
+#ifdef _WIN32
+    const int status = _chsize(_fileno(file.get()), 0);
+#else
+    const int status = ftruncate(fileno(file.get()), 0);
+#endif
+    if (status != 0) throw std::runtime_error("Cannot clear " + path_);
+    return commands;
+}
+
 void RunControl::parse(const std::string& commands, std::ostream* warnings) {
     std::istringstream in(commands);
     std::set<std::string> keys;
@@ -54,7 +87,7 @@ void RunControl::parse(const std::string& commands, std::ostream* warnings) {
         if (!keys.insert(key).second) throw std::invalid_argument("duplicate " + key);
         accepted_.push_back(eq == std::string::npos ? key : key + " = " + argument());
     }
-    if (!has_commands) throw std::invalid_argument("empty command file");
+    if (!has_commands) return;
     const bool limits_changed = keys.count("cfl_min") || keys.count("cfl_max") || keys.count("cfl_coeff") || keys.count("cfl_num_steps");
     change_cfl = explicit_cfl || limits_changed;
     if (upwind < 0 || upwind > 1 || hybrid < 0 || hybrid > 1)
@@ -66,23 +99,14 @@ void RunControl::parse(const std::string& commands, std::ostream* warnings) {
     limits.validate(cfl, "control.txt");
 }
 
-bool RunControl::read(const std::string& directory, const Processes& world) {
-    const std::string path = directory + "/control.txt", claimed = path + ".reading";
+bool RunControl::read(const ControlFile& file, const Processes& world) {
     std::string commands;
-    // Только master забирает файл. Следующую команду уже можно публиковать под исходным именем.
-    if (!world.rank && std::rename(path.c_str(), claimed.c_str()) == 0) {
+    if (!world.rank) {
         try {
-            auto file = settings_detail::open(claimed);
-            std::ostringstream contents;
-            contents << file.rdbuf();
-            if (file.bad()) throw std::runtime_error("read error");
-            commands = contents.str();
-            if (commands.empty()) throw std::runtime_error("empty file");
+            commands = file.read_and_clear();
         } catch (const std::exception& e) {
             std::cerr << "Control rejected: " << e.what() << std::endl;
-            commands.clear();
         }
-        if (std::remove(claimed.c_str())) std::cerr << "Cannot remove " << claimed << std::endl;
     }
     if (world.size > 1) world.broadcast(commands, 0);
     if (commands.empty()) return false;

@@ -26,7 +26,7 @@ ifneq ($(wildcard source/explicit/explicit.h),)
 REPORT_OBJECTS += $(BUILD)/report_explicit.o
 endif
 endif
-$(BUILD)/report.o: $(IO_DIR)/report.cpp $(IO_DIR)/report.h source/eulersolver/euler.h source/parallel/parallel_for.h | $(BUILD)
+$(BUILD)/report.o: $(IO_DIR)/report.cpp source/implicit/linear_iteration_report.h $(IO_DIR)/report.h source/eulersolver/euler.h source/parallel/parallel_for.h | $(BUILD)
 	$(compiling)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
 $(BUILD)/report_explicit.o: $(IO_DIR)/report_explicit.cpp $(IO_DIR)/report.h source/explicit/explicit.h | $(BUILD)

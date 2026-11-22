@@ -97,6 +97,8 @@ void test_bdf1_step(int device) {
         const auto step = limited.advance(state.data(), nullptr, volumes.data(), active_flux, dt, controls, refresh);
         BdfHistory history;
         limited.export_history(history);
+        require(step.correction_iterations.size() == 1 && step.correction_iterations.front() == step.linear_iterations,
+                "BiCGSTAB count for the applied Newton correction");
         require(step.iterations == 1 && std::isfinite(step.relative_residual) &&
                 step.relative_residual > controls.newton_relative, "Newton iteration cap");
         require(state.read() != initial && history.dt == dt && history.previous == initial,
@@ -195,6 +197,7 @@ void test_bdf1_step(int device) {
     // Однородное состояние должно приниматься без вызова линейного решателя.
     state.set({1., 0., 2.5, 1., 0., 2.5});
     const auto uniform = advance();
+    require(uniform.correction_iterations.empty(), "no linear solve for a uniform field");
     require(uniform.iterations == 0 && uniform.relative_residual == 0., "uniform state needs no correction");
     require(solver.spatial_rate_norm(volumes.data(), active_flux) == 0., "uniform spatial residual");
     state.set(initial);

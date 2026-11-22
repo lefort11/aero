@@ -25,6 +25,7 @@ class PartitionGpu {
         // Базовый адрес одной области GPU. До резервирования указатель пуст и вычисляется только размер.
         unsigned char* base = nullptr;
         std::size_t used = 0, capacity = 0;
+        std::size_t array_count = 0; // Число непустых массивов в общей области GPU.
         ~Storage();
         template <class T> T* allocate(std::size_t n, const T* host = nullptr) {
             if (!n)
@@ -38,8 +39,10 @@ class PartitionGpu {
                 throw std::length_error("GPU allocation too large");
             used = offset + n * sizeof(T);
             // Первый проход тем же кодом даёт точное требование к памяти без выделения отдельных массивов.
-            if (!base)
+            if (!base) {
+                ++array_count;
                 return nullptr;
+            }
             if (used > capacity)
                 throw std::logic_error("GPU layout exceeded reserved storage");
             T* data = reinterpret_cast<T*>(base + offset);

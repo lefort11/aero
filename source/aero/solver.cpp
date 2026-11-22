@@ -173,9 +173,13 @@ public:
         runtime_steady_steps_ = true;
     }
 
+    void prepare_control_file() {
+        if (!world_.rank) control_file_.open(run_.directories.output);
+    }
+
     bool control(Id step) {
         RunControl command(run_, courant());
-        if (!command.read(run_.directories.output, world_)) return false;
+        if (!command.read(control_file_, world_)) return false;
         if (command.change_steady_steps) set_steady_steps(command.local_time_step, command.local_time_step_max_ratio);
         if (command.reset) reset_marks();
         if (command.change_cfl) {
@@ -376,6 +380,8 @@ public:
         for (char& c : details.scheme) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
         details.linear = run_.background.active();
         if (run_.uses_implicit_time()) {
+            details.correction_iterations = newton_.correction_iterations;
+            details.solver_max_iter = run_.implicit_settings.linear_max_iterations;
             details.iterations = newton_.iterations;
             details.max_iterations = run_.implicit_settings.max_iterations;
             details.newton_residual = newton_.relative_residual;
@@ -494,6 +500,7 @@ private:
 
     PartitionOperator& op_;              // Потоки, обновление узлов и обмен с соседями.
     PartitionState& fields_;             // Исходное и текущее состояния подобласти.
+    ControlFile control_file_;           // Файл команд в корне --output сохраняется и при продолжении.
     const Processes& world_;             // Процессы, участвующие в общем шаге.
     bool runtime_steady_steps_ = false; // Параметры псевдошага из control.txt сохраняются и при stabilization=off.
     bool runtime_settings_ = false; // Записываем ручные настройки вместе с полем для --recover.
@@ -590,8 +597,17 @@ prepare_partition_operator(const RunSettings& run, const ReconstructionOptions& 
 #ifdef AERO_HAS_TURBULENCE
     if(run.turbulence.uses_sa()) {
         if (single) stage("Preparing SA transport");
-        op->prepare_sa(part,seam,boundaries.patches,boundaries.periodic_pairs,run.turbulence,run.use_cuda,run.uses_implicit_time(),run.time_scheme=="steady");
+        double seconds = 0.;
+        {
+            WallTimer timer(run.mpi_timing ? &seconds : nullptr);
+            op->prepare_sa(part,seam,boundaries.patches,boundaries.periodic_pairs,run.turbulence,
+                           run.use_cuda,run.uses_implicit_time(),run.steady());
+        }
         if (single) done();
+        if (run.mpi_timing) {
+            const double slowest = world.reduce_double(seconds,true);
+            if (!world.rank) std::cout << "SA transport preparation (s) = " << slowest << '\n';
+        }
     }
 #endif
 #endif
@@ -612,6 +628,8 @@ bool prepare_gpu_memory(PartitionOperator& op, const MeshPartition& part, const 
                         const Processes& world, bool compact, GpuMemoryFit& fit) {
     const bool single = world.size == 1;
     world.local([&] {
+        if (!world.rank)
+            std::cout << "Reserving GPU memory..." << std::endl;
         if (single) {
             fit.budget = std::numeric_limits<Id>::max();
         } else {
@@ -640,7 +658,21 @@ bool prepare_gpu_memory(PartitionOperator& op, const MeshPartition& part, const 
             return false;
         }
     }
+    // Размер берём из той же раскладки, по которой сейчас будут загружены массивы.
+    std::ostringstream placement;
+    if (!single)
+        placement << "Rank " << world.rank << ": ";
+    placement << "Placing " << fit.array_count << " arrays on GPU ("
+              << std::fixed << std::setprecision(6) << static_cast<double>(fit.layout_bytes) / 1.e9 << " GB)...";
+    const auto lines = single ? Processes::Messages{placement.str()} : world.gather_text(placement.str());
+    if (!world.rank) {
+        for (const auto& line : lines)
+            std::cout << line << '\n';
+        std::cout.flush();
+    }
     world.local([&] { op.layout_gpu(compact); });
+    if (!world.rank)
+        std::cout << "GPU arrays ready." << std::endl;
     return true;
 }
 #endif
@@ -800,6 +832,7 @@ int run_partition(RunSettings run, const ReconstructionOptions& reconstruction, 
     const auto hash = archive ? part.mesh_sha256 : FieldSnapshot::mesh_fingerprint(part.mesh);
     Recovery recovery(run, world, part.global_counts[0], mesh.dimension, hash, file_layout.rows);
     world.local([&] {
+        stepper.prepare_control_file();
         if (!single) {
             stencil_peak = process_peak_kib();
         }

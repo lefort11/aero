@@ -22,6 +22,7 @@ struct NewtonResult {
     unsigned iterations;       // Сколько поправок применили к полю.
     double relative_residual;  // Отношение норм после последней проверки полного уравнения выбранной схемы BDF.
     unsigned linear_iterations; // Сумма итераций BiCGSTAB по всем поправкам на шаге.
+    std::vector<unsigned> correction_iterations; // Итерации BiCGSTAB отдельно для каждой поправки Ньютона.
     unsigned jacobian_assemblies; // Сколько раз на шаге заново дифференцировали потоки.
 };
 // Геометрия и потоки принадлежат пространственному оператору и живут дольше решателя.

@@ -5,6 +5,14 @@
 
 namespace aero {
 class Processes;
+// Процесс 0 читает очередной набор команд и освобождает файл для следующего.
+class ControlFile {
+public:
+    void open(const std::string& directory);
+    std::string read_and_clear() const;
+private:
+    std::string path_;
+};
 // Сначала разбираем весь файл в отдельную копию. Ошибка в последней строке отменяет весь набор команд.
 struct RunControl {
     Stabilization limits;
@@ -17,7 +25,7 @@ struct RunControl {
     RunControl(const RunSettings& run, double current)
         : limits(run.stabilization), cfl(current), upwind(run.upw_coeff), hybrid(run.mp6_hybrid),
           steady(run.steady()), local_time_step(run.local_time_step), local_time_step_max_ratio(run.local_time_step_max_ratio) {}
-    bool read(const std::string& directory, const Processes& world);
+    bool read(const ControlFile& file, const Processes& world);
     void report_accepted(std::ostream& out) const;
 private:
     std::vector<std::string> accepted_; // Подтверждения выводятся только после применения всего набора.

@@ -389,6 +389,9 @@ void main_and_cuda(const CaseFiles& files) {
     auto directories = parse_run_arguments(3, args);
     directories.input = files.dir;
     const auto bdf = read_run_settings(directories);
+    require(bdf.implicit_settings.linear_max_iterations == 200, "default BiCGSTAB limit");
+    files.write("implicit.txt", content.str() + "\nsolver_max_iter=17\n");
+    require(read_run_settings(directories).implicit_settings.linear_max_iterations == 17, "custom BiCGSTAB limit");
     require(!bdf.implicit_settings.simplified_jacobian, "full LF derivative is the default");
     directories.overrides["implicit"]["simplified_jacobian"] = "on";
     require(read_run_settings(directories).implicit_settings.simplified_jacobian, "simplified LF derivative");
@@ -441,7 +444,7 @@ void main_and_cuda(const CaseFiles& files) {
     for (const auto& bad : std::vector<std::pair<std::string, std::string>>{
          {"local_time_step","adaptive"}, {"local_time_step_max_ratio","0.9"}, {"local_time_step_max_ratio","nan"}, {"steady_criterion","unknown"}, {"steady_tol","1"}, {"steady_max_steps","0"},
          {"jacobian_update_every","-2"}, {"simplified_newton","maybe"}, {"simplified_jacobian","maybe"}, {"solver","gmres"}, {"jacobian_flux","unknown"}, {"preconditioner","unknown"},
-         {"solver_tol","0"}, {"newton_tol","1"}, {"newton_max_iter","0"}, {"newton_max_iter","2.5"}}) {
+         {"solver_max_iter","0"}, {"solver_max_iter","2.5"}, {"solver_max_iter","-1"}, {"solver_tol","0"}, {"newton_tol","1"}, {"newton_max_iter","0"}, {"newton_max_iter","2.5"}}) {
         directories.overrides["implicit"][bad.first] = bad.second;
         rejects([&] { read_run_settings(directories); }, bad.first);
         directories.overrides["implicit"].erase(bad.first);

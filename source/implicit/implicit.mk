@@ -24,7 +24,7 @@ $(SPATIAL_OBJECT): source/implicit/spatial_jacobian.cpp $(SPATIAL_HEADERS) $(IMP
 $(BICGSTAB_OBJECT): source/implicit/bicgstab.cpp $(BICGSTAB_HEADERS) $(SPATIAL_HEADERS) $(IMPLICIT_HEADERS) | $(BUILD)
 	$(compiling)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(IMPLICIT_FLAGS) -c $< -o $@
-$(NEWTON_OBJECT): source/implicit/bdf1_step.cpp source/implicit/bdf1_step.h source/implicit/newton_vectors.h $(BICGSTAB_HEADERS) $(SPATIAL_HEADERS) $(IMPLICIT_HEADERS) | $(BUILD)
+$(NEWTON_OBJECT): source/implicit/bdf1_step.cpp source/implicit/linear_iteration_report.h source/implicit/bdf1_step.h source/implicit/newton_vectors.h $(BICGSTAB_HEADERS) $(SPATIAL_HEADERS) $(IMPLICIT_HEADERS) | $(BUILD)
 	$(compiling)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(IMPLICIT_FLAGS) -c $< -o $@
 $(IMPLICIT_LIBRARY): $(IMPLICIT_OBJECT) $(SPATIAL_OBJECT) $(BICGSTAB_OBJECT) $(NEWTON_OBJECT)

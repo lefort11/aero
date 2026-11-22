@@ -1,4 +1,5 @@
 #include "report.h"
+#include "../implicit/linear_iteration_report.h"
 #include "flow_values.h"
 #include <ctime>
 #include "../eulersolver/euler.h"
@@ -183,6 +184,11 @@ void write_flow_summary(const FlowSummary& total, std::uint64_t step, double tim
         table << "Newton         " << details.iterations << '/' << details.max_iterations
               << " iterations    relative residual = " << details.newton_residual
               << (details.newton_residual <= details.newton_tol ? "  [OK]\n" : "  [ITERATION LIMIT]\n");
+    if (details.solver_max_iter) {
+        table << "BiCGSTAB       ";
+        implicit::write_linear_iterations(table, details.correction_iterations, details.solver_max_iter);
+        table << '\n';
+    }
     if (!details.steady_criterion.empty())
         table << "Steady         " << details.steady_criterion << " residual = " << details.steady_residual
               << "    target = " << details.steady_tol << '\n';

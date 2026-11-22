@@ -13,7 +13,7 @@ enum class LinearStatus { Converged, IterationLimit, Breakdown };
 struct LinearTolerance {
     double relative = 1.e-8;       // Доля от максимальной по модулю компоненты правой части.
     double absolute = 0.;          // Допуск в единицах невязки.
-    unsigned max_iterations = 200; // Полные итерации BiCGSTAB, включая итерации после перезапуска.
+    unsigned max_iterations = default_solver_max_iter; // Полные итерации BiCGSTAB, включая итерации после перезапуска.
 };
 struct LinearResult {
     LinearStatus status;

@@ -178,8 +178,14 @@ def check(args, work, parallel, scheme):
     for name, commands in (("full", changes), ("split", changes + "STOP\n")):
         dest = case / name
         dest.mkdir()
-        (dest / "control.txt").write_text("misspelled = not-a-number\n" + commands)
+        control = dest / "control.txt"
+        control.write_text("misspelled = not-a-number\n" + commands)
+        original_file = control.stat()
         log = run([*cmd, f"--output={dest}"])
+        original_log = (dest / "aero.log").read_text()
+        assert original_log == log, (original_log, log)
+        assert control.read_bytes() == b"" and control.stat().st_ino == original_file.st_ino
+        assert not (dest / "control.txt.last").exists()
         assert "Control applied after step 1, CFL = " in log, log
         assert log.count("unknown parameter 'misspelled'") == 1, log
         for line in commands.splitlines():
@@ -196,7 +202,9 @@ def check(args, work, parallel, scheme):
         if name == "split":
             assert "STOP: final fields and recovery saved at step 1" in log
             assert binary_snapshot(dest / "rare.fields")[0][-2] == 1
-            run([*cmd, f"--output={dest}", "--recover"])
+            resumed = run([*cmd, f"--output={dest}", "--recover"])
+            assert "Control accepted:" not in resumed and "unknown parameter 'misspelled'" not in resumed, resumed
+            assert (dest / "aero.log").read_text() == original_log + resumed
     expected = binary_snapshot(case / "full/end.fields")
     # Продолжение без новых шагов тоже публикует все зоны в новом каталоге,
     # подтверждая, что итоговая контрольная точка читается полностью.
@@ -208,7 +216,7 @@ def check(args, work, parallel, scheme):
     for key in expected[1]:
         assert max(abs(a-b) for a,b in zip(actual[1][key], expected[1][key])) < 1e-11
     if not parallel and scheme == "ssprk3":
-        # Пока солвер работает, посылаем вторую команду после отклонения первой.
+        # После отказа посылаем одну и ту же команду дважды, затем останавливаем расчёт.
         dest = case / "live"
         dest.mkdir()
         (dest / "control.txt").write_text("cfl=.1\nSTOP\ncfl_coeff=0\n")
@@ -216,15 +224,25 @@ def check(args, work, parallel, scheme):
         with subprocess.Popen(launch, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                               errors="replace") as process:
             try:
+                applied = 0
                 for line in process.stdout:
                     if "Control rejected" in line:
-                        pending = dest / "control.tmp"
-                        pending.write_text("STOP\n")
-                        pending.rename(dest / "control.txt")
-                        break
+                        assert (dest / "control.txt").read_bytes() == b""
+                        (dest / "control.txt").write_text("cfl=.1\n")
+                    if "Control applied after step" in line:
+                        assert (dest / "control.txt").read_bytes() == b""
+                        applied += 1
+                        if applied == 2:
+                            (dest / "control.txt").write_text("STOP\n")
+                            break
+                        (dest / "control.txt").write_text("cfl=.1\n")
                 tail = process.communicate(timeout=60)[0]
                 match = re.search(r"STOP: final fields and recovery saved at step (\d+)", tail)
                 assert process.returncode == 0 and match and int(match[1]) % 25 == 0, tail
+                journal = (dest / "aero.log").read_text()
+                assert journal.count("Control accepted: cfl = .1\n") == 2, journal
+                assert journal.count("Control accepted: STOP\n") == 1, journal
+                assert (dest / "control.txt").read_bytes() == b""
             finally:
                 if process.poll() is None:
                     process.kill()
@@ -238,6 +256,7 @@ def check_zero_step(args, work):
     options = [args.aero, f"--input={sample}", f"--output={out}", "main:recovery_every_steps=0",
                "main:control_every=0"]
     run([*options, "main:final_time=0"])
+    assert (out / "control.txt").read_text() == ""
     assert (out / "recovery-0.bin").is_file()
     log = run([*options, "main:final_time=.006", "--recover"])
     assert "Recovered step 0 at time 0" in log and "Final time = 0.006" in log, log
