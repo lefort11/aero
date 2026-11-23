@@ -4,7 +4,7 @@
 #include "residual_detail.h"
 #include "../timestep/cfl_detail.h"
 #include "../timestep/adaptive_step.h"
-#include "../timestep/pressure_guard.h"
+#include "../timestep/local_rate_limit.h"
 #include "../mesh/mesh_index.h"
 
 namespace aero {
@@ -97,33 +97,38 @@ struct FluxCfl {
 };
 // Один обход сохраняет шаг каждого владельца и собирает границы диапазона для отчёта.
 // Пустая подобласть участвует в MPI-редукции с нейтральными границами.
-struct StepRange { double minimum, maximum; };
+struct StepRange { double minimum, maximum; MeshIndex limited; };
 struct LocalSteadySteps {
     using value_type = StepRange;
     FluxCfl gas;
     double courant;
     AdaptiveStepChange change; // Пустое поле означает обычный шаг CFL.
     double* steps;         // Общий шаг газа и SA в нумерации узлов подобласти.
-    PressureCaps pressure;
+    LocalRateLimit feedback;
+    bool initialize_history;
 
-    AERO_HOST_DEVICE void init(StepRange& range) const { range = {max_finite_double, 0.}; }
+    AERO_HOST_DEVICE void init(StepRange& range) const { range = {max_finite_double, 0., 0}; }
     AERO_HOST_DEVICE void join(volatile StepRange& range, const volatile StepRange& next) const {
+        range.limited += next.limited;
         if (next.minimum < range.minimum) range.minimum = next.minimum;
         if (next.maximum > range.maximum) range.maximum = next.maximum;
     }
     // Верхний предел узла определяет выбранный метод CFL: по высоте ячеек
     // или по скоростям на прилегающих площадках. Оба учитывают вязкость и SA.
-    AERO_HOST_DEVICE double proposed_step(Index row, Index node) const {
-        const double ceiling = gas.local(row, courant).dt;
+    AERO_HOST_DEVICE double proposed_step(Index row, Index node, double ceiling) const {
+        // Без истории после запуска/recovery доступны только газовый и турбулентный CFL.
         if (!change.field) return ceiling;
-        // auto может предложить меньший шаг по изменению поля за принятый шаг.
-        // Даже если поле почти не изменилось, новый шаг остаётся в пределах CFL этого узла.
-        const double next = change.next(row, node, steps[node]);
+        const double previous = steps[node];
+        const double next = change.next(row, node, previous);
         return next > ceiling ? ceiling : next;
     }
     AERO_HOST_DEVICE void operator()(Index row, StepRange& range) const {
         const Index node = gas.owned ? gas.owned[row] : row;
-        double dt = pressure.apply(node, proposed_step(row, node));
+        const double ceiling = gas.local(row, courant).dt;
+        const double proposed = proposed_step(row,node,ceiling);
+        const double previous = feedback.history ? steps[node]*change.fraction : 0.;
+        double dt = feedback.limit(row,node,ceiling,previous,proposed,initialize_history);
+        if (dt < proposed) ++range.limited;
         if (!(dt > 0. && dt < max_finite_double)) dt = -1.;
         steps[node] = dt;
         if (dt < range.minimum) range.minimum = dt;
@@ -138,6 +143,53 @@ struct LimitLocalSteps {
     AERO_HOST_DEVICE void operator()(Index row) const {
         const Index node = owned ? owned[row] : row;
         if (steps[node] > ceiling) steps[node] = ceiling;
+    }
+};
+// За проход измеряем действительный разброс на рёбрах и максимум шага.
+// changed нужен отдельно: отношение двух double может округлиться до заданной границы.
+struct NeighbourStepRange {
+    double ratio, maximum;
+    unsigned changed;
+};
+struct NeighbourStepSweep {
+    const MeshIndex* owned;
+    const Index* offsets;
+    const OrientedFace* incidence;
+    const Surface* surfaces;
+    Index edges;
+    const double* previous; // Все читают один слой, включая полученные по MPI узлы.
+    double* next;           // Поток пишет только шаг своего узла.
+    double ratio, global_minimum;
+
+    using value_type = NeighbourStepRange;
+    AERO_HOST_DEVICE void init(value_type& result) const { result = {1., 0., 0}; }
+    AERO_HOST_DEVICE void join(volatile value_type& a, const volatile value_type& b) const {
+        if (b.ratio > a.ratio) a.ratio = b.ratio;
+        if (b.maximum > a.maximum) a.maximum = b.maximum;
+        if (b.changed) a.changed = 1;
+    }
+    AERO_HOST_DEVICE void operator()(Index row, value_type& result) const {
+        const Index node = owned ? owned[row] : row;
+        const double step = previous[node];
+        double smallest = step;
+        // У физической граничной площадки только один узел. Второй конец есть
+        // только у ребра расчётной сетки (в том числе после склейки периодики).
+        for (Index k = offsets[node]; k < offsets[node + 1]; ++k) {
+            const Index face = incidence[k].face();
+            if (face >= edges) continue;
+            const auto& edge = surfaces[face];
+            const Index other = edge.begin == node ? edge.end : edge.begin;
+            if (previous[other] < smallest) smallest = previous[other];
+        }
+        const double edge_ratio = step / smallest;
+        if (edge_ratio > result.ratio) result.ratio = edge_ratio;
+        // При ratio=1 сразу ставим единый глобальный dt, без распространения
+        // минимума через всю сетку. Во всех остальных случаях читаем только соседей.
+        const double ceiling = ratio == 1. ? global_minimum : ratio * smallest;
+        const double limited = step > ceiling ? ceiling : step;
+        next[node] = limited;
+        if (limited < step) result.changed = 1;
+        if (limited > result.maximum) result.maximum = limited;
     }
 };
 double cpu_flux_cfl(const FluxCfl&, double courant, const MeshIndex* global_ids = nullptr);

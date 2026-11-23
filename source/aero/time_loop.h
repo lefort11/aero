@@ -23,7 +23,7 @@ struct StepOperations {
     // Вычисляет ограничение CFL и оставляет потоки готовыми для первой стадии.
     std::function<double(bool first_order_start, SolverTimings&)> cfl_step;
     // Использует готовые физические потоки для проверки выхода на стационар.
-    std::function<double()> steady_residual;
+    std::function<double(bool accepted)> steady_residual;
     // Выполняет все стадии шага и обмен значениями в граничных узлах подобластей.
     std::function<bool(const TimeStep&, SolverTimings&)> advance;
     std::function<bool(std::uint64_t)> control; // Применяет команды после принятого шага. STOP запрашивает итоговый вывод.

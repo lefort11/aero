@@ -16,8 +16,6 @@ namespace device_work {
 using residual_detail::Index;
 extern "C" {
 AERO_DEVICE_ENTRY const char* aero_device_pressure_rate(const partition_detail::PressureRate&, Index count);
-AERO_DEVICE_ENTRY const char* aero_device_observe_pressure(const partition_detail::ObservePressure&, Index count);
-AERO_DEVICE_ENTRY const char* aero_device_pressure_caps(const partition_detail::UpdatePressureCaps&, Index count, MeshIndex*);
 AERO_DEVICE_ENTRY const char* aero_device_sample(const diagnostic::Sample&,Index count);
 #ifdef AERO_HAS_TURBULENCE
 AERO_DEVICE_ENTRY const char* aero_device_sa_step(const turbulence::Step&, turbulence::Operation);
@@ -36,6 +34,8 @@ AERO_DEVICE_ENTRY const char* aero_device_gather(const residual_detail::Geometry
                                                 double* residual, Index* bad, void* stream);
 AERO_DEVICE_ENTRY const char* aero_device_local_steps(const residual_detail::LocalSteadySteps&, residual_detail::StepRange*);
 AERO_DEVICE_ENTRY const char* aero_device_limit_local_steps(const residual_detail::LimitLocalSteps&, Index count);
+AERO_DEVICE_ENTRY const char* aero_device_neighbour_steps(const residual_detail::NeighbourStepSweep&, Index count,
+                                                          residual_detail::NeighbourStepRange*);
 AERO_DEVICE_ENTRY const char* aero_device_flux_step(const residual_detail::FluxCfl&, double courant,
                                                    CflStep* answer, void* stream);
 AERO_DEVICE_ENTRY const char* aero_device_wave_step(cfl_detail::Grid, WaveSpeeds, double courant,

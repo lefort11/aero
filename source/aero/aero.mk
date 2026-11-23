@@ -3,7 +3,6 @@ AERO_SOURCES := source/aero/exact_error.cpp source/aero/main.cpp source/aero/sta
 AERO_SOURCES += source/aero/run_control.cpp source/aero/recovery.cpp source/aero/indexed_io.cpp source/aero/mpi_fields.cpp source/aero/solver.cpp source/aero/momentum_frame.cpp
 AERO_SOURCES += source/aero/mpi_periodic.cpp source/aero/mpi_periodic_match.cpp
 AERO_SOURCES += source/aero/partition_state.cpp source/aero/partition_output.cpp source/aero/partition_operator.cpp
-AERO_SOURCES += source/aero/wall_pressure.cpp
 AERO_SOURCES += source/aero/mpi_stencil.cpp source/aero/partition_report.cpp source/aero/mpi_balance.cpp source/mesh/leaf_balance.cpp
 AERO_SOURCES += source/aero/geometry.cpp source/aero/case_geometry.cpp source/mesh/mdec.cpp source/mesh/partition.cpp source/parallel/processes.cpp
 AERO_HEADERS := source/aero/run_control.h source/aero/exact_error.h source/io/expression.h $(MESH_SOURCE)/archive_format.h $(NUMBER_CODEC) source/aero/solver_timings.h source/aero/startup.h source/io/settings.h source/io/settings_text.h source/io/settings_boundary.h source/io/report.h $(OUTPUT_HEADERS) $(INITIAL_HEADERS) $(RES_HDR) $(TIMESTEP_HEADERS) $(EXPLICIT_HEADERS)
@@ -135,3 +134,9 @@ output-diagnostics-qa: aero meshdec
 	$(running_test)
 	"$(PYTHON)" qa/output_diagnostics.py --aero "$(BIN)/aero$(EXE)" --meshdec "$(BIN)/meshdec$(EXE)" $(if $(filter 1,$(WITH_MPI)),--mpi --mpiexec "$(MPIEXEC)") $(if $(filter 1,$(kokkos_gpu)),--gpu $(if $(MPI_BDF1_DEVICES),--devices=$(MPI_BDF1_DEVICES)))
 test: output-diagnostics-qa
+
+.PHONY: local-step-neighbors-qa
+local-step-neighbors-qa: aero $(if $(filter 1,$(WITH_MPI)),meshdec)
+	$(running_test)
+	"$(PYTHON)" qa/local_step_neighbors.py $(if $(filter 1,$(WITH_MPI)),--mpi $(MPI_QA_ARGS),--aero "$(BIN)/aero$(EXE)") $(if $(filter 1,$(kokkos_gpu)),--gpu)
+test: local-step-neighbors-qa

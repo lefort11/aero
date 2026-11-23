@@ -180,6 +180,15 @@ void write_flow_summary(const FlowSummary& total, std::uint64_t step, double tim
         table << (details.steady_criterion.empty() ? "t = " : "Pseudo-time = ") << std::setprecision(12) << time
           << "    dt = " << std::scientific << std::setprecision(6) << dt;
     table << "    CFL = " << std::defaultfloat << cfl << "\n\n" << std::scientific;
+    if (details.local_rate_control)
+        table << "LTS residual limit  nodes = " << details.rate_limited << '\n';
+    if (details.rate_probe != ~std::uint64_t(0))
+        table << "LTS probe       node = " << details.rate_probe << "    dt = " << details.probe[0]
+              << "    gas rate = " << details.probe[1] << "    SA rate = " << details.probe[2]
+              << "    cap/CFL step = " << details.probe[3] << '\n';
+    if (details.edge_ratio_limit > 0.)
+        table << "LTS edge ratio  " << details.edge_ratio_before << " -> " << details.edge_ratio_after
+              << "    limit = " << details.edge_ratio_limit << '\n';
     if (details.max_iterations)
         table << "Newton         " << details.iterations << '/' << details.max_iterations
               << " iterations    relative residual = " << details.newton_residual

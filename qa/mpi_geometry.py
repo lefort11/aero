@@ -25,13 +25,15 @@ def run(args, success=True):
     return result.stdout
 
 
-def sparse_line(mesh, count):
+def sparse_line(mesh, count, positions=None):
     """Создаёт линию с перемежающимися глобальными номерами, чтобы соседние записи файла попали разным процессам."""
     # Соседние глобальные номера чередуются между удалёнными участками линии.
-    half = count // 2
+    half = (count + 1) // 2
     node_ids = [2 * (i % half) + i // half for i in range(count)]
+    if positions is None:
+        positions = [i / (count - 1) for i in range(count)]
     blocks = [
-        ("X", ((i // 2 + (i % 2) * half) / (count - 1) for i in range(count))),
+        ("X", (positions[i // 2 + (i % 2) * half] for i in range(count))),
         ("Y", [0] * count),
         ("Z", [0] * count),
         ("FACE_OFFSETS", range(count + 1)),

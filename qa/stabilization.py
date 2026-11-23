@@ -1,4 +1,5 @@
 """Проверяет откат в задаче Сода и глобальные счётчики первого порядка в Report."""
+import math
 import re
 import shutil
 from pathlib import Path
@@ -6,6 +7,28 @@ from pathlib import Path
 from mpi_common import report_rows, ROOT, mpi_parser, mpi_workspace
 from mpi_fields import binary_snapshot
 from mpi_geometry import run
+
+
+def check_auto_retry_steps(log):
+    """Сопоставляет каждый повтор отклонённого шага с фактически принятым минимумом dt."""
+    attempts = {}
+    pattern = (r"^RETRY step (\d+) \| CFL (\S+) -> (\S+) \| failed nodes = [1-9]\d*"
+               r" \| dt_min (\S+) -> (\S+)$")
+    for step, old_cfl, new_cfl, old_dt, new_dt in re.findall(pattern, log, re.M):
+        # Вся попытка должна уменьшиться в той же пропорции, в том числе если
+        # нижний шаг auto до отказа уже был меньше шага, вычисленного из CFL.
+        step = int(step)
+        old_dt, new_dt = float(old_dt), float(new_dt)
+        assert math.isclose(new_dt / old_dt, float(new_cfl) / float(old_cfl), rel_tol=2e-14), log
+        if step in attempts:
+            assert old_dt == attempts[step], log
+        attempts[step] = new_dt
+    accepted = {int(step): float(dt) for step, dt in report_rows(log, r"^dt_min = (\S+)")}
+    assert 2 in attempts and attempts.keys() <= accepted.keys(), log
+    for step, final_dt in attempts.items():
+        # В report печатаются шесть знаков после десятичной точки.
+        assert math.isclose(accepted[step], final_dt, rel_tol=1e-6), log
+    assert "next CFL is below cfl_min" in log, log
 
 
 def check_boundary_retry(args, case, mesh, archive):
@@ -21,13 +44,18 @@ def check_boundary_retry(args, case, mesh, archive):
         cmd = [args.mpiexec, "-n", "2", args.aero] if parallel else [args.aero]
         if parallel and args.devices:
             cmd += ["main:backend=cuda", f"cuda:devices={args.devices}"]
-        log = run([*cmd, f"--input={case}", f"--output={case / f'boundary-{parallel}'}",
-                   f"main:mesh={archive if parallel else mesh}", "main:time_scheme=bdf1",
-                   "main:stabilization=low", "cfl:cfl_init=.5", "cfl:cfl_max=.5",
-                   "cfl:cfl_min=.05", "main:report_every=1"], success=False)
+        cmd += [f"--input={case}", f"main:mesh={archive if parallel else mesh}",
+                "main:stabilization=low", "cfl:cfl_init=.5", "cfl:cfl_max=.5",
+                "cfl:cfl_min=.05", "main:report_every=1"]
+        log = run([*cmd, f"--output={case / f'boundary-{parallel}'}", "main:time_scheme=bdf1"], success=False)
         assert "RETRY step 2 | CFL 0.5 -> 0.25 | failed nodes = 1" in log, log
         assert re.search(r"STEP 2 +\|.*?failed since last report = 1 +first-order now = 1", log, re.S), log
         assert "next CFL is below cfl_min" in log, log
+        steady = run([*cmd, f"--output={case / f'auto-retry-{parallel}'}", "main:time_scheme=steady",
+                      "implicit:local_time_step=auto", "implicit:local_time_step_neighbor_ratio=2",
+                      "implicit:local_time_step_max_ratio=off", "implicit:steady_max_steps=12"], success=False)
+        check_auto_retry_steps(steady)
+        print(f"OK steady auto retries after boundary rejection, MPI={parallel}", flush=True)
 
 
 def check(args, case):

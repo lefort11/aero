@@ -97,7 +97,7 @@ public:
         : op_(op), fields_(fields), world_(world), run_(run), courant_(run.stabilization, run.cfl),
           stages_(run.uses_implicit_time() ? explicit_detail::Stages{} :
                   explicit_detail::stages_for(explicit_detail::scheme_from_name(run.time_scheme))) {
-        if (!run.background.active() && (run.t_fo > 0. || run.reconstruction == "first_order"))
+        if (!run.background.active() && (run.first_order_start(0., 0) || run.reconstruction == "first_order"))
             total_cells_ = world.sum(op.owned.size());
     }
 
@@ -132,11 +132,12 @@ public:
     void prepare_state_fluxes(bool first_order_start, SolverTimings& timing) {
         if (op_.first_order_start != first_order_start) {
             op_.first_order_start = first_order_start;
+            op_.reset_rate_history();
             // У BDF потоки прошлого шага могли сохраниться для следующего CFL.
             // После смены порядка их надо вычислить заново на том же поле.
             accepted_fluxes_ = false;
             if (!first_order_start && !world_.rank)
-                std::cout << "Reconstruction = " << run_.reconstruction << " from t_fo = " << run_.t_fo << '\n';
+                std::cout << "Reconstruction = " << run_.reconstruction << " (first-order startup complete)" << '\n';
         }
         if (!accepted_fluxes_) {
             assemble_fluxes(timing);
@@ -167,7 +168,6 @@ public:
     // После принятия шага все ранги уже прочитали один набор команд. Меняем
     // только правило выбора dt: поле и накопленная пространственная матрица остаются пригодными.
     void set_steady_steps(LocalStepMode local, double max_ratio) {
-        previous_norm_ = 0.;
         run_.local_time_step = local;
         run_.local_time_step_max_ratio = max_ratio;
         op_.set_steady_steps(local, max_ratio);
@@ -239,7 +239,6 @@ public:
             return false;
         } catch (RejectedGasState& rejection) {
             record_failed_nodes(rejection.local_nodes, rejection.total);
-            if (run_.local_time_step == LocalStepMode::Auto) op_.reset_auto_history();
             world_.local([&] { op_.copy_backup(fields_.current, backup_, true); });
             if (run_.stabilization.local_order()) {
                 op_.set_low_order(marks_);
@@ -248,12 +247,17 @@ public:
             const double previous_cfl = courant();
             courant_.reject();
             op_.set_courant(courant(), run_.uses_implicit_time());
+            // При повторе уменьшаем поле шагов отказавшей попытки. Новый старт
+            // по геометрическому CFL мог увеличить dt там, где auto уже его сократил.
+            const bool auto_retry = run_.local_time_step == LocalStepMode::Auto;
+            const double retry_dt = auto_retry ? op_.reduce_auto_attempt(step.dt, courant()/previous_cfl) : 0.;
             accepted_fluxes_ = false;
             if (!world_.rank) {
                 // Сообщаем сразу при каждом откате, даже если периодический отчёт выключен.
                 std::ostringstream message;
                 message << std::setprecision(17) << "RETRY step " << step.number
                         << " | CFL " << previous_cfl << " -> " << courant() << " | failed nodes = " << failed_count_;
+                if (auto_retry) message << " | dt_min " << step.dt << " -> " << retry_dt;
                 std::cout << message.str() << std::endl;
             }
             return false;
@@ -354,26 +358,6 @@ public:
         if (step.reporting) world_.local([&] { finish_report(step); });
     }
 
-    // Один и тот же запрет роста нужен всем разделам. Норма и число итераций
-    // глобальные. На ведущем процессе измеряем время между принятыми состояниями.
-    void observe_steady(double norm) {
-        if (run_.local_time_step != LocalStepMode::Auto) return;
-        const auto now = std::chrono::steady_clock::now();
-        bool hold = false;
-        if (previous_norm_ > 0. && norm > 0.) {
-            const double seconds = std::chrono::duration<double>(now - previous_time_).count();
-            if (seconds > 0.) {
-                const double speed = std::log(previous_norm_/norm)/seconds;
-                hold = !world_.rank && newton_.linear_iterations > previous_work_ && speed < previous_speed_;
-                previous_speed_ = speed;
-            }
-        }
-        previous_norm_ = norm;
-        previous_time_ = now;
-        previous_work_ = newton_.linear_iterations;
-        op_.limit_auto_growth(world_.size==1 ? hold : world_.sum(hold ? 1 : 0) != 0);
-    }
-
     // Даже процесс без собственных узлов участвует в сборе общей сводки.
     void write_report(const TimeStep& step, unsigned dimension, double cfl, double steady_residual, double relative_residual) {
         print_input_warnings(run_, world_, std::cout);
@@ -395,6 +379,17 @@ public:
             details.relative_steady_residual = relative_residual;
             details.steady_tol = run_.steady_tol;
             details.max_local_step = op_.largest_step(step.dt);
+            if (run_.local_time_step == LocalStepMode::Auto) {
+                details.local_rate_control = run_.local_time_step_residual_limit;
+                if (details.local_rate_control) details.rate_limited = op_.limited_rate_nodes();
+                details.rate_probe = run_.local_time_step_probe_node;
+                if (details.rate_probe != ~MeshIndex(0)) op_.read_rate_probe(step.dt, details.probe);
+            }
+            if (run_.local_time_step != LocalStepMode::Off && run_.local_time_step_neighbor_ratio > 0.) {
+                details.edge_ratio_limit = run_.local_time_step_neighbor_ratio;
+                details.edge_ratio_before = op_.neighbour_ratio_before();
+                details.edge_ratio_after = op_.neighbour_ratio_after();
+            }
         }
         if (!details.linear) {
             // Ведущий процесс хранит уникальные номера отказавших узлов со всех разделов.
@@ -520,9 +515,6 @@ private:
     AdaptiveCourant courant_;
     std::vector<double> backup_, marks_; // Принятый слой и постоянные до сброса метки узлов.
     bool accepted_fluxes_ = false; // После чтения начального поля потоки ещё предстоит вычислить.
-    double previous_norm_ = 0., previous_speed_ = 0.; // Скорость убывания log невязки в секунду.
-    unsigned previous_work_ = 0; // Суммарное число итераций линейного решателя на предыдущем шаге.
-    std::chrono::steady_clock::time_point previous_time_;
     implicit::NewtonResult newton_{};    // Итог последнего принятого неявного шага.
     explicit_detail::Stages stages_;     // Коэффициенты и число стадий схемы по времени.
     std::unique_ptr<Report> report_; // Измерения на узлах этого процесса.
@@ -574,7 +566,9 @@ prepare_partition_operator(const RunSettings& run, const ReconstructionOptions& 
         if (diagnostic::needs_time(name)) op->enable_time_samples();
         if (diagnostic::column(name) == diagnostic::DpDt) op->enable_pressure_rate();
     }
-    if (run.steady()) world.local([&] { op->prepare_steady_steps(run.use_cuda, run.local_time_step, run.local_time_step_max_ratio); });
+    if (run.local_time_step_probe_node != ~MeshIndex(0)) op->set_rate_probe(run.local_time_step_probe_node);
+    if (run.steady()) world.local([&] { op->prepare_steady_steps(run.use_cuda, run.local_time_step, run.local_time_step_max_ratio,
+                                                             run.local_time_step_residual_limit); });
     Id downgraded = 0;
     if (single) done();
     if (needs_stencil) {
@@ -728,10 +722,8 @@ void integrate_partition(const RunSettings& run, const Processes& world, unsigne
         return stepper.prepare_first_stage(first_order_start, timing);
     };
     if (run.steady()) {
-        operations.steady_residual = [&] {
-            const double norm = op.steady_residual(fields.current, fields.initial);
-            stepper.observe_steady(norm);
-            return norm;
+        operations.steady_residual = [&](bool accepted) {
+            return op.steady_residual(fields.current, fields.initial, accepted);
         };
     }
     bool sample_time=false, write_sa=false;
@@ -776,7 +768,7 @@ void integrate_partition(const RunSettings& run, const Processes& world, unsigne
         if (output.schedule.column_due(diagnostic::DpDt, step.number, step.end, final_field)) {
             // У BDF уже есть потоки последней итерации Ньютона. У явной схемы
             // готовим потоки принятого состояния и оставляем их для следующего шага.
-            stepper.prepare_state_fluxes(run.first_order_start(step.end), timing);
+            stepper.prepare_state_fluxes(run.first_order_start(step.end, step.number), timing);
             pressure_rate = op.output_pressure_rate(snapshot);
             data.pressure_rate = pressure_rate.data();
         }
@@ -790,7 +782,7 @@ void integrate_partition(const RunSettings& run, const Processes& world, unsigne
             data.schlieren=schlieren.data();
         }
 #ifdef AERO_HAS_TURBULENCE
-        if (write_sa && dimension==3 && run.turbulence.uses_sigma()) stepper.prepare_state_fluxes(run.first_order_start(step.end),timing);
+        if (write_sa && dimension==3 && run.turbulence.uses_sigma()) stepper.prepare_state_fluxes(run.first_order_start(step.end, step.number),timing);
         if(write_sa) world.local([&]{scalars=op.sa_output(snapshot);data.sa=scalars.data();});
 #endif
         output.write(step.number, step.end, snapshot, final_field,data);
@@ -832,8 +824,8 @@ int run_partition(RunSettings run, const ReconstructionOptions& reconstruction, 
     if (!single) {
         op->connect(run.use_cuda, run.uses_implicit_time());
     }
-    if (run.local_pressure_guard)
-        op->prepare_pressure_guard(part,geometry.periodic_partition(),geometry.boundaries.patches,run);
+    if (run.local_time_step_neighbor_ratio > 0.)
+        op->prepare_neighbour_step_limit(run.local_time_step_neighbor_ratio, run.use_cuda);
 #ifdef AERO_WITH_KOKKOS_GPU
     GpuMemoryFit single_fit;
     if (single && run.use_cuda) {
@@ -892,7 +884,7 @@ int run_partition(RunSettings run, const ReconstructionOptions& reconstruction, 
     // Вычисляем её до восстановления рабочего поля SA и параметров из control.txt.
     if (run.steady() && run.directories.recover && recovery.steady_reference < 0.) {
         SolverTimings timing(world, false, run.use_cuda, 0);
-        op->first_order_start = run.first_order_start(0.);
+        op->first_order_start = run.first_order_start(0., 0);
 #ifdef AERO_WITH_KOKKOS_GPU
         if (gpu) world.local([&] { op->upload_state(fields.initial, fields.initial); });
 #endif
@@ -929,7 +921,7 @@ int run_partition(RunSettings run, const ReconstructionOptions& reconstruction, 
         write_partition_report(world, op->work(part.end_leaf - part.first_leaf), stencil_peak, std::cout);
     }
     if (run.directories.recover) {
-        op->first_order_start = run.first_order_start(recovery.time);
+        op->first_order_start = run.first_order_start(recovery.time, recovery.step);
         stepper.resume(recovery.stabilization_state);
     }
     print_input_warnings(run, world, std::cerr);

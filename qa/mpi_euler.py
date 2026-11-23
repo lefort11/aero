@@ -223,8 +223,9 @@ def check_steady(aero, case, launcher, ranks, overrides, coords, names):
         local_options = [*options, "implicit:local_time_step=on", "implicit:steady_tol=.5",
                          "implicit:steady_max_steps=100"]
         local_ref, local_mpi = case / "local-steady-reference", case / "local-steady-mpi"
-        local_log = launch(aero, case, local_ref, launcher, 1, *local_options)
-        other_log = launch(aero, case, local_mpi, launcher, ranks, *overrides, *local_options)
+        bounded = [*local_options, "implicit:local_time_step_max_ratio=4"]
+        local_log = launch(aero, case, local_ref, launcher, 1, *bounded)
+        other_log = launch(aero, case, local_mpi, launcher, ranks, *overrides, *bounded)
         for log in (local_log, other_log):
             ranges = list(report_rows(log, r"^dt_min = (\S+)\s+dt_max = (\S+)"))
             if not ranges or not all(0. < float(lo) < float(hi) <= 4.00001*float(lo) for _, lo, hi in ranges):

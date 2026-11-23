@@ -49,6 +49,9 @@ struct NewtonUpdate {
             // Любая неконечная компонента должна прервать принятие шага на всех процессах.
             accumulate_infinity_norm(value, largest);
         }
+        // После принятия слоя вектор поправки свободен. Оставляем узловую
+        // норму для следующего LTS, не пересчитывая и не копируя потоки.
+        if (operation == SpatialRate && correction) correction[row] = largest;
         return largest;
     }
 

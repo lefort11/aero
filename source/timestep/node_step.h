@@ -15,7 +15,7 @@ struct NodeSteps {
 // Перед запуском ядро получает только адрес массива, действующий на этом шаге.
 struct SteadyNodeSteps {
     bool local = false;
-    double max_ratio = 4.;
+    double max_ratio = 0.;
     double* values = nullptr;
     static NodeSteps active(const SteadyNodeSteps* steps) {
         return {steps && steps->local ? steps->values : nullptr};

@@ -56,6 +56,13 @@ def check(args, work, name, equation, time_scheme, parallel):
         counts = {int(n): int(c) for n,c in report_rows(log, r"^Stabilization .*failed since last report = 0\s+first-order now = (\d+)")}
         for step, time in reports:
             assert (counts[step] > 0) == (time <= switch)
+    if name == "pulse_1d":
+        # Порог по числу шагов сам по себе не должен укорачивать шаг CFL.
+        counted = run([*common, f"--output={case / 'steps'}", selected,
+                       "main:steps_fo=2", f"main:final_time={end}"])
+        rows = report_rows(counted, r"^Stabilization .*first-order now = (\d+)")
+        totals = {int(step): int(count) for step, count in rows}
+        assert totals[1] == totals[2] > 0 and totals[3] == 0
     print(f"OK {equation} {time_scheme}, MPI={parallel}: transition at t={switch}")
 
 

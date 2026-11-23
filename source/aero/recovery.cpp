@@ -378,6 +378,12 @@ void Recovery::restore(std::vector<double>& state, std::vector<double>& initial,
             in.imbue(std::locale::classic());
             require(end != std::string::npos && (in >> steady_reference) && std::isfinite(steady_reference)
                     && steady_reference >= 0., "invalid initial steady residual");
+            in >> std::ws;
+            if (!in.eof()) {
+                double steady_theta; // Совместимость со снимками с единым коэффициентом разброса LTS.
+                require((in >> steady_theta) && steady_theta >= 0. && steady_theta <= 1.,
+                        "invalid steady LTS theta");
+            }
             stabilization_state.erase(0, end + 1);
         }
         world_.broadcast(&times[s], 1, 0);

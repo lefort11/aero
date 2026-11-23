@@ -337,20 +337,30 @@ RunSettings read_run_settings(const RunDirectories& directories) {
         // Явный переключатель имеет приоритет и задаёт тот же режим решателя.
         if (settings.contains("simplified_newton"))
             controls.set_simplified_newton(choice(lowercase(settings.take("simplified_newton")), {"on","off"}) == "on");
-        if (settings.contains("local_pressure_guard")) {
-            run.local_pressure_guard = choice(lowercase(settings.take("local_pressure_guard")), {"on","off"})=="on";
-            if (run.local_pressure_guard && (!run.steady() || run.background.active()))
-                throw std::invalid_argument("local_pressure_guard requires steady Euler");
-        }
         if (settings.contains("local_time_step")) {
             const auto entry = settings.take("local_time_step");
             run.local_time_step = parse_local_time_step(entry.value, entry.where);
             if (run.local_time_step != LocalStepMode::Off && !run.steady())
                 throw std::invalid_argument("implicit.txt: local_time_step requires time_scheme=steady");
         }
+        if (settings.contains("local_time_step_residual_limit")) {
+            run.local_time_step_residual_limit = choice(lowercase(settings.take("local_time_step_residual_limit")), {"on","off"}) == "on";
+            if (run.local_time_step_residual_limit && !run.steady())
+                throw std::invalid_argument("local_time_step_residual_limit requires steady");
+        }
+        if (settings.contains("local_time_step_probe_node")) {
+            run.local_time_step_probe_node = settings.count<std::uint64_t>("local_time_step_probe_node");
+            if (!run.steady()) throw std::invalid_argument("local_time_step_probe_node requires steady");
+        }
         if (settings.contains("local_time_step_max_ratio")) {
             const auto entry = settings.take("local_time_step_max_ratio");
             run.local_time_step_max_ratio = parse_local_step_ratio(entry.value, entry.where);
+        }
+        if (settings.contains("local_time_step_neighbor_ratio")) {
+            const auto entry = settings.take("local_time_step_neighbor_ratio");
+            run.local_time_step_neighbor_ratio = parse_local_step_ratio(entry.value, entry.where);
+            if (run.local_time_step_neighbor_ratio && !run.steady())
+                throw std::invalid_argument(entry.where + ": local_time_step_neighbor_ratio requires time_scheme=steady");
         }
         if (settings.contains("steady_criterion"))
             run.steady_absolute = choice(lowercase(settings.take("steady_criterion")), {"relative", "absolute"}) == "absolute";
@@ -398,6 +408,7 @@ RunSettings read_run_settings(const RunDirectories& directories) {
     }
     run.use_cuda = choice(main.take("backend"), {"cpu", "cuda"}) == "cuda";
     run.euler_solver = choice(main.take("euler_solver"), {"roe", "lf"});
+    run.steps_fo = main.optional_count<std::uint64_t>("steps_fo");
     run.t_fo = main.contains("t_fo") ? number(main.take("t_fo"), true) : 0.;
     run.final_time = run.steady() && !main.contains("final_time") ? 0. : number(main.take("final_time"), true);
     run.trace_ratio_min = main.contains("trace_ratio_min") ? number(main.take("trace_ratio_min"), true) : 0;

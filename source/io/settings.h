@@ -53,8 +53,10 @@ struct RunSettings {
     std::string time_scheme;              // Эйлер, SSPRK3, BDF1, BDF2 или выход на стационар.
     implicit::NewtonSettings implicit_settings; // Допуски и предел итераций из implicit.txt для неявных схем.
     bool steady_absolute = false;         // Сравнивать норму напрямую или относительно начального поля.
-    double local_time_step_max_ratio = 4.; // Предел dt_i/dt_min в steady. Ноль отключает ограничение.
-    bool local_pressure_guard = false; // Локальное ограничение по росту невязки давления у стенки.
+    double local_time_step_max_ratio = 0.; // Предел dt_i/dt_min в steady. Ноль отключает ограничение.
+    double local_time_step_neighbor_ratio = 0.; // Допустимое отношение шагов на двух концах одного ребра.
+    bool local_time_step_residual_limit = false; // Ограничивать LTS по росту узловой невязки газа и SA.
+    std::uint64_t local_time_step_probe_node = ~std::uint64_t(0); // Необязательный глобальный номер узла для отчёта.
     LocalStepMode local_time_step = LocalStepMode::Off; // Свой псевдошаг CFL в каждом узле при установлении.
     double steady_tol = 1.e-6;            // Порог в единицах выбранного критерия.
     unsigned steady_max_steps = 10000;    // Предел числа псевдошагов с начала расчёта, включая восстановленные шаги.
@@ -71,7 +73,10 @@ struct RunSettings {
     bool cell_height_cfl = true;          // Шаг по высоте ячейки; false включает сумму по площадкам.
     std::uint64_t control_every = 16; // Интервал проверки control.txt в принятых шагах. Ноль отключает управление.
     double t_fo = 0.; // До этого времени (псевдовремени для steady) весь расчёт идёт с первым порядком по пространству.
-    bool first_order_start(double time) const { return time < t_fo && reconstruction != "first_order"; }
+    std::uint64_t steps_fo = 0; // Число принятых шагов с первым порядком с начала расчёта.
+    bool first_order_start(double time, std::uint64_t accepted_steps) const {
+        return reconstruction != "first_order" && (time < t_fo || accepted_steps < steps_fo);
+    }
     double final_time;                    // Физическое время окончания расчёта.
     double mach = 0.; // Число Маха набегающего потока при единичном масштабе скорости.
     double reference_phi = 0., reference_theta = 0.; // Направление reference_state из gas.txt, в градусах.

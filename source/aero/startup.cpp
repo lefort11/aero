@@ -106,6 +106,7 @@ void show_settings(const RunSettings& r) {
             std::cout << ", " << names[j] << " = " << r.background.velocity[j];
         std::cout << ", c0 = " << r.background.sound << "\nOutput fields are perturbations.";
     }
+    if (r.steps_fo) std::cout << "\nsteps_fo = " << r.steps_fo;
     if (r.t_fo > 0.) std::cout << "\nt_fo = " << r.t_fo;
     if (!r.steady()) std::cout << "\nfinal_time = " << r.final_time;
     std::cout << "\nomp_threads = " << r.omp_threads << " (runtime maximum ";
@@ -118,7 +119,14 @@ void show_settings(const RunSettings& r) {
     if (r.prophecy_every_step) std::cout << "prophecy_every_step = " << r.prophecy_every_step << '\n';
     if (r.steady())
         std::cout << "local_time_step = " << local_step_name(r.local_time_step) << "\nsteady_criterion = " << (r.steady_absolute ? "absolute" : "relative") << "\nsteady_tol = " << r.steady_tol << "\nsteady_max_steps = " << r.steady_max_steps << '\n';
+    if (r.local_time_step == LocalStepMode::Auto) {
+        std::cout << "local_time_step_residual_limit = " << (r.local_time_step_residual_limit ? "on" : "off") << '\n';
+        if (r.local_time_step_probe_node != ~std::uint64_t(0))
+            std::cout << "local_time_step_probe_node = " << r.local_time_step_probe_node << '\n';
+    }
     if (r.local_time_step != LocalStepMode::Off) {
+        if (r.local_time_step_neighbor_ratio > 0.)
+            std::cout << "local_time_step_neighbor_ratio = " << r.local_time_step_neighbor_ratio << '\n';
         std::cout << "local_time_step_max_ratio = ";
         if (r.local_time_step_max_ratio) std::cout << r.local_time_step_max_ratio;
         else std::cout << "off";

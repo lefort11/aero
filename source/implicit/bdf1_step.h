@@ -34,7 +34,8 @@ public:
              const Partition& partition = Partition());
     ~BdfStep();
     // Максимум |R_i|/V_i по собственным узлам всех процессов и всем уравнениям.
-    double spatial_rate_norm(const double* volumes, const EulerFluxResult* flux);
+    double spatial_rate_norm(const double* volumes, const EulerFluxResult* flux, bool save_rows = false);
+    const double* spatial_rates() const; // Временный буфер доступен до следующей поправки Ньютона.
     const double* start_field() const; // U_n по собственным строкам последнего шага BDF1.
     void export_history(BdfHistory& history) const;
     void import_history(const BdfHistory& history);

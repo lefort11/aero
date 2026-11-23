@@ -29,6 +29,11 @@ struct FlowSummary {
 struct ReportDetails {
     std::string scheme, stabilization, steady_criterion;
     double max_local_step = 0.; // Ненулевой при локальном установлении; dt отчёта хранит минимум.
+    // Наибольшее на сетке отношение шагов соседей до и после согласования.
+    bool local_rate_control = false;
+    std::uint64_t rate_limited = 0, rate_probe = ~std::uint64_t(0);
+    double probe[4] = {}; // Шаг, невязки газа и SA, разрешённая доля местного CFL.
+    double edge_ratio_before = 0., edge_ratio_after = 0., edge_ratio_limit = 0.;
     bool linear = false;
     std::vector<unsigned> correction_iterations; // В порядке поправок текущего шага.
     unsigned solver_max_iter = 0;

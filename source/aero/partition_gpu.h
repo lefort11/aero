@@ -135,7 +135,6 @@ public:
     double* layout_node_scalars(MeshIndex count, const double* initial = nullptr) {
         return storage_.allocate<double>(count, initial);
     }
-    template<class T> T* layout_guard_array(const std::vector<T>& values) { return storage_.upload(values); }
     diagnostic::Moments* layout_moments(MeshIndex count) { return storage_.allocate<diagnostic::Moments>(count); }
     void layout_linear_input(MeshIndex count) { krylov_input_ = storage_.allocate<double>(count); }
     double* expand_owned(const double* compact) const;

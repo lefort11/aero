@@ -1,3 +1,4 @@
+#include "../timestep/local_rate_limit.h"
 #include "../../tests/test_mesh.h"
 #include "residual_detail.h"
 #include "flux_cfl.h"
@@ -165,8 +166,22 @@ void mixed_face_list(int device) {
     near(flux[2].flux[1], -3.);
 }
 
-// Разные объёмы и обратная нумерация владельцев. В одном узле шаг задаёт газ,
-// в другом его ограничивает SA. Вязкий вклад добавляется в тот же знаменатель CFL.
+// Рост газа и рост SA ограничивают каждый свой узел; затухание позволяет шагу восстановиться.
+void local_rate_limit_test() {
+    double history[6]{}, gas[]{1., 1.}, sa[]{1., 1.};
+    LocalRateLimit feedback{history,gas,sa,1.,1.,.01,true};
+    for (unsigned i=0;i<2;++i) near(feedback.limit(i,i,2.,1.,1.,true),1.);
+    gas[0] = 1.2;
+    near(feedback.limit(0,0,2.,1.,1.,false),.75);
+    near(feedback.limit(1,1,2.,1.,1.,false),1.);
+    sa[1] = 1.3;
+    near(feedback.limit(1,1,2.,1.,1.,false),.75);
+    sa[1] = .5;
+    near(feedback.limit(1,1,2.,.75,1.,false),.9375);
+    require(!LocalRateLimit::rising(.001,0.,1.), "ignore weak residuals");
+}
+
+// Разные объёмы и обратная нумерация владельцев. Проверяем общий шаг газа и SA.
 void local_steady_cfl() {
     using namespace residual_detail;
     Surface faces[2]{};
@@ -188,7 +203,7 @@ void local_steady_cfl() {
     expected_gas = .5;
 #endif
     const FluxCfl coupled(grid,flux,volumes,owned,2,sa_rate);
-    LocalSteadySteps steps{coupled,1.,{},dt,{}};
+    LocalSteadySteps steps{coupled,1.,{},dt,{},false};
     StepRange range;
     steps.init(range);
     steps(0,range);
@@ -234,22 +249,22 @@ void local_steady_cfl() {
     change.field=conserved; change.old_field=previous; change.dim=2; change.gamma=grid.options.gamma;
     change.fraction=1.; change.ceiling=1.25;
     double history[]={1.,1.};
-    const LocalSteadySteps adaptive{without_cache,.5,change,history,{}};
+    const LocalSteadySteps adaptive{without_cache,.5,change,history,{},false};
     adaptive.init(range);
     adaptive(0,range);
     adaptive(1,range);
     near(history[1],.125); // Для узла 1 верхнюю границу задаёт SA.
     near(history[0],height_cfl.local(1,.5).dt);
     history[0]=.01;
-    near(adaptive.proposed_step(1,0),.0125); // Меньший шаг из истории сохраняем.
-    const LocalSteadySteps spectral{coupled,.5,change,history,{}};
-    near(spectral.proposed_step(0,1),.125); // Шаг газа в узле 1 ограничивает перенос SA.
-    near(spectral.proposed_step(1,0),.0125); // Здесь auto предлагает меньше спектрального предела.
+    near(adaptive.proposed_step(1,0,without_cache.local(1,.5).dt),.0125); // Меньший шаг из истории сохраняем.
+    const LocalSteadySteps spectral{coupled,.5,change,history,{},false};
+    near(spectral.proposed_step(0,1,coupled.local(0,.5).dt),.125); // Шаг газа в узле 1 ограничивает перенос SA.
+    near(spectral.proposed_step(1,0,coupled.local(1,.5).dt),.0125); // Здесь auto предлагает меньше спектрального предела.
     history[0]=1.;
-    near(spectral.proposed_step(1,0),.5*expected_gas);
+    near(spectral.proposed_step(1,0,coupled.local(1,.5).dt),.5*expected_gas);
     // Ускорение распространения на грани должно сразу уменьшить шаг узла 0.
     flux[0].max_wave_speed += 2.;
-    near(spectral.proposed_step(1,0),.5/(1./expected_gas + 1.));
+    near(spectral.proposed_step(1,0,coupled.local(1,.5).dt),.5/(1./expected_gas + 1.));
     // Для Linear скорость распространения определяется фоном при любых пульсациях.
     grid.packed.gas = nullptr;
     grid.options.background.rho = 1.;
@@ -291,27 +306,6 @@ void adaptive_steady_step() {
     step.background.rho = 1.; step.background.p = 2.; step.background.sound = 2.;
     before[0] = before[3] = after[4] = 0.; after[7] = .08;
     expect(.5,"linear pressure perturbation is measured against background");
-}
-
-void wall_pressure_trend() {
-    // Большой установившийся перепад p между узлами не меняется по псевдовремени.
-    PressureTrend steady{};
-    steady.pressure=100.;
-    for (int k=0;k<8;++k) near(steady.observe(100.,0.,.5),0.);
-    // Изменения малы относительно p, но заметны относительно скоростного напора.
-    PressureTrend growing{};
-    growing.pressure=100.;
-    near(growing.observe(100.004,1.,.5),0.);
-    near(growing.observe(100.008,2.,.5),0.);
-    near(growing.observe(100.012,3.,.5),2.);
-    near(pressure_step_cap(0.,.08,2.,0.,1.),.04);
-    near(pressure_step_cap(0.,.08,0.,2.,1.),.06);
-    near(growing.observe(100.013,2.,.5),1.);
-    near(growing.observe(100.014,1.,.5),1.);
-    near(growing.observe(100.014,.5,.5),0.);
-    near(pressure_step_cap(.04,.03,0.,1.,1.),.04);
-    near(pressure_step_cap(.04,.03,0.,0.,1.),.05);
-    near(pressure_step_cap(.04,.03,0.,0.,.045),0.);
 }
 void trace_limiter_test() {
     // При γ = 2 в узле ρ = 2, u = (1,0), p = 4. Кандидат имеет ρ = 4, u = (3,2), p = 12.
@@ -857,10 +851,10 @@ void sod_step(int device) {
 }
 int main(int argc, char** argv) {
     try {
+        local_rate_limit_test();
         signed_surface_balance();
         local_steady_cfl();
         adaptive_steady_step();
-        wall_pressure_trend();
         basis_test();
         face_normal_dimensions();
         first_order_side_flux();

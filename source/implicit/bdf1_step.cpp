@@ -217,9 +217,11 @@ void BdfStep::import_history(const BdfHistory& history) {
     s.cached = false; // Контрольная точка могла содержать другое поле.
 }
 
-double BdfStep::spatial_rate_norm(const double* volumes, const EulerFluxResult* flux) {
+const double* BdfStep::spatial_rates() const { return storage_->correction; }
+
+double BdfStep::spatial_rate_norm(const double* volumes, const EulerFluxResult* flux, bool save_rows) {
     auto& s = *storage_;
-    const double norm = s.residual_norm({s.grid,flux,volumes,nullptr,nullptr,s.rhs,nullptr,nullptr,
+    const double norm = s.residual_norm({s.grid,flux,volumes,nullptr,nullptr,s.rhs,save_rows ? s.correction : nullptr,nullptr,
                                          0.,0.,0.,NewtonUpdate::SpatialRate,s.partition.owned,1.,{}});
     if (!std::isfinite(norm)) throw std::domain_error("Steady: nonfinite spatial residual");
     return norm;

@@ -96,10 +96,22 @@ public:
     double cfl_step(double cfl);
     // После отказа повторяем ту же попытку с половиной фактически использованного шага.
     void retry_auto_step(double failed_dt);
-    void limit_auto_growth(bool hold) { hold_growth_ = hold; }
-    void reset_auto_history();
-    void prepare_steady_steps(bool gpu, LocalStepMode mode, double max_ratio);
-    void prepare_pressure_guard(const MeshPartition&,const PeriodicPartition*,const BoundaryPatches&,const RunSettings&);
+    // После отката сокращаем уже согласованные шаги всех узлов в одной пропорции.
+    double reduce_auto_attempt(double failed_dt, double factor) {
+        retry_dt_ = failed_dt * factor;
+        if (!(retry_dt_ > 0. && retry_dt_ < failed_dt))
+            throw std::runtime_error("Auto LTS: cannot reduce the rejected pseudo-time step further");
+        return retry_dt_;
+    }
+    void reset_rate_history() { rate_samples_ = 0; }
+    std::uint64_t limited_rate_nodes() const { return world_.sum(rate_limited_); }
+    void set_rate_probe(MeshIndex id);
+    void read_rate_probe(double accepted_dt, double* values) const;
+    void prepare_steady_steps(bool gpu, LocalStepMode mode, double max_ratio, bool residual_limit);
+    // Готовит второй слой шагов и обмен скалярами на рёбрах между процессами.
+    void prepare_neighbour_step_limit(double ratio, bool cuda);
+    double neighbour_ratio_before() const { return neighbour_limit_ && steady_steps_->local ? neighbour_limit_->before : 0.; }
+    double neighbour_ratio_after() const { return neighbour_limit_ && steady_steps_->local ? neighbour_limit_->after : 0.; }
     void set_steady_steps(LocalStepMode mode, double max_ratio);
     double largest_step(double accepted_minimum) const {
         return steady_steps_ && steady_steps_->local ? (accepted_minimum / minimum_step_) * maximum_step_ : 0.;
@@ -109,7 +121,7 @@ public:
     implicit::BdfStep& implicit_step(); // Один решатель для интегрирования и контрольных точек.
     // Решает уравнение BDF, используя потоки, подготовленные для CFL.
     // Норма пространственной невязки по текущим потокам всех процессов.
-    double steady_residual(std::vector<double>& state, const std::vector<double>& initial);
+    double steady_residual(std::vector<double>& state, const std::vector<double>& initial, bool accepted = false);
     implicit::NewtonResult advance_bdf(std::vector<double>& state, const std::vector<double>& initial,
                                         double dt, const implicit::NewtonSettings& settings,
                                         SolverTimings& timing, const std::function<void()>& validate);
@@ -177,24 +189,16 @@ private:
 #endif
     residual_detail::FluxCfl cfl_grid() const;
     double prepare_local_steps(double cfl);
-    void update_pressure_guard(double cfl);
-    // Нумерация отдельной полосы у стенки одинакова для CPU, GPU и обмена признаками.
-    struct WallPressure {
-        std::vector<partition_detail::PressureSite> sites;
-        std::vector<Coordinate> points;
-        std::vector<Id> nodes, blocks, offsets, neighbours;
-        std::vector<PressureTrend> history;
-        std::vector<double> signals, caps;
+    void limit_neighbour_steps();
+    // Вся дополнительная память принадлежит опции local_time_step_neighbor_ratio.
+    // Два поля dt меняются ролями: обход ни на CPU, ни на GPU не перезаписывает вход.
+    struct NeighbourStepLimit {
+        double ratio = 0., before = 0., after = 0.;
+        std::vector<double> host_scratch;
+        double* scratch = nullptr; // Свободное поле; второе всегда доступно через steady_steps_->values.
         std::unique_ptr<PartitionTransfers> halo;
-        partition_detail::PressureSite* active_sites=nullptr;
-        PressureTrend* active_history=nullptr;
-        double *active_signals=nullptr,*active_caps=nullptr;
-        const Id *active_offsets=nullptr,*active_neighbours=nullptr;
-        PressureCaps lookup{};
-        double reference=.5, ambient_pressure=0.;
-        bool first=true;
     };
-    std::unique_ptr<WallPressure> wall_pressure_;
+    std::unique_ptr<NeighbourStepLimit> neighbour_limit_;
     std::unique_ptr<SteadyNodeSteps> steady_steps_; // Для steady резервируем память сразу, даже при старте с общего шага.
     std::vector<double> host_steps_; // При работе на GPU массив входит в общую раскладку карты.
     LocalStepMode step_mode_ = LocalStepMode::Off;
@@ -202,7 +206,15 @@ private:
     double current_step_cfl_ = 0.; // CFL, с которым предложен шаг до ограничения расписанием.
     double accepted_fraction_ = 1., previous_cfl_ = 0., retry_dt_ = 0.;
     unsigned retries_ = 0; // Сбрасывается только после успешного шага или переключения режима.
-    bool hold_growth_ = false, recovered_step_ = false;
+    bool recovered_step_ = false;
+    std::uint64_t rate_samples_ = 0; // После сброса первая принятая невязка инициализирует историю.
+    MeshIndex rate_limited_ = 0; // Сколько собственных шагов уменьшено до согласования по рёбрам.
+    MeshIndex probe_row_ = ~MeshIndex(0); // Только владелец хранит номер строки для наблюдения.
+    int probe_owner_ = 0;
+    double gas_rate_max_ = 0., sa_rate_max_ = 0.;
+    bool rate_control_ = false; // Память под историю нужна только при включённом ограничителе.
+    double* rate_history_ = nullptr;
+    std::vector<double> host_rate_history_; // Три double на собственный узел для steady, включая переключение из control.txt.
     double minimum_step_ = 0., maximum_step_ = 0.; // Диапазон до ограничения расписанием.
     bool need_pressure_rate_ = false; // Резервируем рабочую память только при заказе dp_dt.
     std::unique_ptr<PartitionTransfers> pressure_exchange_; // Передаёт dp/dt от владельцев узлов.

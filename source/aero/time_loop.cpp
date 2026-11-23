@@ -54,7 +54,7 @@ class CompletionForecast {
             // Линейно продолжаем log(R) по двум концам окна. При стагнации или
             // смене порядка в этом окне темп сходимости ещё неизвестен.
             out << "residual target: ";
-            if (!run.first_order_start(time_) && residual > 0. && residual_ > residual) {
+            if (!run.first_order_start(time_, step_) && residual > 0. && residual_ > residual) {
                 const double decrease = std::log(residual_) - std::log(residual);
                 const double left = std::log(residual) - std::log(run.steady_tol);
                 out << finish_time(elapsed * (left / decrease));
@@ -80,7 +80,7 @@ TimeStep choose_time_step(std::uint64_t next_number, double current_time, double
     double deadline = run.steady() ? std::numeric_limits<double>::infinity() : run.final_time;
     // Все стадии шага используют один порядок. Попадаем точно в t_fo,
     // даже если CFL или расписание вывода допускают более длинный шаг.
-    if (run.first_order_start(current_time)) deadline = std::min(deadline, run.t_fo);
+    if (current_time < run.t_fo && run.reconstruction != "first_order") deadline = std::min(deadline, run.t_fo);
     const double remaining = deadline - current_time;
     const double candidate_dt = std::min(cfl_dt, remaining);
     const double dt = output.limit_dt(current_time, candidate_dt);
@@ -162,11 +162,11 @@ void integrate_time(const RunSettings& run, const Processes& world, OutputSchedu
         if (number == std::numeric_limits<std::uint64_t>::max()) {
             throw std::overflow_error("Step number overflow");
         }
-        const bool first_order_start = run.first_order_start(time);
+        const bool first_order_start = run.first_order_start(time, number);
         const double cfl_dt = operations.cfl_step(first_order_start, timing);
         // При продолжении сравниваем загруженное поле с исходным полем всего расчёта.
         if (check_initial) {
-            const double norm = operations.steady_residual();
+            const double norm = operations.steady_residual(false);
             if (reference < 0.) reference = norm;
             criterion = steady_measure(norm);
             forecast.set_initial_residual(criterion);
@@ -186,7 +186,7 @@ void integrate_time(const RunSettings& run, const Processes& world, OutputSchedu
         if (steady) {
             // Внутренняя сходимость Ньютона относится к одному псевдошагу.
             // Для стационара отдельно проверяем полный отток из каждого объёма.
-            criterion = steady_measure(operations.steady_residual());
+            criterion = steady_measure(operations.steady_residual(true));
             // Выход на стационар проверяем по невязке выбранной схемы.
             converged = !first_order_start && criterion <= run.steady_tol;
             exhausted = number >= run.steady_max_steps;

@@ -446,17 +446,13 @@ void PartitionOperator::layout_gpu(bool compact_buffer) {
     gpu_->layout(grid_, compute_, owned, volumes_, state_nodes(), compact_buffer, world_.size == 1);
     if (heights_) device_heights_ = gpu_->layout_node_scalars(grid_.nodes, heights_);
     if (need_pressure_rate_) device_pressure_rate_ = gpu_->layout_node_scalars(owned.size());
-    if (steady_steps_) steady_steps_->values = gpu_->layout_node_scalars(grid_.nodes);
-    if (wall_pressure_) {
-        auto& w=*wall_pressure_;
-        w.active_sites=gpu_->layout_guard_array(w.sites);
-        w.active_history=gpu_->layout_guard_array(w.history);
-        w.active_signals=gpu_->layout_guard_array(w.signals);
-        w.active_caps=gpu_->layout_guard_array(w.caps);
-        w.active_offsets=gpu_->layout_guard_array(w.offsets);
-        w.active_neighbours=gpu_->layout_guard_array(w.neighbours);
-        w.lookup={gpu_->layout_guard_array(w.blocks),gpu_->layout_guard_array(w.nodes),w.active_caps};
-        if (w.halo) w.halo->prepare_gpu(*gpu_);
+    if (steady_steps_) {
+        steady_steps_->values = gpu_->layout_node_scalars(grid_.nodes);
+        if (rate_control_) rate_history_ = gpu_->layout_node_scalars(LocalRateLimit::Width*owned.size());
+    }
+    if (neighbour_limit_) {
+        neighbour_limit_->scratch = gpu_->layout_node_scalars(grid_.nodes);
+        if (neighbour_limit_->halo) neighbour_limit_->halo->prepare_gpu(*gpu_);
     }
     if (track_time_) device_moments_ = gpu_->layout_moments(grid_.nodes);
     nodes_.prepare_gpu(*gpu_);
@@ -645,6 +641,9 @@ void PartitionOperator::set_flux_weights(double upwind, double hybrid) {
 #endif
     if (bdf_) {
         implicit::BdfHistory history;
+        // После пересборки исчезает сохранённое начало прошлого шага и его невязка.
+        previous_cfl_ = 0.;
+        reset_rate_history();
         bdf_->export_history(history);
         bdf_.reset();
         if (history.dt > 0.) implicit_step().import_history(history);
@@ -941,14 +940,6 @@ bool PartitionOperator::assemble_fluxes(const std::vector<double>& u, const std:
     return true;
 }
 
-void PartitionOperator::reset_auto_history() {
-    if (wall_pressure_) wall_pressure_->first=true;
-    accepted_field_ = nullptr;
-    previous_cfl_ = retry_dt_ = 0.;
-    retries_ = 0;
-    recovered_step_ = hold_growth_ = false;
-}
-
 void PartitionOperator::retry_auto_step(double failed_dt) {
     // У BDF газ уже восстановлен из U_n. SA имеет собственную копию начала этого шага.
 #ifdef AERO_HAS_TURBULENCE
@@ -961,23 +952,156 @@ void PartitionOperator::retry_auto_step(double failed_dt) {
 #endif
     gas_current_ = false;
     if (++retries_ > 12) throw std::runtime_error("Auto LTS: BiCGSTAB failed after 12 step reductions");
-    retry_dt_ = .5 * failed_dt;
+    reduce_auto_attempt(failed_dt, .5);
+}
+
+// Ищем владельца один раз. Для отчёта читаем только данные выбранного узла.
+void PartitionOperator::set_rate_probe(MeshIndex id) {
+    for (MeshIndex row=0; row<owned.size(); ++row)
+        if (global_node(owned[row]) == id) { probe_row_ = row; break; }
+    const bool owner = probe_row_ != ~MeshIndex(0);
+    if (world_.sum(owner ? 1 : 0) != 1)
+        throw std::invalid_argument("local_time_step_probe_node has no unique owner");
+    probe_owner_ = static_cast<int>(world_.sum(owner ? static_cast<unsigned>(world_.rank) : 0));
+}
+
+void PartitionOperator::read_rate_probe(double accepted_dt, double* values) const {
+    world_.local([&] {
+        if (probe_row_ == ~MeshIndex(0)) return;
+        const auto node = owned[probe_row_];
+        const auto read = [&](const double* p) {
+#ifdef AERO_WITH_KOKKOS_GPU
+            if (gpu_) {
+                double value;
+                gpu::checked(gpu::copy(&value,p,sizeof(value),gpu::Copy::ToHost));
+                return value;
+            }
+#endif
+            return *p;
+        };
+        values[0] = read(steady_steps_->values+node)*(accepted_dt/minimum_step_);
+        values[1] = read(bdf_->spatial_rates()+probe_row_);
+        values[3] = rate_control_ && rate_samples_ > 1 ? read(rate_history_ + LocalRateLimit::Width*probe_row_ + LocalRateLimit::CflFraction) : 1.;
+#ifdef AERO_HAS_TURBULENCE
+        if (sa_active()) values[2] = std::abs(read(sa_step().transport.sa.rate+node));
+#endif
+    });
+    if (world_.size > 1) world_.broadcast(values, 4, probe_owner_);
 }
 
 void PartitionOperator::set_steady_steps(LocalStepMode mode, double max_ratio) {
-    reset_auto_history();
+    // После переключения между глобальным и локальным шагами начинаем историю auto заново.
+    accepted_field_ = nullptr;
+    previous_cfl_ = retry_dt_ = 0.;
+    retries_ = 0;
+    recovered_step_ = false;
+    reset_rate_history();
+    rate_limited_ = 0;
     step_mode_ = mode;
     steady_steps_->local = mode != LocalStepMode::Off;
     steady_steps_->max_ratio = max_ratio;
 }
 
-void PartitionOperator::prepare_steady_steps(bool gpu, LocalStepMode mode, double max_ratio) {
+void PartitionOperator::prepare_steady_steps(bool gpu, LocalStepMode mode, double max_ratio, bool residual_limit) {
     // Адрес описания остаётся постоянным для газа, SA и матрицы на всех шагах.
     steady_steps_.reset(new SteadyNodeSteps);
+    rate_control_ = residual_limit;
     set_steady_steps(mode, max_ratio);
     if (!gpu) {
         host_steps_.resize(grid_.nodes);
         steady_steps_->values = host_steps_.data();
+        if (rate_control_) {
+            host_rate_history_.resize(LocalRateLimit::Width*owned.size());
+            rate_history_ = host_rate_history_.data();
+        }
+    }
+}
+
+void PartitionOperator::prepare_neighbour_step_limit(double ratio, bool cuda) {
+    if (ratio == 0.) return;
+    Processes::Messages needed;
+    world_.local([&] {
+        neighbour_limit_.reset(new NeighbourStepLimit);
+        auto& limit = *neighbour_limit_;
+        limit.ratio = ratio;
+        if (!cuda) {
+            limit.host_scratch.resize(grid_.nodes);
+            limit.scratch = limit.host_scratch.data();
+        }
+        if (world_.size == 1) return;
+        limit.halo.reset(new PartitionTransfers(world_.size, 1));
+        needed.resize(world_.size);
+        for (int p = 0; p < world_.size; ++p) {
+            // В обычном обмене газом есть ещё узлы шаблона и вязкости. Для dt
+            // берём только удалённые концы настоящих рёбер, смежных с собственным узлом.
+            for (Id n : nodes_.imports[p]) {
+                const bool adjacent = n < grid_.nodes && offsets_[n] != offsets_[n+1];
+                needed[p].push_back(adjacent ? 1 : 0);
+                if (adjacent) limit.halo->imports[p].push_back(n);
+            }
+        }
+    });
+    if (world_.size == 1) return;
+    // Списки nodes_ уже согласованы при connect(). Однократно передаём
+    // владельцу маску нужных позиций, сохраняя одинаковый порядок у соседей.
+    const auto requested = world_.exchange(needed);
+    world_.local([&] {
+        auto& halo = *neighbour_limit_->halo;
+        for (int p = 0; p < world_.size; ++p) {
+            if (requested[p].size() != nodes_.exports[p].size())
+                throw MeshError("Invalid neighbouring time-step exchange");
+            for (Id i = 0; i < requested[p].size(); ++i)
+                if (requested[p][i]) halo.exports[p].push_back(nodes_.exports[p][i]);
+        }
+        halo.allocate(cuda);
+    });
+}
+
+void PartitionOperator::limit_neighbour_steps() {
+    auto& limit = *neighbour_limit_;
+    if (maximum_step_ == minimum_step_) {
+        limit.before = limit.after = 1.;
+        return; // Все фактические шаги одинаковы, включая случай общего max_ratio=1.
+    }
+    const auto gas = cfl_grid();
+    bool first = true;
+    for (;;) {
+        double*& current = steady_steps_->values;
+        if (limit.halo) limit.halo->transfer(world_, {1,current,nullptr}, device());
+        const residual_detail::NeighbourStepSweep sweep{gas.owned, gas.offsets, gas.speeds.incidence,
+            gas.speeds.surfaces, grid_.edges, current, limit.scratch, limit.ratio, minimum_step_};
+        residual_detail::NeighbourStepRange range{1., 0., 0};
+        world_.local([&] {
+            if (owned.empty()) return; // Пустой ранг всё равно участвует в обменах и проверке сходимости.
+#ifdef AERO_WITH_KOKKOS_GPU
+            if (gpu_) {
+                device_work::check(device_work::aero_device_neighbour_steps(sweep, owned.size(), &range));
+                return;
+            }
+#endif
+            host_parallel::ensure_runtime();
+            Kokkos::parallel_reduce("Aero: neighbouring local steps", host_parallel::Range(0,owned.size()), sweep, range);
+        });
+        if (first) limit.before = world_.reduce_double(range.ratio, true);
+        // Минимальный узловой dt не меняется: каждому соседу разрешён как минимум
+        // этот шаг. Пропорциональное уменьшение всей попытки тоже сохраняет все отношения.
+        if (limit.ratio == 1.) {
+            std::swap(current, limit.scratch);
+            maximum_step_ = minimum_step_;
+            limit.after = 1.;
+            return;
+        }
+        const bool changed = world_.size == 1 ? range.changed != 0 : world_.sum(range.changed) != 0;
+        if (!changed) {
+            // Записанные значения уже совпадают с исходными. Оставляем поле с заполненными halo.
+            maximum_step_ = world_.reduce_double(range.maximum, true);
+            limit.after = first ? limit.before : world_.reduce_double(range.ratio, true);
+            return;
+        }
+        // Одновременно переходим к новым шагам на ВСЕХ разделах, даже если
+        // на этом ранге пока не было уменьшения. Следующий проход увидит изменения соседа.
+        std::swap(current, limit.scratch);
+        first = false;
     }
 }
 
@@ -999,10 +1123,12 @@ residual_detail::FluxCfl PartitionOperator::cfl_grid() const {
 double PartitionOperator::prepare_local_steps(double cfl) {
     // После отказа значения в узловом массиве остаются прежними. Отношение
     // dt/minimum_step_ в интеграторе уменьшит сразу все строки газа и SA.
-    if (retry_dt_ > 0.) return retry_dt_;
+    if (retry_dt_ > 0.) {
+        current_step_cfl_ = cfl; // После отката газа CFL тоже мог уменьшиться.
+        return retry_dt_;
+    }
     const bool adapting = step_mode_ == LocalStepMode::Auto && previous_cfl_ > 0.;
-    if (adapting && wall_pressure_) update_pressure_guard(cfl);
-    residual_detail::StepRange range{max_finite_double, 0.};
+    residual_detail::StepRange range{max_finite_double, 0., 0};
     world_.local([&] {
         if (owned.empty()) return;
         AdaptiveStepChange change{};
@@ -1012,8 +1138,12 @@ double PartitionOperator::prepare_local_steps(double cfl) {
             change.dim = grid_.dim;
             change.gamma = grid_.options.gamma;
             change.background = grid_.options.background;
-            change.fraction = accepted_fraction_ * (cfl / previous_cfl_);
-            change.ceiling = hold_growth_ || recovered_step_ ? 1. : 1.25;
+            // После тяжёлого решения временно удерживаем именно принятый dt:
+            // одновременная прибавка CFL не должна увеличить его в обход запрета.
+            const bool hold = recovered_step_;
+            const double cfl_change = cfl / previous_cfl_;
+            change.fraction = accepted_fraction_ * (hold ? std::min(cfl_change, 1.) : cfl_change);
+            change.ceiling = hold ? 1. : 1.25;
 #ifdef AERO_HAS_TURBULENCE
             if (sa_active()) {
                 const auto sa = sa_step().transport.sa;
@@ -1023,8 +1153,16 @@ double PartitionOperator::prepare_local_steps(double cfl) {
             }
 #endif
         }
-        const PressureCaps caps = adapting && wall_pressure_ ? wall_pressure_->lookup : PressureCaps{};
-        const residual_detail::LocalSteadySteps steps{cfl_grid(), cfl, change, steady_steps_->values,caps};
+        LocalRateLimit feedback{};
+        if (adapting && rate_samples_) {
+            feedback = {rate_history_, bdf_->spatial_rates(), nullptr, gas_rate_max_, sa_rate_max_,
+                        minimum_step_*change.fraction, rate_samples_ % LocalRateLimit::interval == 0};
+#ifdef AERO_HAS_TURBULENCE
+            if (sa_active()) feedback.sa_rate = sa_step().transport.sa.rate;
+#endif
+        }
+        const residual_detail::LocalSteadySteps steps{cfl_grid(), cfl, change, steady_steps_->values,
+                                                    feedback, rate_samples_ == 1};
 #ifdef AERO_WITH_KOKKOS_GPU
         if (gpu_) {
             device_work::check(device_work::aero_device_local_steps(steps, &range));
@@ -1034,6 +1172,7 @@ double PartitionOperator::prepare_local_steps(double cfl) {
         host_parallel::ensure_runtime();
         Kokkos::parallel_reduce("Aero: local steady steps", host_parallel::Range(0, owned.size()), steps, range);
     });
+    rate_limited_ = range.limited;
     minimum_step_ = world_.minimum(range.minimum);
     maximum_step_ = world_.reduce_double(range.maximum, true);
     if (!(minimum_step_ > 0. && maximum_step_ >= minimum_step_))
@@ -1058,6 +1197,7 @@ double PartitionOperator::prepare_local_steps(double cfl) {
             maximum_step_ = ceiling; // В report попадает фактически применённый максимум.
         }
     }
+    if (neighbour_limit_) limit_neighbour_steps();
     current_step_cfl_ = cfl;
     return minimum_step_;
 }
@@ -1177,13 +1317,21 @@ PartitionOperator::ImplicitFields PartitionOperator::implicit_fields(
     return {state.data(), initial.data(), volumes_, flux_.data()};
 }
 
-double PartitionOperator::steady_residual(std::vector<double>& state, const std::vector<double>& initial) {
+double PartitionOperator::steady_residual(std::vector<double>& state, const std::vector<double>& initial, bool accepted) {
     const auto fields = implicit_fields(state, initial);
-    double norm=bdf_->spatial_rate_norm(fields.volumes, fields.flux);
+    const bool sample = accepted && step_mode_ == LocalStepMode::Auto;
+    const bool keep_rows = sample && (rate_control_ || probe_row_ != ~MeshIndex(0));
+    const double gas = bdf_->spatial_rate_norm(fields.volumes, fields.flux, keep_rows);
+    double sa = 0.;
 #ifdef AERO_HAS_TURBULENCE
-    if(sa_active()) norm=std::max(norm,sa_max(sa_step(),turbulence::Norm::Rate));
+    if (sa_active()) sa = sa_max(sa_step(),turbulence::Norm::Rate);
 #endif
-    return norm;
+    if (sample && rate_control_) {
+        gas_rate_max_ = gas;
+        sa_rate_max_ = sa;
+        ++rate_samples_;
+    }
+    return std::max(gas, sa);
 }
 
 implicit::NewtonResult PartitionOperator::advance_bdf(std::vector<double>& state, const std::vector<double>& initial,
@@ -1231,7 +1379,7 @@ implicit::NewtonResult PartitionOperator::advance_bdf(std::vector<double>& state
         accepted_field_ = fields.state;
         previous_cfl_ = current_step_cfl_;
         accepted_fraction_ = dt_or_fraction;
-        recovered_step_ = retries_ > 0 || result.linear_iterations >= 100;
+        recovered_step_ = retry_dt_ > 0. || result.linear_iterations >= 100;
         retries_ = 0;
         retry_dt_ = 0.;
     }
