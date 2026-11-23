@@ -4,6 +4,7 @@
 #include "../residual/residual_detail.h"
 #include "../explicit/explicit_stage.h"
 #include "../mesh/mesh_index.h"
+#include "../residual/flux_cfl.h"
 
 namespace aero {
 namespace viscosity { struct Operator; }
@@ -32,12 +33,10 @@ struct PressureRate {
     const MeshIndex* owned;
     double* values; // По одному результату на собственный узел процесса.
 
-    AERO_HOST_DEVICE void operator()(Index row) const {
-        const Index node = owned ? owned[row] : row;
+    AERO_HOST_DEVICE double at(Index node) const {
         double residual[5];
         if (!residual_detail::assemble_node_residual(geometry, node, flux, residual)) {
-            values[row] = HUGE_VAL; // Процесс сообщит номер недопустимого узла до обмена.
-            return;
+            return HUGE_VAL;
         }
         const unsigned dim = geometry.dim;
         // В Linear последняя компонента состояния уже является пульсацией давления.
@@ -56,7 +55,59 @@ struct PressureRate {
                                (pressure_balance + .5 * speed_squared * residual[0]);
         }
         // Невязка положительна при оттоке. Правая часть для узла равна -R/V.
-        values[row] = -pressure_balance / volumes[node];
+        return -pressure_balance / volumes[node];
+    }
+    AERO_HOST_DEVICE void operator()(Index row) const {
+        values[row] = at(owned ? owned[row] : row);
+    }
+};
+// Нумерация полосы общая для наблюдателей и их соседей. Только владелец
+// вычисляет невязку узла. На другие ранги уходит один признак состояния.
+struct PressureSite {
+    MeshIndex row, node;
+    bool monitor, owner;
+};
+struct ObservePressure {
+    PressureRate rate;
+    const PressureSite* sites;
+    PressureTrend* history;
+    double* signals;
+    double reference;
+    bool first;
+    AERO_HOST_DEVICE void operator()(Index i) const {
+        const auto site = sites[i];
+        signals[i] = 0.;
+        if (!site.monitor || !site.owner) return;
+        EulerState gas{};
+        const auto& g = rate.geometry;
+        const double rhs = rate.at(site.node);
+        if (euler_state(g.dim,g.node_row(rate.state,site.node),g.options.gamma,&gas)!=EulerStatus::Success ||
+            !(::fabs(rhs)<=max_finite_double)) { signals[i]=-1.; return; }
+        if (first) { history[i] = {gas.pressure,rhs,0.,0,0,false,gas.pressure,rhs}; return; }
+        signals[i] = history[i].observe(gas.pressure,rhs,reference);
+    }
+};
+struct UpdatePressureCaps {
+    const PressureSite* sites;
+    const MeshIndex *offsets,*neighbours;
+    const double *signals,*steps;
+    double* caps;
+    residual_detail::FluxCfl gas;
+    double fraction,courant;
+    bool first;
+    AERO_HOST_DEVICE void operator()(Index i, MeshIndex& event) const {
+        const auto site=sites[i];
+        if (!site.owner) return;
+        // Ошибка имеет приоритет над уведомлением об уменьшении шага.
+        if (signals[i]<0.) { event=0; return; }
+        if (signals[i]==2. && i+1<event) event=i+1;
+        if (first) { caps[i]=0.; return; }
+        double nearby=0.;
+        for (auto k=offsets[i]; k<offsets[i+1]; ++k)
+            nearby=::fmax(nearby,signals[neighbours[k]]);
+        if (caps[i]==0. && nearby!=2. && signals[i]!=2.) return;
+        caps[i]=pressure_step_cap(caps[i],steps[site.node]*fraction,signals[i],nearby,
+                                  gas.local(site.row,courant).dt);
     }
 };
 // Тот же критерий плотности и давления используется на обеих архитектурах.

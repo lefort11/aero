@@ -832,6 +832,8 @@ int run_partition(RunSettings run, const ReconstructionOptions& reconstruction, 
     if (!single) {
         op->connect(run.use_cuda, run.uses_implicit_time());
     }
+    if (run.local_pressure_guard)
+        op->prepare_pressure_guard(part,geometry.periodic_partition(),geometry.boundaries.patches,run);
 #ifdef AERO_WITH_KOKKOS_GPU
     GpuMemoryFit single_fit;
     if (single && run.use_cuda) {

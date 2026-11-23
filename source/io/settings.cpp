@@ -337,6 +337,11 @@ RunSettings read_run_settings(const RunDirectories& directories) {
         // Явный переключатель имеет приоритет и задаёт тот же режим решателя.
         if (settings.contains("simplified_newton"))
             controls.set_simplified_newton(choice(lowercase(settings.take("simplified_newton")), {"on","off"}) == "on");
+        if (settings.contains("local_pressure_guard")) {
+            run.local_pressure_guard = choice(lowercase(settings.take("local_pressure_guard")), {"on","off"})=="on";
+            if (run.local_pressure_guard && (!run.steady() || run.background.active()))
+                throw std::invalid_argument("local_pressure_guard requires steady Euler");
+        }
         if (settings.contains("local_time_step")) {
             const auto entry = settings.take("local_time_step");
             run.local_time_step = parse_local_time_step(entry.value, entry.where);

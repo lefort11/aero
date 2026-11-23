@@ -447,6 +447,17 @@ void PartitionOperator::layout_gpu(bool compact_buffer) {
     if (heights_) device_heights_ = gpu_->layout_node_scalars(grid_.nodes, heights_);
     if (need_pressure_rate_) device_pressure_rate_ = gpu_->layout_node_scalars(owned.size());
     if (steady_steps_) steady_steps_->values = gpu_->layout_node_scalars(grid_.nodes);
+    if (wall_pressure_) {
+        auto& w=*wall_pressure_;
+        w.active_sites=gpu_->layout_guard_array(w.sites);
+        w.active_history=gpu_->layout_guard_array(w.history);
+        w.active_signals=gpu_->layout_guard_array(w.signals);
+        w.active_caps=gpu_->layout_guard_array(w.caps);
+        w.active_offsets=gpu_->layout_guard_array(w.offsets);
+        w.active_neighbours=gpu_->layout_guard_array(w.neighbours);
+        w.lookup={gpu_->layout_guard_array(w.blocks),gpu_->layout_guard_array(w.nodes),w.active_caps};
+        if (w.halo) w.halo->prepare_gpu(*gpu_);
+    }
     if (track_time_) device_moments_ = gpu_->layout_moments(grid_.nodes);
     nodes_.prepare_gpu(*gpu_);
     edges_.prepare_gpu(*gpu_);
@@ -931,6 +942,7 @@ bool PartitionOperator::assemble_fluxes(const std::vector<double>& u, const std:
 }
 
 void PartitionOperator::reset_auto_history() {
+    if (wall_pressure_) wall_pressure_->first=true;
     accepted_field_ = nullptr;
     previous_cfl_ = retry_dt_ = 0.;
     retries_ = 0;
@@ -989,6 +1001,7 @@ double PartitionOperator::prepare_local_steps(double cfl) {
     // dt/minimum_step_ в интеграторе уменьшит сразу все строки газа и SA.
     if (retry_dt_ > 0.) return retry_dt_;
     const bool adapting = step_mode_ == LocalStepMode::Auto && previous_cfl_ > 0.;
+    if (adapting && wall_pressure_) update_pressure_guard(cfl);
     residual_detail::StepRange range{max_finite_double, 0.};
     world_.local([&] {
         if (owned.empty()) return;
@@ -1010,7 +1023,8 @@ double PartitionOperator::prepare_local_steps(double cfl) {
             }
 #endif
         }
-        const residual_detail::LocalSteadySteps steps{cfl_grid(), cfl, change, steady_steps_->values};
+        const PressureCaps caps = adapting && wall_pressure_ ? wall_pressure_->lookup : PressureCaps{};
+        const residual_detail::LocalSteadySteps steps{cfl_grid(), cfl, change, steady_steps_->values,caps};
 #ifdef AERO_WITH_KOKKOS_GPU
         if (gpu_) {
             device_work::check(device_work::aero_device_local_steps(steps, &range));

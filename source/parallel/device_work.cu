@@ -361,6 +361,16 @@ const char* aero_device_pressure_rate(const partition_detail::PressureRate& rate
         for_indices(exec, "Aero: pressure time derivative", count, rate);
     });
 }
+const char* aero_device_observe_pressure(const partition_detail::ObservePressure& task, Index count) {
+    return on_device(nullptr,[&](const Execution& exec) {
+        for_indices(exec,"Aero: wall pressure trend",count,task);
+    });
+}
+const char* aero_device_pressure_caps(const partition_detail::UpdatePressureCaps& task, Index count, MeshIndex* event) {
+    return on_device(nullptr,[&](const Execution& exec) {
+        Kokkos::parallel_reduce("Aero: wall pressure limits",Range(exec,0,count),task,Kokkos::Min<MeshIndex>(*event));
+    });
+}
 const char* aero_device_sample(const diagnostic::Sample& input,Index count) {
     const auto sample=input;
     return on_device(nullptr,[&](const Execution& exec){

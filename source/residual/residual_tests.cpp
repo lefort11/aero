@@ -188,7 +188,7 @@ void local_steady_cfl() {
     expected_gas = .5;
 #endif
     const FluxCfl coupled(grid,flux,volumes,owned,2,sa_rate);
-    LocalSteadySteps steps{coupled,1.,{},dt};
+    LocalSteadySteps steps{coupled,1.,{},dt,{}};
     StepRange range;
     steps.init(range);
     steps(0,range);
@@ -234,7 +234,7 @@ void local_steady_cfl() {
     change.field=conserved; change.old_field=previous; change.dim=2; change.gamma=grid.options.gamma;
     change.fraction=1.; change.ceiling=1.25;
     double history[]={1.,1.};
-    const LocalSteadySteps adaptive{without_cache,.5,change,history};
+    const LocalSteadySteps adaptive{without_cache,.5,change,history,{}};
     adaptive.init(range);
     adaptive(0,range);
     adaptive(1,range);
@@ -242,7 +242,7 @@ void local_steady_cfl() {
     near(history[0],height_cfl.local(1,.5).dt);
     history[0]=.01;
     near(adaptive.proposed_step(1,0),.0125); // Меньший шаг из истории сохраняем.
-    const LocalSteadySteps spectral{coupled,.5,change,history};
+    const LocalSteadySteps spectral{coupled,.5,change,history,{}};
     near(spectral.proposed_step(0,1),.125); // Шаг газа в узле 1 ограничивает перенос SA.
     near(spectral.proposed_step(1,0),.0125); // Здесь auto предлагает меньше спектрального предела.
     history[0]=1.;
@@ -291,6 +291,27 @@ void adaptive_steady_step() {
     step.background.rho = 1.; step.background.p = 2.; step.background.sound = 2.;
     before[0] = before[3] = after[4] = 0.; after[7] = .08;
     expect(.5,"linear pressure perturbation is measured against background");
+}
+
+void wall_pressure_trend() {
+    // Большой установившийся перепад p между узлами не меняется по псевдовремени.
+    PressureTrend steady{};
+    steady.pressure=100.;
+    for (int k=0;k<8;++k) near(steady.observe(100.,0.,.5),0.);
+    // Изменения малы относительно p, но заметны относительно скоростного напора.
+    PressureTrend growing{};
+    growing.pressure=100.;
+    near(growing.observe(100.004,1.,.5),0.);
+    near(growing.observe(100.008,2.,.5),0.);
+    near(growing.observe(100.012,3.,.5),2.);
+    near(pressure_step_cap(0.,.08,2.,0.,1.),.04);
+    near(pressure_step_cap(0.,.08,0.,2.,1.),.06);
+    near(growing.observe(100.013,2.,.5),1.);
+    near(growing.observe(100.014,1.,.5),1.);
+    near(growing.observe(100.014,.5,.5),0.);
+    near(pressure_step_cap(.04,.03,0.,1.,1.),.04);
+    near(pressure_step_cap(.04,.03,0.,0.,1.),.05);
+    near(pressure_step_cap(.04,.03,0.,0.,.045),0.);
 }
 void trace_limiter_test() {
     // При γ = 2 в узле ρ = 2, u = (1,0), p = 4. Кандидат имеет ρ = 4, u = (3,2), p = 12.
@@ -839,6 +860,7 @@ int main(int argc, char** argv) {
         signed_surface_balance();
         local_steady_cfl();
         adaptive_steady_step();
+        wall_pressure_trend();
         basis_test();
         face_normal_dimensions();
         first_order_side_flux();

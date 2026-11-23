@@ -54,6 +54,7 @@ struct RunSettings {
     implicit::NewtonSettings implicit_settings; // Допуски и предел итераций из implicit.txt для неявных схем.
     bool steady_absolute = false;         // Сравнивать норму напрямую или относительно начального поля.
     double local_time_step_max_ratio = 4.; // Предел dt_i/dt_min в steady. Ноль отключает ограничение.
+    bool local_pressure_guard = false; // Локальное ограничение по росту невязки давления у стенки.
     LocalStepMode local_time_step = LocalStepMode::Off; // Свой псевдошаг CFL в каждом узле при установлении.
     double steady_tol = 1.e-6;            // Порог в единицах выбранного критерия.
     unsigned steady_max_steps = 10000;    // Предел числа псевдошагов с начала расчёта, включая восстановленные шаги.

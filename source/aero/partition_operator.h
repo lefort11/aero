@@ -99,6 +99,7 @@ public:
     void limit_auto_growth(bool hold) { hold_growth_ = hold; }
     void reset_auto_history();
     void prepare_steady_steps(bool gpu, LocalStepMode mode, double max_ratio);
+    void prepare_pressure_guard(const MeshPartition&,const PeriodicPartition*,const BoundaryPatches&,const RunSettings&);
     void set_steady_steps(LocalStepMode mode, double max_ratio);
     double largest_step(double accepted_minimum) const {
         return steady_steps_ && steady_steps_->local ? (accepted_minimum / minimum_step_) * maximum_step_ : 0.;
@@ -176,6 +177,24 @@ private:
 #endif
     residual_detail::FluxCfl cfl_grid() const;
     double prepare_local_steps(double cfl);
+    void update_pressure_guard(double cfl);
+    // Нумерация отдельной полосы у стенки одинакова для CPU, GPU и обмена признаками.
+    struct WallPressure {
+        std::vector<partition_detail::PressureSite> sites;
+        std::vector<Coordinate> points;
+        std::vector<Id> nodes, blocks, offsets, neighbours;
+        std::vector<PressureTrend> history;
+        std::vector<double> signals, caps;
+        std::unique_ptr<PartitionTransfers> halo;
+        partition_detail::PressureSite* active_sites=nullptr;
+        PressureTrend* active_history=nullptr;
+        double *active_signals=nullptr,*active_caps=nullptr;
+        const Id *active_offsets=nullptr,*active_neighbours=nullptr;
+        PressureCaps lookup{};
+        double reference=.5, ambient_pressure=0.;
+        bool first=true;
+    };
+    std::unique_ptr<WallPressure> wall_pressure_;
     std::unique_ptr<SteadyNodeSteps> steady_steps_; // Для steady резервируем память сразу, даже при старте с общего шага.
     std::vector<double> host_steps_; // При работе на GPU массив входит в общую раскладку карты.
     LocalStepMode step_mode_ = LocalStepMode::Off;

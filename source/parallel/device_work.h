@@ -16,6 +16,8 @@ namespace device_work {
 using residual_detail::Index;
 extern "C" {
 AERO_DEVICE_ENTRY const char* aero_device_pressure_rate(const partition_detail::PressureRate&, Index count);
+AERO_DEVICE_ENTRY const char* aero_device_observe_pressure(const partition_detail::ObservePressure&, Index count);
+AERO_DEVICE_ENTRY const char* aero_device_pressure_caps(const partition_detail::UpdatePressureCaps&, Index count, MeshIndex*);
 AERO_DEVICE_ENTRY const char* aero_device_sample(const diagnostic::Sample&,Index count);
 #ifdef AERO_HAS_TURBULENCE
 AERO_DEVICE_ENTRY const char* aero_device_sa_step(const turbulence::Step&, turbulence::Operation);

@@ -4,6 +4,7 @@
 #include "residual_detail.h"
 #include "../timestep/cfl_detail.h"
 #include "../timestep/adaptive_step.h"
+#include "../timestep/pressure_guard.h"
 #include "../mesh/mesh_index.h"
 
 namespace aero {
@@ -103,6 +104,7 @@ struct LocalSteadySteps {
     double courant;
     AdaptiveStepChange change; // Пустое поле означает обычный шаг CFL.
     double* steps;         // Общий шаг газа и SA в нумерации узлов подобласти.
+    PressureCaps pressure;
 
     AERO_HOST_DEVICE void init(StepRange& range) const { range = {max_finite_double, 0.}; }
     AERO_HOST_DEVICE void join(volatile StepRange& range, const volatile StepRange& next) const {
@@ -121,7 +123,7 @@ struct LocalSteadySteps {
     }
     AERO_HOST_DEVICE void operator()(Index row, StepRange& range) const {
         const Index node = gas.owned ? gas.owned[row] : row;
-        double dt = proposed_step(row, node);
+        double dt = pressure.apply(node, proposed_step(row, node));
         if (!(dt > 0. && dt < max_finite_double)) dt = -1.;
         steps[node] = dt;
         if (dt < range.minimum) range.minimum = dt;
