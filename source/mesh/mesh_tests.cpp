@@ -26,6 +26,7 @@ typedef std::pair<std::string, std::function<void()>> Test;
 std::vector<Test> tests;
 
 using aero_test::require;
+// Проверяет, что некорректный ввод завершается ожидаемой ошибкой.
 template <class F> void rejects(F operation, const std::string& expected = std::string()) {
     try {
         operation();
@@ -36,20 +37,24 @@ template <class F> void rejects(F operation, const std::string& expected = std::
     }
     throw std::runtime_error("Expected MeshError");
 }
+// Добавляет именованную проверку в список тестов модуля.
 void add(const std::string& name, std::function<void()> test) {
     tests.emplace_back(name, std::move(test));
 }
 
+// Добавляет грань в топологию тестовой сетки.
 void append_face(MeshData& d, const std::vector<MeshIndex>& vertices) {
     d.face_nodes.indices.insert(d.face_nodes.indices.end(), vertices.begin(), vertices.end());
     d.face_nodes.offsets.push_back(d.face_nodes.indices.size());
 }
+// Помечает все внешние грани тестовой сетки одним участком.
 void mark_all_boundary(MeshData& d) {
     const std::size_t count = d.face_nodes.offsets.size() - 1;
     d.boundary_faces.resize(count);
     std::iota(d.boundary_faces.begin(), d.boundary_faces.end(), MeshIndex(0));
     d.boundary_patch.assign(count, 0);
 }
+// Создаёт сетку из одной ячейки с заданной оболочкой.
 void make_single_cell(MeshData& d) {
     const std::size_t count = d.face_nodes.offsets.size() - 1;
     d.cell_faces.indices.resize(count);
@@ -59,6 +64,7 @@ void make_single_cell(MeshData& d) {
     mark_all_boundary(d);
 }
 
+// Создаёт тестовую тетраэдральную ячейку.
 MeshData tetrahedron() {
     MeshData d;
     d.x = {0, 1, 0, 0};
@@ -73,6 +79,7 @@ MeshData tetrahedron() {
     return d;
 }
 
+// Создаёт тестовую сетку со смешанными типами ячеек.
 MeshData mixed() {
     MeshData d = tetrahedron();
     d.patch_names.push_back("farfield");
@@ -99,6 +106,7 @@ MeshData mixed() {
     return d;
 }
 
+// Создаёт соседние тетраэдры с общей гранью.
 MeshData adjacent_tetrahedra() {
     MeshData d = tetrahedron();
     d.x.push_back(0);
@@ -114,6 +122,7 @@ MeshData adjacent_tetrahedra() {
     return d;
 }
 
+// Создаёт призматическую сетку для проверки геометрии и связности.
 MeshData polygonal_prism(std::size_t n) {
     MeshData d;
     d.patch_names = {"surface"};
@@ -170,6 +179,7 @@ MeshData icosahedron() {
     return d;
 }
 
+// Создаёт одномерную сетку для проверки алгоритма.
 MeshData line_mesh() {
     MeshData d;
     d.dimension = 1;
@@ -186,6 +196,7 @@ MeshData line_mesh() {
     return d;
 }
 
+// Создаёт многоугольную ячейку тестовой сетки.
 MeshData polygon(std::size_t n) {
     MeshData d;
     d.dimension = 2;
@@ -202,6 +213,7 @@ MeshData polygon(std::size_t n) {
     return d;
 }
 
+// Создаёт соседние многоугольники с общим ребром.
 MeshData adjacent_polygons() {
     MeshData d;
     d.dimension = 2;
@@ -223,6 +235,7 @@ MeshData adjacent_polygons() {
     return d;
 }
 
+// Сравнивает результаты двух реализаций или представлений с заданным допуском.
 bool same(const MeshData& a, const MeshData& b) {
     return a.dimension == b.dimension && a.x == b.x &&
            a.y == b.y && a.z == b.z && a.face_nodes.offsets == b.face_nodes.offsets &&
@@ -231,27 +244,34 @@ bool same(const MeshData& a, const MeshData& b) {
            a.cell_face_orientation == b.cell_face_orientation && a.boundary_faces == b.boundary_faces &&
            a.boundary_patch == b.boundary_patch && a.patch_names == b.patch_names;
 }
+// Сериализует тестовые данные в строку выбранного формата.
 std::string encode(const Mesh& mesh, MeshFormat format) {
     std::ostringstream out(std::ios::out | std::ios::binary);
     mesh.write(out, format);
     return out.str();
 }
+// Читает тестовые данные из строкового представления.
 Mesh decode(const std::string& bytes, const MeshReadLimits& limits = MeshReadLimits()) {
     std::istringstream in(bytes, std::ios::in | std::ios::binary);
     return Mesh::read(in, limits);
 }
+// Меняет указанный фрагмент заготовки для проверки повреждённого ввода.
 std::string replace_once(std::string text, const std::string& before, const std::string& after) {
     const std::size_t p = text.find(before);
     require(p != std::string::npos, "Test token not found: " + before);
     text.replace(p, before.size(), after);
     return text;
 }
+// Тестовая локаль с десятичной запятой для проверки независимости формата от ОС.
 struct CommaDecimal : std::numpunct<char> {
+    // Возвращает десятичную запятую для проверки работы при нестандартной локали.
     char do_decimal_point() const override { return ','; }
 };
 
+// Владеет временным файлом проверки и удаляет его при выходе из области видимости.
 class TempFile {
 public:
+    // Создаёт уникальное имя временного файла теста.
     TempFile() {
         static unsigned count = 0;
         std::ostringstream name;
@@ -261,11 +281,14 @@ public:
         std::ifstream existing(path.c_str(), std::ios::binary);
         require(!existing, "Test file already exists");
     }
+    // Удаляет временные файлы и каталоги, созданные объектом.
     ~TempFile() { std::remove(path.c_str()); }
     std::string path;
 
 private:
+    // Запрещает копирование объекта, владеющего ресурсами.
     TempFile(const TempFile&);
+    // Запрещает присваивание, чтобы ресурсы сохраняли единственного владельца.
     TempFile& operator=(const TempFile&);
 };
 
@@ -623,6 +646,7 @@ void register_lower_dimensions() {
                 require(same(d, decode(encode(mesh, f)).data()), "Empty dimension round trip");
         }
     });
+    // Создаёт сетку с некорректной размерностью для проверки отказа.
     const auto invalid_dimension_mesh = [](const std::string& name, MeshData d,
                                            std::function<void(MeshData&)> mutate) {
         add(name, [d, mutate]() mutable {
@@ -831,6 +855,7 @@ void register_polyhedra() {
 
 // Проверки повреждённых связей, оболочек и граничных граней.
 void register_invalid_topology() {
+    // Проверяет отклонение повреждённого варианта сетки.
     const auto invalid = [](const std::string& name, std::function<void(MeshData&)> mutate) {
         add(name, [mutate] {
             MeshData d = mixed();
@@ -939,6 +964,7 @@ void register_mesh_format() {
     });
     add("independent empty binary fixture", [] {
         std::string bytes = "AEROMSHB";
+        // Записывает 64-битное слово в тестовый двоичный буфер.
         const auto u64 = [&](std::uint64_t n) {
             for (unsigned i = 0; i < 8; ++i)
                 bytes.push_back(static_cast<char>((n >> (8 * i)) & 255));
@@ -1074,6 +1100,7 @@ void register_mesh_format() {
     });
 }
 
+// Формирует набор проверок модуля и выполняемых тестовых сценариев.
 void register_tests() {
     register_compressed_mesh();
     register_entity_access();
@@ -1084,6 +1111,7 @@ void register_tests() {
 }
 } // namespace
 
+// Запускает проверки модуля и возвращает ненулевой код при ошибке.
 int main() {
     register_tests();
     std::size_t failed = 0;

@@ -33,6 +33,7 @@ PairMetric make_metric(const PairProducts& products, unsigned pair_id, unsigned 
     }
     return pair;
 }
+// Накапливает парные произведения и средние градиенты по симплексам элемента.
 struct Geometry {
     const Element& element;
     unsigned dim;
@@ -96,6 +97,7 @@ struct Geometry {
             simplex(.5, v[0], v[1], v[2]);
         }
     }
+    // Разбивает элемент на симплексы и суммирует геометрические коэффициенты градиентов.
     void build() {
         const auto n = element.count;
         if (dim==3) {
@@ -111,6 +113,7 @@ struct Geometry {
 };
 }
 
+// Вычисляет геометрические и транспортные коэффициенты градиента одного элемента.
 void GradientBuilder::prepare(const Element& element, unsigned dim, double gamma, double prandtl,
                              Cell& cell, std::vector<PairMetric>& pairs, MeanGradient* mean) {
     // Координаты element отсчитаны от первой вершины. Перенесённая копия

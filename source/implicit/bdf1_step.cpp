@@ -4,6 +4,9 @@
 #include "bdf1_linear_system.h"
 #include "newton_vectors.h"
 #include "workspace.h"
+#ifdef AERO_HAS_MULTIGRID
+#include "../multigrid/coarse_step.h"
+#endif
 #include "../timestep/bdf_weights.h"
 #include "../parallel/parallel_for.h"
 #ifdef AERO_WITH_KOKKOS_GPU
@@ -68,6 +71,7 @@ double predict_initial_field(double norm, const NewtonSettings& settings, const 
 }
 }
 
+// Матрица, геометрия, история и рабочие векторы неявного шага.
 struct BdfStep::Storage {
     BdfLinearSystem linear;         // Матрица и рабочая память BiCGSTAB используются на всех шагах.
     residual_detail::Geometry grid; // Геометрия пространственной невязки на выбранном устройстве.
@@ -85,10 +89,19 @@ struct BdfStep::Storage {
     MatrixSettings cached_settings; // Переключение потока или предобуславливателя требует полной сборки.
     double* rhs;         // Полная невязка с обратным знаком для решения системы.
     double* correction;  // Последняя поправка BiCGSTAB к состоянию узлов.
+#ifdef AERO_HAS_MULTIGRID
+    residual_detail::Geometry host_grid; // Адреса связности на CPU для однократного построения агрегатов.
+    std::unique_ptr<multigrid::CoarseStep> coarse;
+    bool matrix_on_step = false; // Предиктор мог закончить шаг без единой сборки матрицы.
+#endif
 
+    // Создаёт матрицу и размечает рабочие поля Ньютона для собственной части подобласти.
     Storage(const residual_detail::Geometry& topology, const residual_detail::Geometry& active, int id, const Partition& part)
         : linear(topology, active, id, part), grid(active), partition(part),
           rows(part.extend_vector ? part.rows : grid.nodes), device(id) {
+#ifdef AERO_HAS_MULTIGRID
+        host_grid = topology;
+#endif
         if (rows > host.max_size() / (NewtonFieldCount * grid.components()))
             throw std::length_error("BDF: field too large");
         const auto size = rows * grid.components();
@@ -111,6 +124,9 @@ struct BdfStep::Storage {
     unsigned prepare_matrix(const double* state, const double* initial, const double* volumes,
                             double effective_dt, const NewtonSettings& settings, unsigned iteration,
                             const PhaseTiming& timing) {
+#ifdef AERO_HAS_MULTIGRID
+        matrix_on_step = true;
+#endif
         if (!cached) {
             // Для линейных уравнений пространственные производные постоянны.
             // В упрощённом Ньютоне сохраняем их вместе с готовым предобусловливателем.
@@ -129,12 +145,14 @@ struct BdfStep::Storage {
         return 0;
     }
 
+    // Выделяет историю предыдущего слоя, когда она требуется формулой BDF2.
     void ensure_history() {
         if (previous) return;
         const auto size = std::max<MeshIndex>(1, rows * grid.components());
         previous = workspace.allocate(device, history_host, size);
     }
 
+    // Вычисляет глобальную норму полной невязки неявного шага.
     double residual_norm(const NewtonUpdate& operation) const {
         double local = 0.;
         partition.local([&] {
@@ -150,6 +168,17 @@ struct BdfStep::Storage {
         return partition.reduce ? partition.reduce(local,true) : local;
     }
 
+    // Одним обходом вычисляем норму и, по запросу, сохраняем узловые нормы
+    // для LTS либо подписанную интегральную невязку для грубой системы.
+    double measure_spatial_balance(const double* volumes, const EulerFluxResult* flux,
+                                   double* rates, double* negative_balance) const {
+        const double norm = residual_norm({grid,flux,volumes,nullptr,nullptr,negative_balance,rates,nullptr,
+                                           0.,0.,0.,NewtonUpdate::SpatialRate,partition.owned,1.,{}});
+        if (!std::isfinite(norm)) throw std::domain_error("Steady: nonfinite spatial residual");
+        return norm;
+    }
+
+    // Выполняет выбранное обновление полей Ньютона на CPU или GPU.
     void update(const NewtonUpdate& operation) const {
 #ifdef AERO_WITH_KOKKOS_GPU
         if (device >= 0) {
@@ -161,12 +190,16 @@ struct BdfStep::Storage {
     }
 };
 
+// Создаёт неявный интегратор с геометрией и обменами заданной подобласти.
 BdfStep::BdfStep(const residual_detail::Geometry& host, const residual_detail::Geometry& active, int device, const Partition& part)
     : storage_(new Storage(host, active, device, part)) {}
+// Освобождает принадлежащие объекту ресурсы при завершении его времени жизни.
 BdfStep::~BdfStep() = default;
 
+// Возвращает сохранённое поле начала текущего шага.
 const double* BdfStep::start_field() const { return storage_->start; }
 
+// Копирует предыдущий слой BDF и его шаг для контрольной точки.
 void BdfStep::export_history(BdfHistory& history) const {
     const auto& s = *storage_;
     history.dt = s.previous_dt;
@@ -193,6 +226,7 @@ void BdfStep::export_history(BdfHistory& history) const {
         std::copy_n(source + i * width, width, history.previous.data() + node * width);
     }
 }
+// Восстанавливает предыдущий слой BDF и длительность его шага.
 void BdfStep::import_history(const BdfHistory& history) {
     auto& s = *storage_;
     const unsigned width = s.grid.components();
@@ -217,21 +251,52 @@ void BdfStep::import_history(const BdfHistory& history) {
     s.cached = false; // Контрольная точка могла содержать другое поле.
 }
 
+// Вычисляет пространственные скорости изменения поля без временного вклада BDF.
 const double* BdfStep::spatial_rates() const { return storage_->correction; }
 
+// Максимум |R_i|/V_i по собственным узлам всех процессов и всем уравнениям.
 double BdfStep::spatial_rate_norm(const double* volumes, const EulerFluxResult* flux, bool save_rows) {
     auto& s = *storage_;
-    const double norm = s.residual_norm({s.grid,flux,volumes,nullptr,nullptr,s.rhs,save_rows ? s.correction : nullptr,nullptr,
-                                         0.,0.,0.,NewtonUpdate::SpatialRate,s.partition.owned,1.,{}});
-    if (!std::isfinite(norm)) throw std::domain_error("Steady: nonfinite spatial residual");
-    return norm;
+    return s.measure_spatial_balance(volumes,flux,save_rows ? s.correction : nullptr,nullptr);
 }
 
+#ifdef AERO_HAS_MULTIGRID
+// Пробуем уменьшить невязку стационарного уравнения после обычного шага.
+SteadyCorrection BdfStep::correct_steady(double* state,const double* initial,const double* volumes,
+                                        const EulerFluxResult* flux,double dt,const NewtonSettings& settings,
+                                        double other_rate,const std::function<double()>& trial_norm,
+                                        const std::function<void()>& restore_flux) {
+    auto& s = *storage_;
+    // До сборки якобиана потоки соответствуют принятому полю. Сохраняем полную
+    // газовую правую часть и получаем критерий принятия за тот же проход.
+    const double accepted_norm = std::max(s.measure_spatial_balance(volumes,flux,nullptr,s.rhs),other_rate);
+    if (accepted_norm == 0.) return {0.,0.,false};
+    s.partition.local([&] {
+        if (!s.coarse) s.coarse.reset(new multigrid::CoarseStep(s.host_grid,s.grid,s.rows,s.device,s.partition));
+    });
+    // Если Ньютон обошёлся предиктором, сборка может занять память потока.
+    // Обновляем его ровно один раз при отказе даже в случае нулевой грубой правой части.
+    bool pending_refresh = !s.matrix_on_step;
+    if (pending_refresh) s.prepare_matrix(state,initial,volumes,dt,settings,0,{});
+    // Пересчитывает зависимые потоки или коэффициенты после изменения поля.
+    const auto refresh = [&] { restore_flux(); pending_refresh = false; };
+    const double fraction = s.coarse->correct(s.linear,state,volumes,dt,s.rhs,s.correction,
+                                              accepted_norm,trial_norm,refresh,s.start);
+    if (pending_refresh && fraction == 0.) refresh();
+    return {accepted_norm,fraction,s.coarse->used_history()};
+}
+#endif
+
+// На входе потоки уже вычислены при выборе dt. После каждой поправки refresh_fluxes
+// пересчитывает их тем же пространственным оператором. При ошибке восстанавливаем U_n.
 NewtonResult BdfStep::advance(double* state, const double* initial, const double* volumes,
                               const EulerFluxResult* flux, double dt, const NewtonSettings& settings,
                               const std::function<void()>& refresh_fluxes, const std::function<bool()>& try_prediction_fluxes,
                               const std::function<bool()>& confirm_prediction, const PhaseTiming& timing) {
     auto& s = *storage_;
+#ifdef AERO_HAS_MULTIGRID
+    s.matrix_on_step = false;
+#endif
     s.partition.local([&] {
         if (settings.second_order) s.ensure_history();
         if ((s.rows && (!state || !volumes || (!flux && s.grid.faces))) || !(dt > 0.) || !std::isfinite(dt))
@@ -244,13 +309,16 @@ NewtonResult BdfStep::advance(double* state, const double* initial, const double
     const auto weights = BdfWeights::for_step(settings.second_order, dt, s.previous_dt);
     if (!std::isfinite(weights.history)) throw std::domain_error("BDF: invalid time step ratio");
     const NodeSteps node_steps = SteadyNodeSteps::active(s.partition.steady_steps);
+    // Формирует параметры выбранного обновления полей неявного шага.
     const auto operation = [&](NewtonUpdate::Operation op, double relaxation) {
         return NewtonUpdate{s.grid, flux, volumes, state, s.start, s.rhs, s.correction, s.previous, dt,
                             weights.leading, weights.history, op, s.partition.owned, relaxation, node_steps};
     };
+    // Формирует пробное поле по заданной доле нелинейной поправки.
     const auto update_trial = [&](NewtonUpdate::Operation op, double relaxation) {
         s.partition.local([&] { s.update(operation(op,relaxation)); });
     };
+    // Применяет выбранное обновление рабочих полей текущего этапа решателя.
     const auto update = [&](NewtonUpdate::Operation op) { update_trial(op, 1.); };
     // Пока поле ещё принятое, сохраняем U_n и собираем первую правую часть за один обход.
     // Все последующие пробы могут использовать эту копию для отката.
@@ -258,9 +326,11 @@ NewtonResult BdfStep::advance(double* state, const double* initial, const double
     LinearTolerance tolerance;
     tolerance.relative = settings.linear_relative;
     tolerance.max_iterations = settings.linear_max_iterations;
+    // Вычисляет согласованную норму невязки текущего пробного состояния.
     const auto residual_norm = [&] {
         return s.residual_norm(operation(NewtonUpdate::FormRhs, 1.));
     };
+    // Обновляет соседние копии поля перед вычислением полной невязки.
     const auto share_state = [&] {
         if (s.partition.share_state) s.partition.share_state(state);
     };
@@ -285,6 +355,7 @@ NewtonResult BdfStep::advance(double* state, const double* initial, const double
                             !s.partition.host_aes.c_des && settings.simplified_newton() && settings.max_iterations > 1;
 #endif
         if (spatial_predictor) assemblies += s.prepare_matrix(state,initial,volumes,dt/weights.leading,settings,0,timing);
+        // Применяет пробное обновление предиктора перед проверкой нелинейного баланса.
         const auto predictor_update = [&](NewtonUpdate::Operation op, double relaxation) {
             if (spatial_predictor && op == NewtonUpdate::Predict) {
                 timing.measure(PhaseTiming::Prediction,[&] { s.linear.predict(s.rhs,s.correction); });

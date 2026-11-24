@@ -29,12 +29,14 @@ enum Column {
     Mach,
     ColumnCount
 };
+// Возвращает имя диагностического столбца.
 inline const char *name(unsigned i) {
     static const char *const names[] = {"rho",      "ux",      "uy",        "uz",        "p",        "E",
                                         "nu_tilde", "nut",     "rho_prime", "ux_prime",  "uy_prime", "uz_prime",
                                         "p_prime",  "E_prime", "dp_dt",     "vorticity", "Cp", "schlieren", "mach"};
     return names[i];
 }
+// Находит диагностический столбец по текстовому имени.
 inline unsigned column(const std::string &key) {
     if (key == "dp/dt")
         return DpDt;
@@ -43,8 +45,11 @@ inline unsigned column(const std::string &key) {
             return i;
     return ColumnCount;
 }
+// Проверяет принадлежность столбца к временной статистике.
 inline bool time_column(unsigned c) { return c >= DensityPrime && c <= EnergyPrime; }
+// Определяет, нужно ли накопление моментов для выбранного столбца.
 inline bool needs_time(const std::string &key) { return key == "fluctuations" || time_column(column(key)); }
+// Определяет, зависит ли столбец от активной турбулентной модели.
 inline bool turbulent(const std::string &key) {
     return key == "turbulence" || key == "nu_tilde" || key == "nut";
 }
@@ -55,9 +60,11 @@ struct Moments {
     double mean[6], last[6], duration;
     // В прежнем recovery слово 12 содержало разность давлений. Оставляем место в файле.
     static constexpr unsigned words = 14;
+    // Читает компоненту накопленных моментов по её номеру.
     AERO_HOST_DEVICE double get(unsigned k) const {
         return k < 6 ? mean[k] : (k < 12 ? last[k - 6] : (k == 12 ? 0. : duration));
     }
+    // Записывает компоненту накопленных моментов по её номеру.
     AERO_HOST_DEVICE void set(unsigned k, double value) {
         if (k < 6)
             mean[k] = value;
@@ -91,12 +98,14 @@ AERO_HOST_DEVICE inline bool primary_from_state(unsigned dim, const double* u, d
     return true;
 }
 
+// Ядро накопления временных моментов физических величин в узлах.
 struct Sample {
     unsigned dim;
     double gamma, dt;
     LinearBackground background;
     Moments *values;
     const double *state;
+    // Добавляет взвешенный по времени вклад состояния одного узла в его моменты.
     AERO_HOST_DEVICE void operator()(size_t i) const {
         const auto *u = state + i * (dim + 2);
         double q[6];
@@ -121,6 +130,7 @@ struct Sample {
         }
     }
 };
+// Представление дополнительных полей SA, временных моментов и производной давления.
 struct Fields {
     const double *sa = nullptr; // Пары nu_tilde и nut по расчётным узлам.
     const Moments *moments = nullptr;
@@ -132,12 +142,14 @@ struct Fields {
 // площадки на разность между скоростью на площадке и скоростью в узле.
 struct Curl {
     double value[3];
+    // Дополняет набор вывода доступными диагностическими величинами.
     AERO_HOST_DEVICE void add(const double *area, const double *jump, double factor) {
         for (unsigned k = 0; k < 3; ++k) {
             const unsigned a = (k + 1) % 3, b = (k + 2) % 3;
             value[k] += factor * (area[a] * jump[b] - area[b] * jump[a]);
         }
     }
+    // Вычисляет модуль векторной диагностической величины.
     AERO_HOST_DEVICE double magnitude(double inverse_volume) const {
         return ::sqrt(value[0] * value[0] + value[1] * value[1] + value[2] * value[2]) * inverse_volume;
     }

@@ -6,6 +6,7 @@ namespace aero {
 // он задаёт долю узлового шага CFL (единица до ограничения расписанием).
 struct NodeSteps {
     double* values;
+    // Возвращает шаг выбранного узла либо общий шаг при отсутствии локального массива.
     AERO_HOST_DEVICE double at(size_t node, double dt_or_fraction) const {
         return values ? values[node] * dt_or_fraction : dt_or_fraction;
     }
@@ -17,6 +18,7 @@ struct SteadyNodeSteps {
     bool local = false;
     double max_ratio = 0.;
     double* values = nullptr;
+    // Возвращает локальные шаги только при включённом локальном режиме.
     static NodeSteps active(const SteadyNodeSteps* steps) {
         return {steps && steps->local ? steps->values : nullptr};
     }

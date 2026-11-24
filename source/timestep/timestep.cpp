@@ -9,17 +9,20 @@
 namespace aero {
 namespace {
 using cfl_detail::Entry;
+// Проверяет размер массива перед приведением к адресуемому диапазону.
 std::size_t extent(std::uint64_t n) {
     if (n >= static_cast<std::uint64_t>((std::numeric_limits<std::ptrdiff_t>::max)()))
         throw std::length_error("CFL grid exceeds addressable range");
     return static_cast<std::size_t>(n);
 }
+// Вычисляет модуль вектора площади площадки.
 double magnitude(CvVector s) {
     const double area = s.length();
     if (!(area > 0 && std::isfinite(area)))
         throw std::invalid_argument("invalid CFL face area");
     return area;
 }
+// Концы ребра и ориентированный вектор его контрольной площадки.
 struct Edge {
     std::uint64_t a, b;
     CvVector area;
@@ -35,7 +38,9 @@ struct CflTimestep::Impl {
     // В режиме CUDA владеет копией таблицы и рабочими буферами поиска минимума на карте.
     void* gpu = nullptr;
 
+    // Формирует невладеющее представление подготовленной геометрии CFL.
     cfl_detail::Grid view() const { return {volumes.size(), offsets.data(), entries.data(), volumes.data()}; }
+    // Готовит списки площадок узлов и их объёмы для выбора шага.
     template <class ReadEdge>
     void prepare(std::size_t nodes, std::size_t edges, std::size_t pieces, const double* v,
                  const CvBoundary* boundary, ReadEdge read_edge, int device) {
@@ -89,6 +94,7 @@ struct CflTimestep::Impl {
 #endif
         }
     }
+    // Освобождает принадлежащие объекту ресурсы при завершении его времени жизни.
     ~Impl() {
 #ifdef AERO_WITH_KOKKOS_GPU
         if (gpu)
@@ -97,6 +103,7 @@ struct CflTimestep::Impl {
     }
 };
 
+// Подготавливает геометрию ограничения CFL на CPU или GPU.
 CflTimestep::CflTimestep(const MeshView& mesh, const CvView& cv, int device) : impl_(new Impl) {
     if (mesh.node_count != cv.node_count || mesh.edge_count != cv.edge_count ||
         mesh.dimension != cv.dimension ||
@@ -107,6 +114,7 @@ CflTimestep::CflTimestep(const MeshView& mesh, const CvView& cv, int device) : i
         [&](std::size_t i) -> Edge { return {mesh.edge_begin[i], mesh.edge_end[i], cv.edge_areas[i]}; },
         device);
 }
+// Подготавливает геометрию ограничения CFL на CPU или GPU.
 CflTimestep::CflTimestep(const PeriodicView& cv, int device) : impl_(new Impl) {
     if (cv.edge_count && !cv.edges)
         throw std::invalid_argument("missing CFL periodic edges");
@@ -118,7 +126,10 @@ CflTimestep::CflTimestep(const PeriodicView& cv, int device) : impl_(new Impl) {
         },
         device);
 }
+// Освобождает принадлежащие объекту ресурсы при завершении его времени жизни.
 CflTimestep::~CflTimestep() {}
+// На неподвижной сетке выбирает один шаг для всей области. stream задаёт поток CUDA, готовящий скорости.
+// При равенстве берётся меньший номер расчётного узла. Одновременным вызовам нужны отдельные контексты.
 CflStep CflTimestep::compute(double cfl, WaveSpeeds speeds, void* stream) const {
     const Impl& p = *impl_;
     if (!(cfl > 0 && std::isfinite(cfl)) || speeds.edge_count != p.edge_count ||

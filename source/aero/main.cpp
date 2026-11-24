@@ -99,6 +99,7 @@ int run_application(int argc, char** argv, const Processes& world, ConsoleLog& l
 }
 }
 
+// Инициализирует MPI, запускает решатель и преобразует исключения в код завершения.
 int main(int argc, char** argv) {
     try {
         aero::Processes world(argc, argv);

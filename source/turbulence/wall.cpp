@@ -7,9 +7,11 @@
 namespace aero {
 namespace turbulence {
 namespace {
+// Треугольник стенки; совпавшие вершины представляют отрезок или точку.
 struct Face {
     Coordinate a, b, c;
 }; // Повтор вершины обозначает отрезок или точку в 2D и 1D.
+// Вычисляет квадрат расстояния точки до отрезка стенки.
 double segment(Coordinate x, Coordinate a, Coordinate b) {
     const auto edge = b - a;
     const double length = dot3(edge, edge);
@@ -17,6 +19,7 @@ double segment(Coordinate x, Coordinate a, Coordinate b) {
     const auto dx = x - a - edge * t;
     return dot3(dx, dx);
 }
+// Вычисляет квадрат расстояния точки до граничного треугольника или его вырожденного случая.
 double squared_distance(Coordinate p, const Face &f) {
     // Если проекция лежит внутри треугольника, ближайшая точка находится в его плоскости.
     const auto e = f.b - f.a, h = f.c - f.a, x = p - f.a;
@@ -34,12 +37,14 @@ double squared_distance(Coordinate p, const Face &f) {
 // Дерево ограничивающих параллелепипедов строим один раз. При поиске отбрасываем
 // целую ветвь, если до её ближайшей точки дальше, чем до уже найденной стенки.
 struct WallTree {
+    // Узел дерева ограничивающих параллелепипедов для поиска ближайшей стенки.
     struct Box {
         Coordinate lo, hi;
         size_t first, end, left, right;
     };
     std::vector<Face> faces;
     std::vector<Box> boxes;
+    // Рекурсивно строит дерево ограничивающих объёмов набора стеночных граней.
     size_t build(size_t first, size_t end) {
         Box box{faces[first].a, faces[first].a, first, end, 0, 0};
         for (size_t j = first; j < end; ++j)
@@ -64,6 +69,7 @@ struct WallTree {
         }
         return i;
     }
+    // Вычисляет нижнюю оценку квадрата расстояния до ограничивающего объёма.
     double lower(size_t i, Coordinate p) const {
         double d = 0.;
         for (unsigned k = 0; k < 3; ++k) {
@@ -72,6 +78,7 @@ struct WallTree {
         }
         return d;
     }
+    // Ищет ближайший участок стенки по дереву ограничивающих объёмов.
     double nearest(size_t i, Coordinate p, double best) const {
         const auto &b = boxes[i];
         if (!b.left) {
@@ -91,6 +98,7 @@ struct WallTree {
     }
 };
 }
+// Вычисляет минимальное расстояние от каждого узла до стенки с прилипанием.
 std::vector<double> wall_distances(const MeshPartition &part, const PeriodicPartition *seam,
                                    const BoundaryPatches &bc, const std::vector<PeriodicPair> &pairs,
                                    const Processes &world, MeshIndex nodes) {
@@ -108,6 +116,7 @@ std::vector<double> wall_distances(const MeshPartition &part, const PeriodicPart
                 wall[i] = 1;
             if (part.node_owners[v[0]] != world.rank)
                 continue;
+            // Добавляет очередную геометрическую сущность или связь в собираемый список.
             auto emit = [&](Coordinate a, Coordinate b, Coordinate c) {
                 Face f{a, b, c};
                 packet.append(reinterpret_cast<const char *>(&f), sizeof(f));

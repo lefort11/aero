@@ -432,6 +432,7 @@ def planar_sigma(case,args):
     assert all(laminar[k]==ref[k] for k in laminar)
 
 
+# Проверяет турбулентные условия на стенках со скольжением и прилипанием.
 def walls(case,args):
     case.mkdir()
     coords=configure(case,args,3)

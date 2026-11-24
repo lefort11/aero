@@ -19,11 +19,13 @@
 
 namespace aero {
 namespace {
+// Проверяет существование каталога по заданному пути.
 bool directory_exists(const std::string& path) {
     struct stat info;
     return stat(path.c_str(), &info) == 0 && (info.st_mode & S_IFMT) == S_IFDIR;
 }
 }
+// Создаёт также отсутствующие родительские каталоги пути.
 void create_output_directory(std::string path) {
     std::replace(path.begin(), path.end(), '\\', '/');
     if (directory_exists(path))
@@ -41,12 +43,15 @@ void create_output_directory(std::string path) {
     if (result && !directory_exists(path))
         throw std::runtime_error("Cannot create output directory " + path);
 }
+// Печатает начало этапа подготовки с немедленным обновлением консоли.
 void stage(const char* name) {
     std::cout << name << "... " << std::flush;
 }
+// Отмечает завершение этапа подготовки в консоли.
 void done() {
     std::cout << "done" << std::endl;
 }
+// Возвращает непустые строки настроек для вывода постановки в журнал.
 std::string settings_text(const std::string& path) {
     auto in = settings_detail::open(path);
     std::ostringstream text;
@@ -64,6 +69,7 @@ std::string settings_text(const std::string& path) {
         throw std::runtime_error("Cannot read " + path);
     return text.str();
 }
+// Печатает параметры, по которым фактически запускается расчёт.
 void show_settings(const RunSettings& r) {
     std::cout << std::setprecision(15) << "Run settings\ninput = " << r.directories.input
               << "\noutput = " << r.directories.output << "\ninteractive = " << r.directories.interactive
@@ -119,6 +125,7 @@ void show_settings(const RunSettings& r) {
     if (r.prophecy_every_step) std::cout << "prophecy_every_step = " << r.prophecy_every_step << '\n';
     if (r.steady())
         std::cout << "local_time_step = " << local_step_name(r.local_time_step) << "\nsteady_criterion = " << (r.steady_absolute ? "absolute" : "relative") << "\nsteady_tol = " << r.steady_tol << "\nsteady_max_steps = " << r.steady_max_steps << '\n';
+    if (r.steady()) std::cout << "steady_multigrid = " << (r.implicit_settings.steady_multigrid ? "on" : "off") << '\n';
     if (r.local_time_step == LocalStepMode::Auto) {
         std::cout << "local_time_step_residual_limit = " << residual_limit_name(r.local_time_step_residual_limit) << '\n';
         if (r.local_time_step_probe_node != ~std::uint64_t(0))
@@ -170,6 +177,7 @@ void show_settings(const RunSettings& r) {
         std::cout << '\n';
     }
 }
+// Выводит имена участков сетки и число помеченных граней каждого участка.
 void show_boundary_labels(const Mesh& mesh) {
     const auto& data = mesh.data();
     std::vector<std::size_t> counts(data.patch_names.size());
@@ -179,6 +187,7 @@ void show_boundary_labels(const Mesh& mesh) {
     for (std::size_t i = 0; i < counts.size(); ++i)
         std::cout << data.patch_names[i] << '\t' << counts[i] << '\n';
 }
+// При первом запуске создаёт заготовку секций по меткам сетки. Возвращает false, если её нужно заполнить.
 bool prepare_boundary_file(const RunSettings& run, const std::vector<std::string>& names) {
     const std::string& path = run.boundary_path;
     std::FILE* file = nullptr;
@@ -240,6 +249,7 @@ bool prepare_boundary_file(const RunSettings& run, const std::vector<std::string
     }
     return true;
 }
+// Выделяет новый пронумерованный каталог продолжения, чтобы отличать результаты разных перезапусков.
 unsigned create_resume_directory(const std::string& prefix) {
     for (unsigned i = 1; i; i++) {
         // Номер резервируется созданием каталога. Если его занял предыдущий запуск, пробуем следующий.
@@ -257,18 +267,21 @@ unsigned create_resume_directory(const std::string& prefix) {
     throw std::runtime_error("Too many recovery output directories");
 }
 namespace {
+// Создаёт вложенный каталог для файла зоны вывода.
 void prepare_zone_directory(const std::string& directory, const OutputZone& zone) {
     const auto slash = zone.file.find_last_of("/\\");
     if (slash != std::string::npos)
         create_output_directory(directory + "/" + zone.file.substr(0, slash));
 }
 }
+// Готовит каталог расчёта и подкаталоги запрошенных зон вывода.
 void prepare_output_directories(const RunSettings& run) {
     create_output_directory(run.directories.output);
     if (!run.directories.geometry_only)
         for (const auto& z : run.output_zones)
             prepare_zone_directory(run.directories.output, z);
 }
+// Готовит каталоги только для зон заданного размещения: общих или локальных.
 void prepare_zone_directories(const std::string& directory, const std::vector<OutputZone>& zones,
                               bool global) {
     create_output_directory(directory);

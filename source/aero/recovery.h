@@ -12,10 +12,13 @@ namespace aero {
 struct ScalarHistory {
     std::vector<double> current, previous; // Поле SA и предыдущий слой BDF2 в расчётной нумерации.
 };
+// Управляет записью и восстановлением контрольных точек расчёта.
 class Recovery {
 public:
+    // Связывает контрольные точки с настройками, сеткой и собственными узлами процесса.
     Recovery(const RunSettings& run, const Processes& world, std::uint64_t count, unsigned dimension,
              std::string mesh_sha256, const std::vector<OwnedNode>& nodes);
+    // Освобождает принадлежащие объекту ресурсы при завершении его времени жизни.
     ~Recovery();
     // При --recover продолжает расчёт из выходного каталога. При заданном initial_file
     // читает текущие газ и SA в качестве начальных полей нового расчёта, со своим отсчётом времени.
@@ -25,10 +28,12 @@ public:
               const std::vector<double>& initial);
     // Только промежуточные точки подчиняются расписанию. Итоговую пишет интегратор.
     bool due(std::uint64_t step) const;
+    // Возвращает каталог полей текущего запуска или продолжения.
     const std::string& fields_directory() const { return fields_; }
     std::uint64_t step = 0;
     double time = 0;
     double steady_reference = -1.; // Норма невязки исходного поля. Отрицательное значение означает отсутствие записи.
+    // Нормирует невязку на сохранённый начальный уровень.
     double relative_steady_residual(double norm) const {
         if (steady_reference > 0.) return norm / steady_reference;
         return norm == 0. ? 0. : std::numeric_limits<double>::infinity();
@@ -54,6 +59,7 @@ private:
     const std::vector<OwnedNode>& nodes_;
     // Номер последнего принятого слота. Следующая запись идёт в противоположный.
     int last_ = -1;
+    // Формирует путь одного из чередующихся файлов контрольных точек.
     std::string path(int slot) const;
 };
 }

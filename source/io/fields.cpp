@@ -23,12 +23,15 @@ namespace aero {
 namespace {
 typedef std::uint64_t U64;
 static_assert(sizeof(double) == 8 && std::numeric_limits<double>::is_iec559, "Requires IEEE-754 binary64");
+// Прерывает чтение или запись с диагностикой некорректных данных.
 [[noreturn]] void fail(const std::string& message) {
     throw FieldError(message);
 }
+// Проверяет, относится ли символ к пробельным разделителям формата.
 bool space(int c) {
     return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\v' || c == '\f';
 }
+// Возвращает текстовое имя типа сущностей, на которых задано поле.
 const char* location_name(FieldLocation location) {
     switch (location) {
     case FieldLocation::Node:
@@ -42,11 +45,13 @@ const char* location_name(FieldLocation location) {
     }
     fail("Invalid field location");
 }
+// Вычисляет размер массива с проверкой переполнения произведения.
 U64 product(U64 a, U64 b) {
     if (b && a > std::numeric_limits<U64>::max() / b)
         fail("Field value count overflow");
     return a * b;
 }
+// Проверяет длину и допустимые символы текстового отпечатка сетки.
 bool valid_hash(const std::string& hash) {
     if (hash.size() != 64)
         return false;
@@ -55,17 +60,21 @@ bool valid_hash(const std::string& hash) {
             return false;
     return true;
 }
+// Преобразует шестнадцатеричную цифру в числовое значение.
 unsigned hex_value(char c) {
     return static_cast<unsigned>(c <= '9' ? c - '0' : c - 'a' + 10);
 }
+// Проверяет поддержку выбранного формата записи полей.
 void check_format(FieldFormat format) {
     if (format != FieldFormat::Text && format != FieldFormat::Binary && format != FieldFormat::Lzma)
         fail("Unsupported field encoding");
 }
 
+// Читает текстовый или двоичный файл полей с контролем формата и объёма данных.
 class Reader {
     friend struct io::NativeFileCodec;
 public:
+    // Подключает входной поток и инициализирует ограничения чтения данных.
     Reader(std::istream& input, const FieldReadLimits& limits)
         : input_(&input), limits_(limits), budget_(limits.max_payload_bytes),
           available_(limits.max_decoded_bytes), text_(false) {
@@ -93,13 +102,16 @@ public:
             fail("Unsupported field format version");
         block("TEXT");
     }
+    // Передаёт блок байтов между представлением файла и потоком с проверкой ошибки.
     void block(const char* label) {
         if (text_ && token() != label)
             fail(std::string("Expected block: ") + label);
     }
+    // Читает или записывает беззнаковое 64-битное значение в формате файла полей.
     U64 u64() {
         return io::NativeFileCodec::read_unsigned(*this,fail);
     }
+    // Читает или записывает вещественное значение в выбранном формате.
     double real() {
         if (!text_) {
             return number_codec::real_from_bits(u64());
@@ -118,6 +130,7 @@ public:
             fail("Invalid floating-point value");
         return result;
     }
+    // Читает или записывает строку вместе с её длиной.
     std::string string() {
         std::string result;
         if (!text_) {
@@ -155,6 +168,7 @@ public:
             fail("Invalid UTF-8 or control character in field string");
         return result;
     }
+    // Читает или записывает отпечаток исходной сетки.
     std::string hash() {
         if (text_)
             return string();
@@ -168,6 +182,7 @@ public:
         }
         return result;
     }
+    // Читает или записывает обозначение размещения поля на сущностях сетки.
     FieldLocation location() {
         if (!text_) {
             char value;
@@ -183,6 +198,7 @@ public:
                 return loc;
         fail("Invalid field location");
     }
+    // Проверяет размер и бюджет перед выделением массива значений.
     template <class T> void resize(std::vector<T>& array, U64 size) {
         if (size > array.max_size())
             fail("Field array is too large");
@@ -200,6 +216,7 @@ public:
             destination[i] = real();
     }
 
+    // Пропускает ненужные значения, сохраняя контроль целостности входного потока.
     void skip_values(U64 count) {
         if (!count)
             return;
@@ -231,6 +248,7 @@ public:
             }
         }
     }
+    // Завершает обработку файла и проверяет состояние потока.
     void finish() {
         block("END");
         if (text_)
@@ -242,12 +260,15 @@ public:
     }
 
 private:
+    // Учитывает потреблённые байты в разрешённом бюджете чтения.
     void charge(U64 size, U64 width) {
         if (size > budget_ / width)
             fail("Fields exceed payload limit");
         budget_ -= size * width;
     }
+    // Возвращает следующий байт входа, не сдвигая текущую позицию.
     int peek() { return input_->peek(); }
+    // Читает один символ с проверкой преждевременного конца файла.
     int get() {
         if (!available_) {
             if (peek() == std::char_traits<char>::eof())
@@ -259,6 +280,7 @@ private:
             --available_;
         return c;
     }
+    // Читает точное количество байтов с контролем лимитов входа.
     void bytes(char* data, std::size_t size) {
         if (size > available_)
             fail("Fields exceed decoded byte limit");
@@ -268,10 +290,12 @@ private:
             fail("Truncated field input");
         available_ -= size;
     }
+    // Пропускает пробельные разделители перед следующим токеном.
     void skip_space() {
         while (space(peek()))
             get();
     }
+    // Читает следующий текстовый токен с контролем допустимого размера.
     std::string token() {
         skip_space();
         std::string result;
@@ -292,6 +316,7 @@ private:
     bool text_;
 };
 
+// Разбирает вещественное число текстового формата независимо от локали ОС.
 void text_real(std::ostream& stream, double value) {
     if (std::isnan(value))
         stream << "nan";
@@ -302,8 +327,10 @@ void text_real(std::ostream& stream, double value) {
     stream.put(' ');
 }
 
+// Записывает метаданные и значения полей в текстовом или двоичном формате.
 class Writer {
 public:
+    // Подключает выходной поток и задаёт независимое от локали представление чисел.
     Writer(std::ostream& output, bool text) : output_(output), text_(text) {
         numeric_.imbue(std::locale::classic());
         numeric_ << std::setprecision(std::numeric_limits<double>::max_digits10);
@@ -312,7 +339,9 @@ public:
         if (text_)
             literal("TEXT\n");
     }
+    // Записывает служебный текстовый фрагмент формата.
     void literal(const char* text) { output_.write(text, static_cast<std::streamsize>(std::strlen(text))); }
+    // Передаёт блок байтов между представлением файла и потоком с проверкой ошибки.
     void block(const char* label) {
         if (text_) {
             output_.put('\n');
@@ -320,7 +349,9 @@ public:
             output_.put(' ');
         }
     }
+    // Читает или записывает беззнаковое 64-битное значение в формате файла полей.
     void u64(U64 value) { number_codec::write_word(output_, value, text_); }
+    // Читает или записывает вещественное значение в выбранном формате.
     void real(double value) {
         if (!text_) {
             u64(number_codec::real_bits(value));
@@ -332,6 +363,7 @@ public:
         const auto s = numeric_.str();
         output_.write(s.data(), static_cast<std::streamsize>(s.size()));
     }
+    // Записывает последовательность вещественных значений поля.
     void values(const std::vector<double>& data, U64 count) {
         if (!text_) {
             // Двоичный формат хранит компоненты целыми столбцами в том же порядке, что и Field::values.
@@ -374,9 +406,11 @@ public:
             start += size;
         }
     }
+    // Читает или записывает строку вместе с её длиной.
     void string(const std::string& value) {
         io::NativeFileCodec::write_string(output_,text_,value,' ',fail,"Field string too large");
     }
+    // Читает или записывает отпечаток исходной сетки.
     void hash(const std::string& value) {
         if (text_)
             string(value);
@@ -384,6 +418,7 @@ public:
             for (std::size_t i = 0; i < 64; i += 2)
                 output_.put(static_cast<char>((hex_value(value[i]) << 4) | hex_value(value[i + 1])));
     }
+    // Читает или записывает обозначение размещения поля на сущностях сетки.
     void location(FieldLocation value) {
         if (text_) {
             literal(location_name(value));
@@ -391,6 +426,7 @@ public:
         } else
             output_.put(static_cast<char>(value));
     }
+    // Завершает обработку файла и проверяет состояние потока.
     void finish() {
         block("END");
         if (text_)
@@ -404,6 +440,7 @@ private:
     bool text_;
     std::ostringstream numeric_;
 };
+// Записывает содержимое снимка без внешнего сжатого контейнера.
 void write_payload(const FieldSnapshot& snapshot, std::ostream& out, bool text,
                    std::vector<U64>* offsets = nullptr) {
     Writer writer(out, text);
@@ -451,6 +488,7 @@ void write_payload(const FieldSnapshot& snapshot, std::ostream& out, bool text,
     }
     writer.finish();
 }
+// Выбирает обычную или сжатую запись снимка по заданному формату.
 void write_encoded(const FieldSnapshot& snapshot, std::ostream& out, FieldFormat format) {
     if (format == FieldFormat::Lzma) {
         io::LzmaOutputBuffer buffer(out);
@@ -463,13 +501,16 @@ void write_encoded(const FieldSnapshot& snapshot, std::ostream& out, FieldFormat
 }
 } // namespace
 
+// Возвращает число сущностей сетки для выбранного размещения поля.
 U64 FieldSnapshot::entity_count(FieldLocation location) const {
     location_name(location);
     return counts[static_cast<std::size_t>(location)];
 }
+// Проверяет согласованность метаданных снимка и размеров его полей.
 void FieldSnapshot::validate() const {
     validate_fields(false);
 }
+// Проверяет размеры, имена и совместимость полей с метаданными снимка.
 void FieldSnapshot::validate_fields(bool layout_only) const {
     if (dimension < 1 || dimension > 3)
         fail("Field dimension must be 1, 2 or 3");
@@ -498,6 +539,7 @@ void FieldSnapshot::validate_fields(bool layout_only) const {
             fail("Field values size mismatch");
     }
 }
+// Записывает описания полей и резервирует диапазоны для двоичных данных. Массивы значений должны быть пусты.
 std::vector<U64> FieldSnapshot::write_binary_layout(const std::string& path) const {
     if (path.find('\0') != std::string::npos)
         fail("NUL in field path");
@@ -615,6 +657,7 @@ static FieldSnapshot read_snapshot(std::istream& input, const FieldReadLimits& l
 } catch (const std::ios_base::failure& error) {
     throw FieldError(std::string("Field input failed: ") + error.what());
 }
+// Читает снимок полей с заданными ограничениями памяти и формата.
 FieldSnapshot FieldSnapshot::read(std::istream& input, const FieldReadLimits& limits) {
     return read_snapshot(input, limits, nullptr);
 }
@@ -627,6 +670,7 @@ static std::ifstream open_field_input(const std::string& path) {
         fail("Cannot open fields for reading: " + path);
     return input;
 }
+// Читает значения узловых полей в порядке запрошенных исходных номеров.
 std::vector<Field> FieldSnapshot::read_nodes(const std::string& path, const FieldNodeSelection& selection) {
     auto input = open_field_input(path);
     FieldReadLimits limits;
@@ -636,10 +680,12 @@ std::vector<Field> FieldSnapshot::read_nodes(const std::string& path, const Fiel
     limits.max_payload_bytes = std::numeric_limits<U64>::max();
     return read_snapshot(input, limits, &selection).fields;
 }
+// Читает снимок полей с заданными ограничениями памяти и формата.
 FieldSnapshot FieldSnapshot::read(const std::string& path, const FieldReadLimits& limits) {
     auto input = open_field_input(path);
     return read(input, limits);
 }
+// Проверяет снимок до открытия файла. Ошибка самой записи может оставить файл частично заполненным.
 void FieldSnapshot::write(std::ostream& output, FieldFormat format) const try {
     validate();
     check_format(format);
@@ -649,6 +695,7 @@ void FieldSnapshot::write(std::ostream& output, FieldFormat format) const try {
 } catch (const std::ios_base::failure& error) {
     throw FieldError(std::string("Field output failed: ") + error.what());
 }
+// Проверяет снимок до открытия файла. Ошибка самой записи может оставить файл частично заполненным.
 void FieldSnapshot::write(const std::string& path, FieldFormat format) const {
     validate();
     check_format(format);

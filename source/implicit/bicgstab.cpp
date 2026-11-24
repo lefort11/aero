@@ -12,6 +12,7 @@
 
 namespace aero {
 namespace implicit {
+// Матрица, предобусловливатель и общая рабочая память BiCGSTAB.
 struct BdfLinearSystem::Storage {
     SpatialJacobian matrix;    // J пространства плюс временная диагональ текущей сборки.
     BlockJacobi jacobi;          // Разложенные диагональные блоки этой же матрицы.
@@ -22,6 +23,7 @@ struct BdfLinearSystem::Storage {
     KrylovVectors work{};       // Шесть непересекающихся участков рабочего буфера.
     std::vector<double> host;   // Рабочая память CPU.
     Workspace workspace;
+    // Создаёт матрицу и диагональный предобусловливатель и размечает шесть рабочих векторов BiCGSTAB.
     template<class... GeometryArgs>
     explicit Storage(GeometryArgs&&... geometry)
         : matrix(std::forward<GeometryArgs>(geometry)..., true),
@@ -39,6 +41,7 @@ struct BdfLinearSystem::Storage {
                 scratch.field[3], scratch.field[4], scratch.field[5]};
     }
 
+    // Выполняет выбранную поэлементную операцию BiCGSTAB на CPU или GPU.
     void update(const KrylovUpdate& operation) const {
 #ifdef AERO_WITH_KOKKOS_GPU
         if (device >= 0) {
@@ -48,6 +51,7 @@ struct BdfLinearSystem::Storage {
 #endif
         parallel_for(count, operation);
     }
+    // Вычисляет локальное скалярное произведение или максимальную норму на выбранном исполнителе.
     double local_reduction(const double* x, const double* y) const {
         if (!count) return 0.; // Нейтральный вклад пустого ранга и в сумму, и в норму.
 #ifdef AERO_WITH_KOKKOS_GPU
@@ -60,6 +64,7 @@ struct BdfLinearSystem::Storage {
         host_parallel::ensure_runtime();
         return krylov_reduce(host_parallel::Execution(), count, x, y);
     }
+    // Согласует локальные редукции и ошибки между процессами MPI.
     double reduce(const double* x, const double* y) const {
         const auto& part = matrix.partition();
         if (!part.reduce) return local_reduction(x, y);
@@ -77,6 +82,7 @@ struct BdfLinearSystem::Storage {
         if (!std::isfinite(value)) part.local([&] { if (failure) std::rethrow_exception(failure); });
         return value;
     }
+    // Обновляет векторы BiCGSTAB и одновременно вычисляет глобальную норму невязки.
     double update_norm(const KrylovUpdate& step) const {
         const auto& part=matrix.partition();
         double norm=0.;
@@ -89,6 +95,7 @@ struct BdfLinearSystem::Storage {
         });
         return part.reduce ? part.reduce(norm,true) : norm;
     }
+    // Вычисляет коэффициент стабилизации BiCGSTAB из глобальных скалярных произведений.
     double omega_projection() const {
         const auto& part=matrix.partition();
         double pair[2]{};
@@ -102,7 +109,9 @@ struct BdfLinearSystem::Storage {
         if (part.reduce) for (auto& value:pair) value=part.reduce(value,false);
         return pair[0]>0. && std::isfinite(pair[0]) ? pair[1]/pair[0] : 0.;
     }
+    // Вычисляет глобальное скалярное произведение рабочих векторов.
     double dot(const double* x, const double* y) const { return reduce(x, y); }
+    // Возвращает максимальный модуль компоненты вектора по всем процессам.
     double norm(const double* x) const { return reduce(x, nullptr); }
 
     // Правое предобусловливание: сначала решаем локальные системы M*z=v,
@@ -118,12 +127,17 @@ struct BdfLinearSystem::Storage {
     }
 };
 
+// Создаёт пространственную матрицу, предобусловливатель и рабочие векторы BiCGSTAB.
 BdfLinearSystem::BdfLinearSystem(const SpatialResidual& residual) : storage_(new Storage(residual)) {}
+// Создаёт пространственную матрицу, предобусловливатель и рабочие векторы BiCGSTAB.
 BdfLinearSystem::BdfLinearSystem(const residual_detail::Geometry& host, const residual_detail::Geometry& active,
                                    int device, const Partition& part) : storage_(new Storage(host, active, device, part)) {}
+// Возвращает максимальный модуль компоненты вектора по всем процессам.
 double BdfLinearSystem::infinity_norm(const double* values) const { return storage_->norm(values); }
+// Освобождает принадлежащие объекту ресурсы при завершении его времени жизни.
 BdfLinearSystem::~BdfLinearSystem() = default;
 
+// Собирает матрицу текущего шага и подготавливает выбранный предобусловливатель.
 void BdfLinearSystem::assemble(const double* state, const double* initial, const double* volumes, double dt,
                                const MatrixSettings& settings, bool cache_diagonal, const PhaseTiming& timing) {
     auto& s = *storage_;
@@ -145,6 +159,7 @@ void BdfLinearSystem::assemble(const double* state, const double* initial, const
     });
     s.ready = true;
 }
+// Обновляет временной вклад диагонали при повторном использовании пространственной матрицы.
 void BdfLinearSystem::update_time_diagonal(const double* volumes, double dt) {
     auto& s = *storage_;
     if (!s.ready) throw std::logic_error("BDF: assemble before reusing the matrix");
@@ -155,23 +170,27 @@ void BdfLinearSystem::update_time_diagonal(const double* volumes, double dt) {
     });
     s.ready = true;
 }
+// Умножает готовую матрицу системы на переданный вектор.
 void BdfLinearSystem::apply(const double* x, double* result) const {
     if (!storage_->ready) throw std::logic_error("BDF: assemble before applying");
     storage_->matrix.apply(x, result);
 }
 
+// Применяет предобусловливатель к правой части для начальной поправки.
 void BdfLinearSystem::predict(const double* rhs,double* correction) const {
     const auto& s=*storage_;
     if (s.csgs) s.matrix.apply_csgs(s.jacobi,rhs,correction,nullptr);
     else s.matrix.partition().local([&]{s.jacobi.apply(rhs,correction);});
 }
 
+// Запускает BiCGSTAB с самостоятельным вычислением нормы правой части.
 LinearResult BdfLinearSystem::solve(const double* b, double* x, const LinearTolerance& tol) {
     // Для самостоятельного вызова норма ещё неизвестна. Вычисляем её только
     // после общих проверок готовности матрицы и указателей.
     return solve_with_rhs_norm(b,x,tol,-1.);
 }
 
+// Решает систему BiCGSTAB, используя известную норму правой части для критерия останова.
 LinearResult BdfLinearSystem::solve_with_rhs_norm(const double* b, double* x, const LinearTolerance& tol, double rhs_norm) {
     auto& s = *storage_;
     const auto& w = s.work;
@@ -184,15 +203,18 @@ LinearResult BdfLinearSystem::solve_with_rhs_norm(const double* b, double* x, co
         throw std::invalid_argument("BiCGSTAB: invalid tolerance");
     if (rhs_norm < 0.) rhs_norm = s.norm(b);
     if (!std::isfinite(rhs_norm)) throw std::domain_error("BiCGSTAB: nonfinite right-hand side");
+    // Абсолютный допуск защищает почти нулевую правую часть, относительный масштабируется её нормой.
     const double threshold = std::max(tol.absolute, tol.relative * rhs_norm);
     // В итерациях масштабируем невязку, чтобы при малой правой части скалярные
     // произведения не обнулялись. Допуск и итоговый отчёт остаются в исходных единицах.
     const double scale = rhs_norm > 0. ? rhs_norm : 1.;
+    // Применяет выбранное обновление рабочих полей текущего этапа решателя.
     const auto update = [&](KrylovStep step, double a, double omega, const double* image) {
         s.matrix.partition().local([&] { s.update({w, b, x, image, scale, a, omega, step}); });
     };
     update(KrylovStep::Begin, 0., 0., nullptr);
     if (rhs_norm <= threshold) return {LinearStatus::Converged, 0, rhs_norm};
+    // Независимо вычисляет b−A*x, чтобы проверить рекуррентную оценку BiCGSTAB.
     const auto actual_residual = [&]() {
         s.matrix.apply(x, w.t);
         // Элемент b−A*x уже находится в регистре. В ту же редукцию включаем

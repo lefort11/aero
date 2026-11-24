@@ -5,6 +5,7 @@
 namespace aero {
 namespace converter {
 namespace detail {
+// Возвращает пространственную размерность обрабатываемой сущности.
 unsigned dimension(int k) {
     switch (k) {
     case 15:
@@ -24,6 +25,7 @@ unsigned dimension(int k) {
         throw MeshError("Unsupported element type: " + std::to_string(k));
     }
 }
+// Возвращает число узлов в текущем представлении.
 std::size_t node_count(int k) {
     switch (k) {
     case 15:
@@ -45,12 +47,14 @@ std::size_t node_count(int k) {
         throw MeshError("Unsupported/high-order element type: " + std::to_string(k));
     }
 }
+// Строит канонический ключ грани по её вершинам для поиска общей грани.
 Nodes key(Nodes n) {
     std::sort(n.begin(), n.end());
     if (n.empty() || std::adjacent_find(n.begin(), n.end()) != n.end())
         throw MeshError("Empty or repeated face vertices");
     return n;
 }
+// Возвращает строку граней указанной ячейки.
 Faces cell_faces(int kind, const Nodes& n) {
     if (kind != 100 && n.size() != node_count(kind))
         throw MeshError("Wrong element node count");
@@ -83,6 +87,7 @@ Faces cell_faces(int kind, const Nodes& n) {
     }
     return f;
 }
+// Определяет направление обхода грани относительно сохранённого порядка вершин.
 static int orientation(const Nodes& stored, const Nodes& current) {
     if (stored.size() == 1)
         return 1;
@@ -104,6 +109,7 @@ static int orientation(const Nodes& stored, const Nodes& current) {
 Builder::Builder(unsigned dim, const Options& options) : options_(options) {
     data.dimension = dim;
 }
+// Добавляет ячейку, переиспользуя уже созданные общие грани.
 void Builder::cell(const Faces& faces) {
     for (std::size_t i = 0; i < faces.size(); ++i) {
         const Nodes& n = faces[i];
@@ -131,6 +137,7 @@ void Builder::cell(const Faces& faces) {
     }
     data.cell_faces.offsets.push_back(data.cell_faces.indices.size());
 }
+// Присваивает граничной грани имя участка.
 void Builder::mark(const Nodes& nodes, const std::string& name, bool required) {
     const auto it = face_ids_.find(key(nodes));
     if (it == face_ids_.end() || uses_[static_cast<std::size_t>(it->second)] != 1) {
@@ -146,6 +153,7 @@ void Builder::mark(const Nodes& nodes, const std::string& name, bool required) {
         throw MeshError("Several boundary names assigned to one face");
     labels_[it->second] = name;
 }
+// Находит и маркирует границу по набору исходных вершин.
 void Builder::mark_vertices(const Nodes& nodes, const std::string& name) {
     std::set<MeshIndex> selected(nodes.begin(), nodes.end());
     for (MeshIndex n : nodes)

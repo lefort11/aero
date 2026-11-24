@@ -28,6 +28,7 @@ struct WenoScale {
     double unit;       // Множитель для возвращения к размерному приращению.
     double inverse;    // Обратная степень двойки для всех наклонов одной характеристики.
 
+    // Выбирает масштаб нормировки наклонов для устойчивого вычисления WENO.
     AERO_HOST_DEVICE explicit WenoScale(double largest) {
         // В binary64 старшие биты положительного числа содержат порядок со смещением 1023.
         // Выбираем 2^e и 2^(-e) так, чтобы обе величины оставались нормальными даже на краях диапазона.
@@ -59,6 +60,7 @@ AERO_HOST_DEVICE constexpr unsigned weno_slope_count(unsigned order) { return or
 // разложение квадратов Jiang–Shu даёт общую часть center² + 4d²/3 и поправку ±center·d.
 struct WenoIndicators {
     double outer, inner; // Кандидат, смещённый наружу, и кандидат, содержащий оба соседних узла.
+    // Вычисляет индикаторы гладкости из центрального и соседнего наклонов.
     AERO_HOST_DEVICE WenoIndicators(double center, double near) {
         const double difference = near - center;
         const double base = (4.0 / 3.0) * difference * difference + center * center;
@@ -101,6 +103,7 @@ KOKKOS_FORCEINLINE_FUNCTION void weno_weights(double a, double b, double c, doub
     weights[2] = third * third;
 }
 
+// Вычисляет приращение WENO третьего порядка по двум наклонам.
 template <bool safe_products>
 KOKKOS_FORCEINLINE_FUNCTION double weno_three(double center, double near, double epsilon) {
     double w[3];
@@ -144,6 +147,7 @@ KOKKOS_FORCEINLINE_FUNCTION double weno_five_side(double center, double near, do
                                     epsilon + near_indicator.inner, epsilon + WenoIndicators(near, far).outer);
 }
 
+// Собирает приращение по нелинейным весам и полиномам WENO.
 template <unsigned order, bool safe_products>
 KOKKOS_FORCEINLINE_FUNCTION double weighted_weno_increment(const double* d, double epsilon) {
     if (order == 3)
@@ -172,6 +176,7 @@ AERO_HOST_DEVICE inline bool regular_weno_scale(double maximum, double epsilon) 
     return epsilon >= 1.e-34 && epsilon <= 32 && maximum <= 32;
 }
 
+// Вычисляет нелинейное приращение WENO на одной стороне ребра.
 template <unsigned order>
 AERO_HOST_DEVICE inline double side_weno_increment(const double* slopes, double epsilon) {
     double scale = epsilon;
@@ -208,7 +213,9 @@ AERO_HOST_DEVICE inline void reconstruct_slope_rows(const SideInput& input, unsi
     }
 }
 
+// Вызывает скалярную формулу WENO для выбранного порядка и наклонов.
 struct WenoFormula {
+    // Вычисляет скалярное приращение WENO заданного порядка.
     AERO_HOST_DEVICE double operator()(unsigned order, const double* slopes, double epsilon) const {
         return weno_increment2(order, slopes, epsilon);
     }

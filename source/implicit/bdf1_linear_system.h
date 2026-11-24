@@ -11,11 +11,13 @@ namespace residual_detail { struct Geometry; }
 namespace implicit {
 enum class LinearStatus { Converged, IterationLimit, Breakdown };
 
+// Относительный и абсолютный допуски линейного решения.
 struct LinearTolerance {
     double relative = 1.e-8;       // Доля от максимальной по модулю компоненты правой части.
     double absolute = 0.;          // Допуск в единицах невязки.
     unsigned max_iterations = default_solver_max_iter; // Полные итерации BiCGSTAB, включая итерации после перезапуска.
 };
+// Статус сходимости, число итераций и итоговая норма линейной невязки.
 struct LinearResult {
     LinearStatus status;
     unsigned iterations;          // Ноль, если начальное приближение уже удовлетворяет допуску.
@@ -26,9 +28,12 @@ struct LinearResult {
 // и рабочие векторы BiCGSTAB на том же исполнителе, что и пространственная невязка.
 class BdfLinearSystem {
 public:
+    // Создаёт пространственную матрицу, предобусловливатель и рабочие векторы BiCGSTAB.
     explicit BdfLinearSystem(const SpatialResidual& residual);
+    // Создаёт пространственную матрицу, предобусловливатель и рабочие векторы BiCGSTAB.
     BdfLinearSystem(const residual_detail::Geometry& host, const residual_detail::Geometry& active, int device,
                      const Partition& partition = Partition());
+    // Освобождает принадлежащие объекту ресурсы при завершении его времени жизни.
     ~BdfLinearSystem();
     // volumes содержит по одному положительному объёму на узел. initial —
     // фиксированное поле для граничных условий. Поля читаются во время сборки.

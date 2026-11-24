@@ -17,10 +17,12 @@ using namespace aero;
 using Vertex = std::array<double,3>;
 using Face = std::vector<MeshIndex>;
 
+// Проверяет совпадение чисел в пределах заданного допуска.
 void near(double value, double expected, const char* reason) {
     aero_test::require(std::abs(value-expected) <= 2.e-12*(1.+std::abs(expected)),reason);
 }
 
+// Создаёт локальное представление подобласти для проверки вязкого оператора.
 MeshPartition local_partition(Mesh mesh) {
     const auto nodes=mesh.view().node_count;
     MeshPartition part;
@@ -54,14 +56,20 @@ MeshPartition element(unsigned dim, const std::vector<Vertex>& coordinates, cons
     return local_partition(Mesh(std::move(mesh)));
 }
 
+// Собираем настоящий CSR на выбранном исполнителе. Эталон — центральная разность
+// двух полных невязок (LF первого порядка + AES) при фиксированном начальном поле.
+// Проверка каждого столбца охватывает в том числе пары, связанные только вязкостью.
 void check_jacobian(viscosity::Aes&,const Mesh&,const std::vector<double>&,int,bool,bool);
 
 // Получаем те же указатели на постоянную геометрию, которые при обычной загрузке
 // указывают на GPU. Проверка только читает их и не запрашивает рабочей памяти.
 struct GeometryProbe {
+    // Копирует исходные тестовые данные с CPU на GPU.
     template<class T> T* upload(const std::vector<T>& values) { return const_cast<T*>(values.data()); }
+    // Выделяет рабочий массив GPU для проверки численного ядра.
     template<class T> T* allocate(std::size_t,const T* = nullptr) { return nullptr; }
 };
+// Сравнивает парные коэффициенты координатной геометрии с эталоном.
 void check_coordinate_pairs(const viscosity::Aes& aes,MeshIndex nodes,bool shared) {
     GeometryProbe probe;
     auto geometry=aes.upload(probe,nodes).tetra;
@@ -88,6 +96,7 @@ Mesh tiled_mixed_mesh(const Mesh& seed) {
     const auto& data=seed.data();
     mesh.dimension=data.dimension;
     mesh.patch_names=data.patch_names;
+    // Дополняет тестовую структуру вязкого оператора строками связности.
     const auto append_rows=[](MeshCsr& to,const MeshCsr& from,MeshIndex shift) {
         const auto old_end=to.indices.size();
         for (auto index:from.indices) to.indices.push_back(index+shift);
@@ -174,6 +183,7 @@ void check_mixed_coordinates(const Processes& world,bool implicit,bool renumbere
                                "tiled mixed AES must build sixteen one-cell tiles");
         }
         auto* state=arrays.upload(field);
+        // Вычисляет проверяемый вязкий оператор по текущему тестовому полю.
         const auto evaluate=[&](viscosity::Evaluation phase) {
             if (const auto* error=device_work::aero_device_viscosity(op,state,nullptr,phase))
                 throw std::runtime_error(error);
@@ -346,6 +356,7 @@ void check_jacobian(viscosity::Aes& aes, const Mesh& mesh, const std::vector<dou
     matrix.assemble(state.data());
     const unsigned width = host.components();
     std::vector<EulerFluxResult> flux(faces.size());
+    // Вычисляет эталонную невязку для проверки производных или коррекции.
     const auto residual = [&](const std::vector<double>& u) {
 #ifdef AERO_HAS_TURBULENCE
         // При DDES декодирование газа вынесено в отдельную фазу до вязкой невязки.
@@ -399,6 +410,7 @@ void check_jacobian(viscosity::Aes& aes, const Mesh& mesh, const std::vector<dou
         }
     }
 }
+// Проверяет вязкие градиенты, невязку и производные для заданного элемента.
 void check_element(const Processes& world, const MeshPartition& part, double volume, bool sutherland = true) {
     const auto mesh = part.mesh.view();
     const auto d = mesh.dimension, width = d+2;
@@ -468,6 +480,7 @@ void check_element(const Processes& world, const MeshPartition& part, double vol
     }
     // Неоднородная плотность исключает случайное совпадение производных по U и по примитивным полям.
     for (MeshIndex i = 0; i < mesh.node_count; ++i) field[i*width] += .017*static_cast<double>(i);
+    // Сравнивает CPU- и GPU-реализации вязкого оператора.
     const auto check_device = [&](int device) {
         check_jacobian(aes,part.mesh,field,device);
         // Те же разностные производные проверяют адреса общей матрицы CSGS на GPU.
@@ -503,6 +516,7 @@ void check_element(const Processes& world, const MeshPartition& part, double vol
 }
 }
 
+// Запускает проверки модуля и возвращает ненулевой код при ошибке.
 int main(int argc, char** argv) {
     aero::Processes world(argc,argv);
     try {

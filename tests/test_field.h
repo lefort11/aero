@@ -9,11 +9,13 @@ namespace aero_test {
 // Буфер тестового поля на выбранном исполнителе. Копируем только входные данные и результат.
 class TestField {
 public:
+    // Выделяет тестовое поле на CPU и при необходимости его копию на GPU.
     TestField(int device, std::size_t count) : host_(count)
 #if defined(AERO_WITH_KOKKOS_GPU)
         , gpu_(device < 0 ? 0 : count)
 #endif
     { (void)device; }
+    // Возвращает адрес поля на выбранном тестовом исполнителе.
     double* data() {
 #if defined(AERO_WITH_KOKKOS_GPU)
         if (gpu_.data)
@@ -21,6 +23,7 @@ public:
 #endif
         return host_.data();
     }
+    // Копирует исходные значения в CPU- и при необходимости GPU-поле.
     void set(const std::vector<double>& values) {
         require(values.size() == host_.size(), "test buffer size mismatch");
 #if defined(AERO_WITH_KOKKOS_GPU)
@@ -31,6 +34,7 @@ public:
 #endif
         host_ = values;
     }
+    // Возвращает CPU-копию актуального тестового поля.
     const std::vector<double>& read() {
 #if defined(AERO_WITH_KOKKOS_GPU)
         if (gpu_.data)

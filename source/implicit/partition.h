@@ -35,6 +35,7 @@ struct Partition {
     std::function<double(double, bool)> reduce; // Общие максимум нормы или сумма произведений.
     std::function<void(const std::function<void()>&)> checked; // Согласовать ошибку до следующего обмена.
 
+    // Выполняет локальную операцию с согласованной обработкой ошибок между рангами.
     template<class Work> void local(const Work& work) const {
         if (checked) checked(work);
         else work();

@@ -13,6 +13,7 @@ struct Workspace {
 #ifdef AERO_WITH_KOKKOS_GPU
     gpu::DeviceArrays arrays;
 #endif
+    // Выделяет рабочий массив на выбранном GPU или в переданном CPU-векторе.
     double* allocate(int device, std::vector<double>& host, std::size_t count) {
 #ifdef AERO_WITH_KOKKOS_GPU
         if (device >= 0) {

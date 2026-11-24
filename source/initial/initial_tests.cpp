@@ -19,9 +19,11 @@
 using namespace aero;
 namespace {
 using aero_test::require;
+// Проверяет совпадение чисел в пределах заданного допуска.
 void near(double a, double b) {
     require(std::fabs(a - b) < 1e-12, "wrong state or expression result");
 }
+// Проверяет, что некорректный ввод завершается ожидаемой ошибкой.
 template <class F> void rejects(F f, const std::string& message) {
     try {
         f();
@@ -32,6 +34,7 @@ template <class F> void rejects(F f, const std::string& message) {
     }
     throw std::runtime_error("expected error: " + message);
 }
+// Создаёт одномерную сетку для проверки алгоритма.
 Mesh line(double last_node = 1) {
     MeshData d;
     d.dimension = 1;
@@ -45,6 +48,7 @@ Mesh line(double last_node = 1) {
     d.boundary_patch = {0, 1};
     return Mesh(d);
 }
+// Создаёт симплекс заданной размерности для проверки начального поля.
 Mesh simplex(unsigned dim) {
     MeshData d;
     d.dimension = dim;
@@ -69,14 +73,17 @@ Mesh simplex(unsigned dim) {
     d.patch_names = {"wall"};
     return Mesh(d);
 }
+// Читает подготовленную тестовую постановку и возвращает разобранные настройки.
 std::vector<double> load(const Mesh& m, const std::string& text, const PeriodicView* seam = nullptr) {
     std::istringstream s(text);
     return read_initial(m, 1.4, s, "build", seam);
 }
+// Создаёт путь тестового файла начального поля.
 void checkpoint_path() {
     // Разбор init.txt разрешает путь с пробелами. Сам файл откроет солвер после разбиения сетки.
     const auto mesh = line();
     std::string path;
+    // Разбирает текстовую заготовку начального поля для теста.
     const auto parse = [&](const std::string& text) {
         std::istringstream input(text);
         return read_initial(mesh, 1.4, input, "case", nullptr, nullptr, {}, nullptr, 0., &path);
@@ -140,8 +147,10 @@ void formulas() {
     near(u[3], 3);
     rejects([&] { load(m, sod, &seam); }, "periodic mismatch");
 }
+// Владеет временным файлом проверки и удаляет его при выходе из области видимости.
 struct Temp {
     std::string filename, path;
+    // Создаёт уникальное имя временного файла теста.
     explicit Temp(const std::string& ext) {
 #ifdef _WIN32
         int process = _getpid();
@@ -152,8 +161,10 @@ struct Temp {
                    std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ext;
         path = "build/" + filename;
     }
+    // Удаляет временные файлы и каталоги, созданные объектом.
     ~Temp() { std::remove(path.c_str()); }
 };
+// Готовит именованное тестовое поле для проверки загрузки.
 Field field(const std::string& name, std::vector<std::string> components, std::vector<double> values) {
     Field f;
     f.location = FieldLocation::Node;
@@ -221,6 +232,7 @@ void files() {
     rejects([&] { load(m, block + "field U"); }, "node 0");
 }
 }
+// Запускает проверки модуля и возвращает ненулевой код при ошибке.
 int main() {
     try {
         formulas();

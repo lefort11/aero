@@ -32,6 +32,7 @@ struct PressureRate {
     const MeshIndex* owned;
     double* values; // По одному результату на собственный узел процесса.
 
+    // Вычисляет производную давления одного собственного узла из собранной невязки.
     AERO_HOST_DEVICE void operator()(Index row) const {
         const Index node = owned ? owned[row] : row;
         double residual[5];
@@ -108,7 +109,9 @@ struct RecordField {
     unsigned width;
     double* values;
     EulerFluxResult* flux;
+    // Возвращает число значений записи, включая скорость волны для потоков.
     AERO_HOST_DEVICE unsigned stride() const { return width + unsigned(flux != nullptr); }
+    // Переносит одну запись состояния или потока между индексированным полем и буфером обмена.
     AERO_HOST_DEVICE void copy_record(MeshIndex i, MeshIndex k, const double* input, double* output) const {
         double* field = flux ? flux[i].flux : values + i * width;
         const auto offset = k * stride();
@@ -122,8 +125,11 @@ struct RecordField {
         }
     }
 };
+// Запускает обновление только собственных степеней свободы MPI-процесса.
 void check_newton_nodes(Grid grid);
+// Запускает GPU-обновление собственных узлов выбранной явной стадией.
 void update(Grid grid, explicit_detail::Stage stage, double dt, bool save_original);
+// Переносит выбранные узловые записи между полем и файлом по заданным смещениям.
 void transfer(RecordField field, const MeshIndex* ids, Index count, const double* input, double* output);
 }
 }

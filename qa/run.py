@@ -273,6 +273,7 @@ def run_case(name, variants, options, solver, exporter, progress, total):
     return failures
 
 
+# Разбирает параметры запуска, выполняет набор QA-проверок и возвращает статус результата.
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(

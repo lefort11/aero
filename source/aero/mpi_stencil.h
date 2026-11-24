@@ -9,12 +9,15 @@ struct StencilEdge {
     MeshIndex surface, begin, end;
     std::pair<MeshIndex, MeshIndex> original;
 };
+// Запросы рёбер шаблона и узлов, где нужен след первого порядка.
 struct StencilRequests {
     std::vector<StencilEdge> edges;
     // На этих исходных узлах нужен узловой след вместо высокопорядкового.
     std::set<MeshIndex> inlet_nodes;
 };
+// Локальные строки реконструкции и их привязка к распределённому полю.
 struct PartitionStencil {
+    // CSR-таблица весов: смещения строк, номера узлов и коэффициенты.
     struct Rows {
         std::vector<ReconstructionIndex> offsets, nodes;
         std::vector<double> weights;
@@ -31,6 +34,7 @@ struct PartitionStencil {
     // Дополнительные состояния, которые надо получать от владельца для удалённых узлов шаблона.
     std::vector<std::pair<MeshIndex, int>> extra_nodes;
     MeshIndex incomplete = 0;
+    // Возвращает невладеющее представление локальных строк распределённого шаблона.
     ReconstructionStencilView view(MeshIndex state_nodes) const;
 };
 // Обе строки шаблона готовит процесс, который затем вычислит поток этого ребра.

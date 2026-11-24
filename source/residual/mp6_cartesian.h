@@ -12,11 +12,13 @@ struct FaceMomentumAxes {
     const double* normal;     // Единичная нормаль, вычисленная решателем для этой грани.
     FixedMatrix<double,2,3> tangents;    // В 2D нужна одна касательная, в 3D — две.
 
+    // Строит нормальное и касательные направления для ограничения компонент MP6.
     AERO_HOST_DEVICE FaceMomentumAxes(unsigned dim, const double* area, const double* unit_normal)
         : dimension(dim), normal(unit_normal), tangents{} {
         euler_detail::face_tangents(dim, area, normal, tangents);
     }
 
+    // Возвращает нормальное или касательное направление базиса площадки.
     AERO_HOST_DEVICE const double* axis(unsigned k) const { return k == 0 ? normal : tangents.row(k-1); }
 
     // Массу и энергию переносим как скаляры. Между ними записываем проекции

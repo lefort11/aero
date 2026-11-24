@@ -8,6 +8,7 @@
 #include "scheduled_output.h"
 
 namespace aero {
+// Создаёт временный путь для последующей публикации законченного снимка.
 StagedFieldFile::StagedFieldFile(const std::string& path) : path_(path) {
     const auto directory = path.substr(0, path.find_last_of("/\\") + 1);
 #ifdef _WIN32
@@ -27,10 +28,12 @@ StagedFieldFile::StagedFieldFile(const std::string& path) : path_(path) {
     }
 #endif
 }
+// Удаляет временные файлы и каталоги, созданные объектом.
 StagedFieldFile::~StagedFieldFile() {
     if (!temporary_.empty())
         std::remove(temporary_.c_str());
 }
+// Переименовывает законченный временный файл в итоговый путь.
 void StagedFieldFile::publish(bool replace) {
 #ifdef _WIN32
     if (!MoveFileExA(temporary_.c_str(), path_.c_str(), replace ? MOVEFILE_REPLACE_EXISTING : 0))

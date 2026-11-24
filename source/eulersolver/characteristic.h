@@ -100,6 +100,7 @@ AERO_HOST_DEVICE inline EulerStatus characteristic_to_conservative(const EulerRo
     return euler_detail::expand_characteristic(basis.dimension + 2, basis, characteristic, conservative);
 }
 #if !defined(AERO_EULERSOLVER_KERNEL_ONLY)
+// Преобразует характеристические приращения обратно в консервативные компоненты.
 std::vector<double> characteristic_to_conservative(const EulerRoeBasis& basis,
                                                    const std::vector<double>& characteristic);
 #endif

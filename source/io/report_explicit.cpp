@@ -4,6 +4,7 @@
 
 namespace aero {
 namespace {
+// Копирует принятое поле явного интегратора для отчёта на CPU.
 template <class Read>
 void read_accepted(const ExplicitIntegrator& solver, std::size_t nodes, unsigned width, const Read& read) {
     // Для CPU читаем принятое поле непосредственно, пока действует представление интегратора.
@@ -20,11 +21,13 @@ void read_accepted(const ExplicitIntegrator& solver, std::size_t nodes, unsigned
     }
 }
 }
+// Сохраняет начальное поле интервала для последующей оценки изменения.
 void Report::capture(std::uint64_t step, const ExplicitIntegrator& solver) {
     if (due(step))
         read_accepted(solver, volumes_.size(), dimension_ + 2,
                       [&](const double* u) { capture_values(step, u); });
 }
+// Измеряет и печатает отчёт о текущем состоянии расчёта.
 void Report::write(std::uint64_t step, double time, double cfl, double dt,
                        const ExplicitIntegrator& solver, std::ostream& out) {
     if (due(step))

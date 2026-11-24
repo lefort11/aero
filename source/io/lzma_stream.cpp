@@ -12,22 +12,27 @@ namespace io {
 namespace {
 const std::uint32_t block_size = 1024 * 1024;
 const std::uint32_t packed_limit = block_size + block_size / 8 + 65536;
+// Выделяет память, запрошенную кодеком LZMA через его C-интерфейс.
 void* allocate(ISzAllocPtr, size_t size) {
     return std::malloc(size);
 }
+// Освобождает память, ранее переданную кодеку LZMA.
 void release(ISzAllocPtr, void* address) {
     std::free(address);
 }
 const ISzAlloc allocator = {allocate, release};
 
+// Читает точное число байтов или сообщает об усечённом контейнере.
 void read_bytes(std::istream& in, void* data, std::size_t size) {
     if (!in.read(static_cast<char*>(data), static_cast<std::streamsize>(size)))
         throw CompressionError("Truncated LZMA container");
 }
+// Записывает весь переданный блок байтов с проверкой состояния потока.
 void write_bytes(std::ostream& out, const void* data, std::size_t size) {
     if (!out.write(static_cast<const char*>(data), static_cast<std::streamsize>(size)))
         throw CompressionError("LZMA output failed");
 }
+// Читает 32-битное целое заголовка сжатого блока.
 std::uint32_t read_u32(std::istream& in) {
     unsigned char bytes[4];
     read_bytes(in, bytes, 4);
@@ -36,6 +41,7 @@ std::uint32_t read_u32(std::istream& in) {
         result |= std::uint32_t(bytes[i]) << (8 * i);
     return result;
 }
+// Записывает 32-битное целое заголовка сжатого блока.
 void write_u32(std::ostream& out, std::uint32_t value) {
     unsigned char bytes[4];
     for (unsigned i = 0; i < 4; ++i)
@@ -61,6 +67,7 @@ std::uint32_t crc32(const char* data, std::size_t size) {
     return c ^ 0xffffffffU;
 }
 
+// Подготавливает блочное сжатие и записывает начало контейнера AEROLZMA.
 LzmaOutputBuffer::LzmaOutputBuffer(std::ostream& output)
     : output_(output), raw_(block_size), finished_(false) {
     write_bytes(output_, "AEROLZMA", 8);
@@ -95,6 +102,7 @@ void LzmaOutputBuffer::flush_block() {
     setp(raw_.data(), raw_.data() + raw_.size());
 }
 
+// Сбрасывает заполненный выходной блок и принимает следующий символ.
 LzmaOutputBuffer::int_type LzmaOutputBuffer::overflow(int_type value) {
     if (finished_)
         throw CompressionError("LZMA stream is already finished");
@@ -105,6 +113,7 @@ LzmaOutputBuffer::int_type LzmaOutputBuffer::overflow(int_type value) {
     }
     return traits_type::not_eof(value);
 }
+// Сжимает накопленные данные и синхронизирует базовый выходной поток.
 int LzmaOutputBuffer::sync() {
     if (!finished_)
         flush_block();
@@ -123,11 +132,13 @@ void LzmaOutputBuffer::finish() {
     setp(raw_.data(), raw_.data());
 }
 
+// Подключает сжатый поток с ограничением общего объёма распаковки.
 LzmaInputBuffer::LzmaInputBuffer(std::istream& input, std::uint64_t max_decoded_bytes)
     : input_(input), remaining_(max_decoded_bytes), finished_(false) {
     if (read_u32(input_) != 1)
         throw CompressionError("Unsupported LZMA container version");
 }
+// Распаковывает следующий блок при исчерпании входного буфера.
 LzmaInputBuffer::int_type LzmaInputBuffer::underflow() {
     if (gptr() && gptr() < egptr())
         return traits_type::to_int_type(*gptr());

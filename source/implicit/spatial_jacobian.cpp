@@ -21,6 +21,7 @@ namespace {
 bool indices_fit_32(const std::vector<MeshIndex>& source) {
     return source.empty() || *std::max_element(source.begin(),source.end()) <= std::numeric_limits<std::uint32_t>::max();
 }
+// Проверяет, помещаются ли смещения упакованных строк CSGS в 32 бита.
 bool csgs_rows_fit_32(MeshIndex count, unsigned lanes) {
     return count <= std::numeric_limits<std::uint32_t>::max()-lanes;
 }
@@ -54,6 +55,7 @@ void read_indices(const IndexList& list, std::vector<MeshIndex>& result) {
 // один раз. При обновлении коэффициентов поиск по номерам узлов уже не нужен.
 struct BlockPattern {
     std::vector<MeshIndex> rows, columns, neighbour;
+    // Строит блочный граф матрицы по собственным узлам, площадкам и обменным связям.
     void build(const residual_detail::Geometry& g, MeshIndex count, const Partition& part) {
         const auto* owned = part.host_owned;
         rows.reserve(count + 1);
@@ -130,6 +132,7 @@ std::unique_ptr<CsgsOrder> prepare_sweep(MeshIndex nodes,const BlockPattern& gra
     layout.build(*order,graph.rows,graph.columns,gpu);
     return order;
 }
+// Формирует диагностическое сообщение об ошибке сборки якобиана.
 std::domain_error assembly_error(MeshIndex bad, const residual_detail::Geometry& g) {
     if (bad < g.edges) return std::domain_error("Spatial Jacobian: invalid edge " + std::to_string(bad));
     if (bad < g.faces) return std::domain_error("Spatial Jacobian: invalid boundary piece " + std::to_string(bad-g.edges));
@@ -138,6 +141,7 @@ std::domain_error assembly_error(MeshIndex bad, const residual_detail::Geometry&
 }
 }
 
+// Граф матрицы, раскраска и оценка размещения коэффициентов на GPU.
 struct GpuMatrixPlan {
     BlockPattern pattern;              // Строки, столбцы и адреса внутренних рёбер.
     std::unique_ptr<CsgsOrder> order;  // Содержит точную раскраску графа этой сетки.
@@ -146,6 +150,7 @@ struct GpuMatrixPlan {
     MeshIndex bytes=0;                // Остаётся доступным также после передачи таблиц в решатель.
 };
 
+// Подготавливает структуру матрицы и раскраску перед выделением памяти GPU.
 std::shared_ptr<GpuMatrixPlan> gpu_matrix_plan(const residual_detail::Geometry& g,MeshIndex rows,
                                                const Partition& part) {
     auto plan=std::make_shared<GpuMatrixPlan>();
@@ -164,6 +169,7 @@ std::shared_ptr<GpuMatrixPlan> gpu_matrix_plan(const residual_detail::Geometry& 
             throw std::length_error("GPU matrix memory size overflow");
         plan->bytes+=count*item_bytes;
     };
+    // Подключает массив индексов в подходящем формате хранения матрицы.
     const auto indices=[&](const std::vector<MeshIndex>& data) {
         add(data.size(),indices_fit_32(data) ? sizeof(std::uint32_t) : sizeof(MeshIndex));
     };
@@ -184,8 +190,10 @@ std::shared_ptr<GpuMatrixPlan> gpu_matrix_plan(const residual_detail::Geometry& 
     return plan;
 }
 
+// Оценивает память GPU для запланированной структуры матрицы.
 MeshIndex gpu_matrix_bytes(const GpuMatrixPlan& plan) { return plan.bytes; }
 
+// Владельцы геометрии, блоков и буферов пространственной матрицы.
 struct SpatialJacobian::Storage {
     std::shared_ptr<const SpatialResidual::Impl> geometry_owner; // Владелец адресов в blocks.grid.
     SpatialBlocks blocks{};    // Указатели на калькуляционные массивы выбранного исполнителя.
@@ -216,6 +224,7 @@ struct SpatialJacobian::Storage {
 #endif
 };
 
+// Подготавливает структуру пространственной матрицы для заданной геометрии.
 SpatialJacobian::SpatialJacobian(const SpatialResidual& residual, bool for_linear_solver) : storage_(new Storage) {
     auto& s = *storage_;
     s.geometry_owner = residual.p_;
@@ -223,6 +232,7 @@ SpatialJacobian::SpatialJacobian(const SpatialResidual& residual, bool for_linea
     s.device = residual.jacobian_geometry(host, s.blocks.grid);
     allocate_blocks(host,for_linear_solver);
 }
+// Подготавливает структуру пространственной матрицы для заданной геометрии.
 SpatialJacobian::SpatialJacobian(const residual_detail::Geometry& host, const residual_detail::Geometry& active,
                                      int device, const Partition& partition, bool for_linear_solver) : storage_(new Storage) {
     storage_->partition = partition;
@@ -230,6 +240,7 @@ SpatialJacobian::SpatialJacobian(const residual_detail::Geometry& host, const re
     storage_->blocks.grid = active;
     allocate_blocks(host,for_linear_solver);
 }
+// Выделяет коэффициенты матрицы согласно подготовленной раскладке.
 void SpatialJacobian::allocate_blocks(const residual_detail::Geometry& host, bool for_linear_solver) {
     auto& s = *storage_;
     const auto& partition = s.partition;
@@ -351,19 +362,28 @@ void SpatialJacobian::allocate_blocks(const residual_detail::Geometry& host, boo
     }
 #endif
 }
+// Освобождает принадлежащие объекту ресурсы при завершении его времени жизни.
 SpatialJacobian::~SpatialJacobian() = default;
 
+// Поля лежат на исполнителе невязки. Начальное поле фиксировано при
+// дифференцировании и может отсутствовать, если его не требует граница.
 void SpatialJacobian::assemble(const double* u, const double* initial) {
     assemble_matrix(u, initial, nullptr, 0.);
 }
+// Возвращает число узлов в текущем представлении.
 MeshIndex SpatialJacobian::node_count() const { return storage_->blocks.row_count; }
+// Возвращает обмены и редукции распределённой матрицы.
 const Partition& SpatialJacobian::partition() const { return storage_->partition; }
+// Возвращает пространственную размерность обрабатываемой сущности.
 unsigned SpatialJacobian::dimension() const { return storage_->blocks.grid.dim; }
+// Возвращает номер устройства; отрицательное значение соответствует CPU.
 int SpatialJacobian::device() const { return storage_->device; }
 
+// Подготавливает порядок обхода и упакованные блоки предобусловливателя CSGS.
 void SpatialJacobian::prepare_csgs() {
     auto& s = *storage_;
     auto& b = s.blocks;
+    // Пересчитывает зависимые потоки или коэффициенты после изменения поля.
     const auto refresh = [&] {
 #ifdef AERO_WITH_KOKKOS_GPU
         if (s.device>=0) {
@@ -486,6 +506,7 @@ void SpatialJacobian::prepare_csgs() {
     s.order = std::move(order);
 }
 
+// Выполняет прямой и обратный проходы CSGS с необходимыми обменами.
 void SpatialJacobian::apply_csgs(const BlockJacobi& diagonal, const double* rhs, double* output,double* image) const {
     const auto& s = *storage_;
     auto sweep = s.sweep;
@@ -538,6 +559,7 @@ void SpatialJacobian::apply_csgs(const BlockJacobi& diagonal, const double* rhs,
     });
 }
 
+// Сохраняет пространственную диагональ для обновления временного вклада.
 void SpatialJacobian::reserve_diagonal() {
     auto& s = *storage_;
     auto& b = s.blocks;
@@ -554,6 +576,7 @@ void SpatialJacobian::reserve_diagonal() {
     s.diagonal.resize(count);
     b.spatial_diagonal = s.diagonal.data();
 }
+// Обновляет временной вклад диагонали при повторном использовании пространственной матрицы.
 void SpatialJacobian::update_time_diagonal(const double* volumes, double dt) {
     auto& s = *storage_;
     auto& b = s.blocks;
@@ -574,11 +597,13 @@ void SpatialJacobian::update_time_diagonal(const double* volumes, double dt) {
     });
 }
 
+// Подготавливает разложение диагональных блоков текущей матрицы.
 void SpatialJacobian::prepare_jacobi(BlockJacobi& jacobi) const {
     const auto& b = storage_->blocks;
     jacobi.prepare(b.values, b.layout.first ? nullptr : b.rows);
 }
 
+// Собирает пространственные производные и временной вклад матрицы шага.
 void SpatialJacobian::assemble_matrix(const double* u, const double* initial, const double* volumes, double dt,
                                      bool simplified, bool roe, const PhaseTiming& timing) {
 #ifndef AERO_HAS_VISCOSITY
@@ -659,6 +684,8 @@ void SpatialJacobian::assemble_matrix(const double* u, const double* initial, co
     });
     s.ready = true;
 }
+// Умножает последнюю успешно собранную матрицу на вектор. Массивы
+// размером nodes*(dimension+2) должны занимать разные области памяти.
 void SpatialJacobian::apply(const double* x, double* y) const {
     const auto& s = *storage_;
     if (!s.ready) throw std::logic_error("Spatial Jacobian: assemble before applying");

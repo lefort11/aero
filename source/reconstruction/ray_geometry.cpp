@@ -8,18 +8,22 @@
 #include <initializer_list>
 
 namespace aero {
+// Создаёт пустое пересечение с бесконечным расстоянием.
 detail::RayPoint::RayPoint() : distance((std::numeric_limits<double>::infinity)()), outward(false) {}
 namespace {
+// Делит все координатные компоненты вектора на общий масштаб.
 Coordinate operator/(Coordinate a, double t) {
     return a * (1.0 / t);
 }
 typedef std::array<MeshIndex, 3> Triangle;
+// Нормаль и контур поверхности для геометрического пересечения лучом.
 struct Surface {
     Coordinate normal;         // Нормаль к плоскому контуру.
     MeshIndexSpan contour;     // Вершины грани в порядке обхода. Память принадлежит сетке.
     bool uses_center = false;  // На неплоской грани соединяем каждое ребро с общим центром.
     Coordinate center{};       // Среднее координат вершин неплоской грани.
 
+    // Связывает нормаль поверхности с диапазоном вершин её контура.
     Surface(Coordinate unit_normal, MeshIndexSpan vertices) : normal(unit_normal), contour(vertices) {}
 
     // При отсечении уха сохраняем те же три вершины в том же порядке.
@@ -50,12 +54,14 @@ struct Surface {
         }
     }
 
+    // Инициализирует объект стандартными значениями его полей.
     Surface() = default;
 private:
     std::array<unsigned char,6> corners_{}; // До двух треугольников на обычной плоской грани.
     std::vector<Triangle> triangles_;       // Разбиение плоского многоугольника с пятью и более вершинами.
 };
 
+// Определяет направление поворота контура по геометрическим векторам.
 double turn(Coordinate a, Coordinate b, Coordinate c, Coordinate normal) {
     return dot3(cross3(b - a, c - a), normal);
 }
@@ -192,6 +198,7 @@ Surface triangulate(MeshView mesh, MeshIndexSpan ids, double eps) {
     return surface;
 }
 
+// Восстанавливает упорядоченный цикл вершин плоской ячейки.
 std::vector<MeshIndex> cell_cycle(MeshCell cell) {
     std::map<MeshIndex, MeshIndex> next;
     for (MeshIndex i = 0; i < cell.face_count(); ++i) {
@@ -219,15 +226,18 @@ struct PatchFace {
 // Ищет одну опорную точку для заданного начала и направления луча.
 class RaySearch {
 public:
+    // Задаёт начало, направление, масштаб и допуск поиска пересечений луча.
     RaySearch(Coordinate origin, Coordinate direction, double length, double eps)
         : origin_(origin), direction_(direction), length_(length), eps_(eps) { best_.distance = 0; }
 
+    // Начинает обработку очередной поверхности при поиске пересечений луча.
     void begin_face(bool boundary) { boundary_face_ = boundary; }
     // Для невыпуклой области ближняя физическая граница может заслонить дальнюю грань слоя.
     bool needs_clipping() const {
         return best_.distance > boundary_distance_ + eps_ * length_ ||
                (!boundary_exit_ && best_.distance >= boundary_distance_ - eps_ * length_);
     }
+    // Обрезает продолжение луча физической границей расчётной области.
     void clip_at_boundary() {
         clipped_ = true;
         best_.weights.clear();
@@ -307,6 +317,7 @@ public:
         }
     }
 
+    // Выбирает итоговое допустимое пересечение после обхода кандидатов.
     detail::RayPoint finish() {
         return std::move(best_);
     }
@@ -354,6 +365,7 @@ detail::RayPoint outer_point(MeshView mesh, MeshIndex node, Coordinate direction
                              std::size_t face_count, const FaceAt& face_at, const std::vector<Surface>& faces,
                              const std::vector<Coordinate>& cell_normals, double eps) {
     RaySearch search(mesh.coordinate(node), direction, length, eps);
+    // Обходит поверхности кандидатов на пересечение луча реконструкции.
     const auto visit_faces = [&] {
         for (std::size_t i = 0; i < face_count; ++i) {
             const auto& entry = face_at(i);
@@ -381,6 +393,7 @@ detail::RayPoint outer_point(MeshView mesh, MeshIndex node, Coordinate direction
 
 } // namespace
 
+// Хранит геометрию поверхностей и допуски поиска опор лучевым методом.
 struct detail::ReconstructionGeometry::Impl {
     MeshView m;                 // Заимствованные координаты и связность исходной сетки.
     double eps;                 // Относительный допуск для пересечений и проверок геометрии.
@@ -388,6 +401,7 @@ struct detail::ReconstructionGeometry::Impl {
     std::vector<Coordinate> normals;   // Ориентированные нормали 2D-ячеек.
     std::vector<PatchFace> owners;               // Смежная ячейка и ориентация по номеру опорной грани.
 
+    // Подготавливает поверхности, нормали и владельцев граней для поиска лучевых пересечений.
     Impl(const Mesh& mesh, double tolerance)
         : m(mesh.view()), eps(tolerance), faces(m.dimension == 3 ? m.face_count : 0),
           normals(m.dimension == 2 ? m.cell_count : 0), owners(m.face_count) {
@@ -463,6 +477,7 @@ struct detail::ReconstructionGeometry::Impl {
         }
     }
 
+    // Подготавливает геометрический поиск по направлению выбранного ребра.
     Coordinate edge(MeshIndex e) const { return m.coordinate(m.edge_end[e]) - m.coordinate(m.edge_begin[e]); }
 
     // Одна параметризация для EBR и WENO. Грани слоя читаем по индексам без копирования.
@@ -473,9 +488,12 @@ struct detail::ReconstructionGeometry::Impl {
         return outer_point(m, node, direction, length, count, face_at, faces, normals, eps);
     }
 };
+// Подготавливает геометрические данные поиска опор реконструкции.
 detail::ReconstructionGeometry::ReconstructionGeometry(const Mesh& mesh, double tolerance)
     : impl_(new Impl(mesh, tolerance)) {}
+// Освобождает принадлежащие объекту ресурсы при завершении его времени жизни.
 detail::ReconstructionGeometry::~ReconstructionGeometry() {}
+// Возвращает геометрическую длину ребра шаблона.
 double detail::ReconstructionGeometry::edge_length(MeshIndex e) const {
     const double h = coordinate_length(impl_->edge(e));
     if (!(h > 0) || !std::isfinite(h)) {
@@ -483,6 +501,7 @@ double detail::ReconstructionGeometry::edge_length(MeshIndex e) const {
     }
     return h;
 }
+// Находит пересечение луча с очередным слоем опорной геометрии.
 detail::RayPoint detail::ReconstructionGeometry::layer_hit(MeshIndex e, unsigned side,
                                                            const std::vector<MeshIndex>& ids) const {
     const Impl& g = *impl_;
@@ -491,6 +510,7 @@ detail::RayPoint detail::ReconstructionGeometry::layer_hit(MeshIndex e, unsigned
     return g.intersect(node, e, side, h, ids.size(),
                        [&](std::size_t i) -> const PatchFace& { return g.owners[ids[i]]; });
 }
+// Добавляет взвешенную строку опор в таблицу шаблона.
 void detail::ReconstructionGeometry::append_row(ReconstructionStencilData& data, const SparseRow& row,
                                                 MeshIndex e, unsigned side, bool curved) const {
     const Impl& g = *impl_;
@@ -517,6 +537,7 @@ void detail::ReconstructionGeometry::append_row(ReconstructionStencilData& data,
     data.offsets.push_back(static_cast<ReconstructionIndex>(data.nodes.size()));
     data.row_owner.push_back(center);
 }
+// Добавляет строку коэффициентов с заданным множителем.
 void detail::add_scaled_row(SparseRow& destination, const SparseRow& source, double factor) {
     for (const auto& term : source) {
         destination[term.first] += factor * term.second;

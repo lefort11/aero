@@ -4,12 +4,14 @@
 
 namespace aero {
 namespace {
+// Нормирует конечный ненулевой вектор; вырожденное направление считается ошибкой сетки.
 CvVector unit(CvVector a) {
     const double n = a.length();
     if (!(n > 0 && std::isfinite(n)))
         throw MeshError("Cannot determine mesh momentum frame");
     return {a.x / n, a.y / n, a.z / n};
 }
+// Выбирает знак вектора с положительной наибольшей по модулю компонентой.
 CvVector orient(CvVector v) {
     double major = std::abs(v.x) >= std::abs(v.y) ? v.x : v.y;
     if (std::abs(v.z) > std::abs(major))
@@ -17,6 +19,7 @@ CvVector orient(CvVector v) {
     return major < 0 ? CvVector{-v.x, -v.y, -v.z} : v;
 }
 const MeshIndex absent = std::numeric_limits<MeshIndex>::max();
+// Ребро-кандидат на ось импульса с направлением и оценкой пригодности.
 struct Candidate {
     MeshIndex begin = absent, end = absent;
     double score = -1;
@@ -38,6 +41,7 @@ CvVector select(const Candidate& c, const Processes& world) {
     return {v[0], v[1], v[2]};
 }
 }
+// Строит общий ортонормированный базис импульса по геометрии сетки и согласует его между процессами.
 ResidualFrame momentum_frame(MeshView mesh, const Processes& world, const MeshPartition* part) {
     ResidualFrame frame;
     if (mesh.dimension == 3)

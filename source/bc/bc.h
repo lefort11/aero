@@ -14,6 +14,7 @@ AERO_HOST_DEVICE inline bool solid_wall(BoundaryType type) {
 enum class BoundaryMode { Pressure, NormalVelocity, Density };
 enum class BoundarySource { Current, Initial, Constant, Profile, Reference, InteriorPressure, Characteristic, ExternalScalar };
 enum class ProfileFallback { Full, Reference, Interior, Initial };
+// Определяет, использует ли выбранный источник опорное состояние.
 AERO_HOST_DEVICE inline bool takes_reference(BoundarySource source) {
     return source == BoundarySource::Reference || source == BoundarySource::InteriorPressure ||
            source == BoundarySource::Characteristic || source == BoundarySource::ExternalScalar;
@@ -32,14 +33,17 @@ struct PrescribedState {
     unsigned mask;       // Установленный бит отмечает явно заданную компоненту.
     double primitive[5]; // Значения по номерам битов: rho, p, ux, uy, uz.
 };
+// Полное состояние и источник данных для сверхзвукового входа.
 struct SupersonicInflow : PrescribedState {
     BoundarySource source; // Для reference_state сверхзвуковой вход определяется по скорости и звуку опорного газа.
 };
+// Отдельные правила свободной границы для входа и выхода разных режимов.
 struct FreeBoundaryRules {
     SupersonicInflow superin; // Полное состояние для сверхзвукового входа.
     BoundaryRule inflow;      // Дозвуковой вход.
     BoundaryRule outflow;     // Дозвуковой выход, включая нулевую нормальную скорость.
     PrescribedState reference; // Общие rho, p и скорости reference_state. Нулевая маска означает, что чисел в секции нет.
+    // Проверяет необходимость опорного газа в наборе граничных правил.
     bool uses_reference() const {
         return takes_reference(superin.source) || takes_reference(inflow.source) || takes_reference(outflow.source);
     }
@@ -50,12 +54,17 @@ struct FreeBoundaryRules {
 class BoundaryConfig {
     enum : long long { Wall = -1, Periodic = -2, SlipWall = -3 };
     long long index_; // Номер комплекта free или код физической границы.
+    // Создаёт компактное обозначение типа граничного условия.
     AERO_HOST_DEVICE explicit BoundaryConfig(long long index) : index_(index) {}
     friend struct BoundaryPatches; // Только владелец массива назначает индексы free.
 public:
+    // Создаёт компактное обозначение типа граничного условия.
     AERO_HOST_DEVICE BoundaryConfig() : index_(Wall) {}
+    // Создаёт обозначение стенки с нулевым нормальным массовым потоком.
     AERO_HOST_DEVICE static BoundaryConfig slip_wall() { return BoundaryConfig(SlipWall); }
+    // Создаёт обозначение периодического участка.
     AERO_HOST_DEVICE static BoundaryConfig periodic() { return BoundaryConfig(Periodic); }
+    // Возвращает тип граничного условия из компактной записи.
     AERO_HOST_DEVICE BoundaryType type() const {
         if (index_ == Wall)
             return BoundaryType::Wall;
@@ -73,13 +82,16 @@ public:
 // Этот вид таблиц передаётся в вычислительные ядра и не владеет памятью.
 enum ProfileColumn : unsigned { Radius=1, ProfileRho=2, Axial=4, Radial=8, ProfileP=16, NuTilde=32,
                                 GasColumns=ProfileRho|Axial|Radial|ProfileP, AllColumns=Radius|GasColumns|NuTilde };
+// Газовое состояние, рабочая вязкость и маска величин граничного профиля.
 struct ProfileState {
     EulerState gas; // Нулевая плотность означает обычную площадку без профиля.
     double nutilde;
     unsigned columns; // Маска столбцов исходной таблицы; нуль допустим для заранее готового полного состояния.
     ProfileFallback fallback;
     double direction[3]; // Направление единственной заданной компоненты скорости в осях расчёта.
+    // Проверяет наличие табличного профиля на площадке.
     AERO_HOST_DEVICE bool present() const { return columns || gas.density > 0.; }
+    // Определяет, задаёт ли профиль только часть газовых величин.
     AERO_HOST_DEVICE bool partial_gas() const { return columns && (columns & GasColumns) != GasColumns; }
     // Из внутреннего или начального вектора оставляем проекцию, которой нет в профиле.
     AERO_HOST_DEVICE void missing_velocity(unsigned d, const double* velocity, double* missing) const {
@@ -88,12 +100,14 @@ struct ProfileState {
             missing[k] = (columns & (Axial|Radial)) == (Axial|Radial) ? 0. : velocity[k] - along*direction[k];
     }
 };
+// Представление таблиц граничных условий без владения их памятью.
 struct BoundaryPatchView {
     const BoundaryConfig* by_patch;             // Одна короткая запись на метку сетки.
     const FreeBoundaryRules* free_rules;        // Комплекты только для открытых меток.
     unsigned long long patch_count, free_count;
     const ProfileState* profiles; // По одной записи на физическую площадку.
     unsigned long long profile_count;
+    // Возвращает профиль, связанный с граничным участком.
     AERO_HOST_DEVICE const ProfileState* profile(unsigned long long piece) const {
         return profiles && profiles[piece].present() ? profiles + piece : nullptr;
     } // Размеры двух массивов при передаче на GPU.
@@ -216,6 +230,7 @@ AERO_HOST_DEVICE inline BoundaryStatus check_boundary_state(unsigned d, const Eu
 
 // Выбирает одно правило free для текущей площадки при каждом вычислении потока.
 enum class FreeRegime { SuperIn, In, Out, SuperOut };
+// Выбирает источник значений для текущего граничного правила.
 AERO_HOST_DEVICE inline BoundarySource boundary_source(FreeRegime regime, const FreeBoundaryRules& rules) {
     if (regime == FreeRegime::In) return rules.inflow.source;
     if (regime == FreeRegime::Out) return rules.outflow.source;
@@ -225,6 +240,7 @@ AERO_HOST_DEVICE inline BoundarySource boundary_source(FreeRegime regime, const 
     }
     return BoundarySource::Current;
 }
+// Определяет вход, выход и дозвуковой или сверхзвуковой режим границы.
 AERO_HOST_DEVICE inline FreeRegime free_regime(double un, double sound) {
     if (un >= sound)
         return FreeRegime::SuperOut;
@@ -275,6 +291,7 @@ AERO_HOST_DEVICE inline BoundaryStatus complete_profile(unsigned d, const Profil
     return gas.sound_speed > 0. && euler_detail::finite(gas.enthalpy) ? BoundaryStatus::Success : BoundaryStatus::InvalidTarget;
 }
 
+// Формирует внешнее состояние свободной границы по выбранному режиму.
 AERO_HOST_DEVICE inline BoundaryStatus free_boundary_state(unsigned d, const FreeBoundaryRules& config,
                                                            const EulerState& inside, const double* normal,
                                                            double un, double gamma, const double* initial,
@@ -433,12 +450,14 @@ namespace aero {
 struct ProfileRow {
     double radius, density, axial, radial, pressure, nutilde;
 };
+// Ось, центр и табличные значения пространственного граничного профиля.
 struct BoundaryProfile {
     Coordinate center{}, axis{{1,0,0}};
     unsigned columns = AllColumns;
     ProfileFallback fallback = ProfileFallback::Full;
     std::vector<ProfileRow> rows;
 };
+// Владеет правилами и профилями граничных участков сетки.
 struct BoundaryPatches {
     std::vector<BoundaryProfile> profiles; // Индекс таблицы по номеру секции free.
 
@@ -464,6 +483,7 @@ BoundaryPatchView upload_boundary_patches(DeviceStorage& storage, BoundaryPatchV
     host.profiles = storage.allocate(host.profile_count,host.profiles);
     return host;
 }
+// Имена сопряжённых участков и сдвиг между ними.
 struct PeriodicPair {
     std::string patch, pair;
     Coordinate translation; // Сдвиг от patch к pair в исходных единицах координат сетки.
@@ -473,6 +493,7 @@ struct BoundaryTemperature {
     FreestreamGas gas; // T/T_amb = gamma*M_inf^2*p/rho.
     double background_rho, background_p; // Для пересчёта пульсации температуры в режиме Linear.
     double background_velocity[3];
+    // Восстанавливает плотность по параметрам граничного газа.
     double density(double pressure, double temperature, bool linear) const;
 };
 // bc_type adiabatic_wall или bc_type novisc_wall
@@ -482,6 +503,7 @@ struct BoundaryTemperature {
 // inflow  base_p|base_u|base_rho [initial|число]
 // outflow base_p|base_u|base_rho [initial|число]
 BoundaryConfig read_boundary(std::istream& input, unsigned dimension, BoundaryPatches& patches);
+// Разбирает текст граничного условия в набор правил.
 BoundaryConfig read_boundary(std::istream& input, unsigned dimension, BoundaryPatches& patches,
                              PeriodicPair& periodic, bool linear = false, BoundaryTemperature temperature = {});
 }

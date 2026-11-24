@@ -24,6 +24,7 @@ namespace mp5 {
 AERO_HOST_DEVICE inline double linear(double outer_slope, double inner_slope, double center, double opposite) {
     return -0.1 * opposite + 0.8 * center + (11.0 / 30.0) * inner_slope - (1.0 / 15.0) * outer_slope;
 }
+// Ограничивает значение заданным допустимым интервалом.
 AERO_HOST_DEVICE inline double bound(double inner_slope, double center, double alpha) {
     const double upwind = alpha * inner_slope;
     return center > 0 ? ::fmax(0., ::fmin(center, upwind)) : ::fmin(0., ::fmax(center, upwind));
@@ -34,6 +35,7 @@ AERO_HOST_DEVICE inline double bound(double inner_slope, double center, double a
 struct Candidate {
     double value;    // Удвоенное приращение по линейному полиному пятого порядка.
     bool admissible; // Можно ли принять этот полином без расчёта полного MP-интервала.
+    // Формирует высокопорядковый кандидат и допустимые приращения ограничителя MP5.
     AERO_HOST_DEVICE Candidate(double outer_slope, double inner_slope, double center, double opposite,
                                double alpha) {
         value = linear(outer_slope, inner_slope, center, opposite);
@@ -47,10 +49,12 @@ struct Candidate {
 // На GPU сравнения границ тогда не занимают арифметические устройства double.
 using OrderKey = unsigned long long;
 constexpr OrderKey sign_bit = 1ull << 63;
+// Преобразует вещественное значение в упорядочиваемый целочисленный ключ.
 KOKKOS_INLINE_FUNCTION OrderKey order_key(double value) {
     const OrderKey bits = double_bits(value);
     return bits ^ ((bits & sign_bit) ? ~0ull : sign_bit);
 }
+// Восстанавливает вещественное значение из упорядоченного ключа.
 KOKKOS_INLINE_FUNCTION double ordered_value(OrderKey key) {
     return from_double_bits(key ^ ((key & sign_bit) ? sign_bit : ~0ull));
 }
@@ -105,6 +109,7 @@ struct Bounds {
 #endif
         return low == high;
     }
+    // Ограничивает реконструированное значение допустимыми границами MP.
     template <bool packed = false> AERO_HOST_DEVICE double clamp(double value) const {
 #ifndef KOKKOS_ACTIVE_EXECUTION_MEMORY_SPACE_HOST
         if (packed) {
@@ -121,6 +126,7 @@ struct Bounds {
         return ::fmin(high, ::fmax(low, value));
     }
 };
+// Вычисляет интервал монотонно допустимых значений на стороне ребра.
 template <bool packed = false, bool packed_curvature = packed>
 AERO_HOST_DEVICE inline Bounds bounds(double outer_slope, double inner_slope, double center, double alpha,
                                       double central_curvature) {
@@ -153,11 +159,13 @@ AERO_HOST_DEVICE inline Bounds bounds(double outer_slope, double inner_slope, do
     const double high = ::fmin(::fmax(0., ::fmax(gc, md)), ::fmax(0., ::fmax(ul, lc)));
     return {low, high};
 }
+// Применяет ограничитель монотонности к высокопорядковому кандидату.
 AERO_HOST_DEVICE inline double limit(double value, double outer_slope, double inner_slope, double center,
                                      double alpha, double central_curvature) {
     return bounds(outer_slope, inner_slope, center, alpha, central_curvature).clamp(value);
 }
 
+// Вычисляет ограниченное приращение MP5 относительно узлового значения.
 AERO_HOST_DEVICE inline double increment(double outer_slope, double inner_slope, double center, double opposite,
                                          double alpha) {
     const Candidate candidate(outer_slope, inner_slope, center, opposite, alpha);

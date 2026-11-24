@@ -9,12 +9,14 @@ namespace aero {
 using namespace periodic_mpi;
 namespace {
 using Ids = std::vector<Id>;
+// Находит позицию номера в отсортированном списке; отсутствие считается ошибкой.
 Id index_of(const Ids& ids, Id id) {
     const auto it = std::lower_bound(ids.begin(), ids.end(), id);
     if (it == ids.end() || *it != id)
         throw MeshError("MPI stencil: missing node " + std::to_string(id));
     return static_cast<Id>(it - ids.begin());
 }
+// Переводит узел подобласти в глобальную ссылку на периодического представителя.
 Ref canonical(const MeshPartition& part, const PeriodicPartition* seam, Id n) {
     if (!seam)
         return vertex(part, n);
@@ -25,6 +27,7 @@ Ref canonical(const MeshPartition& part, const PeriodicPartition* seam, Id n) {
 // Сведения о периодическом классе хранят владельцы всех его исходных вершин.
 // Поэтому запрос второго слоя можно начать с номера вершины до склейки.
 using Copies = std::map<Id, Ids>;
+// Собирает распределённые копии каждого периодического узла.
 Copies periodic_copies(const MeshPartition& part, const PeriodicPartition& seam, const Processes& w) {
     std::map<Id, std::vector<Ref>> groups;
     exchange(
@@ -67,9 +70,11 @@ Copies periodic_copies(const MeshPartition& part, const PeriodicPartition& seam,
     return result;
 }
 
+// Наборы периодических, узловых и исходных опор граничного шаблона.
 struct BoundarySupport {
     std::set<Id> paired, nodal, originals;
 };
+// Определяет опоры шаблонов возле периодических и проточных границ.
 BoundarySupport boundary_support(const PartitionInput::NodeOwners& centers, const Copies& copies,
                                  const std::set<Id>& inlet_nodes, const Processes& w) {
     BoundarySupport result;
@@ -139,6 +144,7 @@ bool add_periodic_context(PartitionInput& input, const Copies& copies, const Pro
     return !support.originals.empty();
 }
 
+// Находит владельцев значений поля для расширенного шаблона подобласти.
 std::vector<Ref> support_states(const MeshPartition& part, const PeriodicPartition* seam,
                                 const MeshPartition& halo, const Processes& w) {
     std::vector<Ref> states;
@@ -289,6 +295,7 @@ std::vector<int> partition_layer_depths(const MeshPartition& part, const MeshPar
     return depth;
 }
 
+// Ищет ребро по упорядоченной паре концов в таблице сетки.
 Id find_edge(MeshView m, Id a, Id b) {
     const auto first = std::lower_bound(m.edge_begin, m.edge_begin + m.edge_count, a) - m.edge_begin;
     const auto last = std::upper_bound(m.edge_begin + first, m.edge_begin + m.edge_count, a) - m.edge_begin;
@@ -299,6 +306,7 @@ Id find_edge(MeshView m, Id a, Id b) {
 }
 }
 
+// Возвращает невладеющее представление локальных строк распределённого шаблона.
 ReconstructionStencilView PartitionStencil::view(MeshIndex state_nodes) const {
     return {state_nodes,           row_owner.size() / 2,
             linear.offsets.data(), linear.nodes.data(),
@@ -366,14 +374,17 @@ class RowTransfer {
     const std::vector<double>& weights_;
     Indices source_; // Номер исходной строки для каждой строки приёмника.
 public:
+    // Связывает исходные строки шаблона с приёмником перенумерованных весов.
     RowTransfer(PartitionStencil::Rows& dst, const Indices& offsets, const Indices& nodes,
                 const std::vector<double>& weights)
         : dst_(dst), offsets_(offsets), nodes_(nodes), weights_(weights),
           source_(dst.offsets.empty() ? 0 : dst.offsets.size() - 1) {}
+    // Связывает исходную строку с целевой и сохраняет требуемое число коэффициентов.
     void select(Id row, Id dst) {
         source_[dst] = row;
         dst_.offsets[dst + 1] = offsets_[row + 1] - offsets_[row];
     }
+    // Переносит выбранные строки с перенумерацией узлов в локальное поле.
     void copy(const Ids& field) {
         if (source_.empty()) return;
         auto& offsets = dst_.offsets;
@@ -449,6 +460,7 @@ void take_native_stencil(PartitionStencil& result, ReconstructionStencilData src
     });
 }
 
+// Выделяет строки EBR или WENO по числу площадок с проверкой размеров.
 void allocate_stencil_rows(PartitionStencil& result, Id surfaces, bool weno) {
     const Id rows_per_edge = weno ? 8 : 2;
     if (surfaces > (result.linear.offsets.max_size() - 1) / rows_per_edge)
@@ -464,6 +476,7 @@ void allocate_stencil_rows(PartitionStencil& result, Id surfaces, bool weno) {
 }
 }
 
+// Обе строки шаблона готовит процесс, который затем вычислит поток этого ребра.
 PartitionStencil prepare_partition_stencil(const MeshPartition& part, const PeriodicPartition* seam,
                                            const std::vector<PeriodicPair>& pairs, PartitionInput* input,
                                            const StencilRequests& requests, Id surfaces,

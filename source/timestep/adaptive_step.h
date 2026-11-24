@@ -8,6 +8,7 @@
 namespace aero {
 // Выбирает множитель следующего шага по реально принятому изменению в этом узле.
 struct AdaptiveStepChange {
+    // Выбирает множитель роста шага по относительным изменениям газа и рабочей вязкости SA.
     static AERO_HOST_DEVICE double growth(double gas, double sa, double ceiling) {
         // Ориентиры на один псевдошаг: 1% для газа и 5% для рабочей вязкости SA.
         const double error = ::fmax(gas / .01, sa / .05);

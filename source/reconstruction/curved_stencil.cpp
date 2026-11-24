@@ -9,16 +9,20 @@ namespace detail {
 namespace {
 using Id = MeshIndex;
 using List = std::vector<Id>;
+// Нормирует направление геометрического поиска шаблона.
 Coordinate unit(Coordinate a) {
     const double length = coordinate_length(a);
     return length > 0. ? a * (1. / length) : Coordinate{};
 }
+// Возвращает второй элемент локальной пары или противоположную сторону связи.
 Id other(MeshView m, Id edge, Id node) {
     return m.edge_begin[edge] == node ? m.edge_end[edge] : m.edge_begin[edge];
 }
+// Проверяет присутствие узла в геометрической сущности.
 bool contains(MeshIndexSpan nodes, Id node) {
     return std::find(nodes.begin(), nodes.end(), node) != nodes.end();
 }
+// Определяет, допускает ли ячейка структурированное продолжение линии шаблона.
 bool structured_cell(MeshView m, Id cell) {
     if (m.dimension == 2)
         return m.cell_faces(cell).size == 4;
@@ -48,6 +52,7 @@ template <class Visit> void for_bases(MeshView m, Id cell, Visit visit) {
         }
     }
 }
+// Находит локальную позицию узла в вершинах элемента.
 Coordinate position(MeshView m, const RayPoint& point) {
     Coordinate x{};
     for (const auto& w : point.weights)
@@ -56,6 +61,7 @@ Coordinate position(MeshView m, const RayPoint& point) {
 }
 } // namespace
 
+// Находит призматические слои, связанные с выбранными граничными участками.
 PrismLayers::PrismLayers(const Mesh& mesh, const std::vector<std::string>& labels) {
     const auto m = mesh.view();
     opposite.resize(m.face_count);
@@ -72,6 +78,7 @@ PrismLayers::PrismLayers(const Mesh& mesh, const std::vector<std::string>& label
     }
 }
 
+// Определяет доступную глубину призматических слоёв для опор шаблона.
 std::vector<int> PrismLayers::local_depths(MeshView m, const Sync& sync) const {
     std::vector<int> depth(m.node_count, -1), visited(m.face_count, -1);
     List frontier = wall_faces;
@@ -93,6 +100,7 @@ std::vector<int> PrismLayers::local_depths(MeshView m, const Sync& sync) const {
     return depth;
 }
 
+// Готовит геометрию и ограничения поворота для криволинейного шаблона.
 CurvedStencil::CurvedStencil(const Mesh& mesh, const ReconstructionOptions& o, const NodeIncidence* cells)
     : mesh_(mesh.view()), cosine_(std::cos(o.max_turn_degrees * std::acos(-1.) / 180.)) {
     if (!(o.max_turn_degrees > 0. && o.max_turn_degrees < 90.))
@@ -153,6 +161,7 @@ struct IjkNode {
 };
 }
 
+// Строит направления и связи структурированных линий i, j, k.
 void CurvedStencil::prepare_ijk(const NodeIncidence& incident) {
     const auto m = mesh_;
     std::vector<unsigned char> structured(m.cell_count);
@@ -209,6 +218,7 @@ bool CurvedStencil::follow_line(Id edge, bool fifth, bool limit_each_turn, Next 
     return true;
 }
 
+// Подготавливает линии реконструкции по призматическим слоям.
 void CurvedStencil::prepare_pl(const Mesh& mesh, const ReconstructionOptions& o) {
     const auto m = mesh_;
     if (o.wall_labels.empty() && o.node_layers.empty())
@@ -288,11 +298,13 @@ void CurvedStencil::prepare_pl(const Mesh& mesh, const ReconstructionOptions& o)
         normal_[e] = counts[e] <= 2 ? unit(normal_[e]) : Coordinate{};
 }
 
+// Выбирает опорные точки вдоль призматической линии.
 bool CurvedStencil::pl_points(Id e, bool fifth, CurvedPoints& p) const {
     const auto m = mesh_;
     if (layer_.empty() || layer_[m.edge_begin[e]] < 0 || layer_[m.edge_begin[e]] != layer_[m.edge_end[e]])
         return false;
     if (m.dimension == 2) {
+        // Ищет допустимое продолжение геометрической линии шаблона.
         const auto continuation = [&](Id edge, Id node) {
             const auto& incident = layer_edges_[node];
             if (incident.size() == 2) {
@@ -333,6 +345,7 @@ bool CurvedStencil::pl_points(Id e, bool fifth, CurvedPoints& p) const {
             for (Id v : next) {
                 const auto delta = m.coordinate(v) - origin;
                 const double vertex_distance = coordinate_length(delta), height = dot3(plane, delta);
+                // Проверяет очередного кандидата на продолжение криволинейного шаблона.
                 auto consider = [&](Id w, double fraction) {
                     const auto offset = delta + (m.coordinate(w) - m.coordinate(v)) * fraction;
                     const double distance = coordinate_length(offset);
@@ -381,8 +394,10 @@ bool CurvedStencil::pl_points(Id e, bool fifth, CurvedPoints& p) const {
     return true;
 }
 
+// Возвращает обе ближние опоры и доступные дальние; false включает прямой шаблон.
 bool CurvedStencil::points(Id edge, bool fifth, CurvedPoints& out) const {
     if (!next_.empty()) {
+        // Ищет допустимое продолжение геометрической линии шаблона.
         const auto continuation = [&](Id e, Id n) { return next_(e,mesh_.edge_end[e] == n); };
         if (follow_line(edge, fifth, true, continuation, out))
             return true;

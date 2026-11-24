@@ -38,6 +38,7 @@ public:
     void write(std::uint64_t step, double time, const std::vector<double>& state, bool final_field = false,const diagnostic::Fields& scalars={});
 
 private:
+    // Метаданные подсетки, точки интерполяции и схема записи среза.
     struct SliceOutput {
         FieldSnapshot metadata;             // Геометрия и отпечаток именно подсетки.
         std::vector<SlicePoint> points;     // Номера концов в компактном списке источников.
@@ -45,14 +46,19 @@ private:
         std::size_t source_count;
     };
     std::map<std::string,SliceOutput> slices_;
+    // Поля сначала вычисляются в размерности исходной задачи (в срез 3D входит и uz).
+    // Интерполируем именно заказанные столбцы, включая производные и пульсации.
     void write_slice(const OutputZone&,const std::vector<unsigned>&,std::uint64_t,double,
                      const std::vector<double>&,const diagnostic::Fields&);
+    // Исходный номер, локальная строка и координаты узла стенки.
     struct WallNode {
         MeshIndex id, slot; // Исходный номер узла и его номер в массиве расчётных значений.
         Coordinate point;
     };
     std::map<std::string,std::vector<WallNode>> walls_;
     double reference_pressure_=0., dynamic_pressure_=0.;
+    // Для Cp в файл попадают только узлы указанной стенки. На общей границе
+    // двух разделов один и тот же исходный номер попадает в общий снимок один раз.
     void write_wall(const OutputZone&, std::uint64_t, double, const std::vector<double>&);
     const Processes& world_;            // Участники коллективной записи полей.
     const PartitionFileLayout& layout_; // Нумерация узлов принадлежит постановке расчёта.

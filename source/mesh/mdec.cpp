@@ -6,24 +6,29 @@
 
 namespace aero {
 namespace mdec {
+// Проверяет условие целостности архива и выбрасывает MeshError при нарушении.
 void check(bool condition, const char* message) {
     if (!condition)
         throw MeshError(std::string("mdec: ") + message);
 }
 namespace {
+// Складывает размеры с проверкой переполнения.
 Id add(Id a, Id b) {
     check(b <= absent - a, "offset overflow");
     return a + b;
 }
+// Умножает размеры с проверкой переполнения.
 Id mul(Id a, Id b) {
     check(!a || b <= absent / a, "size overflow");
     return a * b;
 }
+// Читает восьмибайтовое слово каталога, отклоняя усечённый файл.
 Id read(std::istream& in) {
     char bytes[8];
     check(static_cast<bool>(in.read(bytes, 8)), "truncated directory");
     return number_codec::read_word(bytes);
 }
+// Передаёт блок байтов формата сетки с проверкой состояния потока.
 std::string block(std::istream& in, Id n) {
     std::string s;
     check(n <= s.max_size() && n <= static_cast<Id>(std::numeric_limits<std::streamsize>::max()),
@@ -33,6 +38,7 @@ std::string block(std::istream& in, Id n) {
         check(static_cast<bool>(in.read(&s[0], static_cast<std::streamsize>(n))), "truncated input");
     return s;
 }
+// Распаковывает сжатый лист и проверяет ожидаемый объём данных.
 std::string decode(const std::string& data, Id raw) {
     std::istringstream in(data);
     check(block(in, 8) == "AEROLZMA", "bad compressed leaf signature");
@@ -49,6 +55,7 @@ std::string decode(const std::string& data, Id raw) {
 }
 // По типу записи и числу ссылок определяет её размер с проверкой переполнения.
 Id record_size(const std::string& data, std::size_t start, Id kind) {
+    // Читает выбранное поле записи каталога архива.
     const auto field = [&](std::size_t k) {
         check(k <= data.size() - start, "short record header");
         return read_word(data, start + k);
@@ -61,6 +68,7 @@ Id record_size(const std::string& data, std::size_t start, Id kind) {
     return add(24, mul(17, field(16)));
 }
 }
+// Читает целое слово из двоичного представления.
 Id read_word(const std::string& data, std::size_t offset) {
     check(offset <= data.size() && data.size() - offset >= 8, "truncated record");
     return number_codec::read_word(data.data() + offset);
@@ -71,9 +79,11 @@ void append_word(std::string& data, Id value) {
     number_codec::store_word(bytes, value);
     data.append(bytes, sizeof(bytes));
 }
+// Читает координату узла по смещению её битового представления.
 double Record::coordinate(unsigned axis) const {
     return number_codec::real_from_bits(word(16 + 8 * axis));
 }
+// Число ссылок первого списка; их смысл зависит от типа записи.
 Id Record::primary_count() const {
     switch (kind()) {
     case Node:
@@ -84,18 +94,22 @@ Id Record::primary_count() const {
         return word(16);
     }
 }
+// Возвращает число вторичных связей записи сущности архива.
 Id Record::secondary_count() const {
     return kind() == Face ? word(40) : 0;
 }
+// Извлекает адрес связанного элемента. У грани первичные ссылки ведут к вершинам, вторичные — к ячейкам.
 Address Record::link(Id i, bool secondary) const {
     const Id k = kind(), pos = k == Cell ? 24 + 17 * i : 48 + 16 * (i + (secondary ? primary_count() : 0));
     return {word(static_cast<std::size_t>(pos)), word(static_cast<std::size_t>(pos + 8))};
 }
+// Ориентация грани с локальным номером i внутри записи ячейки.
 std::int8_t Record::sign(Id i) const {
     const auto value = static_cast<unsigned char>(bytes.at(static_cast<std::size_t>(40 + 17 * i)));
     check(value == 1 || value == 255, "invalid face orientation");
     return value == 1 ? 1 : -1;
 }
+// Читает только сигнатуру, чтобы выбрать обычную сетку или архив разбиения при запуске.
 bool Archive::matches(const std::string& path) {
     std::ifstream f(path.c_str(), std::ios::binary);
     char sig[8];
@@ -173,6 +187,7 @@ Id Archive::read_halo_directory(Id end_tree) {
     file_.seekg(static_cast<std::streamoff>(end_tree));
     const Id n = read(file_), h = read(file_);
     end_tree = add(end_tree, 16);
+    // Читает или проверяет диапазоны строк индексированной таблицы архива.
     const auto rows = [&](Id count, Id entries) {
         Rows r = {end_tree, add(end_tree, mul(8, add(count, 1))), count, entries};
         end_tree = add(r.refs, mul(16, entries));
@@ -190,6 +205,7 @@ Id Archive::read_halo_directory(Id end_tree) {
     return end_tree;
 }
 
+// Читает запись ветви дерева разбиения.
 Archive::Branch Archive::branch(Id i) {
     check(i < entries_, "invalid tree pointer");
     file_.seekg(static_cast<std::streamoff>(tree_ + archive_format::tree_entry_bytes * i));
@@ -198,6 +214,7 @@ Archive::Branch Archive::branch(Id i) {
         v = read(file_);
     return row;
 }
+// Возвращает корневую запись дерева или представителя множества.
 Archive::Branch Archive::root() {
     const auto row = branch(root_);
     check(row[0] == 0 && row[1] == leaves && row[5] == counts[Node] && row[6] == counts[Face] &&
@@ -205,6 +222,7 @@ Archive::Branch Archive::root() {
           "incorrect root totals");
     return row;
 }
+// Возвращает дочерние записи ветви разбиения.
 void Archive::children(const Branch& parent, Branch& left, Branch& right) {
     left = branch(parent[2]);
     right = branch(parent[3]);
@@ -214,6 +232,7 @@ void Archive::children(const Branch& parent, Branch& left, Branch& right) {
     for (unsigned k = 4; k < 8; ++k)
         check(add(left[k], right[k]) == parent[k], "incorrect branch totals");
 }
+// Вычисляет файловое смещение строки индексированной таблицы.
 Id Archive::row_offset(const Rows& rows, Id row) {
     check(row <= rows.count, "invalid halo prefix");
     file_.seekg(static_cast<std::streamoff>(rows.offsets + 8 * row));
@@ -222,6 +241,7 @@ Id Archive::row_offset(const Rows& rows, Id row) {
           "invalid halo prefix");
     return value;
 }
+// Читает накопленные размеры записей до указанной границы листа.
 Archive::Prefix Archive::prefix(Id end_leaf, bool fifth) {
     check(end_leaf <= leaves, "invalid leaf prefix");
     Prefix result;
@@ -248,7 +268,9 @@ Archive::Prefix Archive::prefix(Id end_leaf, bool fifth) {
     return result;
 }
 
+// Возвращает границы последовательных диапазонов листьев для заданного числа процессов.
 std::vector<Id> Archive::partition(int processes) {
+    // Возвращает оценку работы выбранной сущности архива.
     const auto weight = [](const std::array<Id, 8>& row) {
         return static_cast<long double>(row[4]) + 32.0L * row[5];
     };
@@ -276,6 +298,7 @@ std::vector<Id> Archive::partition(int processes) {
     }
     return cuts;
 }
+// Читает ссылки одной строки дисковой таблицы архива.
 void Archive::read_row(const Rows& rows, Id row, Addresses& result) {
     check(indexed_halo() && row < rows.count, "invalid halo row");
     file_.seekg(static_cast<std::streamoff>(rows.offsets + 8 * row));
@@ -292,12 +315,15 @@ void Archive::read_row(const Rows& rows, Id row, Addresses& result) {
         result.emplace(leaf, offset);
     }
 }
+// Добавляет все ячейки, инцидентные узлу, по обратному индексу архива.
 void Archive::cell_star(Id node, Addresses& cells) {
     read_row(stars_, node, cells);
 }
+// Дополняет множество дальними ячейками для шаблона пятого порядка.
 void Archive::far_cells(Id leaf, Addresses& cells) {
     read_row(far_, leaf, cells);
 }
+// Читает ядро листа или его дополнительный слой смежных ячеек.
 void Archive::leaf_cells(Id leaf, bool outer, Addresses& cells) {
     read_row(halo_, 2 * leaf + (outer ? 1 : 0), cells);
 }
@@ -322,6 +348,7 @@ void Archive::read_records(const Addresses& needed, Kind kind, Records& records)
     }
 }
 
+// Загружает упакованные записи геометрии одного листа.
 void Archive::read_leaf(Id leaf, Records& records) {
     check(leaf < leaves, "invalid leaf number");
     file_.seekg(static_cast<std::streamoff>(index_ + archive_format::leaf_entry_bytes * leaf));

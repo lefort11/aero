@@ -11,6 +11,7 @@
 namespace {
 using namespace aero;
 using namespace aero::meshdec;
+// Читает целое слово из двоичного представления.
 Id read_word(std::istream& in) {
     Id v = 0;
     for (unsigned k = 0; k < 8; ++k) {
@@ -20,22 +21,26 @@ Id read_word(std::istream& in) {
     }
     return v;
 }
+// Восстанавливает вещественное число из двоичного представления.
 double read_real(std::istream& in) {
     const Id bits = read_word(in);
     double value;
     std::memcpy(&value, &bits, 8);
     return value;
 }
+// Читает заданный диапазон байтов тестового архива.
 std::string bytes(std::istream& in, Id n) {
     std::string text(static_cast<std::size_t>(n), '\0');
     if (n)
         in.read(&text[0], position(n));
     return text;
 }
+// Читает полное содержимое созданного тестового файла.
 std::string contents(const std::string& path) {
     auto f = input(path);
     return bytes(f, file_size(path));
 }
+// Создаёт архив разбиения тестовой сетки для проверки его структуры.
 void make_archive(const Options& o, const std::string& scratch, int workers) {
     Scratch work;
     work.create(scratch);
@@ -56,9 +61,11 @@ void make_archive(const Options& o, const std::string& scratch, int workers) {
         write_part(d, o.target, r);
 }
 using Key = std::pair<Id, Id>;
+// Адрес и исходная сущность контрольной ссылки архива.
 struct Ref {
     Key address, entity;
 };
+// Читает контрольную ссылку и сохраняет её для проверки связности архива.
 void reference(std::istream& in, std::vector<Ref>& refs, Id kind, Id id) {
     const Id leaf = read_word(in), offset = read_word(in);
     refs.push_back({{leaf, offset}, {kind, id}});
@@ -217,6 +224,7 @@ void check(const std::string& path, const Mesh& mesh, bool compressed) {
                 halo[2 * owner[b] + 1].insert(c);
     }
     const Id star_count = read_word(f), halo_count = read_word(f);
+    // Читает или проверяет диапазоны строк индексированной таблицы архива.
     const auto rows = [&](const std::vector<std::set<Id>>& expected, Id count) {
         require(read_word(f) == 0, "First halo offset must be zero");
         Id k = 0;
@@ -260,6 +268,7 @@ void check(const std::string& path, const Mesh& mesh, bool compressed) {
     require(bytes(f, 64) == hash.hex_digest(), "Incorrect source mesh fingerprint");
     require(f.tellg() == position(payload), "Incorrect halo directory length");
 }
+// Выполняет проверки каталога, геометрии и halo-связей архива meshdec.
 void tests() {
     Scratch temp;
     temp.create(".");
@@ -322,6 +331,7 @@ void tests() {
     require(rejected, "Truncated input accepted");
 }
 }
+// Запускает проверки модуля и возвращает ненулевой код при ошибке.
 int main() {
     try {
         tests();

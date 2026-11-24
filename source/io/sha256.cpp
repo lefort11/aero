@@ -12,6 +12,7 @@
 namespace aero {
 namespace io_detail {
 namespace {
+// Выполняет циклический сдвиг 32-битного слова алгоритма SHA-256.
 std::uint32_t rotate(std::uint32_t x, unsigned n) {
     return (x >> n) | (x << (32 - n));
 }
@@ -25,6 +26,7 @@ const std::uint32_t constants[64] = {
     0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2};
 #ifdef AERO_X86_SHA256
+// Проверяет наличие аппаратных инструкций SHA у текущего процессора.
 bool has_sha_instructions() {
     unsigned a,b,c,d;
     return __get_cpuid(1,&a,&b,&c,&d) && (c & bit_SSSE3) && (c & bit_SSE4_1) &&
@@ -64,6 +66,7 @@ void sha_blocks(std::uint32_t* state, const unsigned char* data, std::size_t blo
 }
 #endif
 }
+// Инициализирует состояние SHA-256 стандартными начальными словами.
 Sha256Buffer::Sha256Buffer()
     : state_{0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19},
       block_{}, used_(0), bytes_(0) {}
@@ -133,12 +136,14 @@ void Sha256Buffer::append(const unsigned char* data, std::size_t size) {
         }
     }
 }
+// Добавляет блок байтов в поток вычисления SHA-256.
 std::streamsize Sha256Buffer::xsputn(const char* data, std::streamsize size) {
     if (size < 0)
         return 0;
     append(reinterpret_cast<const unsigned char*>(data), static_cast<std::size_t>(size));
     return size;
 }
+// Добавляет одиночный символ в хеширующий поток.
 Sha256Buffer::int_type Sha256Buffer::overflow(int_type value) {
     if (!traits_type::eq_int_type(value, traits_type::eof())) {
         const unsigned char byte = static_cast<unsigned char>(traits_type::to_char_type(value));

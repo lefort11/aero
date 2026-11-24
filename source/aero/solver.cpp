@@ -101,6 +101,7 @@ public:
             total_cells_ = world.sum(op.owned.size());
     }
 
+    // Определяет необходимость буфера начала шага для SSPRK или отчёта MPI.
     bool needs_compact_buffer() const {
         // SSPRK хранит начало шага; при MPI этот же буфер собирает узлы для отчёта.
         return stages_.count > 1 || (world_.size > 1 && run_.report_every);
@@ -145,6 +146,7 @@ public:
         }
     }
 
+    // Готовит первые потоки шага и исходную стационарную невязку.
     double prepare_first_stage(bool first_order_start, SolverTimings& timing) {
         prepare_state_fluxes(first_order_start, timing);
         // После перехода с первого порядка оцениваем тем же полем начальную
@@ -189,10 +191,12 @@ public:
         runtime_steady_steps_ = true;
     }
 
+    // Создаёт файл интерактивных команд на корневом процессе.
     void prepare_control_file() {
         if (!world_.rank) control_file_.open(run_.directories.output);
     }
 
+    // Читает команды управления и применяет изменения к расчёту.
     bool control(Id step, bool& settings_changed) {
         RunControl command(run_, courant());
         if (!command.read(control_file_, world_)) return false;
@@ -227,6 +231,7 @@ public:
         return command.stop;
     }
 
+    // Фиксирует успешный шаг и обновляет параметры следующей попытки.
     void accepted(bool startup_finished = false) {
         // Последний принятый шаг первого порядка уже попал в отчёт со своим CFL.
         // В recovery записываем CFL следующего шага и новый счётчик успешных шагов.
@@ -306,7 +311,8 @@ public:
         if (world_.rank) return {};
         const auto* spread = op_.step_spread();
         const bool save_spread = spread && spread->reference() >= 0.;
-        if (!save_spread && !run_.stabilization.active() && !runtime_settings_ && !runtime_steady_steps_) return {};
+        if (!save_spread && !run_.implicit_settings.steady_multigrid && !run_.stabilization.active() &&
+            !runtime_settings_ && !runtime_steady_steps_) return {};
         std::ostringstream out;
         out.imbue(std::locale::classic());
         out << std::setprecision(17) << "ready " << runtime_settings_ << ' ';
@@ -327,6 +333,12 @@ public:
             if (run_.local_time_step_max_ratio) out << run_.local_time_step_max_ratio;
             else out << "off";
         }
+#ifdef AERO_HAS_MULTIGRID
+        if (run_.implicit_settings.steady_multigrid) {
+            const auto& cycle = op_.coarse_schedule();
+            out << " multigrid_cycle " << reconstruction_key() << ' ' << cycle.interval() << ' ' << cycle.remaining();
+        }
+#endif
         if (save_spread) {
             out << " step_spread " << reconstruction_key() << ' ';
             spread->write(out);
@@ -334,6 +346,7 @@ public:
         return out.str();
     }
 
+    // Восстанавливает сохранённые настройки адаптации CFL и стабилизации.
     void resume(const std::string& data) {
         if (data.empty()) return; // Старый снимок содержит только газодинамические поля.
         std::istringstream in(data);
@@ -368,6 +381,14 @@ public:
             if (key == "local_time_step" && (in >> local >> ratio)) {
                 if (run_.steady()) set_steady_steps(settings_detail::parse_local_time_step(local, key),
                     settings_detail::parse_local_step_ratio(ratio, "checkpoint local_time_step_max_ratio"));
+            } else if (key == "multigrid_cycle") {
+                std::string scheme;
+                unsigned interval, remaining;
+                if (!(in >> scheme >> interval >> remaining)) throw std::runtime_error("Invalid checkpoint multigrid cycle");
+#ifdef AERO_HAS_MULTIGRID
+                if (run_.implicit_settings.steady_multigrid && scheme == reconstruction_key())
+                    op_.coarse_schedule().restore(interval,remaining);
+#endif
             } else if (key == "step_spread") {
                 std::string scheme;
                 if (!(in >> scheme)) throw std::runtime_error("Missing checkpoint reconstruction for local time steps");
@@ -390,6 +411,7 @@ public:
         if (!ready) accepted(); // В прежнем формате повышение CFL выполнялось после записи.
     }
 
+    // Выполняет выбранный явный или неявный шаг с учётом отчётности.
     void advance(const TimeStep& step, SolverTimings& timing) {
         if (!run_.uses_implicit_time()) {
             advance_explicit(step, timing);
@@ -458,6 +480,7 @@ public:
     }
 
 private:
+    // Добавляет к ошибке номер шага и выбранный порядок BDF.
     std::runtime_error implicit_error(const TimeStep& step, const std::exception& error) const {
         return std::runtime_error(std::string(run_.implicit_settings.second_order ? "BDF2 step " : "BDF1 step ")
                                   + std::to_string(step.number) + ": " + error.what());
@@ -470,6 +493,7 @@ private:
         op_.copy_owned(fields_.current, owned_state_);
         report_->capture(step.number, owned_state_);
     }
+    // Собирает принятое поле собственных узлов для отчётных показателей.
     void finish_report(const TimeStep& step) {
         if (!step.reporting || !report_) return;
         op_.copy_owned(fields_.current, owned_state_);
@@ -480,6 +504,7 @@ private:
     Id first_order_cells() const {
         return (op_.first_order_start || run_.reconstruction == "first_order") ? total_cells_ : master_low_.size();
     }
+    // Проверяет состояние после стадии и согласует отказы между процессами.
     void validate_stage() {
         std::vector<Id> failed;
         world_.local([&] { op_.failed_nodes(fields_.current, failed, run_.uses_implicit_time()); });
@@ -519,10 +544,13 @@ private:
         if (run_.stabilization.local_order() && marks_.empty()) marks_.resize(fields_.current.size());
     }
 
+    // Выполняет явные стадии с обменами и проверкой состояния.
     void advance_explicit(const TimeStep& step, SolverTimings& timing) {
+        // Пересчитывает пространственную невязку для текущей явной стадии.
         const auto assemble = [&](double) {
             op_.assemble_fluxes(fields_.current, fields_.initial, timing, false, run_.stabilization.active());
         };
+        // Применяет выбранное обновление рабочих полей текущего этапа решателя.
         const auto update = [&](explicit_detail::StepStage stage) {
             world_.local([&] {
                 if (stage.first()) capture_report(step);
@@ -534,6 +562,7 @@ private:
                 if (stage.last() && step.reporting) world_.local([&] { finish_report(step); });
             }
         };
+        // Обновляет halo-значения после изменения собственного поля.
         const auto exchange = [&] {
             if (world_.size > 1) {
                 op_.halo(fields_.current, timing.counter(SolverTimings::Halo));
@@ -987,6 +1016,7 @@ int run_partition(RunSettings run, const ReconstructionOptions& reconstruction, 
 }
 }
 
+// Готовит сетку, подбирает разбиение для выбранного устройства и выполняет расчёт.
 int calculate_case(RunSettings run, const ReconstructionOptions& reconstruction, const Processes& world,
                    bool archive) {
 #ifdef AERO_WITH_KOKKOS_GPU

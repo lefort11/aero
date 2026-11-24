@@ -12,6 +12,7 @@ struct PeriodicEdge {
     MeshIndex begin, end, original;
     CvVector area;
 };
+// Массивы периодически склеенных степеней свободы и их геометрии.
 struct PeriodicView {
     MeshIndex node_count, edge_count, boundary_count, original_node_count;
     // Для каждого исходного узла хранится номер общей степени свободы после склейки.
@@ -22,21 +23,26 @@ struct PeriodicView {
         boundary; // Только физические площадки. Поле node указывает номер степени свободы после склейки.
 };
 namespace periodic_detail {
+// Выбирает геометрический допуск сопоставления периодических участков.
 double match_tolerance(const std::vector<PeriodicPair>& pairs, double requested = 0);
+// Проверяет согласованность площадей сопряжённых периодических граней.
 bool compatible_areas(const Coordinate& a, const Coordinate& b);
 }
 // Временная сетка сдвинутых ячеек нужна для подготовки шаблона. field связывает каждую вершину образа
 // с расчётным узлом; это относится и к исходным вершинам в начале массива.
 Mesh periodic_stencil_cover(const Mesh&, const std::vector<MeshIndex>& node_dof, MeshIndex count,
                             double tolerance, unsigned rings, std::vector<MeshIndex>& field);
+// Строит и хранит периодическое объединение узлов, рёбер и контрольных объёмов.
 class PeriodicDomain {
 public:
     // Периодические связи строятся на CPU. Допуск задаётся в единицах входных координат.
     // При нуле используем 10⁻¹⁰ от длины наименьшего заданного периода.
     PeriodicDomain(const Mesh&, const std::vector<PeriodicPair>&, double tol = 0);
+    // Возвращает невладеющее представление склеенной периодической геометрии.
     PeriodicView view() const;
     // Исходная сетка должна существовать и сохранять геометрию всё время жизни периодической области.
     ReconstructionStencil prepare(const ReconstructionOptions&) const;
+    // Запрещает копирование, чтобы ресурсы объекта сохраняли единственного владельца.
     PeriodicDomain(Mesh&&, const std::vector<PeriodicPair>&, double = 0) = delete;
 
 private:

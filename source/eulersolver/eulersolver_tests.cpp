@@ -12,7 +12,9 @@
 #include <utility>
 
 #ifdef AERO_WITH_KOKKOS_GPU
+// Возвращает число устройств, доступных GPU-проверкам потоков.
 extern "C" int euler_test_device_count(int*, char*, unsigned);
+// Запускает выбранное потоковое ядро на GPU и возвращает результат проверки.
 extern "C" int euler_test_device_flux(int, unsigned, unsigned, const double*, const double*, const double*,
                                     const double*, const double*, double, aero::EulerFluxResult*, int*, char*,
                                     unsigned);
@@ -23,22 +25,27 @@ using namespace aero;
 typedef std::vector<double> Values;
 std::vector<std::pair<std::string, std::function<void()>>> tests;
 using aero_test::require;
+// Проверяет совпадение чисел в пределах заданного допуска.
 void near(double actual, double expected, double tolerance = 3.e-11) {
     require(std::isfinite(actual) && std::abs(actual - expected) <= tolerance * (1 + std::abs(expected)),
             "Expected " + std::to_string(expected) + ", got " + std::to_string(actual));
 }
+// Проверяет условие теста и сообщает понятную причину нарушения.
 void ok(EulerStatus status) {
     require(status == EulerStatus::Success, euler_status_message(status));
 }
+// Добавляет именованную проверку в список тестов модуля.
 void add(const std::string& name, std::function<void()> test) {
     tests.push_back(std::make_pair(name, test));
 }
+// Сравнивает результаты двух реализаций или представлений с заданным допуском.
 void same(const EulerFluxResult& a, const EulerFluxResult& b) {
     require(a.components == b.components, "Component count mismatch");
     near(a.max_wave_speed, b.max_wave_speed);
     for (unsigned k = 0; k < 5; ++k)
         near(a.flux[k], b.flux[k]);
 }
+// Создаёт консервативное газовое состояние из тестовых примитивных величин.
 Values state(double rho, const Values& velocity, double pressure, double gamma = 1.4) {
     Values u(velocity.size() + 2);
     u[0] = rho;
@@ -50,6 +57,7 @@ Values state(double rho, const Values& velocity, double pressure, double gamma =
     u.back() = pressure / (gamma - 1) + kinetic;
     return u;
 }
+// Задаёт направление нормали для проверки многомерного потока.
 Values direction(unsigned d) {
     if (d == 1)
         return Values{1};
@@ -57,12 +65,14 @@ Values direction(unsigned d) {
         return Values{3, 4};
     return Values{2, -3, 6};
 }
+// Формирует тестовый вектор скорости активной размерности.
 Values velocity(unsigned d, double scale) {
     Values v(d);
     for (unsigned k = 0; k < d; ++k)
         v[k] = scale * (1 + 0.3 * k) * (k % 2 ? -1 : 1);
     return v;
 }
+// Вычисляет физический поток тестового состояния и проверяет успешность газодинамического ядра.
 Values physical(const Values& u, const Values& n, double gamma = 1.4) {
     Values f(u.size());
     double speed = 0;
@@ -117,6 +127,7 @@ EulerStatus test_characteristic_lf(unsigned d, const double* wl, const double* w
         return status;
     return lax_friedrichs_conservative(d, ul, ur, n, gamma, result);
 }
+// В тесте отдельно соединяем обратное преобразование и вычисление потока выбранной схемой.
 EulerFluxResult test_characteristic_lf(const Values& wl, const Values& wr, const Values& ui, const Values& uj,
                                        const Values& n, double gamma) {
     EulerFluxResult result;
@@ -124,6 +135,7 @@ EulerFluxResult test_characteristic_lf(const Values& wl, const Values& wr, const
                               n.data(), gamma, &result));
     return result;
 }
+// Вычисляет независимый эталон потока Роу для сравнения с ядром.
 EulerFluxResult reference_roe(const Values& ul, const Values& ur, const Values& n, double gamma) {
     const unsigned d = static_cast<unsigned>(n.size());
     EulerRoeBasis basis;
@@ -143,6 +155,7 @@ EulerFluxResult reference_roe(const Values& ul, const Values& ur, const Values& 
     }
     return result;
 }
+// Заполняет результат контрольными значениями до вызова проверяемого ядра.
 EulerFluxResult sentinel() {
     EulerFluxResult r = {};
     r.components = 99;
@@ -151,12 +164,14 @@ EulerFluxResult sentinel() {
         r.flux[k] = 100 + k;
     return r;
 }
+// Проверяет сохранность контрольных значений после неуспешного вызова.
 void unchanged(const EulerFluxResult& r) {
     require(r.components == 99 && r.max_wave_speed == 77, "Failed call changed metadata");
     for (unsigned k = 0; k < 5; ++k)
         require(r.flux[k] == 100 + k, "Failed call changed output");
 }
 
+// Проверяет действие диссипации Роу на характеристических направлениях.
 void roe_eigenvector_test(unsigned d) {
     const double gamma = 1.67;
     const Values ui = state(2, velocity(d, 0.7), 1.3, gamma), uj = state(0.5, velocity(d, -0.4), 0.8, gamma),
@@ -205,6 +220,7 @@ void roe_eigenvector_test(unsigned d) {
 }
 
 #ifdef AERO_WITH_KOKKOS_GPU
+// Сравнивает CPU- и GPU-результаты одного газодинамического сценария.
 void gpu_case(int device, unsigned mode, unsigned d, const Values& left, const Values& right,
               const Values& aux_left, const Values& aux_right, const Values& n, double gamma,
               EulerStatus expected_status, const EulerFluxResult* expected) {
@@ -224,6 +240,7 @@ void gpu_case(int device, unsigned mode, unsigned d, const Values& left, const V
 #endif
 }
 
+// Запускает проверки модуля и возвращает ненулевой код при ошибке.
 int main(int argc, char** argv) {
     const bool require_cuda = argc == 2 && std::string(argv[1]) == "--require-cuda";
     if (argc > 2 || (argc == 2 && !require_cuda)) {
@@ -248,6 +265,7 @@ int main(int argc, char** argv) {
             right[d+1] = .22;
             face.physical(left.data(),fl.data());
             face.physical(right.data(),fr.data());
+            // Создаёт малое возмущение состояния для независимой проверки характеристик.
             const auto perturbed = [&](const Values& q, double step) {
                 Values u = velocity;
                 for (unsigned j=0; j<d; ++j) u[j] += step*q[j+1];
@@ -558,6 +576,7 @@ int main(int argc, char** argv) {
     add("single-call output is bounded and shared functions are thread safe", [] {
         const Values u = state(1, Values{0.7, -0.3}, 1), v = state(2, Values{-0.1, 0.5}, 0.8), n = {3, 4};
         const auto expected = lax_friedrichs_conservative(u, v, n, 1.4);
+        // Контрольные значения вокруг результата для выявления записи за границы.
         struct Guard {
             double before;
             EulerFluxResult result;

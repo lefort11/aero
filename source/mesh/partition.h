@@ -33,15 +33,18 @@ struct MeshPartition {
 // Распакованные записи ядра раздела нужны до окончания построения строк реконструкции.
 class PartitionInput {
 public:
+    // Открывает архив сетки и выбирает листья текущего MPI-процесса.
     PartitionInput(const std::string& path, const Processes& world, const LeafLayout& layout);
     // Читает собственные узлы и все ячейки, необходимые для их контрольных объёмов.
     MeshPartition core(const Processes& world);
     using NodeOwners = std::vector<std::pair<MeshIndex, int>>;
+    // Расширяет входные данные геометрией, необходимой шаблону реконструкции.
     void prepare_stencil(const std::set<MeshIndex>& periodic_nodes, bool fifth, NodeOwners* near_vertices);
     // Добавляет ячейки вокруг запрошенных вершин, в том числе у периодических копий.
     void add_stars(const std::set<MeshIndex>& vertices);
     // Дополняет выбранный слой гранями для поиска пересечений луча WENO.
     void complete_layer_faces();
+    // Собирает номера узлов указанных граничных участков.
     NodeOwners boundary_nodes(std::set<MeshIndex>* incomplete_stars);
     // Возвращает вспомогательную сетку со всеми запрошенными опорными ячейками.
     MeshPartition stencil();
@@ -54,10 +57,14 @@ private:
     // Уже прочитанные записи по паре «лист, смещение». Соседние ячейки могут ссылаться на одну запись.
     mdec::Records records_;
     mdec::Addresses owned_, cells_;
+    // Возвращает строку граней указанной ячейки.
     mdec::Addresses cell_faces(const mdec::Addresses& cells);
+    // Возвращает строку узлов указанной грани.
     mdec::Addresses face_nodes(const mdec::Addresses& faces);
+    // Строит локальную сетку из выбранных глобальных сущностей.
     MeshPartition indexed_mesh(const mdec::Addresses& cells);
 };
+// Загружает собственную геометрию и требуемые halo-связи подобласти.
 MeshPartition load_partition(const std::string& path, const Processes& world,
                              std::unique_ptr<PartitionInput>* stencil_input = nullptr,
                              const LeafLayout& layout = {});

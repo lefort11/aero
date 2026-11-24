@@ -7,14 +7,18 @@
 
 namespace aero {
 namespace {
+// Проверяет десятичную цифру без зависимости от локали.
 bool digit(char c) {
     return c >= '0' && c <= '9';
 }
 }
 
+// Разбирает формулу и формирует последовательность инструкций вычисления.
 class Expression::Parser {
 public:
+    // Связывает текст выражения с выходным массивом инструкций и начинает разбор с нуля.
     Parser(const std::string& input, std::vector<Instruction>& code) : s(input), out(code), pos(0) {}
+    // Разбирает всё выражение и проверяет отсутствие лишнего текста.
     void compile() {
         if (s.size() > 65536)
             fail("formula too long");
@@ -28,24 +32,30 @@ private:
     const std::string& s;          // Исходная формула из файла настроек.
     std::vector<Instruction>& out; // Команды в порядке вычисления.
     std::size_t pos;               // Позиция следующего символа, начиная с нуля.
+    // Проверяет следующий токен выражения без изменения позиции.
     char peek() const { return pos < s.size() ? s[pos] : '\0'; }
+    // Пропускает пробельные разделители перед следующим токеном.
     void spaces() {
         while (pos < s.size() && std::isspace(static_cast<unsigned char>(s[pos])))
             ++pos;
     }
+    // Прерывает чтение или запись с диагностикой некорректных данных.
     [[noreturn]] void fail(const std::string& why) const {
         throw std::invalid_argument("formula column " + std::to_string(pos + 1) + ": " + why);
     }
+    // Проверяет обязательное условие и сообщает ошибку при его нарушении.
     void require(char c) {
         spaces();
         if (peek() != c)
             fail(std::string("expected '") + c + "'");
         ++pos;
     }
+    // Добавляет инструкцию в выходной код выражения.
     std::size_t emit(Op op, double v = 0) {
         out.push_back({op, v, 0});
         return out.size() - 1;
     }
+    // Добавляет числовую константу в код выражения.
     void literal() {
         const std::size_t start = pos;
         while (digit(peek()))
@@ -186,6 +196,7 @@ private:
         else
             fail("expected a number, variable or subexpression");
 
+        // Текст оператора, его приоритет и соответствующий код вычисления.
         struct Operator {
             const char* token;
             unsigned precedence;

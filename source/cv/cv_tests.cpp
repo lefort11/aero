@@ -8,20 +8,24 @@
 #include <algorithm>
 #include <string>
 #ifdef AERO_WITH_KOKKOS_GPU
+// Сравнивает геометрию контрольных объёмов на CPU и доступных GPU.
 int check_cv_devices(aero::CvView, bool);
 #endif
 namespace {
 using namespace aero;
+// Добавляет грань в топологию тестовой сетки.
 void append_face(MeshData& d, const std::vector<MeshIndex>& vertices) {
     d.face_nodes.indices.insert(d.face_nodes.indices.end(), vertices.begin(), vertices.end());
     d.face_nodes.offsets.push_back(d.face_nodes.indices.size());
 }
+// Помечает все внешние грани тестовой сетки одним участком.
 void mark_all_boundary(MeshData& d) {
     const std::size_t count = d.face_nodes.offsets.size() - 1;
     d.boundary_faces.resize(count);
     std::iota(d.boundary_faces.begin(), d.boundary_faces.end(), MeshIndex(0));
     d.boundary_patch.assign(count, 0);
 }
+// Создаёт сетку из одной ячейки с заданной оболочкой.
 void make_single_cell(MeshData& d) {
     const std::size_t count = d.face_nodes.offsets.size() - 1;
     d.cell_faces.indices.resize(count);
@@ -31,6 +35,7 @@ void make_single_cell(MeshData& d) {
     mark_all_boundary(d);
 }
 
+// Создаёт тестовую тетраэдральную ячейку.
 MeshData tetrahedron() {
     MeshData d;
     d.x = {0, 1, 0, 0};
@@ -45,6 +50,7 @@ MeshData tetrahedron() {
     return d;
 }
 
+// Создаёт тестовую сетку со смешанными типами ячеек.
 MeshData mixed() {
     MeshData d = tetrahedron();
     d.patch_names.push_back("farfield");
@@ -71,6 +77,7 @@ MeshData mixed() {
     return d;
 }
 
+// Создаёт соседние тетраэдры с общей гранью.
 MeshData adjacent_tetrahedra() {
     MeshData d = tetrahedron();
     d.x.push_back(0);
@@ -86,6 +93,7 @@ MeshData adjacent_tetrahedra() {
     return d;
 }
 
+// Создаёт призматическую сетку для проверки геометрии и связности.
 MeshData polygonal_prism(std::size_t n) {
     MeshData d;
     d.patch_names = {"surface"};
@@ -112,6 +120,7 @@ MeshData polygonal_prism(std::size_t n) {
     return d;
 }
 
+// Создаёт одномерную сетку для проверки алгоритма.
 MeshData line_mesh() {
     MeshData d;
     d.dimension = 1;
@@ -128,6 +137,7 @@ MeshData line_mesh() {
     return d;
 }
 
+// Создаёт многоугольную ячейку тестовой сетки.
 MeshData polygon(std::size_t n) {
     MeshData d;
     d.dimension = 2;
@@ -144,6 +154,7 @@ MeshData polygon(std::size_t n) {
     return d;
 }
 
+// Создаёт соседние многоугольники с общим ребром.
 MeshData adjacent_polygons() {
     MeshData d;
     d.dimension = 2;
@@ -166,10 +177,12 @@ MeshData adjacent_polygons() {
 }
 
 using aero_test::require;
+// Проверяет совпадение чисел в пределах заданного допуска.
 void near(double value, double expected) {
     require(std::fabs(value - expected) < 2e-12 * (1 + std::fabs(expected)), "numerical mismatch");
 }
 
+// Проверяет геометрические инварианты и ожидаемые контрольные объёмы.
 void verify(const MeshData& data, double total, const std::vector<double>& nodal = {}) {
     const Mesh mesh(data);
     const MeshView m = mesh.view();
@@ -188,6 +201,7 @@ void verify(const MeshData& data, double total, const std::vector<double>& nodal
     double state[5] = {1, .3, -.4, .5, 0};
     state[d + 1] = 3;
     std::vector<double> residual(v.node_count * (d + 2));
+    // Добавляет ориентированный вклад площадки в тестовый баланс.
     const auto add_flux = [&](MeshIndex node, CvVector s, double sign) {
         const double n[] = {s.x, s.y, s.z};
         const double area = std::sqrt(s.x * s.x + s.y * s.y + s.z * s.z);
@@ -219,6 +233,7 @@ void verify(const MeshData& data, double total, const std::vector<double>& nodal
     for (double r : residual)
         near(r, 0);
 }
+// Проверяет отклонение некорректной геометрии сетки.
 void reject(MeshData data, const std::string& where) {
     const Mesh mesh(data);
     try {
@@ -230,6 +245,7 @@ void reject(MeshData data, const std::string& where) {
     throw std::runtime_error("invalid geometry accepted");
 }
 }
+// Запускает проверки модуля и возвращает ненулевой код при ошибке.
 int main(int argc, char** argv) {
     try {
         const bool required = argc == 2 && std::string(argv[1]) == "--require-cuda";

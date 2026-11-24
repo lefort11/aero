@@ -47,6 +47,8 @@ void select_single_device(RunSettings& run) {
 }
 }
 
+// Возвращает false, если пользователю нужно заполнить созданный файл граничных условий.
+// В однопроцессном режиме также выбирает устройство до построения контрольных объёмов.
 bool prepare_case_geometry(RunSettings& run, const MeshPartition& partition, const Processes& world,
                            bool first_attempt, CaseGeometry& geometry) {
     const auto mesh = partition.mesh.view();
@@ -96,6 +98,8 @@ bool prepare_case_geometry(RunSettings& run, const MeshPartition& partition, con
     return true;
 }
 
+// В периодическом расчёте оператор уже забрал геометрию поверхностей.
+// Нумерация и объёмы остаются доступны для шага по времени и записи полей.
 void CaseGeometry::release_stencil_geometry() {
     if (!periodic()) {
         return; // В обычной сетке решатель продолжает использовать dual.

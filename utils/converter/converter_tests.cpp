@@ -26,6 +26,7 @@ using namespace aero::converter;
 typedef std::pair<std::string, std::function<void()>> Test;
 std::vector<Test> tests;
 using aero_test::require;
+// Проверяет, что некорректный ввод завершается ожидаемой ошибкой.
 template <class F> void rejects(F f) {
     try {
         f();
@@ -34,13 +35,16 @@ template <class F> void rejects(F f) {
     }
     throw std::runtime_error("Expected MeshError");
 }
+// Добавляет именованную проверку в список тестов модуля.
 void add(const std::string& s, std::function<void()> f) {
     tests.push_back(std::make_pair(s, f));
 }
+// Создаёт текстовую заготовку Gmsh для проверки конвертера.
 Mesh gmsh(const std::string& s) {
     std::istringstream in(s, std::ios::in | std::ios::binary);
     return read_gmsh(in);
 }
+// Читает двоичное значение исходного типа с учётом порядка байтов.
 template <class T> void raw(std::ostream& out, T value, bool reverse = false) {
     char b[sizeof(T)];
     std::memcpy(b, &value, sizeof(T));
@@ -57,18 +61,21 @@ std::string triangle(bool modern, bool binary, bool reverse = false) {
         o << "\n";
     }
     o << "$EndMeshFormat\n$PhysicalNames\n1\n1 7 \"wing\"\n$EndPhysicalNames\n";
+    // Записывает целое значение нужной разрядности в тестовый файл Gmsh.
     const auto integer = [&](int n) {
         if (binary)
             raw<std::int32_t>(o, n, reverse);
         else
             o << n << " ";
     };
+    // Записывает целое значение нужной разрядности в тестовый файл Gmsh.
     const auto size = [&](std::uint64_t n) {
         if (binary)
             raw<std::uint64_t>(o, n, reverse);
         else
             o << n << " ";
     };
+    // Читает или записывает вещественный параметр в формате текущей операции.
     const auto real = [&](double n) {
         if (binary)
             raw<double>(o, n, reverse);
@@ -184,6 +191,7 @@ std::string triangle(bool modern, bool binary, bool reverse = false) {
     o << "\n$EndElements\n";
     return o.str();
 }
+// Создаёт минимальную тестовую сетку внешнего формата.
 std::string simple(int kind, const std::vector<double>& x, const std::vector<double>& y,
                    const std::vector<double>& z) {
     std::ostringstream o;
@@ -196,25 +204,31 @@ std::string simple(int kind, const std::vector<double>& x, const std::vector<dou
     o << "\n$EndElements\n";
     return o.str();
 }
+// Меняет указанный фрагмент заготовки для проверки повреждённого ввода.
 std::string replace(std::string s, const std::string& before, const std::string& after) {
     const std::size_t p = s.find(before);
     require(p != std::string::npos, "Missing test token");
     s.replace(p, before.size(), after);
     return s;
 }
+// Владеет временным файлом проверки и удаляет его при выходе из области видимости.
 struct Temp {
     std::string path;
+    // Создаёт уникальное имя временного файла теста.
     Temp() {
         static unsigned n = 0;
         path = "build/converter-test-" +
                std::to_string(std::chrono::high_resolution_clock::now().time_since_epoch().count()) + "-" +
                std::to_string(n++) + ".cgns";
     }
+    // Удаляет временные файлы и каталоги, созданные объектом.
     ~Temp() { std::remove(path.c_str()); }
 };
+// Временный набор файлов формата NTTE для проверок конвертера.
 struct AnotherFixture {
     std::string path;
     std::vector<std::string> files;
+    // Создаёт временный набор файлов для проверки формата NTTE.
     AnotherFixture() {
         Temp name;
         path = name.path + "-ntte";
@@ -224,6 +238,7 @@ struct AnotherFixture {
         require(mkdir(path.c_str(), 0700) == 0, "Create test directory");
 #endif
     }
+    // Записывает один файл многокомпонентной тестовой сетки.
     void put(const std::string& name, const std::string& data) {
         const std::string file = path + "/" + name;
         if (std::find(files.begin(), files.end(), file) == files.end())
@@ -232,6 +247,7 @@ struct AnotherFixture {
         out.write(data.data(), static_cast<std::streamsize>(data.size()));
         require(static_cast<bool>(out), "Write test fixture");
     }
+    // Удаляет временные файлы и каталоги, созданные объектом.
     ~AnotherFixture() {
         for (const std::string& file : files)
             std::remove(file.c_str());
@@ -241,6 +257,7 @@ struct AnotherFixture {
         rmdir(path.c_str());
 #endif
     }
+    // Создаёт квадратную тестовую область внешнего формата.
     void square(bool triangles = true) {
         put("mesh.txt", std::string("Name test\nNumCoords 2\nNum_Node 4\nNum_Elem ") +
                             (triangles ? "2" : "1") +
@@ -250,6 +267,7 @@ struct AnotherFixture {
         put("bctopo.msh", "2 0 1 1\n2 1 3 2\n2 3 2 3\n2 2 0 4\n");
         put("label.txt", "# Boundary names\n1 bottom\n2 right\n3 top\n4 left\n");
     }
+    // Создаёт гексаэдральную тестовую область внешнего формата.
     void hex() {
         put("mesh.txt", "Name cube\nNumCoords 3\nNn 8\nNt 1\nNFaceBC 6\nMeshFormat 0\n"
                         "BufferZoneType no\nNnBase -1\nNtBase -1\n");
@@ -274,25 +292,31 @@ void roundtrip(const Mesh& m) {
     }
 }
 #ifdef AERO_WITH_CGNS
+// Проверяет код возврата CGNS и преобразует ошибку библиотеки в исключение.
 void cgcheck(int code) {
     if (code != CG_OK)
         throw std::runtime_error(cg_get_error());
 }
+// Владеет дескриптором тестового файла CGNS и закрывает его после проверки.
 struct CgFile {
     int fn;
+    // Создаёт тестовый файл CGNS с выбранным форматом хранения.
     CgFile(const std::string& path, int backend) {
         cgcheck(cg_set_file_type(backend));
         cgcheck(cg_open(path.c_str(), CG_MODE_WRITE, &fn));
     }
+    // Закрывает тестовый файл CGNS с проверкой статуса.
     void close() {
         cgcheck(cg_close(fn));
         fn = -1;
     }
+    // Закрывает принадлежащий объекту файл CGNS.
     ~CgFile() {
         if (fn != -1)
             cg_close(fn);
     }
 };
+// Записывает координатные массивы тестовой зоны CGNS.
 void coordinates(int fn, int b, int z, const std::vector<double>& x, const std::vector<double>& y,
                  const std::vector<double>& zz, int dim = 3) {
     int c;
@@ -302,6 +326,7 @@ void coordinates(int fn, int b, int z, const std::vector<double>& x, const std::
     if (dim >= 3)
         cgcheck(cg_coord_write(fn, b, z, CGNS_ENUMV(RealDouble), "CoordinateZ", zz.data(), &c));
 }
+// Создаёт и проверяет тетраэдральную сетку CGNS.
 void cgns_tet(const std::string& path, int backend, bool mixed = false, bool poly = false) {
     CgFile f(path, backend);
     int b, z, s, bc;
@@ -335,6 +360,7 @@ void cgns_tet(const std::string& path, int backend, bool mixed = false, bool pol
     cgcheck(cg_boco_gridlocation_write(f.fn, b, z, bc, CGNS_ENUMV(FaceCenter)));
     f.close();
 }
+// Создаёт и проверяет структурированную зону CGNS.
 void cgns_structured(const std::string& path, int backend, int dim) {
     CgFile f(path, backend);
     int b, z, bc;
@@ -378,6 +404,7 @@ void cgns_structured(const std::string& path, int backend, int dim) {
     }
     f.close();
 }
+// Проверяет конвертацию многоугольных или полиэдральных элементов CGNS.
 void cgns_polygon(const std::string& path, int backend) {
     CgFile f(path, backend);
     int b, z, s, bc;
@@ -390,6 +417,7 @@ void cgns_polygon(const std::string& path, int backend) {
     cgcheck(cg_boco_write(f.fn, b, z, "concave", CGNS_ENUMV(BCWall), CGNS_ENUMV(PointList), 5, nodes, &bc));
     f.close();
 }
+// Проверяет переиспользование общих граней при конвертации CGNS.
 void cgns_shared(const std::string& path) {
     CgFile f(path, CG_FILE_HDF5);
     int b, z, s;
@@ -801,6 +829,7 @@ void register_cgns() {
 #endif
 }
 
+// Формирует набор проверок модуля и выполняемых тестовых сценариев.
 void register_tests() {
     register_another_meshes();
     register_another_errors();
@@ -809,6 +838,7 @@ void register_tests() {
     register_cgns();
 }
 }
+// Запускает проверки модуля и возвращает ненулевой код при ошибке.
 int main() {
     register_tests();
     std::size_t failed = 0;

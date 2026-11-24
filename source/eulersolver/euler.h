@@ -34,6 +34,7 @@ struct EulerState {
     double enthalpy;    // Полная энтальпия на единицу массы.
     double density_root; // Вес состояния при осреднении Роу. Для узла используется всеми смежными рёбрами.
 };
+// Осреднённые параметры Роу для перехода к характеристическому базису.
 struct EulerRoeBasis {
     unsigned dimension;    // Число пространственных координат.
     double velocity[3];    // Скорость после осреднения по Роу.
@@ -42,11 +43,13 @@ struct EulerRoeBasis {
     double right[25];      // Правые собственные векторы по столбцам, шаг строки равен пяти.
     // В столбце энтропийной волны энергетическая компонента равна |v_Roe|²/2.
     AERO_HOST_DEVICE double kinetic_energy() const { return right[5 * (dimension + 1) + 1]; }
+    // Проверяет или возвращает коэффициент диссипативной части потока.
     AERO_HOST_DEVICE double coefficient(unsigned row, unsigned wave) const { return right[5 * row + wave]; }
     double eigenvalues[5]; // Скорости волн в порядке: звук−, энтропия, сдвиговые волны, звук+.
 };
 
 namespace euler_detail {
+// Проверяет конечность всех проверяемых компонент.
 AERO_HOST_DEVICE inline bool finite(double x) {
 #ifndef KOKKOS_ACTIVE_EXECUTION_MEMORY_SPACE_HOST
     // У бесконечности и NaN все биты порядка равны единице. Проверка целых битов
@@ -56,6 +59,7 @@ AERO_HOST_DEVICE inline bool finite(double x) {
     return std::isfinite(x);
 #endif
 }
+// Возвращает абсолютное значение в коде, общем для CPU и GPU.
 AERO_HOST_DEVICE inline double absolute(double x) {
     return x < 0 ? -x : x;
 }
@@ -72,6 +76,7 @@ AERO_HOST_DEVICE inline double dot_components(const double* a, const double* b) 
         value += a[k] * b[k];
     return value;
 }
+// Вычисляет скалярное произведение по активным пространственным компонентам.
 AERO_HOST_DEVICE inline double dot(unsigned dimension, const double* a, const double* b) {
     if (dimension == 2)
         return dot_components<2>(a, b);
@@ -139,6 +144,7 @@ KOKKOS_FORCEINLINE_FUNCTION EulerStatus decode_state(unsigned dimension, const d
     // прямое деление, чтобы промежуточное 1/ρ не переполнилось и не стало субнормальным.
     const bool common_denominator = u[0] > 1.e-150 && u[0] < 1.e150;
     const double inverse_density = common_denominator ? inverse_value(u[0]) : 0;
+    // Нормирует консервативную величину на плотность, получая значение на единицу массы.
     const auto per_mass = [&](double amount) {
         return common_denominator ? amount * inverse_density : amount / u[0];
     };
@@ -266,6 +272,7 @@ AERO_HOST_DEVICE inline EulerStatus interface_fluxes(unsigned dimension, const d
     return EulerStatus::Success;
 }
 
+// Звуковая и переносная скорости на каждой стороне уже известны ограничителю и решателю.
 AERO_HOST_DEVICE inline EulerStatus interface_wave_speed(unsigned, const InterfaceGas&, double&);
 
 // При реконструкции потоков они уже известны. Скорость диссипации определяем по состояниям.
@@ -361,6 +368,7 @@ struct RoeAverage {
     }
 };
 
+// Вычисляет осреднённые по Роу скорость и энтальпию двух состояний.
 KOKKOS_FORCEINLINE_FUNCTION EulerStatus average_roe_state(unsigned dimension, const EulerState& left,
                                                        const EulerState& right, const double* n,
                                                        double gamma, RoeAverage& gas) {
@@ -420,7 +428,9 @@ struct PlaneWaveBasis : RoeAverage {
     double normal[2];     // Направление от первого конца ребра ко второму.
     double tangent_speed; // Скалярное произведение средней скорости на касательную.
 
+    // Вычисляет кинетическую часть энергии газового состояния.
     AERO_HOST_DEVICE double kinetic_energy() const { return kinetic; }
+    // Проверяет или возвращает коэффициент диссипативной части потока.
     AERO_HOST_DEVICE double coefficient(unsigned row, unsigned wave) const {
         if (wave == 1)
             return entropy_row(row, dimension);
@@ -501,6 +511,7 @@ AERO_HOST_DEVICE inline EulerStatus build_roe_basis(unsigned mesh_dimension, con
         *result = basis;
     return EulerStatus::Success;
 }
+// Строит характеристический базис Роу для заданной единичной нормали.
 AERO_HOST_DEVICE inline EulerStatus roe_basis_with_normal(unsigned dimension, const double* original_left,
                                                           const double* original_right,
                                                           const double* direction, double gamma,
@@ -515,6 +526,7 @@ AERO_HOST_DEVICE inline EulerStatus roe_basis_with_normal(unsigned dimension, co
     return build_roe_basis(dimension, left, right, direction, n, gamma, result);
 }
 } // namespace euler_detail
+// Проверяет состояния и формирует базис Роу на площадке.
 AERO_HOST_DEVICE inline EulerStatus euler_roe_basis(unsigned dimension, const double* original_left,
                                                     const double* original_right, const double* direction,
                                                     double gamma, EulerRoeBasis* result) {
@@ -527,11 +539,15 @@ AERO_HOST_DEVICE inline EulerStatus euler_roe_basis(unsigned dimension, const do
 #include <vector>
 #include <stdexcept>
 namespace aero {
+// Возвращает диагностический текст кода газодинамического ядра.
 const char* euler_status_message(EulerStatus status);
+// Исключение газодинамического ядра с исходным кодом ошибки.
 class EulerError : public std::runtime_error {
 public:
+    // Сохраняет код газодинамической ошибки и формирует её текст.
     explicit EulerError(EulerStatus status)
         : std::runtime_error(euler_status_message(status)), status_(status) {}
+    // Возвращает исходный код ошибки газодинамического ядра.
     EulerStatus status() const { return status_; }
 
 private:
@@ -543,9 +559,11 @@ using StateFluxKernel = EulerStatus (*)(unsigned, const double*, const double*, 
                                         EulerFluxResult*);
 using SuppliedFluxKernel = EulerStatus (*)(unsigned, const double*, const double*, const double*,
                                            const double*, const double*, double, EulerFluxResult*);
+// Вычисляет поток по состояниям и сообщает ошибку через исключение.
 EulerFluxResult checked_state_flux(StateFluxKernel kernel, const std::vector<double>& left,
                                    const std::vector<double>& right, const std::vector<double>& direction,
                                    double gamma);
+// Вычисляет численный поток с заданными физическими потоками и проверяет статус.
 EulerFluxResult checked_supplied_flux(SuppliedFluxKernel kernel, const std::vector<double>& flux_left,
                                       const std::vector<double>& flux_right, const std::vector<double>& left,
                                       const std::vector<double>& right, const std::vector<double>& direction,

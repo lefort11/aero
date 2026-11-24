@@ -14,6 +14,7 @@ struct HexFilterData {
     const double* coefficients;
     unsigned lanes;
 
+    // Вычисляет начало данных элемента в чередующейся раскладке GPU.
     AERO_HOST_DEVICE MeshIndex first(MeshIndex element, unsigned columns) const {
         return (element/lanes)*columns*lanes + element%lanes;
     }
@@ -22,6 +23,7 @@ struct HexFilterData {
 // Один элемент в подготовленной таблице. Общая формула фильтра обращается
 // к полной геометрии, когда четыре длиннейшие пары не определяют диаметр.
 template<class Shape>
+// Представление упакованной геометрии гексаэдра для фильтра LES/DDES.
 struct PackedHexFilter {
     const double* column;
     unsigned stride;
@@ -30,7 +32,9 @@ struct PackedHexFilter {
     MeshIndex element;
     double vol_length;
 
+    // Читает коэффициент фильтра с учётом шага упакованного хранения.
     AERO_HOST_DEVICE double value(unsigned index) const { return column[index*stride]; }
+    // Возвращает компоненту среднего градиента базиса вершины гексаэдра.
     AERO_HOST_DEVICE double basis(unsigned vertex,unsigned direction) const {
         return value(HexFilterData::Basis+3*(vertex-1)+direction);
     }
@@ -41,6 +45,7 @@ struct PackedHexFilter {
         for (unsigned i=0; i<3; ++i) diagonal[i]=value(HexFilterData::Diagonals+3*k+i);
         return diagonal;
     }
+    // Возвращает квадрат геометрического масштаба фильтра.
     AERO_HOST_DEVICE double length_squared(Scale scale, unsigned count, const Coordinate& axis) const {
         if (scale==Scale::Min || scale==Scale::Max)
             return shapes[shape_ids[element]].length_squared(scale,count,axis);

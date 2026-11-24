@@ -26,6 +26,7 @@ struct Transport {
     viscosity::GradientStencil shared_geometry; // Таблица коэффициентов AES на том же исполнителе.
     double heat_to_diffusion; // Перевод теплового коэффициента AES в коэффициент диффузии SA.
 
+    // Переводит номер обрабатываемой строки в номер собственного узла.
     AERO_HOST_DEVICE MeshIndex node(MeshIndex k) const { return owned ? owned[k] : k; }
     // В уравнении переноса разность с соседним значением нужна только при втекании.
     AERO_HOST_DEVICE double incoming_speed(residual_detail::OrientedFace side, double inverse_density) const {
@@ -60,6 +61,7 @@ struct Transport {
     AERO_HOST_DEVICE void set_diffusivity(MeshIndex e,double working_sum) const {
         sa.diffusion.element_mean[e]=sa.diffusion.molecular_mean[e]+working_sum*cells[e].inverse_count;
     }
+    // Обновляет коэффициенты диффузии по текущей рабочей вязкости.
     template<bool host=false>
     AERO_HOST_DEVICE void refresh_diffusivity(MeshIndex e) const {
         if (host && sa.diffusion.vertex_contributions) { diffuse_element<true>(e); return; }
@@ -84,6 +86,7 @@ struct Transport {
             diagonal+=::fabs(coupling);
         }
     }
+    // Добавляет вклад упакованной плотной диффузионной строки.
     template<unsigned neighbours>
     AERO_HOST_DEVICE void add_dense(const DiffusionCell* blocks,RowRange row,double w,
                                     double& diffusion,double& diagonal) const {
@@ -105,6 +108,7 @@ struct Transport {
         if (sa.diffusion.short_blocks) add_dense<3>(blocks,row,w,diffusion,diagonal);
         else add_dense<7>(blocks,row,w,diffusion,diagonal);
     }
+    // Добавляет диффузионные вклады объёмных элементов AES.
     template<bool host>
     AERO_HOST_DEVICE void add_volume_diffusion(MeshIndex i,double w,double& diffusion,double& diagonal) const {
         // Каждая ненулевая пара даёт приращение от разности рабочих вязкостей.
@@ -274,6 +278,7 @@ struct Transport {
         else if (sa.axis_faces) assemble_sa_row<d,reuse_gas,host,true>(k,save_rotation);
         else assemble_sa_row<d,reuse_gas,host,false>(k,save_rotation);
     }
+    // Вычисляет полную невязку переноса SA для выбранного узла.
     template <bool reuse_gas> AERO_HOST_DEVICE void residual(MeshIndex k, bool save_rotation) const {
         if (dim == 3)
             residual_row<3, reuse_gas>(k, save_rotation);
@@ -295,6 +300,7 @@ enum class Operation {
     LineRelax
 };
 enum class Norm { Rate, Bdf };
+// Поле и временные коэффициенты одной явной или неявной стадии переноса SA.
 struct Step {
     Transport transport;
     explicit_detail::Stage stage;
@@ -303,12 +309,16 @@ struct Step {
     bool save_stage_start;
     bool extrapolate; // Разрешает ускорение двух последовательных скалярных поправок BDF.
     bool keep_gas; // Давление, плотность и скорость фиксированы между итерациями скалярного уравнения.
+#ifdef AERO_HAS_MULTIGRID
+    double polynomial_current, polynomial_previous; // Нулевой первый коэффициент означает обычный сглаживатель.
+#endif
     // Погрешность дискретного уравнения на новом слое BDF в единицах рабочей вязкости.
     AERO_HOST_DEVICE double defect(MeshIndex i) const {
         const auto &s = transport.sa;
         const double previous = history ? history * (s.old[i] - s.previous[i]) : 0.;
         return leading * (s.w[i] - s.old[i]) - previous - local_steps.at(i, dt) * s.rate[i];
     }
+    // Применяет неявную поправку к рабочей вязкости с учётом диагонали и границ.
     AERO_HOST_DEVICE double implicit_update(MeshIndex i) const {
         auto& s=transport.sa;
         const double delta=-defect(i)/(leading+local_steps.at(i,dt)*s.diagonal[i]);
@@ -318,6 +328,18 @@ struct Step {
             return plain;
         }
         s.plain_update[i]=s.zero_working_viscosity(i) || plain<0. ? 0. : plain;
+#ifdef AERO_HAS_MULTIGRID
+        if (polynomial_current > 0.) {
+            // Все узлы используют одни коэффициенты. Так ускорение сохраняет
+            // пространственную форму ошибки, в том числе когда поправки меняют знак.
+            double change = polynomial_current*delta;
+            if (polynomial_previous != 0.) change += polynomial_previous*s.last_correction[i];
+            const double next = s.w[i]+change;
+            const double projected = s.zero_working_viscosity(i) || next<0. ? 0. : next;
+            s.last_correction[i] = projected-s.w[i];
+            return projected;
+        }
+#endif
         return extrapolated_viscosity(plain,delta,s.last_correction[i]);
     }
     // На вытянутой сетке учитываем две сильные связи в поправке совместно.
@@ -353,6 +375,7 @@ struct Step {
             sa.w[i]=sa.zero_working_viscosity(i) || next<0. ? 0. : next;
         }
     }
+    // Выполняет выбранное обновление одной компоненты поля SA.
     AERO_HOST_DEVICE void apply(Operation op, MeshIndex k) const {
         const auto i = transport.node(k);
         const auto &s = transport.sa;
@@ -401,6 +424,7 @@ struct Step {
         transport.residual_row<dim,true,host>(k,false);
         return magnitude(Norm::Bdf,k);
     }
+    // Возвращает модуль величины SA, выбранной для контроля сходимости.
     AERO_HOST_DEVICE double magnitude(Norm norm, MeshIndex k) const {
         const auto i = transport.node(k);
         const auto &s = transport.sa;

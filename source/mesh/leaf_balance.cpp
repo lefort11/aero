@@ -6,9 +6,11 @@
 namespace aero {
 namespace {
 using Id = MeshIndex;
+// Находит последнюю границу листьев, укладывающуюся в заданный лимит.
 template <class Fits> Id last_fit(Id first, Id last, const Fits& fits) {
     if (fits(last))
         return last;
+    // Предикат монотонен по длине префикса: двоичный поиск сохраняет допустимую нижнюю границу.
     while (last - first > 1) {
         const Id middle = first + (last - first) / 2;
         if (fits(middle))
@@ -19,6 +21,7 @@ template <class Fits> Id last_fit(Id first, Id last, const Fits& fits) {
     return first;
 }
 
+// Выбирает ближайшую допустимую границу разбиения по накопленной работе.
 Id nearest_cut(Id low, Id high, Id base, long double target, const LeafPrefix& prefix) {
     Id cut = last_fit(low, high, [&](Id end) { return prefix(end).work - base <= target; });
     if (cut < high && target - (prefix(cut).work - base) > (prefix(cut + 1).work - base) - target)
@@ -26,6 +29,7 @@ Id nearest_cut(Id low, Id high, Id base, long double target, const LeafPrefix& p
     return cut;
 }
 
+// Распределяет листья между процессами одного вычислительного узла.
 void divide_node(LeafLayout& plan, Id first, Id last, const CpuNodeShare& node, const LeafPrefix& prefix,
                  const std::vector<long double>& speeds) {
     // Если листьев меньше, чем процессов, выдаём доступные участки самым быстрым процессам.
@@ -59,6 +63,7 @@ void divide_node(LeafLayout& plan, Id first, Id last, const CpuNodeShare& node, 
 }
 }
 
+// Распределяет листья сетки между процессами с учётом работы и памяти.
 LeafLayout balance_leaves(Id leaves, const LeafPrefix& prefix, const std::vector<CpuNodeShare>& nodes,
                           const std::vector<long double>& speeds) {
     const std::size_t count = nodes.size();
@@ -69,10 +74,12 @@ LeafLayout balance_leaves(Id leaves, const LeafPrefix& prefix, const std::vector
     // При пробном времени узлу назначаем самый длинный префикс, который помещается в память и укладывается в срок.
     // Более короткий префикс только увеличил бы работу оставшихся узлов.
     std::vector<Id> ends(count + 1);
+    // Проверяет, укладывается ли диапазон листьев одновременно в память и пробное время.
     const auto fits = [&](std::size_t i, const LeafCost& a, const LeafCost& b, long double duration) {
         return b.bytes - a.bytes <= nodes[i].mesh_bytes &&
                static_cast<long double>(b.work - a.work) / speed[i] <= duration;
     };
+    // Проверяет возможность разместить все листья при заданном времени выполнения.
     const auto place = [&](long double duration) {
         for (std::size_t i = 0; i < count; ++i) {
             const auto base = prefix(ends[i]);
@@ -129,10 +136,12 @@ LeafLayout balance_leaves(Id leaves, const LeafPrefix& prefix, const std::vector
     return plan;
 }
 
+// Распределяет листья с учётом производительности и вместимости GPU.
 LeafLayout balance_gpu_leaves(Id leaves, const LeafPrefix& prefix, const std::vector<CpuNodeShare>& nodes,
                               const std::vector<long double>& speeds,
                               const std::vector<GpuRankCapacity>& cards) {
     auto plan = balance_leaves(leaves, prefix, nodes, speeds);
+    // Ограничивает диапазон листьев допустимыми условиями размещения GPU.
     const auto allowed = [&](int rank, Id first, Id end, bool estimate) {
         const auto& card = cards[rank];
         if (estimate && prefix(end).work - prefix(first).work > card.work_capacity)

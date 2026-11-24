@@ -6,6 +6,7 @@ namespace io {
 // Сетка и поля используют одинаковые целые числа и строки, но по-разному
 // ограничивают ввод. Чтение байтов и токенов поручаем читателю конкретного файла.
 struct NativeFileCodec {
+    // Читает беззнаковое число формата и проверяет диапазон значения.
     template<class Reader, class Fail>
     static number_codec::Word read_unsigned(Reader& reader, Fail fail) {
         if (reader.text_) return number_codec::parse_decimal(reader.token(),fail);

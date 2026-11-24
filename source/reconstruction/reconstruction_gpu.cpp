@@ -5,11 +5,13 @@
 #include <memory>
 
 namespace {
+// Дескриптор GPU-шаблона и его рабочего состояния.
 struct State {
     aero::ReconstructionStencilView view{};
     aero::gpu::DeviceArrays storage; // Освобождает и частично загруженный шаблон при ошибке.
 };
 
+// Сохраняет текст ошибки GPU-интерфейса реконструкции.
 int report(aero::gpu::Status code, char* error, unsigned capacity) {
     if (code != aero::gpu::Status::Success && error && capacity)
         std::snprintf(error, capacity, "CUDA: %s", aero::gpu::message(code));
@@ -18,6 +20,7 @@ int report(aero::gpu::Status code, char* error, unsigned capacity) {
 
 }
 
+// Возвращает число доступных устройств через интерфейс GPU-модуля реконструкции.
 extern "C" int aero_reconstruction_device_count(int* count, char* error, unsigned capacity) {
     *count = 0;
     aero::gpu::Status code = aero::gpu::count(count);
@@ -28,9 +31,11 @@ extern "C" int aero_reconstruction_device_count(int* count, char* error, unsigne
     }
     return report(code, error, capacity);
 }
+// Освобождает GPU-копию шаблона реконструкции.
 extern "C" void aero_reconstruction_device_destroy(void* opaque) {
     delete static_cast<State*>(opaque);
 }
+// Создаёт GPU-копию шаблона реконструкции и возвращает её дескриптор.
 extern "C" int aero_reconstruction_device_create(aero::ReconstructionStencilView view, int device,
                                                void** opaque, char* error, unsigned capacity) {
     *opaque = nullptr;
@@ -53,6 +58,7 @@ extern "C" int aero_reconstruction_device_create(aero::ReconstructionStencilView
         return 1;
     }
 }
+// Возвращает представление шаблона из GPU-дескриптора.
 extern "C" void aero_reconstruction_device_view(void* opaque, aero::ReconstructionStencilView* view) {
     *view = static_cast<State*>(opaque)->view;
 }

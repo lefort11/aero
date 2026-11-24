@@ -7,6 +7,7 @@ from typing import NamedTuple
 _HEADER = struct.Struct("<8s15Q")
 
 
+# Именованные поля заголовка текущей версии архива разбиения сетки.
 class MdecHeader(NamedTuple):
     flags: int
     dimension: int
@@ -24,6 +25,7 @@ class MdecHeader(NamedTuple):
     payload: int
 
     @classmethod
+    # Распаковывает заголовок AERODEC1 и проверяет совместимость его версии.
     def unpack(cls, data):
         # В v5 слово единиц длины исключено. Запрещаем применять эти смещения
         # к старому архиву, чтобы не принять, например, число ветвей за число листьев.
@@ -33,6 +35,7 @@ class MdecHeader(NamedTuple):
         return cls(*fields)
 
 
+# Читает фиксированный заголовок архива разбиения из файла.
 def read_mdec_header(path):
     with path.open("rb") as file:
         return MdecHeader.unpack(file.read(_HEADER.size))

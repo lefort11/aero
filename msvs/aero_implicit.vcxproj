@@ -37,6 +37,8 @@
     <ClInclude Include="..\source\implicit\roe_edge_jacobian.h" />
     <ClInclude Include="..\source\implicit\spatial_jacobian_detail.h" />
     <ClCompile Include="..\source\implicit\spatial_jacobian.cpp" />
+    <ClCompile Include="..\source\multigrid\*.cpp" Exclude="..\source\multigrid\*_tests.cpp" />
+    <ClInclude Include="..\source\multigrid\*.h" />
     <ClInclude Include="..\source\implicit\spatial_jacobian.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

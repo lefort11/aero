@@ -35,6 +35,7 @@ void choose_nodes(const Element &cell, AffineHex &g) {
         if (std::find(g.node, g.node + 4, i) == g.node + 4)
             g.node[next++] = static_cast<unsigned char>(i);
 }
+// Вычисляет коэффициенты интерполяции для аффинного гексаэдра.
 void prepare_interpolation(const Element &e, AffineHex &g) {
     const auto origin = e.position[g.node[0]];
     const auto a = e.position[g.node[1]] - origin, b = e.position[g.node[2]] - origin,
@@ -64,6 +65,7 @@ PairMetric block(const Cell &c, const std::vector<PairMetric> &table, unsigned i
     return result;
 }
 }
+// Выделяет из штатной геометрии AES часть оператора для отклонений от линейного поля.
 AffineHex make_affine_hex(const Element &e, const Cell &c, const MeanGradient &mean,
                           const std::vector<PairMetric> &table) {
     AffineHex g{};

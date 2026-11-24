@@ -532,6 +532,7 @@ END
     print("OK collective rejection of different periodic face subdivisions")
 
 
+# Разбирает параметры запуска, выполняет набор QA-проверок и возвращает статус результата.
 def main():
     parser = mpi_parser(__doc__)
     group = parser.add_mutually_exclusive_group()

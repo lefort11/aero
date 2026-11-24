@@ -2,6 +2,7 @@
 #include <limits>
 
 namespace aero {
+// Согласует одно наименьшее значение на всех процессах, например допустимый шаг CFL.
 double Processes::minimum(double value) const {
     if (size == 1)
         return value;
@@ -10,6 +11,7 @@ double Processes::minimum(double value) const {
 #endif
     return value;
 }
+// Глобальная норма либо скалярное произведение распределённых векторов BiCGSTAB.
 double Processes::reduce_double(double value, bool maximum) const {
 #ifdef AERO_WITH_MPI
     if (size > 1) MPI_Allreduce(MPI_IN_PLACE, &value, 1, MPI_DOUBLE, maximum ? MPI_MAX : MPI_SUM, MPI_COMM_WORLD);
@@ -18,18 +20,21 @@ double Processes::reduce_double(double value, bool maximum) const {
 #endif
     return value;
 }
+// Выбирает первый доступный глобальный идентификатор среди процессов.
 std::uint64_t Processes::first_id(std::uint64_t value) const {
 #ifdef AERO_WITH_MPI
     MPI_Allreduce(MPI_IN_PLACE, &value, 1, MPI_UINT64_T, MPI_MIN, MPI_COMM_WORLD);
 #endif
     return value;
 }
+// Суммирует переданное значение по всем процессам.
 std::uint64_t Processes::sum(std::uint64_t value) const {
 #ifdef AERO_WITH_MPI
     MPI_Allreduce(MPI_IN_PLACE, &value, 1, MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
 #endif
     return value;
 }
+// Передаёт данные корневого процесса всем участникам коммуникатора.
 void Processes::broadcast(std::string& value, int root) const {
 #ifdef AERO_WITH_MPI
     std::uint64_t length = value.size();
@@ -46,6 +51,7 @@ void Processes::broadcast(std::string& value, int root) const {
     (void)root;
 #endif
 }
+// Передаёт данные корневого процесса всем участникам коммуникатора.
 void Processes::broadcast(double* values, int count, int root) const {
 #ifdef AERO_WITH_MPI
     MPI_Bcast(values, count, MPI_DOUBLE, root, MPI_COMM_WORLD);
@@ -55,6 +61,7 @@ void Processes::broadcast(double* values, int count, int root) const {
     (void)root;
 #endif
 }
+// Передаёт данные корневого процесса всем участникам коммуникатора.
 void Processes::broadcast(std::uint64_t* values, int count, int root) const {
 #ifdef AERO_WITH_MPI
     MPI_Bcast(values, count, MPI_UINT64_T, root, MPI_COMM_WORLD);
@@ -64,6 +71,7 @@ void Processes::broadcast(std::uint64_t* values, int count, int root) const {
     (void)root;
 #endif
 }
+// Передаёт данные корневого процесса всем участникам коммуникатора.
 void Processes::broadcast(int* values, int count, int root) const {
 #ifdef AERO_WITH_MPI
     MPI_Bcast(values, count, MPI_INT, root, MPI_COMM_WORLD);
@@ -73,6 +81,7 @@ void Processes::broadcast(int* values, int count, int root) const {
     (void)root;
 #endif
 }
+// Собирает данные процессов на корневом ранге.
 void Processes::gather(const std::uint64_t* values, int count, std::uint64_t* collected, int root) const {
 #ifdef AERO_WITH_MPI
     MPI_Gather(values, count, MPI_UINT64_T, collected, count, MPI_UINT64_T, root, MPI_COMM_WORLD);
@@ -81,6 +90,7 @@ void Processes::gather(const std::uint64_t* values, int count, std::uint64_t* co
     std::copy_n(values, count, collected);
 #endif
 }
+// Собирает данные всех процессов на каждом ранге.
 void Processes::allgather(const double* values, int count, double* collected) const {
 #ifdef AERO_WITH_MPI
     MPI_Allgather(values, count, MPI_DOUBLE, collected, count, MPI_DOUBLE, MPI_COMM_WORLD);
@@ -88,6 +98,7 @@ void Processes::allgather(const double* values, int count, double* collected) co
     std::copy_n(values, count, collected);
 #endif
 }
+// Собирает короткие диагностические сообщения в порядке номеров процессов на процессе 0.
 Processes::Messages Processes::gather_text(std::string message) const {
 #ifdef AERO_WITH_MPI
     int width = 0;
@@ -149,6 +160,7 @@ void DoubleExchange::transfer(const std::vector<int>& peers) {
 #endif
 }
 
+// Пересылает по одному сообщению каждому процессу. В ответе индекс означает номер отправителя.
 Processes::Messages Processes::exchange(const Messages& outgoing) const {
     if (size == 1)
         return outgoing;

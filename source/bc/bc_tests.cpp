@@ -12,6 +12,7 @@ namespace {
 using namespace aero;
 std::vector<BcTestCase> cases;
 BoundaryPatches patches; // Одна таблица для тех же проверок на CPU и GPU.
+// Разбирает текстовую заготовку сетки или граничных условий для теста.
 BoundaryConfig parse(const std::string& text, unsigned d) {
     std::istringstream input(text);
     return read_boundary(input, d, patches);
@@ -33,6 +34,7 @@ void state(unsigned d, double rho, double p, double un, double* u) {
         u[d + 1] += .5 * rho * vel[k] * vel[k];
     }
 }
+// Создаёт исходную конфигурацию проверки граничного условия.
 BcTestCase fixture(unsigned d, const std::string& block, double un) {
     BcTestCase t = {};
     t.config = parse(block, d);
@@ -43,6 +45,7 @@ BcTestCase fixture(unsigned d, const std::string& block, double un) {
     state(d, 1, 2, un, t.current);
     return t;
 }
+// Выполняет один вариант тестовой задачи на выбранном исполнителе.
 void run(BcTestCase t, const std::string& label) {
     EulerFluxResult got = {};
     got.flux[0] = 123;
@@ -59,6 +62,7 @@ void run(BcTestCase t, const std::string& label) {
         require(got.flux[0] == 123, label + " error wrote flux");
     cases.push_back(t);
 }
+// Проверяет выбранный режим свободной газодинамической границы.
 void free_case(BcTestCase t, double rho, double p, double un, const std::string& label) {
     double u[5] = {}, speed;
     state(t.dimension, rho, p, un, u);
@@ -73,6 +77,7 @@ void free_case(BcTestCase t, double rho, double p, double un, const std::string&
         t.expected.flux[k] *= 5;
     run(t, label);
 }
+// Проверяет диагностику некорректного граничного условия.
 void error(BcTestCase t, BoundaryStatus s) {
     t.expected_status = s;
     run(t, "invalid input");
@@ -90,6 +95,7 @@ void fixed_flux(BcTestCase t, double rho, double p, double un) {
 std::string free_block(const std::string& superin, const std::string& inflow, const std::string& outflow) {
     return "bc_type free\nsuperin " + superin + "\ninflow " + inflow + "\noutflow " + outflow;
 }
+// Проверяет граничные потоки для одной пространственной размерности.
 void dimension(unsigned d) {
     for (int sign : {-1, 1}) {
         const double un = sign * .6;
@@ -150,6 +156,7 @@ void dimension(unsigned d) {
     error(t, BoundaryStatus::InvalidArgument);
 }
 
+// Сравнивает линейное граничное условие с независимым эталоном.
 void linear_reference() {
     BoundaryPatches local;
     PeriodicPair pair;
@@ -193,6 +200,7 @@ void check_derivative(const BcTestCase& t) {
     }
 }
 
+// Проверяет профиль, задающий лишь часть граничных величин.
 void partial_profiles() {
     const auto constant = free_block("p_interior","p_interior","p_interior")+"\nreference_state rho=2 ux=-1.5";
     for (double u : {-3.,-.5,.5}) {
@@ -218,7 +226,9 @@ void partial_profiles() {
     }
 }
 }
+// Проверяет склейку и потоки периодических границ.
 void test_periodic(bool require_gpu);
+// Запускает проверки модуля и возвращает ненулевой код при ошибке.
 int main(int argc, char** argv) {
     try {
         for (unsigned d = 1; d <= 3; ++d)

@@ -12,6 +12,7 @@ struct Stage {
     double original_weight; // Вес U в начале шага.
     double forward_weight;  // Вес результата шага Эйлера из текущего состояния стадии.
 
+    // Проверяет, нужен ли стадии сохранённый слой начала шага.
     AERO_HOST_DEVICE bool uses_step_start() const { return original_weight != 0; }
 
     // На поздних стадиях SSPRK3 добавляем долю исходного U_n к результату Эйлера из текущего поля.
@@ -22,6 +23,7 @@ struct Stage {
         return original_weight * step_start + forward_weight * forward;
     }
 };
+// Представление неизменяемой таблицы коэффициентов явного интегратора.
 struct Stages {
     const Stage* data; // Таблица коэффициентов в порядке выполнения.
     unsigned count;    // Одна стадия у Эйлера, три у SSPRK3.
@@ -31,7 +33,9 @@ struct Stages {
 constexpr Stage first_euler_stage() {
     return {0.0, 0.0, 1.0};
 }
+// Возвращает таблицу единственной стадии явного метода Эйлера.
 Stages euler_stages();
+// Возвращает коэффициенты трёх стадий SSPRK3.
 Stages ssprk3_stages();
 
 // Обновляет одну компоненту одного узла. Невязка уже содержит площадь всех его граней.
@@ -61,6 +65,7 @@ struct FieldStageUpdate {
     double dt;                // Шаг по времени одинаков для всех стадий.
     double* next;             // Буфер результата стадии. Может совпадать с current.
 
+    // Обновляет одну компоненту поля и сообщает о допустимости результата.
     AERO_HOST_DEVICE bool apply(size_t entry) const {
         // Поля хранятся по схеме [узел][компонента], а объём общий для всех компонент узла.
         return advance_component(formula, step_start[entry], current[entry], residual[entry],
@@ -69,6 +74,7 @@ struct FieldStageUpdate {
 };
 
 #ifdef AERO_WITH_KOKKOS_GPU
+// Запускает обновление компонент явной стадии на GPU.
 void launch_update(FieldStageUpdate update, size_t entries, int* invalid, void* stream);
 #endif
 }

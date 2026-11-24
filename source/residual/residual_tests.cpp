@@ -28,6 +28,7 @@ using namespace aero;
 namespace {
 using Values = std::vector<double>;
 using aero_test::require;
+// Проверяет совпадение чисел в пределах заданного допуска.
 void near(double a, double b) {
     if (!(std::abs(a - b) <= 3e-11 * (1 + std::abs(b)))) {
         std::ostringstream message;
@@ -36,13 +37,16 @@ void near(double a, double b) {
         throw std::runtime_error(message.str());
     }
 }
+// Сохраняет узловую невязку и потоки площадок тестового расчёта.
 struct Result {
     Values r, edge, bc;
+    // Выделяет тестовые массивы узловой невязки и потоков внутренних и внешних площадок.
     Result(size_t n, size_t e, size_t b) : r(n), edge(e), bc(b) {}
 };
 #ifdef AERO_WITH_KOKKOS_GPU
 using aero::gpu::checked;
 #endif
+// Собирает тестовую невязку и сохраняет потоки внутренних и граничных площадок.
 void evaluate(int device, SpatialResidual& op, const Values& u, Result& output) {
     if (device < 0) {
         op.assemble(u.data(), u.data(), output.r.data(), output.edge.data(), output.bc.data());
@@ -68,16 +72,19 @@ void evaluate(int device, SpatialResidual& op, const Values& u, Result& output) 
     checked(aero::gpu::destroy_stream(stream));
 #endif
 }
+// Сравнивает результаты двух реализаций или представлений с заданным допуском.
 void compare(const Values& a, const Values& b) {
     require(a.size() == b.size(), "array extent");
     for (size_t i = 0; i < a.size(); ++i)
         near(a[i], b[i]);
 }
+// Сравнивает результаты двух реализаций или представлений с заданным допуском.
 void compare(const Result& a, const Result& b) {
     compare(a.r, b.r);
     compare(a.edge, b.edge);
     compare(a.bc, b.bc);
 }
+// Создаёт набор свободных границ для теста пространственного оператора.
 BoundaryPatches free_patches(const Mesh& mesh) {
     BoundaryPatches patches;
     const auto open = patches.add_free(FreeBoundaryRules{});
@@ -167,9 +174,11 @@ void mixed_face_list(int device) {
     near(flux[2].flux[1], -3.);
 }
 
+// Проверяет оценку разброса стационарных локальных шагов.
 void steady_step_spread_test() {
     SteadyStepSpread spread;
     spread.start(100.);
+    // Проверяет структуру или содержимое одного упакованного блока теста.
     const auto observe_block = [&](double first, double second, unsigned linear_work) {
         for (unsigned n = 0; n < 32; ++n) spread.accepted(n < 16 ? first : second,linear_work);
     };
@@ -236,6 +245,7 @@ void steady_step_spread_test() {
     require(resumed.samples() == 0 && resumed.last() == 0., "invalid or zero observation consumed a step");
 }
 
+// Проверяет перенос ограничений шага по опорам реконструкции.
 void stencil_rates_test() {
     using namespace residual_detail;
     Surface face{};
@@ -249,6 +259,7 @@ void stencil_rates_test() {
     EulerFluxResult flux{};
     StencilRates work{stencil,&face,nullptr,nullptr,nullptr,nullptr,1,{},
                       &flux,input,maximum,false,true,1.,0.,StencilRates::Edges,0,0};
+    // Проверяет ожидаемое свойство текущего тестового результата.
     const auto check = [&](double gas, double sa) { work(0); near(maximum[0],gas); near(maximum[1],sa); };
     flux.flux[0]=1.; check(1.6,1.4);
     flux.flux[0]=-1.; check(1.6,1.8);
@@ -415,6 +426,7 @@ void adaptive_steady_step() {
     AdaptiveStepChange step{};
     step.old_field = before; step.field = after;
     step.dim = 2; step.gamma = 2.; step.ceiling = 1.25; step.fraction = 1.;
+    // Проверяет ожидаемое свойство текущего тестового результата.
     const auto expect = [&](double target, const char* message) {
         require(std::abs(step.next(0,1,2.)-target)<1.e-12,message);
     };
@@ -441,6 +453,7 @@ void adaptive_steady_step() {
     before[0] = before[3] = after[4] = 0.; after[7] = .08;
     expect(.5,"linear pressure perturbation is measured against background");
 }
+// Проверяет ограничение восстановленных следов по физической допустимости.
 void trace_limiter_test() {
     // При γ = 2 в узле ρ = 2, u = (1,0), p = 4. Кандидат имеет ρ = 4, u = (3,2), p = 12.
     // Давление ограничивает коэффициент до 1/4, тогда как плотность допускает 1/2.
@@ -514,6 +527,7 @@ void first_order_side_flux() {
         near(result.max_wave_speed, reference.max_wave_speed);
     }
 }
+// Проверяет преобразование потоков при смене базиса импульса.
 void basis_test() {
     const double a[] = {1, .21, .32, .43, 4}, b[] = {1.5, .2, .3, .4, 5}, dir[] = {-.4, .8, .32};
     for (unsigned d = 1; d <= 3; ++d) {
@@ -565,6 +579,7 @@ Result reference(const Mesh& mesh, CvView cv, const ReconstructionStencil& stenc
                             EulerStatus::Success,
                         "project flux");
         }
+        // Вычисляет тестовые следы двух сторон одного ребра.
         auto pair = [&](const Values& field, double* left, double* right) {
             if (open_node[i] || open_node[j]) {
                 std::copy_n(field.data() + 3 * i, 3, left);
@@ -640,6 +655,7 @@ std::vector<const char*> tested_variables(ReconstructionScheme scheme) {
     return {"characteristic", "flux"};
 }
 
+// Проверяет сочетания режимов реконструкции и потока на ребре.
 void edge_modes(int device) {
     const Mesh mesh = aero_test::test_mesh(1);
     const auto m = mesh.view();
@@ -731,6 +747,7 @@ void shared_characteristic_mp5() {
     }
 }
 
+// Проверяет ограничение MP на наклонной площадке.
 void oblique_mp_limit() {
     for (unsigned d : {2u, 3u}) {
         const double normal[3] = {d == 2 ? .6 : 2./3., d == 2 ? .8 : 1./3., d == 2 ? 0. : 2./3.};
@@ -789,6 +806,7 @@ void cartesian_hybrid_limit(unsigned d, int device) {
         const auto stencil = prepare_reconstruction(mesh, st);
         for (const char* variables : tested_variables(scheme)) {
             auto options = residual_options(variables, "roe", gamma_gas);
+            // Выполняет один вариант текущего численного теста.
             const auto run = [&](double h, int backend) {
                 options.mp6_hybrid = h;
                 SpatialResidual op(m, cv, stencil, bc, options, backend);
@@ -817,6 +835,7 @@ void cartesian_hybrid_limit(unsigned d, int device) {
     }
 }
 
+// Проверяет сохранение однородного состояния пространственным оператором.
 void constant_test(unsigned d, int device) {
     const Mesh mesh = aero_test::test_mesh(d);
     const auto m = mesh.view();
@@ -877,6 +896,7 @@ void constant_test(unsigned d, int device) {
             near(v, 0);
     }
 }
+// Проверяет реконструкцию на рёбрах возле входных и выходных границ.
 void inlet_outlet_edges(int device) {
     const Mesh mesh = aero_test::test_mesh(2);
     const auto m = mesh.view();
@@ -927,6 +947,7 @@ void inlet_outlet_edges(int device) {
     }
     require(tangent_edges && interior_to_boundary_edges, "missing inlet/outlet edge coverage");
 }
+// Проверяет баланс потоков в периодическом кольце.
 void ring_test(int device) {
     const Mesh mesh = aero_test::test_mesh(1);
     PeriodicDomain ring(mesh, {{"xmin", "xmax", {1, 0, 0}}});
@@ -951,6 +972,7 @@ void ring_test(int device) {
     }
 }
 #ifndef AERO_RESIDUAL_NO_TIME_TEST
+// Проверяет один шаг задачи Сода с выбранным пространственным оператором.
 void sod_step(int device) {
     Mesh mesh = aero_test::test_mesh(1);
     MedianDual dual(mesh);
@@ -983,6 +1005,7 @@ void sod_step(int device) {
 }
 #endif
 }
+// Запускает проверки модуля и возвращает ненулевой код при ошибке.
 int main(int argc, char** argv) {
     try {
         local_rate_limit_test();

@@ -22,6 +22,7 @@ inline double finite_real(const std::string& text, const std::string& where) {
     return value;
 }
 
+// Приводит значение настройки к нижнему регистру для сравнения ключевых слов.
 inline std::string lower_value(std::string value) {
     for (char& c : value) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return value;
@@ -35,6 +36,7 @@ inline LocalStepMode parse_local_time_step(const std::string& text, const std::s
     if (value == "auto") return LocalStepMode::Auto;
     throw std::invalid_argument(where + ": expected on, off or auto");
 }
+// Разбирает ограничение отношения соседних локальных шагов или значение off.
 inline double parse_local_step_ratio(const std::string& text, const std::string& where) {
     if (lower_value(text) == "off") return 0.;
     const double value = finite_real(text, where);
@@ -42,6 +44,7 @@ inline double parse_local_step_ratio(const std::string& text, const std::string&
     return value;
 }
 
+// Удаляет пробелы по краям строки настройки.
 inline std::string trim(const std::string& s) {
     const auto first = s.find_first_not_of(" \t\r\n");
     return first == std::string::npos ? "" : s.substr(first, s.find_last_not_of(" \t\r\n") - first + 1);
@@ -65,6 +68,7 @@ inline std::string clean(std::string line, const std::string& where, std::size_t
     return trim(line);
 }
 
+// Извлекает и проверяет имя секции или участка из текстовой настройки.
 inline std::string label(std::string value, const std::string& where) {
     if (value.size() >= 2 && value.front() == '"' && value.back() == '"') {
         value = value.substr(1, value.size() - 2);
@@ -82,6 +86,7 @@ inline std::string label(std::string value, const std::string& where) {
     return value;
 }
 
+// Открывает текстовый файл настроек и сообщает путь при ошибке.
 inline std::ifstream open(const std::string& path) {
     std::ifstream file(path.c_str());
     if (!file)

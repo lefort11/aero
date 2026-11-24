@@ -10,6 +10,7 @@ namespace implicit {
 template<class Index> struct CsgsRowOf { Index first[2], count[2]; };
 using CsgsRow = CsgsRowOf<MeshIndex>;
 using CsgsRow32 = CsgsRowOf<std::uint32_t>;
+// Схема переноса блоков CSR в упакованные строки CSGS.
 struct CsgsPacking {
     const MeshIndex* source; // Адрес исходного блока CSR для каждой заполненной позиции.
     double* values;
@@ -39,6 +40,7 @@ struct CsgsPacking {
         }
     }
 };
+// Представление диагонали и соседних блоков для проходов CSGS.
 struct CsgsSweep {
     JacobiBlocks diagonal;
     const CsgsRow* rows;
@@ -57,6 +59,7 @@ struct CsgsSweep {
         const auto r = short_rows[index];
         return {{r.first[0], r.first[1]}, {r.count[0], r.count[1]}};
     }
+    // Обновляет одну строку CSGS по уже доступным соседним значениям.
     template<unsigned width,unsigned stride,class Coefficient>
     AERO_HOST_DEVICE void solve_row(MeshIndex index,const Coefficient* coefficients) const {
         const MeshIndex row=sequence[index], start=row*width;
@@ -106,11 +109,13 @@ struct CsgsSweep {
         }
         for (unsigned k=0;k<width;++k) image[start+k]=sum[k];
     }
+    // Вычисляет образ вектора для выбранного формата строк CSGS.
     template<unsigned stride>
     AERO_HOST_DEVICE void image(MeshIndex index,double* result) const {
         if (neighbour_values) image_typed<stride>(index,result,neighbour_values);
         else image_typed<stride>(index,result,blocks);
     }
+    // Вычисляет образ вектора для выбранного формата строк CSGS.
     template<unsigned stride,class Coefficient>
     AERO_HOST_DEVICE void image_typed(MeshIndex index,double* result,const Coefficient* a) const {
         switch (diagonal.width) {
@@ -119,11 +124,13 @@ struct CsgsSweep {
         default: return image_row<5,stride>(index,result,a);
         }
     }
+    // Запускает проход CSGS с подходящим форматом индексов строк.
     template<unsigned stride>
     AERO_HOST_DEVICE void solve(MeshIndex index) const {
         if (neighbour_values) solve_typed<stride>(index,neighbour_values);
         else solve_typed<stride>(index,blocks);
     }
+    // Выполняет проход CSGS с выбранной разрядностью индексов.
     template<unsigned stride,class Coefficient>
     AERO_HOST_DEVICE void solve_typed(MeshIndex index,const Coefficient* a) const {
         switch (diagonal.width) {
@@ -132,6 +139,7 @@ struct CsgsSweep {
         default: return solve_row<5,stride>(index,a);
         }
     }
+    // Копирует коэффициенты одного блока в упакованную раскладку CSGS.
     AERO_HOST_DEVICE void operator()(MeshIndex index) const {
         if (lanes==32) solve<32>(index);
         else solve<1>(index);

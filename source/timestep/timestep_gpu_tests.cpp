@@ -11,6 +11,7 @@ namespace {
 using aero::gpu::checked;
 using namespace aero::device_tests;
 }
+// Проверяет обработку входных данных оценки CFL на GPU.
 CflStep gpu_inputs(int device, const CflTimestep& plan, double cfl, WaveSpeeds host) {
     checked(aero::gpu::select(device));
     aero_test::DeviceBuffer<double> edges(host.edge_count), boundary(host.boundary_count);
@@ -25,6 +26,7 @@ CflStep gpu_accepted(const CflTimestep& plan, const ExplicitField& field) {
 
     return plan.compute(.5, {speed.data, 1, nullptr, 0}, field.stream);
 }
+// Сравнивает ограничения шага, полученные при сборке невязки на GPU.
 void gpu_residual(const ExplicitField& f, double* r) {
     aero::device_work::check(residual_kernel(f.stream, r));
 

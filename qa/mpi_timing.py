@@ -86,6 +86,7 @@ def verify(case, aero, meshdec, launcher, devices):
         "layout = global\nformat = binary\nvariables = rho, ux, p\n"
     )
 
+    # Создаёт файлы и параметры тестовой постановки для выбранного сценария.
     def configure(**changes):
         config.update(changes)
         (case / "main.txt").write_text("".join(f"{k} = {v}\n" for k, v in config.items()))
@@ -114,6 +115,7 @@ def verify(case, aero, meshdec, launcher, devices):
     print(f"OK {backend} timings, Euler/SSPRK3, recovery and zero additional steps")
 
 
+# Разбирает параметры запуска, выполняет набор QA-проверок и возвращает статус результата.
 def main():
     parser = mpi_parser(__doc__, require_programs=True)
     parser.add_argument("--devices", help="run CUDA timings on these two GPUs")

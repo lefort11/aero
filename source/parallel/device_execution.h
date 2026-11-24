@@ -7,6 +7,7 @@
 namespace aero {
 namespace device_work {
 using Execution = Kokkos::DefaultExecutionSpace;
+// Возвращает контекст Kokkos для выбранного устройства и потока CUDA.
 Execution current_execution(void* stream);
 // Исключения библиотеки остаются внутри модуля. На хост уходит только текст ошибки.
 template <class Work>

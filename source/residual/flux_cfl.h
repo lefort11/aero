@@ -9,10 +9,12 @@
 
 namespace aero {
 namespace residual_detail {
+// Связывает площадки узла с их площадями и оценками скоростей волн.
 struct FaceSpeeds {
     const OrientedFace* incidence; // Из записи списка узла получаем номер площадки.
     const Surface* surfaces;       // Модуль площади умножает скорость в сумме CFL.
     const EulerFluxResult* flux;   // Скорости, уже вычисленные при сборке потока.
+    // Возвращает скорость волны и площадь по записи инцидентности узла.
     AERO_HOST_DEVICE cfl_detail::FaceSpeed operator()(Index j) const {
         const auto face = incidence[j].face();
         return {flux[face].max_wave_speed, surfaces[face].measure};
@@ -35,6 +37,7 @@ struct FluxCfl {
     double gamma;
     unsigned dimension;
     double linear_speed;   // Для Linear скорость определяется однородным фоном.
+    // Связывает геометрию, скорости волн и объёмы для вычисления шагов CFL.
     FluxCfl(const Geometry& grid, const EulerFluxResult* flux, const double* node_volumes,
             const MeshIndex* owned_nodes, Index rows, const double* transport_rate = nullptr,
             const double* node_heights = nullptr,const double* node_state=nullptr)
@@ -49,6 +52,7 @@ struct FluxCfl {
         if (background.active())
             linear_speed = wave_speed(dimension, background.velocity, background.sound);
     }
+    // Возвращает узловую оценку скорости распространения волн для ограничения CFL.
     AERO_HOST_DEVICE static double wave_speed(unsigned dim, const double* velocity, double sound) {
         return ::sqrt(euler_detail::dot(dim, velocity, velocity)) + sound;
     }
@@ -73,6 +77,7 @@ struct FluxCfl {
         const double dt = courant / rate;
         return {dt > 0. && dt <= max_finite_double ? dt : -1., i};
     }
+    // Вычисляет допустимый локальный шаг по газовым и диффузионным скоростям.
     AERO_HOST_DEVICE CflStep local(Index k, double courant) const {
         const Index i = owned ? owned[k] : k;
         const double volume = volumes[i];
@@ -98,6 +103,7 @@ struct FluxCfl {
 // Один обход сохраняет шаг каждого владельца и собирает границы диапазона для отчёта.
 // Пустая подобласть участвует в MPI-редукции с нейтральными границами.
 struct StepRange { double minimum, maximum; MeshIndex limited, capped; };
+// Вычисляет локальные псевдошаги и сводит их диапазон и ограничения.
 struct LocalSteadySteps {
     using value_type = StepRange;
     FluxCfl gas;
@@ -107,7 +113,9 @@ struct LocalSteadySteps {
     LocalRateLimit feedback;
     bool initialize_history;
 
+    // Задаёт нейтральный результат редукции диапазона шагов и счётчиков.
     AERO_HOST_DEVICE void init(StepRange& range) const { range = {max_finite_double, 0., 0, 0}; }
+    // Объединяет частичные диапазоны, максимумы и признаки ограничений шага.
     AERO_HOST_DEVICE void join(volatile StepRange& range, const volatile StepRange& next) const {
         range.limited += next.limited;
         range.capped += next.capped;
@@ -123,6 +131,7 @@ struct LocalSteadySteps {
         const double next = change.next(row, node, previous);
         return next > ceiling ? ceiling : next;
     }
+    // Вычисляет шаг собственного узла и обновляет диапазон и счётчики ограничений.
     AERO_HOST_DEVICE void operator()(Index row, StepRange& range) const {
         const Index node = gas.owned ? gas.owned[row] : row;
         const double ceiling = gas.local(row, courant).dt;
@@ -143,6 +152,7 @@ struct LimitLocalSteps {
     const MeshIndex* owned;
     double* steps;
     double ceiling;
+    // Ограничивает локальный шаг узла заданным общим потолком.
     AERO_HOST_DEVICE void operator()(Index row) const {
         const Index node = owned ? owned[row] : row;
         if (steps[node] > ceiling) steps[node] = ceiling;
@@ -154,6 +164,7 @@ struct NeighbourStepRange {
     double ratio, maximum;
     unsigned changed;
 };
+// Уменьшает шаги узлов по ограничениям соседних рёбер.
 struct NeighbourStepSweep {
     const MeshIndex* owned;
     const Index* offsets;
@@ -165,12 +176,15 @@ struct NeighbourStepSweep {
     double ratio, global_minimum;
 
     using value_type = NeighbourStepRange;
+    // Задаёт нейтральный результат редукции диапазона шагов и счётчиков.
     AERO_HOST_DEVICE void init(value_type& result) const { result = {1., 0., 0}; }
+    // Объединяет частичные диапазоны, максимумы и признаки ограничений шага.
     AERO_HOST_DEVICE void join(volatile value_type& a, const volatile value_type& b) const {
         if (b.ratio > a.ratio) a.ratio = b.ratio;
         if (b.maximum > a.maximum) a.maximum = b.maximum;
         if (b.changed) a.changed = 1;
     }
+    // Уменьшает шаг узла по соседям и обновляет статистику прохода.
     AERO_HOST_DEVICE void operator()(Index row, value_type& result) const {
         const Index node = owned ? owned[row] : row;
         const double step = previous[node];
@@ -195,7 +209,9 @@ struct NeighbourStepSweep {
         if (limited > result.maximum) result.maximum = limited;
     }
 };
+// Находит минимальный шаг по скоростям потоков на CPU.
 double cpu_flux_cfl(const FluxCfl&, double courant, const MeshIndex* global_ids = nullptr);
+// Находит минимальный шаг по скоростям потоков на GPU.
 double gpu_flux_cfl(const FluxCfl&, double courant, void* stream);
 }
 }

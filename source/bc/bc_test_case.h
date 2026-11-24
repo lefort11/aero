@@ -9,6 +9,7 @@ struct BcTestCase {
     bool initial_available;
     double current[5], initial[5], area[3], gamma;
     ProfileState profile;
+    // Создаёт таблицу тестового граничного профиля.
     AERO_HOST_DEVICE const ProfileState* profile_data() const {
         return profile.present() ? &profile : nullptr;
     }
@@ -16,6 +17,7 @@ struct BcTestCase {
     BoundaryStatus expected_status;
     EulerFluxResult expected;
 };
+// Сравнивает граничные потоки на CPU и доступных GPU.
 int check_bc_devices(const BcTestCase* cases, size_t count, const FreeBoundaryRules* rules, size_t rule_count,
                      bool required);
 }

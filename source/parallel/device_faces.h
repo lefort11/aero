@@ -65,6 +65,7 @@ void mp_edges(const Execution& exec, FaceBatch batch, Index* bad, const FaceBatc
 // При подготовке упаковки рёбра с неполной реконструкцией, узловые рёбра и границы
 // уже собраны по типам. Все потоки одного запуска выполняют одну физическую операцию.
 enum class RemainingFace { Sparse, Nodal, Boundary };
+// Определяет размер неполной группы рёбер в конце диапазона.
 template <RemainingFace kind>
 void remaining_group(const Execution& exec, FaceBatch batch, const FaceBatch* stored, Index begin,
                      Index count, Index* bad) {
@@ -128,6 +129,7 @@ void cartesian_edges(const Execution& exec, FaceBatch batch, Index* bad, const F
     if (batch.count) other_faces<true>(exec,batch,bad);
 }
 
+// Вычисляет пакет потоков в декартовом базисе компонент импульса.
 template<bool physical>
 void cartesian_fluxes(const Execution& exec, const FaceBatch& batch, Index* bad, const FaceBatch* stored) {
     const auto& mp = batch.geometry.stencil.mp5;

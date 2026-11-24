@@ -8,6 +8,7 @@ from mpi_common import ROOT, mpi_workspace
 from mpi_geometry import run
 
 
+# Проверяет предупреждения о неизвестных и неиспользуемых параметрах постановки.
 def check(case):
     source = ROOT / "qa/cases/pulse_1d"
     for path in source.glob("*.txt"):

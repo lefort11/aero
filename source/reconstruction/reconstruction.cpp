@@ -5,6 +5,7 @@
 
 namespace aero {
 namespace {
+// Проверяет вместимость числа элементов в тип индексов реконструкции.
 std::size_t checked_size(ReconstructionIndex count, ReconstructionIndex components) {
     const ReconstructionIndex limit =
         static_cast<ReconstructionIndex>((std::numeric_limits<std::size_t>::max)() / sizeof(double));
@@ -29,6 +30,7 @@ void build_first_order_rows(MeshView mesh, ReconstructionStencilData& data) {
 }
 } // namespace
 
+// Формирует невладеющее представление массивов подготовленного шаблона.
 ReconstructionStencilView ReconstructionStencil::view() const {
     const ReconstructionStencilView result = {data_.node_count,
                                               data_.edge_count,
@@ -45,6 +47,7 @@ ReconstructionStencilView ReconstructionStencil::view() const {
                                                data_.mpweno_ad_corr, data_.mp5_alpha},nullptr,false,nullptr,false};
     return result;
 }
+// Подсчитывает стороны рёбер с неполным высокопорядковым шаблоном.
 ReconstructionIndex ReconstructionStencil::incomplete_sides() const {
     return static_cast<ReconstructionIndex>(std::count(data_.complete.begin(), data_.complete.end(), 0));
 }
@@ -85,6 +88,7 @@ ReconstructionStencil prepare_reconstruction(const Mesh& mesh, const Reconstruct
     return result;
 }
 
+// Строит линейные строки и геометрические масштабы реконструкции EBR.
 ReconstructionStencil prepare_ebr(const Mesh& mesh, const ReconstructionOptions& options) {
     if (reconstruction_scheme(options.scheme).family != ReconstructionFamily::Ebr) {
         throw ReconstructionError("Invalid reconstruction scheme");
@@ -92,6 +96,7 @@ ReconstructionStencil prepare_ebr(const Mesh& mesh, const ReconstructionOptions&
     return prepare_reconstruction(mesh, options);
 }
 
+// Строит опоры и строки наклонов для нелинейной реконструкции WENO.
 ReconstructionStencil prepare_weno(const Mesh& mesh, const ReconstructionOptions& options) {
     if (reconstruction_scheme(options.scheme).family != ReconstructionFamily::Weno) {
         throw ReconstructionError("prepare_weno requires Weno3 or Weno5");
@@ -99,19 +104,23 @@ ReconstructionStencil prepare_weno(const Mesh& mesh, const ReconstructionOptions
     return prepare_reconstruction(mesh, options);
 }
 
+// Владеет шаблоном CPU и его возможной копией на GPU.
 struct ReconstructionContext::Impl {
     ReconstructionStencil stencil;
     ReconstructionBackend backend;
     void* gpu;
     int device;
+    // Принимает владение шаблоном и начинает с CPU-представления без GPU-копии.
     explicit Impl(ReconstructionStencil s)
         : stencil(std::move(s)), backend(ReconstructionBackend::Cpu), gpu(nullptr), device(-1) {}
+    // Освобождает принадлежащие объекту ресурсы при завершении его времени жизни.
     ~Impl() {
 #ifdef AERO_WITH_KOKKOS_GPU
         aero_reconstruction_device_destroy(gpu);
 #endif
     }
 };
+// Сообщает, собран ли модуль с поддержкой CUDA.
 bool ReconstructionContext::cuda_compiled() {
 #ifdef AERO_WITH_KOKKOS_GPU
     return true;
@@ -119,6 +128,7 @@ bool ReconstructionContext::cuda_compiled() {
     return false;
 #endif
 }
+// Возвращает число доступных CUDA-устройств.
 int ReconstructionContext::cuda_device_count() {
 #ifdef AERO_WITH_KOKKOS_GPU
     int count = 0;
@@ -131,6 +141,7 @@ int ReconstructionContext::cuda_device_count() {
     return 0;
 #endif
 }
+// Размещает подготовленный шаблон на выбранном исполнителе.
 ReconstructionContext::ReconstructionContext(ReconstructionStencil stencil, ReconstructionBackend backend,
                                              int device)
     : impl_(new Impl(std::move(stencil))) {
@@ -160,16 +171,21 @@ ReconstructionContext::ReconstructionContext(ReconstructionStencil stencil, Reco
     impl_->device = device;
 #endif
 }
+// Освобождает принадлежащие объекту ресурсы при завершении его времени жизни.
 ReconstructionContext::~ReconstructionContext() {}
+// Возвращает выбранный исполнитель вычислений.
 ReconstructionBackend ReconstructionContext::backend() const {
     return impl_->backend;
 }
+// Возвращает номер устройства; отрицательное значение соответствует CPU.
 int ReconstructionContext::device() const {
     return impl_->device;
 }
+// Возвращает представление шаблона с адресами, доступными CPU.
 ReconstructionStencilView ReconstructionContext::host_view() const {
     return impl_->stencil.view();
 }
+// Возвращает представление шаблона с адресами выбранного GPU.
 ReconstructionStencilView ReconstructionContext::device_view() const {
     if (impl_->backend != ReconstructionBackend::Cuda) {
         throw ReconstructionError("Device view requires CUDA backend");

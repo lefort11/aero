@@ -56,6 +56,7 @@ static_assert((team_size & (team_size - 1)) == 0, "Kokkos team_scan requires a p
 constexpr unsigned warp_size = edge_tile::width;
 using Teams = Kokkos::TeamPolicy<Kokkos::DefaultExecutionSpace, Kokkos::LaunchBounds<team_size>>;
 
+// Очередь нелинейных весов MPWENO5 с раздельными массивами компонент для GPU.
 struct WeightQueue {
     // На пару приходится не больше двух нелинейных задач. Компоненты храним
     // отдельно: при обработке очереди соседние потоки читают соседние double.
@@ -74,6 +75,7 @@ struct WeightQueue {
         polynomial(2, slot) = values.last;
     }
 
+    // Вычисляет нелинейный след одной задачи очереди с выбранной антидиссипативной поправкой.
     KOKKOS_INLINE_FUNCTION void solve(unsigned slot, bool correction) {
         const mpweno5::Indicators indicators = {beta(0, slot), beta(1, slot), beta(2, slot)};
         const mpweno5::Polynomials values = {polynomial(0, slot), polynomial(1, slot), polynomial(2, slot)};

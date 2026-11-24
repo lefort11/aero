@@ -24,6 +24,7 @@ struct EvaluationPlan {
     bool rows=false;            // Добавить вязкие потоки в строки невязки.
     bool reuse_gradients=false; // Внутри итераций SA поле газа осталось прежним.
 
+    // Выбирает нужные стадии вязкого вычисления по запрошенному режиму.
     explicit EvaluationPlan(Evaluation phase) {
 #ifdef AERO_HAS_TURBULENCE
         if (phase==Evaluation::DdesGasOnly) return;
@@ -39,9 +40,11 @@ struct EvaluationPlan {
     }
 };
 
+// Узловые скорость, плотность, отношение p/rho и динамическая вязкость.
 struct Gas {
     double velocity[3], pressure_over_density, density, mu;
 };
+// Осреднённые коэффициенты переноса и взвешенная вязкостью скорость элемента.
 struct Material {
     double mu, mu_velocity[3]; // Средние по вершинам исходного элемента, формула (48).
 #ifdef AERO_HAS_TURBULENCE
@@ -60,6 +63,7 @@ struct Material {
         }
     }
 };
+// Вязкая невязка одного узла и вклад диффузии в ограничение CFL.
 struct Row {
     double residual[5], cfl_rate;
 };
@@ -69,6 +73,7 @@ struct FlowScratch {
     Gas* gas;
     Row* rows;
 };
+// Безразмерные параметры молекулярной вязкости и теплопроводности.
 struct Law {
     double gamma, temperature_scale, inverse_reynolds, prandtl, sutherland_ratio;
     // Масштабы: rho_inf = U_inf = 1. При T = T_inf получаем mu = 1/Re для обоих законов.
@@ -82,9 +87,11 @@ struct Law {
 struct GradientSlice {
     MeshIndex node,first,end; // Какие вхождения текущего узла принадлежат группе элементов.
 };
+// Диапазоны элементов, срезов и вершин группы вычисления градиентов.
 struct GradientTile {
     MeshIndex first_cell,cells,first_slice,slices,first_vertex; // Начало градиентов группы в общей нумерации.
 };
+// Представление геометрии и материалов для вычисления вязких и турбулентных вкладов.
 struct Operator {
     unsigned dim;
     Law law;
@@ -128,9 +135,13 @@ struct Operator {
     AERO_HOST_DEVICE static void read_basis(const Geometry& geometry,unsigned vertex,unsigned dimension,double* basis) {
         for (unsigned j=0;j<dimension;++j) basis[j]=geometry.basis(vertex,j);
     }
+    // Вычитаем скорость первой вершины до умножения на градиент базисной функции.
+    // Так постоянная скорость даёт точный ноль даже на сильно искажённом элементе.
+    // Максимум модуля компоненты нужен только для фильтра с направлением по ротору.
     AERO_HOST_DEVICE static void read_basis(const MeanAreaBasis& geometry,unsigned vertex,unsigned,double* basis) {
         geometry.read(vertex,basis);
     }
+    // Вычисляет средний по элементу градиент скорости.
     template<unsigned fixed_dim,unsigned fixed_count,class Geometry,class Index>
     AERO_HOST_DEVICE double mean_velocity_gradient(const Geometry& geometry,const Index* nodes,unsigned stride,
                                   unsigned count,turbulence::VelocityGradient& grad) const {
@@ -152,6 +163,7 @@ struct Operator {
         }
         return speed;
     }
+    // Вычисляет элементный вклад замыкания LES для последующего узлового осреднения.
     template<bool ddes,unsigned fixed_dim,bool box=false>
     AERO_HOST_DEVICE void sample_les(MeshIndex e) const {
         const auto& cell=cells[e];
@@ -166,10 +178,13 @@ struct Operator {
     // Возвращаем номер вершины в порядке сетки: порядок суммирования модели сохраняется.
     struct AffineBasis {
         const AffineHex& cell;
+        // Возвращает компоненту градиента локальной базисной функции.
         AERO_HOST_DEVICE double basis(unsigned i,unsigned axis) const { return cell.basis(axis,cell.ordered[i]); }
     };
+    // Представление постоянных средних градиентов тетраэдрального элемента.
     struct TetraBasis {
         const MeanGradient& cell;
+        // Возвращает компоненту градиента локальной базисной функции.
         AERO_HOST_DEVICE double basis(unsigned i,unsigned axis) const { return cell.basis[i][axis]; }
     };
     // Фильтр получает те же относительные координаты, что при подготовке AES.
@@ -180,19 +195,24 @@ struct Operator {
         const Coordinate* positions;
         VolumeCellView cell;
         double vol_length;
+        // Возвращает координаты вершины относительно опорной точки элемента.
         AERO_HOST_DEVICE Coordinate relative(unsigned i) const {
             return positions[cell.vertex[i]]-positions[cell.vertex[0]];
         }
+        // Возвращает координаты локальной вершины фильтра.
         AERO_HOST_DEVICE Coordinate point(unsigned i) const {
             if (!shape.diagonals) return relative(i);
             const unsigned pair=shape.longest_pairs[i];
             return relative(pair/8)-relative(pair%8);
         }
+        // Возвращает диагональ элемента для оценки размера фильтра.
         AERO_HOST_DEVICE Coordinate long_diagonal(unsigned k) const { return shape.diagonal(*this,k); }
+        // Возвращает квадрат длины геометрического масштаба.
         AERO_HOST_DEVICE double length_squared(turbulence::Scale scale,unsigned count,const Coordinate& axis) const {
             return shape.squared(*this,scale,count,axis);
         }
     };
+    // Вычисляет элементные параметры по компактной геометрии AES.
     template<bool ddes,unsigned fixed_count,class Basis,class Extent>
     AERO_HOST_DEVICE void sample_compact_cell(MeshIndex e,const Basis& basis,const Extent& extent,
                                             const turbulence::FilterLengths& sizes) const {
@@ -202,6 +222,7 @@ struct Operator {
         const double speed=mean_velocity_gradient<3,fixed_count>(basis,cells[e].node,1,count,gradient);
         finish_sample<ddes>(e,extent,count,3,gradient,speed,sizes.gradient_sum,sizes.volume*weight);
     }
+    // Вычисляет вклад фильтра LES/DDES по компактной геометрии.
     template<bool ddes,unsigned fixed_count>
     AERO_HOST_DEVICE void sample_compact_filter(MeshIndex e) const {
         const auto shape=filter_indices[e];
@@ -232,6 +253,7 @@ struct Operator {
         finish_sample<ddes>(e,geometry,8,3,grad,speed,geometry.value(turbulence::HexFilterData::GradientSum),
                             geometry.value(turbulence::HexFilterData::Volume)*.125);
     }
+    // Нормирует накопленные элементные вклады турбулентного замыкания.
     template<bool ddes,class Geometry>
     AERO_HOST_DEVICE void finish_sample(MeshIndex e,const Geometry& geometry,unsigned count,unsigned dimension,
                     turbulence::VelocityGradient& grad,double speed,double gradient_sum,double weight) const {
@@ -258,6 +280,7 @@ struct Operator {
         }
         samples[e]={weight*result.value,weight*result.tilt};
     }
+    // Вычисляет узловой масштаб и коэффициенты турбулентного фильтра.
     AERO_HOST_DEVICE turbulence::NodalFilter nodal_filter() const {
         return {offsets,incidence,les_volumes,cell_gradient_norm,samples,no_slip,
                 eddy_nu,skip_ddes_filter ? nullptr : sa.ddes,les,c_des,fixed_ddes_length};
@@ -289,11 +312,13 @@ struct Operator {
         for (unsigned i=0; i<dim; ++i) result.mu_velocity[i]=result.mu*point.velocity[i];
         result.scalar_diffusion=scalar;
     }
+    // Собирает элементные вклады фильтра в узловые значения.
     template<bool ddes>
     AERO_HOST_DEVICE void gather_filter(MeshIndex node) const {
         nodal_filter().gather<ddes>(node);
         if (!ddes && material_nodes) cache_material(node,gas[node].density*eddy_nu[node],les_pr_ratio,0.);
     }
+    // Обновляет молекулярные и вихревые коэффициенты для переноса SA.
     AERO_HOST_DEVICE void prepare_sa_material(MeshIndex node) const {
         const auto& g=gas[node];
         const double rho_w=g.density*sa.w[node];
@@ -303,6 +328,7 @@ struct Operator {
         if (material_nodes) cache_material(node,properties.eddy_mu,sa.pr_ratio,properties.nu+sa.w[node]);
     }
 #endif
+    // Определяет, требуется ли подготовка узлового газа для выбранной фазы.
     AERO_HOST_DEVICE bool needs_gas(Evaluation phase) const {
 #ifdef AERO_HAS_TURBULENCE
         // Перед вязким потоком LES уже декодировала это состояние для расчёта ν_t.
@@ -333,6 +359,7 @@ struct Operator {
     }
     // Для работы напряжений в уравнении энергии усредняем именно произведение mu*u.
     enum class Mixing { General, Sa, Sigma };
+    // Осредняет материальные коэффициенты по вершинам элемента.
     template<unsigned fixed_dim=0,unsigned fixed_count=0,Mixing model=Mixing::General>
     AERO_HOST_DEVICE void average_material(MeshIndex index) const {
         const auto& cell = cells[index];
@@ -409,6 +436,7 @@ struct Operator {
         const auto& cell = cells[entry/8];
         gradient_cache[entry]=stencil.vertex_gradient<3>(cell,static_cast<unsigned>(entry%8),gas);
     }
+    // Добавляет вязкие вклады заданного диапазона элементных строк.
     template<unsigned d, Gradients mode>
     AERO_HOST_DEVICE void add_row_range(Row& result,MeshIndex first,MeshIndex end,MeshIndex first_vertex) const {
         for (MeshIndex k=first;k<end;++k) {
@@ -442,16 +470,19 @@ struct Operator {
         if (!partial || end==offsets[node+1]) result.cfl_rate*=2./gas[node].density;
         rows[node]=result;
     }
+    // Собирает вязкую невязку и диффузионное ограничение CFL одного узла.
     template<unsigned d, Gradients mode=Gradients::Direct>
     AERO_HOST_DEVICE void assemble_row(MeshIndex node) const {
         finish_row<d,mode,false>(node,offsets[node],offsets[node+1],0);
     }
+    // Собирает часть вязких вкладов, относящуюся к одному срезу рабочей группы.
     AERO_HOST_DEVICE void assemble_slice(const GradientSlice& slice,MeshIndex first_vertex) const {
         if (tetra.cells && !tetra.all_hex)
             finish_row<3,Gradients::MixedElement,true>(slice.node,slice.first,slice.end,first_vertex);
         else
             finish_row<3,Gradients::Element,true>(slice.node,slice.first,slice.end,first_vertex);
     }
+    // Собирает узловые вклады вязкого оператора из подготовленных градиентов.
     template<Gradients mode=Gradients::Direct>
     AERO_HOST_DEVICE void assemble(MeshIndex node) const {
         if (dim == 3) assemble_row<3,mode>(node);

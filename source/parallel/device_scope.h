@@ -11,6 +11,7 @@ class DeviceScope {
 
 public:
     aero::gpu::Status status = aero::gpu::Status::Success;
+    // Временно выбирает устройство, сохраняя предыдущее для восстановления.
     explicit DeviceScope(int device) noexcept {
         if (device < 0)
             return;
@@ -23,11 +24,14 @@ public:
             status = aero::gpu::select(device);
         }
     }
+    // Освобождает принадлежащие объекту ресурсы при завершении его времени жизни.
     ~DeviceScope() {
         if (previous_ >= 0)
             aero::gpu::select(previous_);
     }
+    // Запрещает копирование, чтобы ресурсы объекта сохраняли единственного владельца.
     DeviceScope(const DeviceScope&) = delete;
+    // Запрещает копирование, чтобы ресурсы объекта сохраняли единственного владельца.
     DeviceScope& operator=(const DeviceScope&) = delete;
 };
 }

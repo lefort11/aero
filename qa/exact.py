@@ -99,6 +99,7 @@ CASES = {
 
 def linear_acoustic(dim):
     """Плоская звуковая волна вдоль диагонали. Фон покоится, ρ₀ = c₀ = 1."""
+    # Вычисляет созданное аналитическое акустическое решение в заданной точке.
     def solution(x, y, z, t, gamma):
         phase = sum((x, y, z)[:dim]) - sqrt(dim) * t
         p = 0.01 * sin(2 * pi * phase)

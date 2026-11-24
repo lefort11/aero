@@ -7,6 +7,7 @@ namespace aero {
 // Конструктор разбирает формулу один раз. При вычислении каждый вызов пользуется собственным стеком операндов.
 class Expression {
 public:
+    // Компилирует формулу один раз. При обходе сетки меняются только координаты узла.
     explicit Expression(const std::string& formula);
     // Подставляет координаты текущего узла и возвращает одно конечное число.
     double evaluate(double x, double y, double z, double t = 0.) const;

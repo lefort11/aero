@@ -29,6 +29,7 @@
 namespace {
 using namespace aero;
 using aero_test::require;
+// Проверяет, что некорректный ввод завершается ожидаемой ошибкой.
 template <class F> void rejects(F call, const std::string& fragment) {
     try {
         call();
@@ -39,8 +40,10 @@ template <class F> void rejects(F call, const std::string& fragment) {
     throw std::runtime_error("expected error containing " + fragment);
 }
 
+// Временная постановка для проверки чтения и валидации настроек.
 struct CaseFiles {
     std::string dir;
+    // Создаёт временный каталог и исходные файлы тестовой постановки.
     CaseFiles() {
         const auto stamp = std::chrono::high_resolution_clock::now().time_since_epoch().count();
         for (unsigned n = 0;; ++n) {
@@ -55,6 +58,7 @@ struct CaseFiles {
             require(errno == EEXIST, "cannot create test directory");
         }
     }
+    // Удаляет временные файлы и каталоги, созданные объектом.
     ~CaseFiles() {
         for (const char* name :
              {"main.txt", "bc.txt", "init.txt", "cuda.txt", "gas.txt", "scheme.txt", "implicit.txt", "linear.txt", "turbulence.txt", "test.fields", "output.txt",
@@ -66,15 +70,18 @@ struct CaseFiles {
         rmdir(dir.c_str());
 #endif
     }
+    // Записывает исходный файл тестовой постановки.
     void write(const std::string& name, const std::string& content) const {
         std::ofstream out((dir + "/" + name).c_str(), std::ios::binary);
         out << content;
         out.close();
         require(bool(out), "cannot write " + name);
     }
+    // Читает подготовленную тестовую постановку и возвращает разобранные настройки.
     RunSettings load() const { return read_run_settings({dir, "./results"}); }
 };
 
+// Проверяет разбор аргументов запуска и переопределений настроек.
 void arguments() {
     const char* args[] = {"aero", "--output=out dir", "--input=./params"};
     const auto dirs = parse_run_arguments(3, args);
@@ -149,6 +156,7 @@ void templates_case() {
             "template initial state");
 }
 
+// Проверяет настройки полей, имён и расписаний зон вывода.
 void output_zones(const CaseFiles& files) {
     const std::string latest =
         "[latest]\nfile=latest.fields\nevery_steps=2\nvariables=E, ux, rho, uy\nformat=text\n";
@@ -278,6 +286,7 @@ void output_zones(const CaseFiles& files) {
 // Оба закона используют одни опорные величины. Для Сазерленда проверяем и
 // дополнительную константу, включая ноль — предел, совпадающий с законом normal.
 #ifdef AERO_HAS_VISCOSITY
+// Проверяет чтение и валидацию параметров вязкости.
 void viscosity_settings(const CaseFiles& files) {
     files.write("main.txt", "mesh=grid.mesh\nreconstruction=first_order\nreconstruction_variables=characteristic\n"
                             "time_scheme=euler\ncfl=.5\neuler_solver=roe\nfinal_time=0\nbackend=cpu");
@@ -320,6 +329,7 @@ void viscosity_settings(const CaseFiles& files) {
 
 #endif
 #ifdef AERO_HAS_TURBULENCE
+// Проверяет чтение и согласованность параметров турбулентности.
 void turbulence_settings(const CaseFiles& files) {
     files.write("main.txt","mesh=grid.mesh\nreconstruction=first_order\nreconstruction_variables=characteristic\n"
                            "backend=cpu\ntime_scheme=euler\ncfl=.5\neuler_solver=lf\nfinal_time=0\nviscosity=normal");
@@ -359,6 +369,7 @@ void turbulence_settings(const CaseFiles& files) {
     require(!read_run_settings(dirs).turbulence.enabled,"Off ignores turbulence.txt");
 }
 #endif
+// Проверяет общие настройки запуска и выбор CUDA-устройств.
 void main_and_cuda(const CaseFiles& files) {
     const std::string head = "\xef\xbb\xbf# test\r\nmesh = \"path #1/grid.mesh\" # relative\n";
     files.write("gas.txt", "gamma=1.67");
@@ -416,6 +427,9 @@ void main_and_cuda(const CaseFiles& files) {
     directories.overrides["implicit"]["preconditioner"]="CSGS";
     const auto second=read_run_settings(directories).implicit_settings;
     require(second.second_order && second.roe && second.csgs && second.simplified_jacobian,"BDF2 controls");
+    directories.overrides["implicit"]["steady_multigrid"] = "on";
+    rejects([&] { read_run_settings(directories); }, "requires time_scheme=steady");
+    directories.overrides["implicit"].erase("steady_multigrid");
     directories.overrides["implicit"]["local_time_step"] = "on";
     rejects([&] { read_run_settings(directories); }, "local_time_step");
     directories.overrides["implicit"]["local_time_step"] = "auto";
@@ -473,6 +487,17 @@ void main_and_cuda(const CaseFiles& files) {
             steady.local_time_step == LocalStepMode::Off && !steady.steady_absolute && steady.steady_tol == 1.e-6 && steady.steady_max_steps == 10000 &&
             steady.implicit_settings.jacobian_update_every == 3, "steady default controls");
     directories.overrides["implicit"]["steady_criterion"] = "absolute";
+    require(!steady.implicit_settings.steady_multigrid,"steady multigrid defaults to off");
+    directories.overrides["implicit"]["steady_multigrid"] = "on";
+#ifdef AERO_HAS_MULTIGRID
+    require(read_run_settings(directories).implicit_settings.steady_multigrid,"enable steady multigrid");
+#else
+    rejects([&]{read_run_settings(directories);},"no source/multigrid");
+#endif
+    directories.overrides["implicit"].erase("steady_multigrid");
+    directories.overrides["implicit"]["steady_multigrid"] = "sometimes";
+    rejects([&]{read_run_settings(directories);},"steady_multigrid");
+    directories.overrides["implicit"].erase("steady_multigrid");
     directories.overrides["implicit"]["steady_tol"] = "10";
     require(read_run_settings(directories).steady_tol == 10., "absolute steady tolerance has physical units");
     directories.overrides["implicit"].erase("steady_criterion");
@@ -562,6 +587,7 @@ void main_and_cuda(const CaseFiles& files) {
     files.write("gas.txt", "gamma=1.4");
 }
 
+// Проверяет привязку граничных секций к меткам сетки.
 void boundaries(const CaseFiles& files) {
     MeshData data;
     data.dimension = 2;
@@ -614,6 +640,7 @@ void initial_snapshot(const CaseFiles& files) {
 }
 }
 
+// Запускает проверки модуля и возвращает ненулевой код при ошибке.
 int main() {
     try {
 #ifdef _OPENMP

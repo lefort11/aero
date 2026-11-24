@@ -14,6 +14,7 @@
 #endif
 
 namespace aero {
+// Создаёт control.txt без удаления заранее сохранённых команд.
 void ControlFile::open(const std::string& directory) {
     path_ = directory + "/control.txt";
     // Режим добавления создаёт пустой файл и сохраняет заранее заданные команды.
@@ -21,7 +22,9 @@ void ControlFile::open(const std::string& directory) {
     if (!create) throw std::runtime_error("Cannot create " + path_);
 }
 
+// Считывает команды и очищает тот же файл для однократного исполнения.
 std::string ControlFile::read_and_clear() const {
+    // Закрывает FILE при автоматическом уничтожении владельца.
     const auto close_file = [](std::FILE* handle) noexcept { std::fclose(handle); };
     std::unique_ptr<std::FILE, decltype(close_file)> file(std::fopen(path_.c_str(), "r+b"), close_file);
     if (!file) throw std::runtime_error("Cannot open " + path_);
@@ -43,6 +46,7 @@ std::string ControlFile::read_and_clear() const {
     return commands;
 }
 
+// Разбирает команды, проверяет значения и сохраняет список принятых изменений.
 void RunControl::parse(const std::string& commands, std::ostream* warnings) {
     std::istringstream in(commands);
     std::set<std::string> keys;
@@ -56,10 +60,12 @@ void RunControl::parse(const std::string& commands, std::ostream* warnings) {
         const auto eq = line.find('=');
         const auto key = trim(line.substr(0, eq));
         has_commands = true;
+        // Извлекает обязательный аргумент команды интерактивного управления.
         const auto argument = [&]() {
             if (eq == std::string::npos) throw std::invalid_argument("expected key=value: " + line);
             return trim(line.substr(eq + 1));
         };
+        // Читает или записывает вещественный параметр в формате текущей операции.
         const auto real = [&]() { return finite_real(argument(), "control.txt (" + key + ")"); };
         if (key == "STOP" || key == "reset_fail") {
             if (eq != std::string::npos) throw std::invalid_argument(key + " takes no value");
@@ -100,6 +106,7 @@ void RunControl::parse(const std::string& commands, std::ostream* warnings) {
     limits.validate(cfl, "control.txt");
 }
 
+// Читает команды на корневом ранге и распространяет результат по MPI.
 bool RunControl::read(const ControlFile& file, const Processes& world) {
     std::string commands;
     if (!world.rank) {
@@ -119,6 +126,7 @@ bool RunControl::read(const ControlFile& file, const Processes& world) {
     return !accepted_.empty();
 }
 
+// Печатает подтверждение применённых параметров управления.
 void RunControl::report_accepted(std::ostream& out) const {
     for (const auto& setting : accepted_) out << "Control accepted: " << setting << '\n';
 }

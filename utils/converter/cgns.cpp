@@ -2,9 +2,11 @@
 #ifndef AERO_WITH_CGNS
 namespace aero {
 namespace converter {
+// Сообщает, собран ли конвертер с поддержкой CGNS.
 bool cgns_available() noexcept {
     return false;
 }
+// Читает выбранную базу и зону CGNS во внутреннее представление сетки.
 Mesh read_cgns(const std::string&, const Options&) {
     throw MeshError("CGNS support is disabled. Rebuild with WITH_CGNS=1 and the CGNS library.");
 }
@@ -19,20 +21,26 @@ Mesh read_cgns(const std::string&, const Options&) {
 namespace aero {
 namespace converter {
 namespace {
+// Проверяет код возврата CGNS и преобразует ошибку библиотеки в исключение.
 void check(int code) {
     if (code != CG_OK)
         throw MeshError(std::string("CGNS: ") + cg_get_error());
 }
+// Проверяет размер входного массива перед приведением к внутреннему типу.
 std::size_t count(cgsize_t n) {
     if (n < 0 || static_cast<std::uint64_t>(n) > 100000000)
         throw MeshError("CGNS: invalid/excessive count");
     return static_cast<std::size_t>(n);
 }
+// Владеет дескриптором открытого файла CGNS.
 struct File {
     int id;
+    // Открывает файл CGNS для чтения и сохраняет его дескриптор.
     explicit File(const std::string& path) { check(cg_open(path.c_str(), CG_MODE_READ, &id)); }
+    // Закрывает принадлежащий объекту файл CGNS.
     ~File() { cg_close(id); }
 };
+// Сопоставляет тип элемента CGNS с поддерживаемой топологией конвертера.
 int kind(CGNS_ENUMT(ElementType_t) type) {
     switch (type) {
     case CGNS_ENUMV(NODE):
@@ -58,16 +66,19 @@ int kind(CGNS_ENUMT(ElementType_t) type) {
                         std::to_string(static_cast<int>(type)));
     }
 }
+// Переводит номер узла исходного формата во внутреннюю нумерацию.
 MeshIndex node(cgsize_t id, std::size_t n) {
     if (id < 1 || static_cast<std::uint64_t>(id) > n)
         throw MeshError("CGNS: invalid node reference");
     return static_cast<MeshIndex>(id - 1);
 }
+// Тип элемента CGNS, его вершины и ссылки на полиэдральные грани.
 struct Record {
     int kind;
     detail::Nodes nodes;
     std::vector<cgsize_t> faces;
 };
+// Преобразует индекс структурированной зоны CGNS в линейный номер узла.
 MeshIndex structured_node(const cgsize_t* ijk, const cgsize_t* shape, int dim) {
     MeshIndex id = 0, stride = 1;
     for (int d = 0; d < dim; ++d) {
@@ -79,6 +90,7 @@ MeshIndex structured_node(const cgsize_t* ijk, const cgsize_t* shape, int dim) {
     return id;
 }
 }
+// Сообщает, собран ли конвертер с поддержкой CGNS.
 bool cgns_available() noexcept {
     return true;
 }
@@ -363,7 +375,9 @@ class CgnsZone {
     }
 
 public:
+    // Открывает CGNS и выбирает запрошенные базу и зону.
     CgnsZone(const std::string& path, const Options& options) : file(path) { select_zone(options); }
+    // Читает координаты, элементы и граничные условия выбранной зоны CGNS.
     Mesh read(const Options& options) {
         detail::Builder builder(static_cast<unsigned>(dimension), options);
         read_coordinates(builder);
@@ -378,6 +392,7 @@ public:
     }
 };
 }
+// Читает выбранную базу и зону CGNS во внутреннее представление сетки.
 Mesh read_cgns(const std::string& path, const Options& options) {
     return CgnsZone(path, options).read(options);
 }

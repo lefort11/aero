@@ -158,6 +158,7 @@ void check_mesh(unsigned d, int device) {
 }
 }
 
+// Проверяет сборку и решение линейной системы BDF.
 void test_bdf1_linear_system(int device) {
     for (unsigned dim = 1; dim <= 3; ++dim) check_mesh(dim,device);
     std::cout << "BDF1 + LF, block Jacobi BiCGSTAB passed on "

@@ -17,6 +17,7 @@ Vector select_nodes(const Vector& field, const std::vector<MeshIndex>& nodes, un
     return selected;
 }
 
+// Сравнивает результаты двух реализаций или представлений с заданным допуском.
 void compare(const Processes& world, const char* mesh_path, const char* archive, const std::vector<int>& devices) {
     const bool gpu = !devices.empty();
     const auto part = load_partition(archive, world);
@@ -104,6 +105,7 @@ void compare(const Processes& world, const char* mesh_path, const char* archive,
 }
 }
 
+// Запускает проверки модуля и возвращает ненулевой код при ошибке.
 int main(int argc, char** argv) {
     aero::Processes world(argc, argv);
     try {

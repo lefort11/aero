@@ -14,6 +14,7 @@ struct SaEdgeConvection {
     double* correction;        // Поправка к потоку первого порядка в направлении begin -> end.
     double upwind, hybrid;
 
+    // Восстанавливает приращение рабочей вязкости на выбранной стороне ребра.
     AERO_HOST_DEVICE double increment(MeshIndex edge, bool right) const {
         const auto side = right ? ReconstructionSide::Right : ReconstructionSide::Left;
         const auto owner = stencil.owner(2*edge + right);
@@ -50,6 +51,7 @@ struct SaEdgeConvection {
         return (right ? -.5 : .5)*increment(edge,right);
     }
 
+    // Вычисляет противопоточный перенос SA по направлению газового потока массы.
     AERO_HOST_DEVICE void operator()(MeshIndex k) const {
         const auto edge = computed ? computed[k] : k;
         const auto& face = surfaces[edge];

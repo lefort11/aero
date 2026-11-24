@@ -29,10 +29,13 @@ clean_runtime :=
 ifeq ($(OS),Windows_NT)
 clean_runtime := libstdc++-6.dll libgcc_s_seh-1.dll libwinpthread-1.dll libgomp-1.dll vcomp140.dll
 endif
+# Возвращает только существующие файлы из заданного каталога и списка известных шаблонов.
 clean_files = $(wildcard $(addprefix $(1)/,$(2)))
 clean_bin_files := $(call clean_files,$(BIN),$(clean_exes) $(clean_runtime) aero_kokkos_cuda.dll libaero_kokkos_cuda.so)
+# Удаляет один известный файл; кавычки сохраняют пробелы, а -- завершает список опций rm.
 remove_file = rm -f -- "$(1)"
 
+# Разворачивает список файлов в отдельные команды удаления, сохраняя границы каждого пути.
 define remove_files
 $(foreach f,$(1),$(call remove_file,$(f))
 )

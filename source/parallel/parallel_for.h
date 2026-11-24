@@ -13,6 +13,7 @@ template <class F> void parallel_for(std::size_t count, const F& row, std::size_
         std::exception_ptr error;
         std::size_t first = count;
         std::mutex error_lock;
+        // Обрабатывает один выбранный диапазон или набор узлов текущей операции.
         const auto visit = [&](std::size_t i) {
             try {
                 row(i);

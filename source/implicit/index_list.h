@@ -11,9 +11,13 @@ struct IndexList {
     const MeshIndex* wide;
     const std::uint32_t* narrow;
 
+    // Подключает массив индексов нужной разрядности без копирования данных.
     AERO_HOST_DEVICE IndexList(const MeshIndex* values = nullptr) : wide(values), narrow(nullptr) {}
+    // Подключает массив индексов нужной разрядности без копирования данных.
     AERO_HOST_DEVICE explicit IndexList(const std::uint32_t* values) : wide(nullptr), narrow(values) {}
+    // Проверяет наличие подключённого массива индексов.
     AERO_HOST_DEVICE explicit operator bool() const { return narrow || wide; }
+    // Возвращает элемент по индексу; допустимость индекса обеспечивает вызывающий код.
     AERO_HOST_DEVICE MeshIndex operator[](MeshIndex i) const { return narrow ? narrow[i] : wide[i]; }
 };
 }

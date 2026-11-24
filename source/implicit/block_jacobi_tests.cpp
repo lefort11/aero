@@ -1,5 +1,6 @@
 #include "../../tests/test_field.h"
 #include "block_jacobi.h"
+#include "../parallel/modules.h"
 #include "../../tests/test_checks.h"
 #include <algorithm>
 #include <cmath>
@@ -12,11 +13,20 @@
 #include "../parallel/device_scope.h"
 #endif
 
+// Сравнивает производные потока LF с независимым численным эталоном.
 void test_lf_edge_jacobian(int device);
+// Проверяет сборку и действие пространственной матрицы Якоби.
 void test_spatial_jacobian(int device);
+// Проверяет сборку и решение линейной системы BDF.
 void test_bdf1_linear_system(int device);
+// Проверяет неявный шаг и его сходимость.
 void test_bdf1_step(int device);
+// Проверяет проходы и предобусловливание CSGS.
 void test_csgs(int device);
+#ifdef AERO_HAS_MULTIGRID
+// Проверяет ограничение, продление и принятие грубосеточной коррекции.
+void test_steady_multigrid(int device);
+#endif
 
 namespace {
 using aero::implicit::BlockJacobi;
@@ -49,6 +59,7 @@ std::vector<double> multiply(const std::vector<double>& matrix, const std::vecto
     return b;
 }
 
+// Проверяет выбрасывание исключения при недопустимых параметрах.
 template <class Exception, class Operation>
 void expect_error(Operation operation, const std::string& message) {
     try {
@@ -60,6 +71,7 @@ void expect_error(Operation operation, const std::string& message) {
     throw std::runtime_error("Expected exception containing " + message);
 }
 
+// Проверяет разложение и решение набора диагональных блоков.
 void check_blocks(int device, unsigned dimension, bool use_matrix_diagonal) {
     const unsigned width = dimension + 2;
     const std::size_t nodes = 1031; // Неполная последняя группа на GPU, выше порога параллельного цикла CPU.
@@ -118,6 +130,7 @@ void check_blocks(int device, unsigned dimension, bool use_matrix_diagonal) {
         require(z == .25, "incorrect inverse of the BDF1 time term");
 }
 
+// Сравнивает результат блочного предобусловливания на CPU и GPU.
 void check_device(int device) {
     BlockJacobi empty(0, 3, device); // MPI-процесс без собственных узлов проходит те же вызовы.
     empty.prepare(nullptr);
@@ -131,9 +144,14 @@ void check_device(int device) {
     test_spatial_jacobian(device);
     test_bdf1_linear_system(device);
     test_bdf1_step(device);
+#ifdef AERO_HAS_MULTIGRID
+    test_steady_multigrid(device);
+    std::cout << "Steady multigrid passed on " << (device < 0 ? "CPU" : "GPU " + std::to_string(device)) << '\n';
+#endif
 }
 }
 
+// Запускает проверки модуля и возвращает ненулевой код при ошибке.
 int main(int argc, char** argv) {
     try {
         const bool require_gpu = argc == 2 && std::string(argv[1]) == "--require-cuda";

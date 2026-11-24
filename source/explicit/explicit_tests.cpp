@@ -9,10 +9,12 @@
 namespace {
 using namespace aero;
 using aero_test::require;
+// Проверяет совпадение чисел в пределах заданного допуска.
 void near(double value, double expected) {
     require(std::fabs(value - expected) < 2e-12 * (1 + std::fabs(expected)),
             "incorrect stage, update or conserved integral");
 }
+// Вычисляет правую часть модельной задачи для проверки временного интегратора.
 void evaluate(TestProblem problem, double time, const ExplicitField& field, double* residual) {
 #ifdef AERO_WITH_KOKKOS_GPU
     if (field.backend == ExplicitBackend::Cuda) {
@@ -23,6 +25,7 @@ void evaluate(TestProblem problem, double time, const ExplicitField& field, doub
     for (std::size_t k = 0; k < field.nodes * field.components; ++k)
         residual[k] = test_residual(problem, time, field, k);
 }
+// Измеряет ошибку интегрирования тестовой задачи для оценки порядка схемы.
 double convergence_error(ExplicitBackend backend, int device, ExplicitScheme scheme, unsigned n) {
     const double volume = .23, initial = 1, dt = 1. / n;
     ExplicitIntegrator solver(1, 1, &volume, &initial, backend, device);
@@ -45,6 +48,7 @@ double convergence_error(ExplicitBackend backend, int device, ExplicitScheme sch
 void periodic(ExplicitBackend backend, int device, ExplicitScheme scheme) {
     const double v[] = {.75, 1, 1.25, 1}, dt = .1;
     const std::vector<double> q = {1, .1, 3, 2, -.3, 4, .8, .9, 2, 1.5, .4, 5};
+    // Выполняет один проверяемый шаг или действие тестового оператора.
     const auto apply = [&](const std::vector<double>& u) {
         std::vector<double> du(u.size());
         for (unsigned i = 0; i < 4; ++i)
@@ -70,6 +74,7 @@ void periodic(ExplicitBackend backend, int device, ExplicitScheme scheme) {
         near(balance, 0);
     }
 }
+// Проверяет шаг с заранее вычисленной первой невязкой.
 void prepared_step(ExplicitBackend backend, int device, ExplicitScheme scheme) {
     const double volume = 2, initial = 1, start = .5, dt = .125;
     const double first = -volume * (initial + start);
@@ -96,6 +101,7 @@ void prepared_step(ExplicitBackend backend, int device, ExplicitScheme scheme) {
     require(solver.state() == baseline.state(), "precomputed first residual changed the step");
 }
 #ifdef AERO_WITH_KOKKOS_GPU
+// Проверяет вложенное переключение GPU и восстановление исходного устройства.
 void nested_devices() {
     const int caller = current_test_device(), other = caller == 0 ? 1 : 0;
     const double one = 1;
@@ -136,6 +142,7 @@ void one_node_stage_values() {
         near(integrator.state()[0], scheme == ExplicitScheme::Euler ? 9.0 : 55.0 / 6);
     }
 }
+// Выполняет набор проверок явного интегратора на выбранном исполнителе.
 void exercise(ExplicitBackend backend, int device) {
     for (auto scheme : {ExplicitScheme::Euler, ExplicitScheme::SSPRK3}) {
         const double coarse = convergence_error(backend, device, scheme, 16);
@@ -183,6 +190,7 @@ void exercise(ExplicitBackend backend, int device) {
         near(result[k], u[k] + .25 * (u[k] + .5));
 }
 }
+// Запускает проверки модуля и возвращает ненулевой код при ошибке.
 int main(int argc, char** argv) {
     try {
         one_node_stage_values();

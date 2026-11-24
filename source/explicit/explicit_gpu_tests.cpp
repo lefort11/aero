@@ -4,6 +4,7 @@
 namespace {
 using namespace aero::device_tests;
 }
+// Возвращает устройство, выбранное текущей GPU-проверкой.
 int current_test_device() {
     int device;
     const auto code = aero::gpu::current(&device);

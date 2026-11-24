@@ -272,6 +272,7 @@ def verify_sparse_batches(case, aero, meshdec, launcher):
         reconstruction="first_order", time_scheme="euler", recovery_every_steps=1, omp_threads=1
     )
 
+    # Создаёт файлы и параметры тестовой постановки для выбранного сценария.
     def configure(mesh_name, end, weights):
         options.update(mesh=mesh_name, final_time=end, mpi_rank_weights=weights)
         (case / "main.txt").write_text("".join(f"{k} = {v}\n" for k, v in options.items()))
@@ -333,6 +334,7 @@ def verify_sparse_batches(case, aero, meshdec, launcher):
     )
 
 
+# Разбирает параметры запуска, выполняет набор QA-проверок и возвращает статус результата.
 def main():
     parser = mpi_parser(__doc__)
     args = parser.parse_args()

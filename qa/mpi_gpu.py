@@ -93,6 +93,7 @@ def verify(case, aero, meshdec, launcher, devices, fixture, scheme, recon, empty
         + columns
     )
 
+    # Создаёт файлы и параметры тестовой постановки для выбранного сценария.
     def configure(**changes):
         options.update(changes)
         (case / "main.txt").write_text("".join(f"{k} = {v}\n" for k, v in options.items()))
@@ -219,6 +220,7 @@ def verify(case, aero, meshdec, launcher, devices, fixture, scheme, recon, empty
             raise AssertionError(failure)
 
 
+# Разбирает параметры запуска, выполняет набор QA-проверок и возвращает статус результата.
 def main():
     parser = mpi_parser(__doc__, require_programs=True)
     parser.add_argument("--devices", default="1,0", help="two visible device IDs on the same node")

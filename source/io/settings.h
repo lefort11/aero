@@ -19,6 +19,7 @@
 #include <vector>
 
 namespace aero {
+// Каталоги постановки и результатов с переопределениями настроек командной строки.
 struct RunDirectories {
     std::string input, output;  // Каталоги постановки и результатов запуска.
     using Parameters = std::map<std::string, std::string>;
@@ -27,6 +28,7 @@ struct RunDirectories {
     bool geometry_only = false; // Записать геометрию контрольных объёмов.
     bool recover = false;       // Возобновить расчёт с контрольной точки.
     int recovery_slot = -1;     // Без номера выбираем новейший пригодный слот.
+    // Сохраняет каталоги входа и выхода и режим интерактивной подготовки.
     RunDirectories(std::string in = "", std::string out = "", bool edit = false)
         : input(in), output(out), interactive(edit) {}
 };
@@ -60,7 +62,9 @@ struct RunSettings {
     LocalStepMode local_time_step = LocalStepMode::Off; // Свой псевдошаг CFL в каждом узле при установлении.
     double steady_tol = 1.e-6;            // Порог в единицах выбранного критерия.
     unsigned steady_max_steps = 10000;    // Предел числа псевдошагов с начала расчёта, включая восстановленные шаги.
+    // Проверяет выбор стационарного режима расчёта.
     bool steady() const { return time_scheme == "steady"; }
+    // Проверяет, требует ли выбранный режим неявного временного интегратора.
     bool uses_implicit_time() const { return steady() || time_scheme == "bdf1" || time_scheme == "bdf2"; }
     std::string euler_solver;             // Численный поток Roe или LF.
     std::string stencil_geometry = "straight";
@@ -74,6 +78,7 @@ struct RunSettings {
     std::uint64_t control_every = 16; // Интервал проверки control.txt в принятых шагах. Ноль отключает управление.
     double t_fo = 0.; // До этого времени (псевдовремени для steady) весь расчёт идёт с первым порядком по пространству.
     std::uint64_t steps_fo = 0; // Число принятых шагов с первым порядком с начала расчёта.
+    // Определяет действие начального периода первого порядка.
     bool first_order_start(double time, std::uint64_t accepted_steps) const {
         return reconstruction != "first_order" && (time < t_fo || accepted_steps < steps_fo);
     }
@@ -97,10 +102,12 @@ struct RunSettings {
     std::vector<OutputZone> output_zones; // Какие поля, куда и с какой частотой записывать.
 };
 
+// Разбирает каталоги запуска и переопределения параметров командной строки.
 RunDirectories parse_run_arguments(int argc, const char* const argv[]);
 // Читает main.txt, gas.txt, необязательный output.txt и параметры CUDA из cuda.txt.
 // Начальные и граничные условия разбираются после загрузки сетки.
 std::vector<std::string> read_exact_formulas(const RunDirectories&, const std::vector<std::string>& names, std::vector<std::string>* warnings = nullptr);
+// Читает и согласует настройки постановки, модулей и командной строки.
 RunSettings read_run_settings(const RunDirectories& directories);
 }
 #endif

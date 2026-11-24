@@ -19,6 +19,7 @@ namespace aero {
 namespace {
 using namespace settings_detail;
 
+// Разрешает путь настройки относительно каталога постановки.
 std::string resolve(const std::string& directory, const std::string& path) {
     if (path.front() == '/' || path.front() == '\\' || (path.size() > 1 && path[1] == ':'))
         return path;
@@ -26,6 +27,7 @@ std::string resolve(const std::string& directory, const std::string& path) {
     return directory + (last == '/' || last == '\\' ? "" : "/") + path;
 }
 
+// Текст параметра и место его определения для сообщений об ошибках.
 struct Entry {
     std::string value, where;
 };
@@ -33,6 +35,7 @@ struct Entry {
 // Таблица ещё не прочитанных ключей одного файла. take удаляет ключ, а finish находит опечатки и лишние поля.
 class Entries {
 public:
+    // Читает файл настроек и применяет переопределения командной строки.
     Entries(const RunDirectories& dirs, const std::string& file, bool optional = false) : path_(resolve(dirs.input, file + ".txt")) {
         const auto& path = path_;
         std::ifstream input(path.c_str());
@@ -65,6 +68,7 @@ public:
                 entries_[item.first] = {item.second, file + ":" + item.first};
     }
 
+    // Извлекает параметр и удаляет его из таблицы непрочитанных ключей.
     Entry take(const std::string& key) {
         const auto it = entries_.find(key);
         if (it == entries_.end())
@@ -73,12 +77,15 @@ public:
         entries_.erase(it);
         return entry;
     }
+    // Проверяет наличие ещё не использованного ключа настройки.
     bool contains(const std::string& key) const { return entries_.count(key) != 0; }
+    // Читает необязательное целочисленное значение с проверкой диапазона.
     template <class T> T optional_count(const std::string& key) {
         if (!entries_.count(key))
             return 0;
         return count<T>(key);
     }
+    // Разбирает неотрицательное целое значение настройки с проверкой диапазона типа.
     template <class T> T count(const std::string& key) {
         const Entry e = take(key);
         std::istringstream stream(e.value);
@@ -90,6 +97,7 @@ public:
         return count;
     }
 
+    // Сообщает о неиспользованных ключах как об ошибках или предупреждениях.
     void finish(std::vector<std::string>* warnings) const {
         for (const auto& item : entries_) {
             const auto message = item.second.where + ": unknown parameter";
@@ -103,6 +111,7 @@ private:
     std::map<std::string, Entry> entries_;
 };
 
+// Проверяет значение настройки по списку поддерживаемых вариантов.
 std::string choice(const Entry& e, std::initializer_list<const char*> allowed) {
     if (std::find(allowed.begin(), allowed.end(), e.value) == allowed.end())
         throw std::invalid_argument(e.where + ": unknown value " + e.value);
@@ -123,10 +132,12 @@ ResidualLimit read_residual_limit(const Entry& entry) {
     throw std::invalid_argument(entry.where + ": expected off, on, stencil or work");
 }
 
+// Разбирает конечное вещественное значение параметра.
 double finite_number(const Entry& e) {
     return finite_real(e.value, e.where);
 }
 
+// Разбирает числовое значение настройки с диагностикой исходной строки.
 double number(const Entry& e, bool zero_allowed) {
     const double value = finite_number(e);
     if (value < 0 || (!zero_allowed && value == 0))
@@ -138,8 +149,10 @@ double number(const Entry& e, bool zero_allowed) {
 // Проверяем все явно заданные величины. Для активного закона take также проверяет
 // наличие обязательных ключей. Это позволяет менять закон, сохранив общий gas.txt.
 #ifdef AERO_HAS_VISCOSITY
+// Читает и согласует параметры закона вязкости и теплопроводности.
 void read_viscosity_parameters(Entries& gas, ViscositySettings& settings) {
     const bool active = settings.law != "off";
+    // Извлекает именованный параметр с диагностикой его исходной записи.
     const auto parameter = [&](const char* key, bool required, bool allow_zero, double& value) {
         if (required || gas.contains(key)) value = number(gas.take(key), allow_zero);
     };
@@ -151,6 +164,7 @@ void read_viscosity_parameters(Entries& gas, ViscositySettings& settings) {
 
 #endif
 
+// Разбирает список положительных чисел из настройки.
 std::vector<double> positive_list(const Entry& e) {
     std::vector<double> values;
     std::size_t start = 0;
@@ -163,6 +177,7 @@ std::vector<double> positive_list(const Entry& e) {
     }
 }
 
+// Разбирает перечень номеров GPU для назначения процессам.
 std::vector<int> device_list(const Entry& e) {
     std::vector<int> result;
     std::set<int> used;
@@ -209,6 +224,7 @@ void read_partition_settings(Entries& main, double default_memory_factor, RunSet
 }
 }
 
+// Разбирает каталоги запуска и переопределения параметров командной строки.
 RunDirectories parse_run_arguments(int argc, const char* const argv[]) {
     RunDirectories dirs;
     for (int i = 1; i < argc; ++i) {
@@ -276,6 +292,8 @@ RunDirectories parse_run_arguments(int argc, const char* const argv[]) {
     return dirs;
 }
 
+// Читает main.txt, gas.txt, необязательный output.txt и параметры CUDA из cuda.txt.
+// Начальные и граничные условия разбираются после загрузки сетки.
 std::vector<std::string> read_exact_formulas(const RunDirectories& dirs, const std::vector<std::string>& names, std::vector<std::string>* warnings) {
     Entries file(dirs, "exact");
     std::vector<std::string> result;
@@ -284,6 +302,7 @@ std::vector<std::string> read_exact_formulas(const RunDirectories& dirs, const s
     return result;
 }
 
+// Читает и согласует настройки постановки, модулей и командной строки.
 RunSettings read_run_settings(const RunDirectories& directories) {
     if (directories.input.empty() || directories.output.empty())
         throw std::invalid_argument("input and output directories are required");
@@ -327,9 +346,20 @@ RunSettings read_run_settings(const RunDirectories& directories) {
         Entries settings(directories, "implicit");
         choice(lowercase(settings.take("solver")), {"bicgstab"});
         auto& controls = run.implicit_settings;
+        if (settings.contains("steady_multigrid")) {
+            const auto entry = settings.take("steady_multigrid");
+            controls.steady_multigrid = choice(lowercase(entry), {"on","off"}) == "on";
+            if (controls.steady_multigrid && !run.steady())
+                throw std::invalid_argument(entry.where + ": steady_multigrid requires time_scheme=steady");
+#ifndef AERO_HAS_MULTIGRID
+            if (controls.steady_multigrid)
+                throw std::invalid_argument(entry.where + ": this build has no source/multigrid module");
+#endif
+        }
         controls.second_order = run.time_scheme == "bdf2";
         controls.roe = choice(lowercase(settings.take("jacobian_flux")), {"lf","roe"}) == "roe";
         controls.csgs = choice(lowercase(settings.take("preconditioner")), {"bj","csgs"}) == "csgs";
+        // Разрешает относительный путь по каталогу исходной настройки.
         const auto relative = [&](const char* key) {
             const auto entry = settings.take(key);
             const double value = number(entry, false);

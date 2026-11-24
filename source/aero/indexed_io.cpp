@@ -7,11 +7,13 @@
 
 namespace aero {
 namespace indexed_io {
+// Записывает двоичное представление вещественного числа без потери точности.
 void put_real(char* dst, double value) {
     number_codec::store_real(dst, value);
 }
 namespace {
 #ifdef AERO_WITH_MPI
+// Преобразует код ошибки MPI-IO в исключение с названием операции.
 void check(int code, const char* operation) {
     if (code == MPI_SUCCESS)
         return;
@@ -43,11 +45,13 @@ struct Batch {
 
     MPI_Offset base = 0;
     MPI_Datatype type = MPI_BYTE;
+    // Освобождает принадлежащие объекту ресурсы при завершении его времени жизни.
     ~Batch() {
         if (type != MPI_BYTE && type != MPI_DATATYPE_NULL)
             MPI_Type_free(&type);
     }
 
+    // Готовит файловое смещение и MPI-тип для пакета выбранных узловых записей.
     void prepare(const std::vector<OwnedNode>& nodes, std::size_t first, std::size_t count, unsigned stride,
                  std::size_t fields) {
         if (!count)
@@ -76,6 +80,7 @@ struct Batch {
     }
 };
 
+// Читает или записывает принадлежащие рангу строки через коллективный MPI-IO.
 void transfer_mpi(const Processes& world, const std::string& file, bool writing, unsigned stride,
                   const std::vector<OwnedNode>& nodes, const std::vector<std::uint64_t>& offsets,
                   const Row& row) {
@@ -149,6 +154,7 @@ void transfer_mpi(const Processes& world, const std::string& file, bool writing,
 #endif
 }
 
+// Переносит выбранные узловые записи между полем и файлом по заданным смещениям.
 void transfer(const Processes& world, const std::string& file, Access access, unsigned stride,
               const std::vector<OwnedNode>& nodes, const std::vector<std::uint64_t>& offsets,
               const Row& row) {

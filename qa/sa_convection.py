@@ -144,6 +144,7 @@ def compare_steps(reference, actual):
     return maximum
 
 
+# Проверяет согласованный перенос газа и рабочей вязкости SA.
 def coupled(case,args):
     case.mkdir()
     configure(case,args,dimension=3)

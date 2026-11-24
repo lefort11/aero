@@ -24,21 +24,27 @@ struct Work {
 struct GradientsOnly {
     using Scratch=Work;
     enum : unsigned { cells_per_team=4 };
+    // Возвращает имя запуска Kokkos для профилирования выбранного типа элементов.
     static const char* label(bool all_hex) {
         return all_hex ? "Aero: AES hex coordinates" : "Aero: AES volume coordinates";
     }
+    // Сохраняет геометрию симплекса, если выбран режим вычисления парных производных.
     KOKKOS_INLINE_FUNCTION void remember(Work&,unsigned,const viscosity::TetrahedronGeometry&,double) const {}
+    // Записывает парные коэффициенты при включённом расчёте якобиана; в режиме градиентов ничего не делает.
     KOKKOS_INLINE_FUNCTION void write_pair(const Work&,MeshIndex,unsigned,
                                            const viscosity::VolumePattern&,const viscosity::Cell&) const {}
 };
+// Нормали и объёмные множители симплексов в общей памяти команды GPU.
 struct PairBasis : Work {
     FixedTensor<double,4,3,24> normal;
     double factor[24];
+    // Возвращает сохранённые нормали пары вершин и объёмный множитель симплекса.
     KOKKOS_INLINE_FUNCTION double operator()(unsigned t,unsigned i,unsigned j,Coordinate& left,Coordinate& right) const {
         for (unsigned m=0;m<3;++m) { left[m]=normal(i,m,t); right[m]=normal(j,m,t); }
         return factor[t];
     }
 };
+// Политика сохранения парных коэффициентов для вязкого якобиана.
 struct JacobianPairs {
     using Scratch=PairBasis;
     // Нормали занимают ещё 2496 байт на элемент. Два элемента на группу
@@ -46,10 +52,12 @@ struct JacobianPairs {
     enum : unsigned { cells_per_team=2 };
     viscosity::CoordinatePairTile tile;
     viscosity::ColumnGraph graph;
+    // Возвращает имя запуска Kokkos для профилирования выбранного типа элементов.
     static const char* label(bool all_hex) {
         return all_hex ? "Aero: AES hex gradients and Jacobian pairs" : "Aero: AES volume gradients and Jacobian pairs";
     }
 
+    // Сохраняет геометрию симплекса, если выбран режим вычисления парных производных.
     KOKKOS_INLINE_FUNCTION void remember(PairBasis& w,unsigned tid,
                                          const viscosity::TetrahedronGeometry& tetra,double factor) const {
         w.factor[tid]=factor;
@@ -57,6 +65,7 @@ struct JacobianPairs {
             for (unsigned m=0;m<3;++m) w.normal(i,m,tid)=tetra.normal[i][m];
     }
 
+    // Записывает парные коэффициенты при включённом расчёте якобиана; в режиме градиентов ничего не делает.
     KOKKOS_INLINE_FUNCTION void write_pair(const PairBasis& w,MeshIndex index,unsigned tid,
                                            const viscosity::VolumePattern& pattern,const viscosity::Cell& cell) const {
         if (tid>=28) return;
@@ -76,6 +85,7 @@ struct JacobianPairs {
     }
 };
 template<bool all_hex,class PairOutput>
+// Командное ядро градиентов AES и необязательных парных производных по координатной геометрии.
 struct Apply {
     enum : unsigned { threads_per_cell=32, cells_per_team=PairOutput::cells_per_team };
     viscosity::Operator grid;
@@ -116,6 +126,7 @@ struct Apply {
             w.stress(0,m,t)=-sum;
         }
     }
+    // Вычисляет градиенты и выбранные парные данные группы элементов командой GPU.
     KOKKOS_INLINE_FUNCTION void operator()(const Team::member_type& team) const {
         const unsigned thread=static_cast<unsigned>(team.team_rank());
         const unsigned slot=thread/threads_per_cell, tid=thread%threads_per_cell, i=tid%8;
@@ -178,6 +189,7 @@ inline void prepare_volumes(const Execution& exec,const viscosity::VolumeCoordin
         g.volume_factors[k]=tetra.factor(pattern.volume_divisor);
     });
 }
+// Запускает командное вычисление градиентов и выбранного вида парных данных.
 template<class PairOutput>
 inline void apply(const Execution& exec,const viscosity::Operator& grid,viscosity::Gradient* out,
                       MeshIndex first,MeshIndex count,MeshIndex first_vertex,PairOutput pairs) {
@@ -193,6 +205,7 @@ inline void apply(const Execution& exec,const viscosity::Operator& grid,viscosit
     else
         Kokkos::parallel_for(pairs.label(false),team,Apply<false,PairOutput>{grid,out,first,first_vertex,count,pairs});
 }
+// Запускает координатный оператор только для вычисления градиентов.
 inline void gradients(const Execution& exec,const viscosity::Operator& grid,viscosity::Gradient* out,
                       MeshIndex first,MeshIndex count,MeshIndex first_vertex) {
     apply(exec,grid,out,first,count,first_vertex,GradientsOnly{});

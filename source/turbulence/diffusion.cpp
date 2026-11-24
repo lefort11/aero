@@ -8,7 +8,9 @@
 
 namespace aero {
 namespace turbulence {
+// Объединяет совпадающие геометрические строки диффузии для сокращения памяти.
 bool Storage::share_diffusion_rows() {
+    // Лексикографически упорядочивает строки диффузионных коэффициентов.
     struct Compare {
         bool operator()(const std::vector<DiffusionTerm> &a, const std::vector<DiffusionTerm> &b) const {
             return std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end(),
@@ -51,6 +53,7 @@ bool Storage::share_diffusion_rows() {
     return true;
 }
 
+// Упаковывает компактные строки с тремя соседями в специализированный формат.
 bool Storage::pack_three_neighbours(size_t node_count) {
     if (node_count>UINT32_MAX || element_count>UINT32_MAX || diffusion_terms.empty()
         || diffusion_terms.size()%3) return false;
@@ -76,6 +79,7 @@ bool Storage::pack_three_neighbours(size_t node_count) {
     return true;
 }
 
+// Упаковывает плотные диффузионные строки для регулярного доступа.
 bool Storage::pack_dense_rows(MeshIndex possible) {
     if (!possible || diffusion_terms.size()<=possible-possible/3 ||
         distance.size()>UINT32_MAX || element_count>UINT32_MAX) return false;
@@ -179,6 +183,7 @@ static void visit_diffusion_row(const viscosity::Operator& aes, MeshIndex node, 
 // более двух связей, а на границе MPI линия закончится на собственном узле.
 void Storage::prepare_lines(const viscosity::Operator& aes,double scale,const std::vector<MeshIndex>& owned) {
     const auto missing=static_cast<MeshIndex>(-1);
+    // Обратная топологическая ссылка с исходным адресом в таблице.
     struct Link { MeshIndex node; double weight; };
     const Link none{missing,0.};
     using Pair=std::array<Link,2>;
@@ -242,6 +247,7 @@ void Storage::prepare_lines(const viscosity::Operator& aes,double scale,const st
     }
     if (!coupled) { line_segments.clear(); line_vertices.clear(); }
 }
+// Строит геометрические строки диффузии рабочей вязкости SA.
 void Storage::prepare_diffusion(const viscosity::Operator& aes,View& view,bool host,bool implicit,
                                 const std::vector<MeshIndex>* steady_nodes) {
     element_count = aes.cell_count;

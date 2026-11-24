@@ -11,16 +11,20 @@ namespace converter {
 namespace {
 typedef std::uint64_t Tag;
 const Tag max_items = 100000000; // Ограничение объявленных размеров до выделения памяти.
+// Читает числа Gmsh с учётом текстового режима, разрядности и порядка байтов.
 struct Reader {
     std::istream& in;
     bool binary, swap;
     int width;
+    // Начинает чтение Gmsh с исходными параметрами до разбора заголовка.
     explicit Reader(std::istream& s) : in(s), binary(false), swap(false), width(8) {}
+    // Проверяет обязательный маркер или значение входного формата.
     void expect(const std::string& s) {
         std::string t;
         if (!(in >> t) || t != s)
             throw MeshError("Gmsh: expected " + s);
     }
+    // Пропускает требуемый перевод строки после двоичного блока Gmsh.
     void newline() {
         std::string rest;
         if (!std::getline(in, rest))
@@ -28,6 +32,7 @@ struct Reader {
         if (rest.find_first_not_of(" \t\r") != std::string::npos)
             throw MeshError("Gmsh: unexpected header data");
     }
+    // Читает двоичное значение исходного типа с учётом порядка байтов.
     template <class T> T raw() {
         char bytes[sizeof(T)];
         if (!in.read(bytes, sizeof(T)))
@@ -38,6 +43,7 @@ struct Reader {
         std::memcpy(&value, bytes, sizeof(T));
         return value;
     }
+    // Читает неотрицательное целое из текстового раздела Gmsh.
     Tag ascii_uint() {
         std::string t;
         if (!(in >> t) || t.empty() || t.size() > 20)
@@ -51,7 +57,9 @@ struct Reader {
         }
         return n;
     }
+    // Читает размер в разрядности, указанной заголовком Gmsh.
     Tag size() { return binary ? (width == 8 ? raw<std::uint64_t>() : raw<std::uint32_t>()) : ascii_uint(); }
+    // Читает целое значение с учётом формата и порядка байтов.
     int integer() {
         if (binary)
             return raw<std::int32_t>();
@@ -60,6 +68,7 @@ struct Reader {
             throw MeshError("Gmsh: invalid int32");
         return static_cast<int>(n);
     }
+    // Читает вещественное значение с учётом формата и порядка байтов.
     double real() {
         if (binary)
             return raw<double>();
@@ -68,12 +77,14 @@ struct Reader {
             throw MeshError("Gmsh: invalid coordinate");
         return d;
     }
+    // Проверяет размер входного массива перед приведением к внутреннему типу.
     Tag count() {
         Tag n = size();
         if (n > max_items)
             throw MeshError("Gmsh: count exceeds converter limit");
         return n;
     }
+    // Читает идентификатор сущности Gmsh заданной разрядности.
     Tag tag() {
         Tag n = size();
         if (n == 0)
@@ -81,6 +92,7 @@ struct Reader {
         return n;
     }
 };
+// Тип элемента, геометрическая сущность, физическая метка и номера его вершин.
 struct Record {
     int kind, entity;
     unsigned dim;
@@ -91,10 +103,13 @@ struct Record {
 struct Locale {
     std::istream& s;
     std::locale old;
+    // Временно задаёт потоку независимую от ОС локаль разбора чисел.
     explicit Locale(std::istream& x) : s(x), old(x.getloc()) { s.imbue(std::locale::classic()); }
+    // Освобождает принадлежащие объекту ресурсы при завершении его времени жизни.
     ~Locale() { s.imbue(old); }
 };
 
+// Состояние чтения версии, сущностей и элементов файла Gmsh.
 class GmshFile {
     Reader r;            // Источник токенов или двоичных величин в порядке байтов файла.
     bool legacy = false; // В 2.2 метки сопоставлены элементам, в 4.1 — геометрическим сущностям.
@@ -413,7 +428,9 @@ class GmshFile {
     }
 
 public:
+    // Связывает разборщик сетки Gmsh с входным потоком.
     explicit GmshFile(std::istream& input) : r(input) {}
+    // Разбирает секции Gmsh и собирает внутреннюю сетку.
     Mesh read(const Options& options) {
         read_header();
         std::string section;
@@ -434,10 +451,12 @@ public:
     }
 };
 }
+// Читает сетку Gmsh и переводит её топологию во внутренний формат.
 Mesh read_gmsh(std::istream& input, const Options& options) {
     Locale locale(input);
     return GmshFile(input).read(options);
 }
+// Читает сетку Gmsh и переводит её топологию во внутренний формат.
 Mesh read_gmsh(const std::string& path, const Options& options) {
     std::ifstream in(path.c_str(), std::ios::binary);
     if (!in)

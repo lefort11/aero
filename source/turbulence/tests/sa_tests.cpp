@@ -47,6 +47,7 @@ void test_sa_convection() {
     aero::EulerFluxResult gas{};
     double result = 0.;
     const SaEdgeConvection edge{stencil,&face,nullptr,&gas,w,&result,1.,0.};
+    // Вычисляет эталонный поток SA для проверки конвективного оператора.
     const auto flux = [&](double mass, unsigned char mask) {
         gas.flux[0] = mass;
         face.use_nodal_traces = mask;
@@ -70,6 +71,7 @@ void test_sigma() {
     box.volume=8.; box.vol_length=2.; box.min_edge=1.; box.max_edge=4.;
     for (unsigned i=0;i<8;++i)
         box.position[i]={{double(i&1),double(i&2),double(i&4)}};
+    // Вычисляет физическую вихревую вязкость из тестового состояния SA.
     const auto viscosity=[&](Scale scale) {
         LesSettings settings;
         settings.scale=scale;
@@ -158,6 +160,7 @@ void test_sigma_filter_geometry() {
         // Смена местных номеров вершин и большая постоянная скорость не должны
         // менять производные линейного поля. Проверяем все девять компонент.
         struct Cell { unsigned node[8]; } cell{};
+        // Тестовые компоненты скорости в вершинах элемента.
         struct Gas { double velocity[3]; } gas[8]{};
         const VelocityGradient linear={{1.,.5,-2.,.25,-3.,4.,-2.,2.,1.}};
         for (unsigned k=0;k<8;++k) {
@@ -276,6 +279,7 @@ void test_sa_line() {
     aero_test::require(w[3]==0. && plain[3]==0., "SA line wall");
 }
 
+// Запускает проверки модуля и возвращает ненулевой код при ошибке.
 int main() {
     try {
         // Для геометрической последовательности поправок получаем точную сумму.

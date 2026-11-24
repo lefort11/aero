@@ -8,18 +8,21 @@
 namespace aero {
 // Для исходного узла first == second. На ребре значение равно (1-w)*first + w*second.
 struct SlicePoint { MeshIndex first, second; double weight; };
+// Геометрия подсетки и её связь с узлами исходной сетки для интерполяции.
 struct Submesh {
     std::string parent_hash;
     MeshIndex parent_nodes = 0;
     std::vector<SlicePoint> points;
     Mesh mesh;
 
+    // Сохраняет подсетку, отпечаток родителя и точки интерполяции.
     void write(std::ostream& out) const {
         out << "AEROSLICE 1\n" << parent_hash << ' ' << parent_nodes << ' ' << points.size() << '\n'
             << std::setprecision(17);
         for (const auto& p : points) out << p.first << ' ' << p.second << ' ' << p.weight << '\n';
         mesh.write(out, MeshFormat::Binary);
     }
+    // Читает подсетку и проверяет её связи с родительской сеткой.
     static Submesh read(const std::string& path) {
         std::ifstream in(path, std::ios::binary);
         Submesh s;

@@ -14,6 +14,7 @@ using Id=MeshIndex;
 using Key=std::pair<Id,Id>;
 using Ring=std::vector<Key>;
 
+// Разбирает конечный числовой параметр секущей плоскости.
 double number(const char* text) {
     std::size_t used=0;
     const double value=std::stod(text,&used);
@@ -32,15 +33,18 @@ class SliceBuilder {
     std::vector<unsigned> uses;
     std::vector<SlicePoint> mapping;
 
+    // Вычисляет интерполяционный вес пересечения ребра с плоскостью.
     double weight(Key k) const {
         return k.first==k.second ? 0. : distance[k.first]/(distance[k.first]-distance[k.second]);
     }
+    // Вычисляет координаты точки среза по концам ребра и весу.
     Coordinate position(Key k) const {
         const auto a=grid.coordinate(k.first), b=grid.coordinate(k.second);
         Coordinate p{};
         for (unsigned j=0;j<3;++j) p[j]=a[j]+weight(k)*(b[j]-a[j]);
         return p;
     }
+    // Создаёт или находит уже добавленную вершину среза.
     Id vertex(Key k) {
         auto added=vertices.emplace(k,vertices.size());
         if (added.second) {
@@ -50,6 +54,7 @@ class SliceBuilder {
         }
         return added.first->second;
     }
+    // Добавляет грань среза с сохранением общей нумерации вершин.
     void append_face(Id a,Id b,int orientation) {
         const auto key=std::minmax(a,b);
         auto added=faces.emplace(key,faces.size());
@@ -64,6 +69,7 @@ class SliceBuilder {
         data.cell_faces.indices.push_back(f);
         data.cell_face_orientation.push_back(static_cast<std::int8_t>(orientation));
     }
+    // Добавляет ячейку полученной подсетки.
     void append_cell(Ring ring) {
         if (data.dimension==1) {
             auto a=position(ring[0]), b=position(ring[1]);
@@ -106,6 +112,7 @@ class SliceBuilder {
         for (std::size_t k=0;k<hits.size();k+=2) result.emplace_back(hits[k],hits[k+1]);
         return result;
     }
+    // Пересекает исходную ячейку плоскостью и упорядочивает контур сечения.
     void cut_cell(const MeshCell& cell) {
         bool above=false, below=false;
         for (Id n:cell.node_ids()) { above|=distance[n]>0.; below|=distance[n]<0.; }
@@ -145,6 +152,7 @@ class SliceBuilder {
         }
     }
 public:
+    // Вычисляет расстояния узлов до секущей плоскости и готовит построение среза.
     SliceBuilder(MeshView mesh,Coordinate n,double offset,double tolerance):grid(mesh),normal(n),distance(mesh.node_count) {
         data.dimension=grid.dimension-1;
         if (grid.dimension<2) throw MeshError("A plane slice requires a 2D or 3D mesh");
@@ -155,6 +163,7 @@ public:
         if (std::all_of(distance.begin(),distance.end(),[](double d){return d==0.;}))
             throw MeshError("The entire mesh lies within the plane tolerance");
     }
+    // Строит геометрию подсетки и связи интерполяции с исходной сеткой.
     Submesh build(bool cut) {
         // Каждую совпавшую грань берём один раз, включая внутренние грани двух ячеек.
         for (Id f=0;f<grid.face_count;++f) {
@@ -177,6 +186,7 @@ public:
 };
 }
 
+// Разбирает параметры плоскости и сохраняет сечение исходной сетки.
 int main(int argc,char** argv) {
     using namespace aero;
     try {

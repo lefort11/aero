@@ -17,8 +17,12 @@ using Index = ReconstructionIndex;
 struct OrientedFace {
     Index encoded; // Младший бит отмечает нормаль, направленную внутрь контрольного объёма.
 
+    // Создаёт ссылку на площадку с положительной ориентацией для текущего узла.
     AERO_HOST_DEVICE static OrientedFace outward(Index face) { return {2 * face}; }
+    // Создаёт ссылку на площадку с отрицательной ориентацией для текущего узла.
     AERO_HOST_DEVICE static OrientedFace inward(Index face) { return {2 * face + 1}; }
+    // При плотном обходе k уже является номером грани. Выделенная группа
+    // или подобласть MPI передаёт свой список; для GPU достаточно его адреса.
     AERO_HOST_DEVICE Index face() const { return encoded / 2; }
 
     // Приводит компоненту сохранённого потока к наружной нормали этого узла.
@@ -27,11 +31,14 @@ struct OrientedFace {
     }
 };
 #if !defined(__CUDACC_RTC__) && !defined(AERO_RESIDUAL_KERNEL_ONLY)
+// Переводит вектор площади в базис компонент импульса решателя.
 void project_surface(Surface&, CvVector area, unsigned dimension, const ResidualFrame&);
 // Однородная среда у неподвижной стенки может двигаться только вдоль неё.
 void validate_linear_walls(const Geometry&);
+// Строит CSR-списки ориентированных площадок каждого узла.
 void build_incidence(Index nodes, Index edges, const std::vector<Surface>& surfaces,
                      std::vector<Index>& offsets, std::vector<OrientedFace>& incidence);
+// Определяет, требуется ли заменить реконструированные следы узловыми значениями.
 inline bool needs_nodal_traces(BoundaryType type) {
     // На открытой метке режим меняется во времени. Для всех её узлов нужны внутренние состояния.
     return type == BoundaryType::Free;
@@ -59,11 +66,15 @@ AERO_HOST_DEVICE constexpr unsigned first_slope_term(unsigned row) {
 // Порядки обеих сторон проходят с ребром от сборки шаблона до записи потока.
 struct PackedEdgeOrder {
     unsigned char flags; // 0 — пропустить ребро, бит 0 — готово, биты 1 и 2 — укороченные стороны.
+    // Кодирует параметры обеих сторон в общее представление ребра.
     static PackedEdgeOrder from_sides(bool short_left, bool short_right) {
         return {static_cast<unsigned char>(1u | (unsigned(short_left) << 1) | (unsigned(short_right) << 2))};
     }
+    // Проверяет наличие готовых упакованных данных обработки ребра.
     AERO_HOST_DEVICE bool ready() const { return flags != 0; }
+    // Проверяет полноту высокопорядкового шаблона ребра.
     AERO_HOST_DEVICE bool complete() const { return flags == 1; }
+    // Определяет, используется ли укороченный шаблон реконструкции.
     AERO_HOST_DEVICE bool shortened(unsigned side) const { return (flags & (2u << side)) != 0; }
 };
 
@@ -71,8 +82,11 @@ struct PackedEdgeOrder {
 // Номер ребра задаёт номер плитки и позицию внутри неё на обоих исполнителях.
 namespace edge_tile {
 constexpr unsigned width = 32;
+// Возвращает индекс записи в упакованной группе рёбер.
 AERO_HOST_DEVICE constexpr Index index(Index edge) { return edge / width; }
+// Возвращает позицию ребра внутри упакованной группы.
 AERO_HOST_DEVICE constexpr unsigned lane(Index edge) { return static_cast<unsigned>(edge % width); }
+// Возвращает исходный номер ребра для позиции в упакованной группе.
 AERO_HOST_DEVICE constexpr Index edge(Index tile, unsigned position) { return tile * width + position; }
 // Последняя неполная плитка тоже занимает место. Сложение не переполняется даже при максимальном n.
 AERO_HOST_DEVICE constexpr Index count(Index n) { return index(n) + (lane(n) != 0); }
@@ -83,6 +97,7 @@ AERO_HOST_DEVICE constexpr Index count(Index n) { return index(n) + (lane(n) != 
 template <unsigned scheme_order> struct WenoEdgeTile {
     // Обеим сторонам достаточно трёх общих наклонов. Пятый порядок добавляет по дальнему с каждой стороны.
     static constexpr unsigned rows_per_edge = scheme_order == 5 ? 5 : 3;
+    // Возвращает начало опорных коэффициентов наклона выбранного ребра.
     FixedMatrix<unsigned,first_slope_term(rows_per_edge),edge_tile::width> nodes; // Индексы слагаемых по строкам наклонов.
     PackedEdgeOrder order[edge_tile::width]; // Хранится вместе с постоянной геометрией ребра.
     // В каждой строке первый узел задаёт начало отсчёта. Для него вес хранить не требуется.
@@ -100,6 +115,7 @@ struct MpEdgeTile {
     double enthalpy[edge_tile::width], sound[edge_tile::width];
     double kinetic[edge_tile::width], normal_speed[edge_tile::width], tangent_speed[edge_tile::width];
 
+    // Сохраняет характеристический базис ребра для повторного использования.
     AERO_HOST_DEVICE void store_basis(unsigned lane, const euler_detail::PlaneWaveBasis& basis) {
         velocity(0, lane) = basis.velocity[0];
         velocity(1, lane) = basis.velocity[1];
@@ -124,7 +140,9 @@ struct MpEdgeTile {
     }
 };
 
+// Единичная нормаль площадки в базисе компонент импульса.
 struct FaceNormal { double axis[3]; }; // Единичный вектор в базисе решателя.
+// Невладеющие геометрия, реконструкция и параметры расчёта потоков.
 struct Geometry {
     unsigned dim;              // Число компонент импульса.
     Index nodes, edges, faces; // faces включает рёбра и следующие за ними физические площадки.
@@ -150,7 +168,9 @@ struct Geometry {
     } packed;
     bool initial_on_boundary; // На GPU начальные данные можно хранить по номеру граничной площадки.
 
+    // Возвращает число консервативных компонент состояния: размерность плюс две.
     AERO_HOST_DEVICE unsigned components() const { return dim + 2; } // Плотность, импульс и энергия.
+    // Возвращает строку площадок указанного узла.
     template <class T> AERO_HOST_DEVICE T* node_row(T* field, Index node) const {
         return field + node * components();
     }
@@ -168,6 +188,7 @@ AERO_HOST_DEVICE inline void decode_nodal_gas(unsigned dimension, const double* 
         gas[i].density = 0;
 }
 
+// Читает и преобразует компоненты текущего поля для реконструкции потока.
 struct Reader {
     const Geometry& g;           // Размерность, параметры и готовый шаблон.
     const double* field;         // Консервативные переменные текущей стадии по узлам.
@@ -205,14 +226,17 @@ struct LinearReader {
     ResidualVariables variables;
     const LinearFace& face;
     FixedMatrix<double,2,3> tangent;
+    // Физический поток в узле проецируем на нормаль текущего ребра.
     AERO_HOST_DEVICE EulerStatus physical_flux(Index, const double* q, double* flux) const {
         face.physical(q,flux);
         return EulerStatus::Success;
     }
 };
+// Проецирует приращение состояния или потока в выбранный базис реконструкции.
 AERO_HOST_DEVICE inline bool project_slope(const Reader& r, bool characteristic, double* slope) {
     return !characteristic || r.project(slope,slope) == EulerStatus::Success;
 }
+// Проецирует приращение состояния или потока в выбранный базис реконструкции.
 AERO_HOST_DEVICE inline bool project_slope(const LinearReader& r, bool characteristic, double* q) {
     const auto& gas = r.face.gas;
     const unsigned d = r.g.dim;
@@ -247,6 +271,7 @@ KOKKOS_FORCEINLINE_FUNCTION bool transformed_row(const FieldReader& reader, Inde
             out[c * stride] = 0;
         return true;
     }
+    // Возвращает компоненты опорного поля в выбранных переменных реконструкции.
     const auto values = [&](Index i, double* buffer) -> const double* {
         const Index node = row.node(i);
         const double* state = reader.field + node * width;
@@ -256,6 +281,7 @@ KOKKOS_FORCEINLINE_FUNCTION bool transformed_row(const FieldReader& reader, Inde
             return own;
         return reader.physical_flux(node, state, buffer) == EulerStatus::Success ? buffer : nullptr;
     };
+    // Возвращает вес опоры в текущей строке реконструкции.
     const auto weight = [&](Index i) { return row.weight(i); };
     double slope[5];
     if (!reconstruction_detail::sum_slope<characteristic_2d ? 4 : linear_width>(width, count, values, weight, slope))
@@ -286,6 +312,7 @@ KOKKOS_FORCEINLINE_FUNCTION void side_increments(const ReconstructionStencilView
         out[k] = nonlinear_increment(st.weno_order[row], slopes + 4*k, st.epsilon(row), st.mp5);
 }
 
+// Вычисляет WENO-приращение в преобразованных переменных.
 template <bool characteristic_2d = false, class FieldReader>
 KOKKOS_FORCEINLINE_FUNCTION bool transformed_weno_increment(const FieldReader& reader, Index row, const double* own,
                                                                     double* out) {
@@ -339,11 +366,13 @@ KOKKOS_FORCEINLINE_FUNCTION bool trace_from_increment(unsigned width, const Basi
     return true;
 }
 
+// Добавляет восстановленное приращение к узловому следу.
 template<unsigned Width>
 AERO_HOST_DEVICE inline bool add_increment(const Reader& r, bool characteristic, const double* own,
                                           double* increment, bool right, double* trace) {
     return trace_from_increment<Width>(r.g.components(),characteristic ? &r.basis : nullptr,own,increment,right,trace);
 }
+// Добавляет восстановленное приращение к узловому следу.
 template<unsigned Width>
 AERO_HOST_DEVICE inline bool add_increment(const LinearReader& r, bool characteristic, const double* own,
                                           double* increment, bool right, double* trace) {
@@ -485,6 +514,7 @@ KOKKOS_FORCEINLINE_FUNCTION bool reconstruct_edge_traces(const FieldReader& read
     return true;
 }
 
+// Выбирает допустимую долю приращения по ограничениям физического состояния.
 AERO_HOST_DEVICE inline double limit_ratio(double base, double value, const ResidualOptions& o) {
     const double lo = base * o.trace_ratio_min, hi = base * o.trace_ratio_max;
     if (value < lo)
@@ -711,6 +741,7 @@ KOKKOS_FORCEINLINE_FUNCTION bool ebr_state_and_flux(const FieldReader& reader, I
         const double* own = reader.field + width * owner;
         double own_flux[width], increment[2*width];
         if (reader.physical_flux(owner,own,own_flux) != EulerStatus::Success) return false;
+        // Возвращает компоненты опорного поля в выбранных переменных реконструкции.
         const auto values = [&](Index k, double* pair) -> const double* {
             const Index node = entries.node(k);
             const double* u = reader.field + width*node;
@@ -720,6 +751,7 @@ KOKKOS_FORCEINLINE_FUNCTION bool ebr_state_and_flux(const FieldReader& reader, I
             } else if (reader.physical_flux(node,u,pair+width) != EulerStatus::Success) return nullptr;
             return pair;
         };
+        // Возвращает вес опоры в текущей строке реконструкции.
         const auto weight = [&](Index k) { return entries.weight(k); };
         if (!reconstruction_detail::sum_slope<2*width>(2*width,entries.count,values,weight,increment))
             return false;
@@ -733,6 +765,7 @@ KOKKOS_FORCEINLINE_FUNCTION bool ebr_state_and_flux(const FieldReader& reader, I
     return true;
 }
 
+// Восстанавливает левый и правый следы на внутреннем ребре.
 template<unsigned linear_width, bool characteristic_2d, bool ebr_flux = false, class FieldReader>
 KOKKOS_FORCEINLINE_FUNCTION bool reconstruct_pair(const Geometry& g, Index edge, FieldReader& reader,
         EdgeTraces& state, EdgeTraces& reconstructed_flux, EdgeTraces*& physical_flux) {
@@ -790,6 +823,7 @@ AERO_HOST_DEVICE inline bool linear_edge_flux(const Geometry& g, Index edge, con
                           flux.left,flux.right,out) && integrate_flux(g.components(),s.measure,out);
 }
 
+// Вычисляет поток внутренних следов с однократным умножением на площадь.
 template <bool roe_2d = false, bool nodal_only = false, unsigned linear_width = 0, bool characteristic_2d = false,
           bool ebr_flux = false>
 KOKKOS_FORCEINLINE_FUNCTION bool integrated_edge_flux(const Geometry& g, Index edge, const double* field,
@@ -845,10 +879,13 @@ struct FaceBatch {
         geometry.stencil = ReconstructionStencilView{};
         geometry.packed.tiles = nullptr;
     }
+    // Определяет, требуется ли обновить кэш примитивных газовых параметров.
     bool needs_gas_update() const { return geometry.packed.gas && !gas_current; }
     // При плотном обходе k уже является номером грани. Выделенная группа
     // или подобласть MPI передаёт свой список; для GPU достаточно его адреса.
     AERO_HOST_DEVICE static Index face(const MeshIndex* selected, Index k) { return selected ? selected[k] : k; }
+    // При плотном обходе k уже является номером грани. Выделенная группа
+    // или подобласть MPI передаёт свой список; для GPU достаточно его адреса.
     AERO_HOST_DEVICE Index face(Index k) const { return face(indices, k); }
     // Для первого порядка размерность и решатель известны до обхода. Проверки и формулы потока общие.
     AERO_HOST_DEVICE bool roe_2d() const {
@@ -857,6 +894,7 @@ struct FaceBatch {
     // Первый порядок LF читает только два узла. Размерность выбираем один раз
     // до обхода всего списка, чтобы ядро работало с постоянной шириной состояния.
     bool nodal_lf() const { return !geometry.stencil.has_owners() && geometry.options.solver == ResidualSolver::LocalLF; }
+    // Строит двумерный базис Роу по узловым значениям.
     AERO_HOST_DEVICE bool nodal_roe_2d() const {
         return roe_2d() && !geometry.stencil.has_owners();
     }
@@ -866,6 +904,7 @@ struct FaceBatch {
         return roe_2d() && geometry.stencil.has_owners() && !geometry.stencil.weno_order &&
                geometry.options.variables != ResidualVariables::Flux;
     }
+    // Вычисляет численный поток внутренней площадки между узлами.
     template <bool roe, bool nodal, unsigned linear_width = 0, bool characteristic_2d = false, bool ebr_flux = false>
     AERO_HOST_DEVICE bool compute_edge(Index f, unsigned nodal_lf_dim = 0) const {
         if (!integrated_edge_flux<roe, nodal, linear_width, characteristic_2d, ebr_flux>(geometry, f, state, flux[f], nodal_lf_dim))
@@ -873,6 +912,7 @@ struct FaceBatch {
         save_speed(f);
         return true;
     }
+    // Вычисляет поток внешней площадки с заданным граничным условием.
     AERO_HOST_DEVICE bool compute_boundary(Index f) const {
         if (!integrated_boundary_flux(geometry, f, state, initial, flux[f]))
             return false;
@@ -882,16 +922,19 @@ struct FaceBatch {
     // Список MPI может перемежать внутренние рёбра и граничные площадки.
     // Для раздельных диапазонов исполнитель вызывает нужную функцию напрямую.
     AERO_HOST_DEVICE bool is_boundary(Index face) const { return face >= geometry.edges; }
+    // Выбирает внутренний или граничный расчёт для данной площадки.
     template <bool roe_2d = false, bool nodal = false, unsigned linear_width = 0, bool ebr_flux = false>
     AERO_HOST_DEVICE bool compute_face(Index face, unsigned lf_dim = 0) const {
         return is_boundary(face) ? compute_boundary(face) : compute_edge<roe_2d,nodal,linear_width,false,ebr_flux>(face,lf_dim);
     }
+    // Вычисляет поток площадки для линеаризованной системы Эйлера.
     AERO_HOST_DEVICE bool compute_linear(Index f) const {
         if (is_boundary(f)) return compute_boundary(f);
         if (!linear_edge_flux(geometry,f,state,flux[f])) return false;
         save_speed(f);
         return true;
     }
+    // Сохраняет скорость волн площадки для последующего ограничения CFL.
     AERO_HOST_DEVICE void save_speed(Index f) const {
         if (f < geometry.edges) {
             if (edge_speeds)
@@ -900,8 +943,11 @@ struct FaceBatch {
             boundary_speeds[f - geometry.edges] = flux[f].max_wave_speed;
     }
 };
+// Вычисляет потоки набора внутренних и граничных площадок на CPU.
 void cpu_face_fluxes(const FaceBatch&, const MeshIndex* global_nodes = nullptr);
+// Готовит единичные нормали площадок на GPU.
 void gpu_prepare_face_normals(const Geometry&);
+// Вычисляет потоки набора площадок на GPU.
 void gpu_face_fluxes(const FaceBatch&, Index* bad, void* stream, const FaceBatch* device_faces = nullptr);
 
 // Собирает R одного узла в row. Один поток исполнения пишет все его компоненты.

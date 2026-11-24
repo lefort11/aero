@@ -10,7 +10,9 @@ from mpi_fields import binary_snapshot
 from mpi_geometry import run
 
 
+# Создаёт срез сетки и сравнивает интерполированные поля разных режимов запуска.
 def check(case, mpi):
+    # Находит утилиту, необходимую для проверки подсеток.
     def program(name):
         return ROOT / "bin" / (name + (".exe" if os.name == "nt" else ""))
     grid = case / "grid.mesh"

@@ -32,6 +32,7 @@ namespace {
 using Id = std::uint64_t;
 const unsigned header_size = 120;
 using Packet = std::array<char, header_size>;
+// Проверяет обязательное условие и сообщает ошибку при его нарушении.
 void require(bool ok, const std::string& message) {
     if (!ok)
         throw std::runtime_error("recovery: " + message);
@@ -42,18 +43,22 @@ using number_codec::read_word;
 using number_codec::store_word;
 // Версия 2 добавляет контрольную сумму и значение предыдущего dt после заголовка.
 unsigned records_start(bool history) { return header_size + (history ? 16u : 0u); }
+// Вычисляет размер записи узла с учётом истории, SA и статистики.
 unsigned record_size(unsigned width, bool history, bool scalar, bool samples) {
     return 24 + (history ? 24 : 16) * width + (scalar ? (history ? 16 : 8) : 0) + (samples ? 8*diagnostic::Moments::words : 0);
 }
+// Вычисляет смещение записи узла с проверкой диапазона streamoff.
 std::streamoff offset(Id id, unsigned width, bool history, bool scalar, bool samples) {
     const auto stride = record_size(width,history,scalar,samples);
     require(id <= (static_cast<Id>(std::numeric_limits<std::streamoff>::max()) - records_start(history)) / stride,
             "file too large");
     return static_cast<std::streamoff>(records_start(history) + id * stride);
 }
+// Дописывает CRC32 в конец записи контрольной точки.
 void seal(char* bytes, unsigned size) {
     store_word(bytes + size - 8, io::crc32(bytes, size - 8));
 }
+// Сверяет CRC32 с содержимым записи.
 bool intact(const char* bytes, unsigned size) {
     return read_word(bytes + size - 8) == io::crc32(bytes, size - 8);
 }
@@ -68,6 +73,7 @@ std::size_t component_offset(unsigned component) {
     return state_start + sizeof(double) * component;
 }
 
+// Восстанавливает газ, историю и дополнительные данные из записи узла.
 void decode_node(const OwnedNode& n, const char* row, unsigned width, unsigned stride, bool saved_history,
                  std::vector<double>& state, std::vector<double>* initial, implicit::BdfHistory& history,
                  ScalarHistory* scalar, diagnostic::Moments* samples) {
@@ -96,6 +102,7 @@ void decode_node(const OwnedNode& n, const char* row, unsigned width, unsigned s
         if (history.dt>0.) history.previous[begin+k] = read_real(row+component_offset(2*width+k));
     }
 }
+// Упаковывает состояние узла, историю и дополнительные поля.
 void encode_node(const OwnedNode& n, char* row, unsigned width, const double* state, const double* initial, const double* previous, const ScalarHistory* scalar, const diagnostic::Moments* samples) {
     store_word(row, n.id);
     store_word(row + id_bytes, n.representative);
@@ -117,6 +124,7 @@ void encode_node(const OwnedNode& n, char* row, unsigned width, const double* st
     seal(row, record_size(width,previous!=nullptr,scalar!=nullptr,samples!=nullptr));
 }
 
+// Формирует заголовок контрольной точки с параметрами и отпечатком сетки.
 Packet header(Id count, unsigned width, double gamma, const std::string& hash, Id step, double time, bool history, bool adaptive, bool scalar, bool samples) {
     Packet bytes{};
     std::memcpy(bytes.data(),scalar ? "AEROSAV" : "AERORCV",7);
@@ -130,6 +138,7 @@ Packet header(Id count, unsigned width, double gamma, const std::string& hash, I
     seal(bytes.data(), header_size);
     return bytes;
 }
+// Читает заголовок и проверяет совместимость контрольной точки.
 Packet read_header(std::ifstream& in, Id count, unsigned width, double gamma, const std::string& hash, double& saved_dt, std::string& stabilization, bool scalar) {
     Packet bytes{};
     in.read(bytes.data(), header_size);
@@ -173,6 +182,7 @@ Packet read_header(std::ifstream& in, Id count, unsigned width, double gamma, co
     } else require(tail == 0, "incomplete or damaged file length");
     return bytes;
 }
+// Проверяет существование указанного пути.
 bool exists(const std::string& path) {
     struct stat info;
     if (!stat(path.c_str(), &info))
@@ -180,6 +190,7 @@ bool exists(const std::string& path) {
     require(errno == ENOENT, "cannot inspect " + path);
     return false;
 }
+// Принудительно сохраняет файл средствами ОС перед публикацией.
 void sync_file(const std::string& path) {
 #ifdef _WIN32
     HANDLE f = CreateFileA(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
@@ -223,14 +234,17 @@ std::string archive_hash(const std::string& path, const Processes& world) {
 struct Recovery::Lock {
 #ifdef _WIN32
     HANDLE handle;
+    // Получает исключительную блокировку файла, предотвращая одновременную запись восстановления.
     explicit Lock(const std::string& path) {
         handle =
             CreateFileA(path.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
         require(handle != INVALID_HANDLE_VALUE, "cannot lock " + path);
     }
+    // Снимает блокировку и закрывает системный дескриптор.
     ~Lock() { CloseHandle(handle); }
 #else
     int fd;
+    // Получает исключительную блокировку файла, предотвращая одновременную запись восстановления.
     explicit Lock(const std::string& path) {
         fd = open(path.c_str(), O_RDWR | O_CREAT, 0666);
         require(fd >= 0, "cannot open " + path);
@@ -239,10 +253,13 @@ struct Recovery::Lock {
             throw std::runtime_error("recovery: cannot lock " + path);
         }
     }
+    // Снимает блокировку и закрывает системный дескриптор.
     ~Lock() { close(fd); }
 #endif
 };
+// Освобождает принадлежащие объекту ресурсы при завершении его времени жизни.
 Recovery::~Recovery() = default;
+// Связывает контрольные точки с настройками, сеткой и собственными узлами процесса.
 Recovery::Recovery(const RunSettings& run, const Processes& world, Id count, unsigned dimension,
                    std::string mesh_sha256, const std::vector<OwnedNode>& nodes)
     : run_(run), world_(world), count_(count), width_(dimension + 2), hash_(std::move(mesh_sha256)),
@@ -280,12 +297,16 @@ Recovery::Recovery(const RunSettings& run, const Processes& world, Id count, uns
         hash_ = buffer.hex_digest();
     }
 }
+// Формирует путь одного из чередующихся файлов контрольных точек.
 std::string Recovery::path(int slot) const {
     return run_.directories.output + "/recovery-" + std::to_string(slot) + ".bin";
 }
+// Только промежуточные точки подчиняются расписанию. Итоговую пишет интегратор.
 bool Recovery::due(Id accepted) const {
     return accepted > 0 && run_.recovery_every_steps && accepted % run_.recovery_every_steps == 0;
 }
+// При --recover продолжает расчёт из выходного каталога. При заданном initial_file
+// читает текущие газ и SA в качестве начальных полей нового расчёта, со своим отсчётом времени.
 void Recovery::restore(std::vector<double>& state, std::vector<double>& initial, const std::string& initial_file) {
     const bool new_run = !initial_file.empty();
     const int requested = new_run ? 0 : run_.directories.recovery_slot;
@@ -341,6 +362,7 @@ void Recovery::restore(std::vector<double>& state, std::vector<double>& initial,
                 }
             });
             const unsigned stride = record_size(width_,saved_history,scalar!=nullptr,saved_samples);
+            // Восстанавливает узловые значения из прочитанной записи контрольной точки.
             const auto decode = [&](const OwnedNode& n, char* row, std::size_t) {
                 decode_node(n, row, width_, stride, saved_history, gas, new_run ? nullptr : &initial,
                             history, scalar.get(), has_samples ? samples.data() : nullptr);
@@ -408,6 +430,7 @@ void Recovery::restore(std::vector<double>& state, std::vector<double>& initial,
     throw std::runtime_error("recovery: no valid checkpoint in " +
                              (requested >= 0 ? files[requested] : run_.directories.output));
 }
+// Записывает данные владельцев в другой слот и завершает запись проверенным заголовком.
 void Recovery::save(Id accepted, double t, const std::vector<double>& state,
                     const std::vector<double>& initial) {
     const bool has_history = history.dt>0.;
@@ -427,6 +450,7 @@ void Recovery::save(Id accepted, double t, const std::vector<double>& state,
         sync_file(file);
     });
     const unsigned stride = record_size(width_,has_history,scalar!=nullptr,has_samples);
+    // Упаковывает узловую запись в формат распределённого файлового обмена.
     const auto encode = [&](const OwnedNode& n, char* row, std::size_t) {
         const auto begin = n.slot * width_;
         encode_node(n, row, width_, state.data() + begin, initial.data() + begin,

@@ -13,11 +13,14 @@ class Mesh;
 enum class FieldFormat { Text, Binary, Lzma };
 enum class FieldLocation : std::uint8_t { Node = 0, Edge = 1, Face = 2, Cell = 3 };
 
+// Ошибка структуры, чтения или записи файла полей.
 class FieldError : public std::runtime_error {
 public:
+    // Создаёт исключение с переданным диагностическим сообщением.
     explicit FieldError(const std::string& message) : std::runtime_error(message) {}
 };
 
+// Именованное поле на выбранных сущностях сетки с заданным числом компонент.
 struct Field {
     // Имя физической величины в файле полей.
     std::string name;
@@ -30,6 +33,7 @@ struct Field {
     // Значения идут по компонентам. Индекс равен component * entity_count + entity_id.
     // В каждом столбце находятся все элементы данного типа в нумерации сетки с нуля.
     std::vector<double> values;
+    // Создаёт пустое поле с размещением на ячейках по умолчанию.
     Field() : location(FieldLocation::Cell) {}
 };
 
@@ -42,12 +46,14 @@ struct FieldNodeSelection {
     std::array<std::uint64_t, 4> counts;
 };
 
+// Ограничения памяти и размеров строк при чтении файла полей.
 struct FieldReadLimits {
     // Предел памяти для сохраняемых векторов и строк. Служебные данные аллокатора и кодека учитываются отдельно.
     std::uint64_t max_payload_bytes;
     // Максимальный размер распакованного файла вместе с метаданными и пробелами текстового представления.
     std::uint64_t max_decoded_bytes;
     std::uint64_t max_string_bytes, max_fields, max_components;
+    // Устанавливает стандартные пределы размеров данных и памяти чтения.
     FieldReadLimits()
         : max_payload_bytes(1024ULL * 1024 * 1024), max_decoded_bytes(2ULL * 1024 * 1024 * 1024),
           max_string_bytes(4096), max_fields(1024), max_components(1024) {}
@@ -71,24 +77,32 @@ public:
 
     // Пустой снимок нужно связать с сеткой через метаданные или использовать конструктор от Mesh.
     FieldSnapshot() : dimension(0), counts{{0, 0, 0, 0}}, step(0), time(0) {}
+    // Формирует метаданные снимка по сетке, номеру шага и физическому времени.
     explicit FieldSnapshot(const Mesh& mesh, std::uint64_t step_number = 0, double time_seconds = 0);
+    // Возвращает число сущностей сетки для выбранного размещения поля.
     std::uint64_t entity_count(FieldLocation location) const;
+    // Проверяет согласованность метаданных снимка и размеров его полей.
     void validate() const;
     // Сверяет размерность, числа элементов и SHA-256 сетки перед использованием значений.
     void check_mesh(const Mesh& mesh) const;
+    // Вычисляет устойчивый отпечаток сетки для проверки совместимости полей.
     static std::string mesh_fingerprint(const Mesh& mesh);
 
     // Читает значения узловых полей в порядке запрошенных исходных номеров.
     static std::vector<Field> read_nodes(const std::string& path, const FieldNodeSelection& selection);
+    // Читает снимок полей с заданными ограничениями памяти и формата.
     static FieldSnapshot read(const std::string& path, const FieldReadLimits& limits = FieldReadLimits());
+    // Читает снимок полей с заданными ограничениями памяти и формата.
     static FieldSnapshot read(std::istream& input, const FieldReadLimits& limits = FieldReadLimits());
     // Проверяет снимок до открытия файла. Ошибка самой записи может оставить файл частично заполненным.
     void write(const std::string& path, FieldFormat format = FieldFormat::Binary) const;
+    // Проверяет снимок до открытия файла. Ошибка самой записи может оставить файл частично заполненным.
     void write(std::ostream& output, FieldFormat format = FieldFormat::Binary) const;
     // Записывает описания полей и резервирует диапазоны для двоичных данных. Массивы значений должны быть пусты.
     std::vector<std::uint64_t> write_binary_layout(const std::string& path) const;
 
 private:
+    // Проверяет размеры, имена и совместимость полей с метаданными снимка.
     void validate_fields(bool layout_only) const;
 };
 } // namespace aero

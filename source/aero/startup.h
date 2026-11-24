@@ -21,7 +21,9 @@ void prepare_zone_directories(const std::string& directory, const std::vector<Ou
 unsigned create_resume_directory(const std::string& prefix);
 // Возвращает непустые строки настроек для вывода постановки в журнал.
 std::string settings_text(const std::string& path);
+// Печатает начало этапа подготовки с немедленным обновлением консоли.
 void stage(const char* name);
+// Отмечает завершение этапа подготовки в консоли.
 void done();
 // Сообщение видно до первого чтения. В MPI прогресс печатает только процесс 0.
 // При ошибке управления до done() не доходит.

@@ -12,6 +12,7 @@ struct PhaseTiming {
     std::uint64_t* calls;
     void (*wait)(); // Завершить работу очереди Kokkos; для замера CPU всегда nullptr.
 
+    // Выполняет операцию и добавляет время и число вызовов выбранной фазе.
     template<class Work> void measure(Phase phase, const Work& work) const {
         if (!seconds) { work(); return; }
         // Начальный барьер исключает незавершённую работу предыдущей фазы.

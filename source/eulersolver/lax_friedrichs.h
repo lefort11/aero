@@ -5,7 +5,9 @@
 
 namespace aero {
 namespace euler_detail {
+// Собирает поток Русанова из состояний и оценок скорости волн.
 struct RusanovFlux {
+    // Собирает поток Русанова из средних физических потоков и диссипации.
     AERO_HOST_DEVICE static EulerStatus combine(const euler_detail::FaceStates& face,
                                                 const euler_detail::InterfaceGas&, const double* flux_left,
                                                 const double* flux_right, double alpha,
@@ -53,6 +55,7 @@ namespace aero {
 // Обёртки для векторов проверяют размеры и сообщают причину ошибки через исключение.
 EulerFluxResult lax_friedrichs_conservative(const std::vector<double>& left, const std::vector<double>& right,
                                             const std::vector<double>& direction, double gamma);
+// Вычисляет поток LF/Русанова по заранее заданным физическим потокам.
 EulerFluxResult lax_friedrichs_fluxes(const std::vector<double>& fl, const std::vector<double>& fr,
                                       const std::vector<double>& ul, const std::vector<double>& ur,
                                       const std::vector<double>& direction, double gamma);

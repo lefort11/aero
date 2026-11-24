@@ -4,18 +4,21 @@
 namespace aero {
 namespace periodic_mpi {
 namespace {
+// Узел периодической грани и относящийся к нему вектор площади.
 struct Corner {
     Id node;
     Coordinate area;
 };
 using Face = std::vector<Corner>;
 using Ids = std::vector<Id>;
+// Собственные узлы и грани одного периодического участка.
 struct Patch {
     std::set<Id> owned;
     std::vector<Face> faces;
 };
 using Links = std::set<std::pair<Ref, Ref>>;
 
+// Собирает локальные грани и собственные узлы периодических участков.
 std::map<std::string, Patch> collect(const MeshPartition& part, CvView cv,
                                      const std::vector<PeriodicPair>& pairs, int rank) {
     std::map<std::string, Patch> patches;
@@ -46,24 +49,29 @@ std::map<std::string, Patch> collect(const MeshPartition& part, CvView cv,
     return patches;
 }
 
+// Ограничивающий параллелепипед для отсева кандидатов периодического сопоставления.
 struct Box {
     Coordinate lo, hi;
+    // Инициализирует пустые границы для последующего расширения точками.
     Box() {
         lo.fill(std::numeric_limits<double>::infinity());
         hi.fill(-std::numeric_limits<double>::infinity());
     }
+    // Расширяет границы параллелепипеда до включения заданной точки.
     void include(Coordinate p) {
         for (unsigned i = 0; i < 3; ++i) {
             lo[i] = std::min(lo[i], p[i]);
             hi[i] = std::max(hi[i], p[i]);
         }
     }
+    // Проверяет попадание точки в ограничивающий параллелепипед с допуском.
     bool contains(Coordinate p, double tol) const {
         for (unsigned i = 0; i < 3; ++i)
             if (p[i] + tol < lo[i] || p[i] - tol > hi[i])
                 return false;
         return true;
     }
+    // Проверяет пересечение ограничивающих параллелепипедов с допуском.
     bool overlaps(const Box& b, double tol) const {
         for (unsigned i = 0; i < 3; ++i)
             if (hi[i] + tol < b.lo[i] || lo[i] - tol > b.hi[i])
@@ -71,6 +79,7 @@ struct Box {
         return true;
     }
 };
+// Сопоставляет узлы периодических участков после заданного сдвига.
 std::map<Id, Ref> match_nodes(const MeshPartition& part, const Patch& source, const Patch& target,
                               Coordinate shift, double tol, const std::string& label, const Processes& w,
                               Links& links) {
@@ -170,6 +179,7 @@ std::map<Id, Ref> match_nodes(const MeshPartition& part, const Patch& source, co
     return partners;
 }
 
+// Проверяет соответствие граней по сопоставленным периодическим узлам.
 void match_faces(const MeshPartition& part, const Patch& source, const Patch& target,
                  const std::map<Id, Ref>& partners, const std::string& label, const Processes& w,
                  Links& links) {
@@ -240,6 +250,7 @@ void match_faces(const MeshPartition& part, const Patch& source, const Patch& ta
 }
 }
 
+// Сопоставляет периодические участки разных рангов и строит общие метки узлов.
 Labels match_periodic(const MeshPartition& part, CvView cv, const std::vector<PeriodicPair>& pairs,
                       const Processes& w) {
     std::map<std::string, Patch> patches;

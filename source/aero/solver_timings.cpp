@@ -10,6 +10,7 @@
 #include <sstream>
 
 namespace aero {
+// Настраивает сбор времён фаз и профилирование неявного решателя.
 SolverTimings::SolverTimings(const Processes& world, bool enabled, bool cuda, std::uint64_t first_step)
     : world_(world), enabled_(enabled), cuda_(cuda), first_(first_step) {
     if (!enabled_)
@@ -22,6 +23,7 @@ SolverTimings::SolverTimings(const Processes& world, bool enabled, bool cuda, st
 #endif
     start_ = WallTimer::Clock::now();
 }
+// Связывает таймеры фаз BDF с общей статистикой решателя.
 implicit::PhaseTiming SolverTimings::bdf_phases() {
     if (!profile_bdf_) return {};
     implicit::PhaseTiming timing{seconds_.data()+ImplicitFirst,calls_.data()+ImplicitFirst,nullptr};
@@ -30,6 +32,7 @@ implicit::PhaseTiming SolverTimings::bdf_phases() {
 #endif
     return timing;
 }
+// После последнего шага собирает минимум, среднее и максимум времени по процессам.
 void SolverTimings::report(std::uint64_t last_step, std::ostream& out) {
     if (!enabled_)
         return;

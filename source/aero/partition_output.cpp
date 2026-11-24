@@ -40,6 +40,7 @@ void write_local_mesh(const MeshPartition& part, const std::string& directory) {
 }
 }
 
+// Выбирает узлы вывода и строит распределённую раскладку записей файла.
 PartitionFileLayout::PartitionFileLayout(const RunSettings& run, const MeshPartition& part,
                                          const PeriodicPartition* seam, const Processes& world)
     : selection(select_field_nodes(part, world)),
@@ -81,6 +82,7 @@ PartitionFileLayout::PartitionFileLayout(const RunSettings& run, const MeshParti
     });
 }
 
+// Готовит зоны вывода и запись поля для текущей подобласти.
 PartitionOutput::PartitionOutput(const RunSettings& run, const MeshPartition& part,
                                  const PartitionFileLayout& layout, const Processes& world,
                                  const std::string& directory, std::vector<MeshIndex>& node_dof,
@@ -172,6 +174,7 @@ PartitionOutput::PartitionOutput(const RunSettings& run, const MeshPartition& pa
 // двух разделов один и тот же исходный номер попадает в общий снимок один раз.
 void PartitionOutput::write_wall(const OutputZone& zone, std::uint64_t step, double time,
                                  const std::vector<double>& state) {
+    // Номер узла стенки, его координаты и коэффициент давления для записи.
     struct Row {MeshIndex id; Coordinate xyz; double cp;};
     const bool global=zone.global && world_.size>1;
     const auto dim=layout_.selection.dimension;
@@ -273,6 +276,7 @@ void PartitionOutput::write_slice(const OutputZone& zone,const std::vector<unsig
     });
 }
 
+// Записывает назначенные зоны из одного уже доступного на CPU состояния.
 void PartitionOutput::write(std::uint64_t step, double time, const std::vector<double>& state, bool final_field,const diagnostic::Fields& scalars) {
     schedule.write_due(step, time, [&](const OutputZone& zone, const std::vector<unsigned>& columns) {
         if (!zone.submesh.empty()) { write_slice(zone,columns,step,time,state,scalars); return; }

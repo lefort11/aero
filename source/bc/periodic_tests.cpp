@@ -6,14 +6,17 @@
 
 using namespace aero;
 #ifdef AERO_WITH_KOKKOS_GPU
+// Проверяет вычисления периодической задачи на GPU.
 void periodic_gpu(int, PeriodicView, ReconstructionStencilView, const double*, const double*);
 #endif
 namespace {
 using Id = MeshIndex;
 using aero_test::require;
+// Проверяет совпадение чисел в пределах заданного допуска.
 void near(double a, double b) {
     require(std::abs(a - b) < 1e-11, "periodic geometry or reconstruction mismatch");
 }
+// Разбирает текстовую заготовку сетки или граничных условий для теста.
 PeriodicPair parse(const std::string& spec) {
     PeriodicPair pair;
     std::istringstream input("bc_type periodic\n" + spec);
@@ -23,10 +26,12 @@ PeriodicPair parse(const std::string& spec) {
             "periodic parser");
     return pair;
 }
+// Добавляет грань в топологию тестовой сетки.
 void append(MeshCsr& csr, const std::vector<Id>& list) {
     csr.indices.insert(csr.indices.end(), list.begin(), list.end());
     csr.offsets.push_back(csr.indices.size());
 }
+// Создаёт одномерную сетку для проверки алгоритма.
 Mesh line(unsigned repeats) {
     MeshData d;
     d.dimension = 1;
@@ -46,6 +51,7 @@ Mesh line(unsigned repeats) {
     d.boundary_patch = {0, 1};
     return Mesh(std::move(d));
 }
+// Вычисляет тестовое приращение поля на периодической сетке.
 double increment(ReconstructionStencilView st, Id e, unsigned side, const std::vector<double>& q) {
     double v = 0;
     const Id owner = st.row_owner[2 * e + side];
@@ -55,6 +61,7 @@ double increment(ReconstructionStencilView st, Id e, unsigned side, const std::v
             "periodic row access");
     return v;
 }
+// Проверяет периодический оператор на одномерной сетке.
 void line_test(bool require_gpu) {
     Mesh original = line(1), extended = line(3);
     PeriodicDomain domain(original, {parse("patch left\npair right\ntranslation 6 0 0")});
@@ -100,6 +107,7 @@ void line_test(bool require_gpu) {
 #endif
     }
 }
+// Создаёт многомерную периодическую тестовую область.
 Mesh box(unsigned d) {
     MeshData m;
     m.dimension = d;
@@ -125,6 +133,7 @@ Mesh box(unsigned d) {
     return Mesh(std::move(m));
 }
 }
+// Проверяет склейку и потоки периодических границ.
 void test_periodic(bool require_gpu) {
     line_test(require_gpu);
     const PeriodicPair x = parse("patch xm\npair xp\ntranslation 1 0 0");

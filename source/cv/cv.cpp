@@ -9,22 +9,28 @@
 namespace aero {
 namespace {
 typedef CvVector V;
+// Складывает компоненты геометрических векторов.
 V operator+(V a, V b) {
     return {a.x + b.x, a.y + b.y, a.z + b.z};
 }
+// Вычисляет разность геометрических векторов.
 V operator-(V a, V b) {
     return {a.x - b.x, a.y - b.y, a.z - b.z};
 }
+// Умножает все компоненты геометрического вектора на общий масштаб.
 V operator*(V a, double s) {
     return {a.x * s, a.y * s, a.z * s};
 }
+// Проверяет конечность всех проверяемых компонент.
 bool finite(V a) {
     return std::isfinite(a.x) && std::isfinite(a.y) && std::isfinite(a.z);
 }
 
+// Представление сетки и текущей ячейки для вычисления контрольных объёмов.
 struct Geometry {
     MeshView mesh;
     MeshIndex cell;
+    // Вычисляет разность координат двух узлов.
     V delta(MeshIndex a, MeshIndex b) const {
         return {mesh.x[a] - mesh.x[b], mesh.y[a] - mesh.y[b], mesh.z[a] - mesh.z[b]};
     }
@@ -35,6 +41,7 @@ struct Geometry {
             sum = sum + delta(id, nodes[0]);
         return sum * (1.0 / static_cast<double>(nodes.size));
     }
+    // Проверяет обязательное условие и сообщает ошибку при его нарушении.
     void require(bool valid, const char* reason) const {
         if (!valid)
             throw MeshError("median dual: cell " + std::to_string(cell) + ": " + reason);
@@ -56,6 +63,7 @@ V polygon_normal(const Geometry& g, MeshCell cell, V center) {
     return sum * (1 / length);
 }
 
+// Проверяет плоскостность контура относительно заданной нормали с масштабным допуском.
 void check_plane(const Geometry& g, MeshIndexSpan ids, V normal) {
     double span = 0, deviation = 0;
     for (MeshIndex id : ids) {
@@ -170,6 +178,8 @@ double collect_cell_contributions(const MeshView& m, MeshIndex id, const std::ve
 }
 }
 
+// Строит медианные объёмы на неподвижной сетке. Центр равен среднему координат вершин.
+// Каждая часть многоугольника или пирамиды должна иметь положительную ориентированную меру.
 MedianDual::MedianDual(const Mesh& mesh) : dimension_(mesh.data().dimension) {
     const MeshView m = mesh.view();
     volumes_.resize(m.node_count);
@@ -240,6 +250,7 @@ MedianDual::MedianDual(const Mesh& mesh) : dimension_(mesh.data().dimension) {
             throw MeshError("median dual: surface does not close at node " + std::to_string(i));
     });
 }
+// Даёт доступ к геометрии без копирования массивов MedianDual.
 CvView MedianDual::view() const noexcept {
     return {dimension_,      volumes_.size(),    edge_areas_.size(), boundary_.size(),
             volumes_.data(), edge_areas_.data(), boundary_.data(), min_heights_.data()};

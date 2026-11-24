@@ -3,6 +3,7 @@
 namespace aero {
 namespace meshdec {
 namespace {
+// Находит первую запись отсортированной дисковой таблицы, не меньшую заданной сущности.
 Id lower(Table<Entity>& table, const Entity& value) {
     Id a = 0, b = table.count;
     while (a < b) {
@@ -14,16 +15,20 @@ Id lower(Table<Entity>& table, const Entity& value) {
     }
     return a;
 }
+// Возвращает число связей строки по разности соседних CSR-смещений.
 Id width(Table<Id>& offsets, Id i) {
     return offsets.at(i + 1) - offsets.at(i);
 }
+// Тип и исходный номер сущности вместе с её адресом в архиве.
 struct Location {
     Id kind, id;
     Address address;
+    // Сравнивает ключи сущностей для упорядочения и поиска.
     bool operator<(const Location& v) const { return kind == v.kind ? id < v.id : kind < v.kind; }
 };
 }
 
+// Упорядочивает сущности сетки по пространственным ключам и строит адреса.
 void order_entities(const std::string& dir, Id memory, int rank, int size) {
     const auto h = Table<Header>(dir + "/header").at(0);
     Table<Id> node_key(dir + "/node-key"), face_key(dir + "/face-key");
@@ -65,6 +70,7 @@ void choose_splitters(const std::string& dir, Id memory, int size) {
     }
     split.close();
 }
+// Сортирует назначенный диапазон записей в пределах заданной памяти.
 void sort_range(const std::string& dir, Id memory, int rank, int size) {
     if (size == 1) {
         require(std::rename(part(dir + "/local", 0).c_str(), part(dir + "/range", 0).c_str()) == 0,
@@ -83,6 +89,7 @@ void sort_range(const std::string& dir, Id memory, int rank, int size) {
     result.finish();
 }
 
+// Разбивает упорядоченные сущности на листья заданного целевого размера.
 void plan_leaves(const std::string& dir, const Options& options, int size) {
     auto ordered = output(dir + "/ordered"), leaves = output(dir + "/leaves");
     Sorter<Location> locations(dir + "/locations", options.memory);

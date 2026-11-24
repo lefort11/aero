@@ -14,6 +14,7 @@ namespace host_parallel {
 // Встроенный солвер может использовать среду, уже созданную вызывающей программой.
 class Runtime {
 public:
+    // Инициализирует Kokkos, если среда ещё не создана вызывающим кодом.
     Runtime() : owner_(!Kokkos::is_initialized()) {
         if (owner_) {
             Kokkos::InitArguments settings;
@@ -25,11 +26,14 @@ public:
             Kokkos::initialize(settings);
         }
     }
+    // Освобождает принадлежащие объекту ресурсы при завершении его времени жизни.
     ~Runtime() {
         if (owner_ && Kokkos::is_initialized())
             Kokkos::finalize();
     }
+    // Запрещает копирование, чтобы ресурсы объекта сохраняли единственного владельца.
     Runtime(const Runtime&) = delete;
+    // Запрещает копирование, чтобы ресурсы объекта сохраняли единственного владельца.
     Runtime& operator=(const Runtime&) = delete;
 private:
     bool owner_; // Только создавшая среду сторона завершает её.

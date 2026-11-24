@@ -15,9 +15,11 @@ namespace viscosity {
 class Aes {
 public:
     using Locate = std::function<MeshIndex(MeshIndex,int)>;
+    // Строит геометрию и рабочие связи AES для выбранной подобласти и базиса импульса.
     void prepare(const MeshPartition&, const PeriodicPartition*, const ResidualFrame&, const Processes&,
                  const ViscositySettings&, double gamma, double mach, MeshIndex rows, const Locate&);
 #ifdef AERO_HAS_TURBULENCE
+    // Подключает настройки фильтра и замыкания LES к вязкому оператору.
     void configure_les(const turbulence::Settings& settings, double prandtl, bool gpu=false, bool explicit_whole_mesh=false) {
         // На GPU многократные обращения к одним и тем же вязкостям соседей дороги.
         // На CPU исходный обход элемента использует аппаратный кэш и не пишет промежуточный массив.
@@ -30,9 +32,11 @@ public:
         op_.les_pr_ratio=prandtl/settings.prandtl;
     }
     turbulence::Storage turbulence_field;
+    // Готовит граничные и внутренние площадки конвективного переноса SA.
     template<class Grid> void prepare_sa_faces(const Grid& grid,bool host) {
         turbulence_field.prepare_faces(grid,op_.sa,host);
     }
+    // Подготавливает геометрию и рабочие поля активной турбулентной модели.
     void prepare_turbulence(const turbulence::Settings& settings, bool host, bool implicit=false,
                             const std::vector<MeshIndex>* steady_nodes=nullptr) {
         // Внутри шага BDF газ при уточнении nu_tilde фиксирован. Для явного
@@ -62,13 +66,20 @@ public:
 #endif
     // Для резервного размещения сохраняем геометрию на хосте до проверки свободной памяти.
     void prepare_device_geometry() { keep_affine_input_=true; }
+    // Переключает вычисление на компактное представление аффинных гексаэдров.
     bool use_affine_geometry();
+    // Исходная нумерация вершин повторяется на многих элементах. Только список из
+    // тетраэдров общий для такой нумерации, координаты каждой ячейки индивидуальны.
     bool use_coordinate_geometry(bool implicit=false);
+    // Проверяет использование координатной геометрии в неявном вязком операторе.
     bool uses_implicit_coordinates() const { return implicit_coordinates_; }
+    // Проверяет выбор компактного представления геометрии AES.
     bool uses_compact_geometry() const { return compact_geometry_; }
     // Невязка и якобиан одного процесса по очереди занимают один буфер градиентов.
     bool has_gradient_tiles() const { return !gradient_tiles_.empty(); }
+    // Завершает подготовку и размещение геометрии вязкого оператора на устройстве.
     void finish_device_geometry();
+    // Освобождает исходные CPU-данные после подготовки геометрии устройства.
     void release_device_geometry_input() {
         std::vector<AffineInput>().swap(affine_input_);
         if (!coordinate_geometry_) {
@@ -76,11 +87,13 @@ public:
             std::vector<VolumeCellNodes>().swap(tetra_cells_);
         }
     }
+    // Выделяет рабочие массивы вязкого оператора на CPU.
     void allocate_host(MeshIndex state_nodes);
     // После явной стадии на одном процессе узловая вязкость уже готова.
     // В остальных случаях пересчитываем её по текущему полю, включая узлы соседей.
     void evaluate(const double* state, const EulerState* cached = nullptr, bool gas_is_current = false,
                   Evaluation phase = Evaluation::Full);
+    // Возвращает невладеющее представление геометрии, материалов и рабочих полей AES.
     const Operator& view() const { return op_; }
     std::vector<unsigned char> wall; // Единица у узла неподвижной теплоизолированной стенки.
 
@@ -179,6 +192,7 @@ private:
     void merge_cell_metrics(std::vector<std::vector<PairMetric>>&);
     // Собирает список вязких вкладов каждого узла в исходном порядке элементов.
     void index_local_vertices();
+    // Исходные координаты и средние градиенты аффинного элемента.
     struct AffineInput {
         Coordinate position[8]; // Исходные координаты до подготовки фильтра DDES.
         MeanGradient mean;      // Интегралы базисных функций штатной схемы AES.
@@ -188,10 +202,13 @@ private:
     std::vector<AffineInput> affine_input_;
     std::vector<AffineHex> affine_;
     bool compact_geometry_=false; // Выбирает раскладку до выделения таблицы на CPU.
+    // Коэффициенты тепла нужны газу и SA при обоих способах хранения геометрии.
     void prepare_compact_geometry();
     bool coordinate_geometry_=false, coordinate_all_hex_=false;
     bool implicit_coordinates_=false; // При BDF рабочее место приоритетно отдаём якобиану и предобуславливателю.
     bool shared_coordinate_nodes_=false;
+    // Не предполагаем определённого типа ячеек, порядка узлов или отсутствия
+    // периодичности. На каждой ячейке сравниваем столько номеров, сколько у неё вершин.
     void share_coordinate_nodes(); // Проверяем реальные номера всех вершин до загрузки на GPU.
     std::vector<std::uint32_t> tetra_pattern_ids_;
     std::vector<Coordinate> tetra_position_;
@@ -201,17 +218,25 @@ private:
     std::vector<double> pair_heat_; // Исходные коэффициенты для скалярной диффузии SA и производной теплового потока.
     std::vector<GradientTile> gradient_tiles_;
     std::vector<GradientSlice> gradient_slices_;
+    // Градиенты газа нужны, пока суммируются вклады в узлы. Обрабатываем одну группу
+    // элементов и затем отдаём ту же рабочую память следующей группе. При склейке MPI
+    // несколько локальных вершин могут обозначать один узел, поэтому используем готовую incidence_.
     void prepare_gradient_tiles(MeshIndex capacity=65536);
+    // Сохраняет исходную аффинную геометрию для последующего фильтра LES/DDES.
     void remember_affine_input(MeshIndex cell,const Element&,const MeanGradient&);
     Operator op_{};
     bool store_iteration_gradients_=false; // Для BDF с переносом SA можно повторно использовать неизменное поле газа.
     std::vector<Gradient> gradient_cache_;
 #ifdef AERO_HAS_TURBULENCE
+    // Готовит геометрию гексаэдрального фильтра LES/DDES.
     void prepare_hex_filter();
+    // На произвольной сетке ориентацию каждого тетраэдра определяем по фактическим
+    // координатам. Только после этого можно разделить одну формулу между ячейками.
     bool prepare_mean_areas(); // Выбираем общие целочисленные формы вместо таблицы градиентов.
     std::vector<MeanAreaForm> mean_area_forms_;
     std::vector<MeanAreaTerm> mean_area_terms_;
     std::vector<std::uint32_t> mean_area_ids_;
+    // Формирует связи элементов с узлами для осреднения материальных коэффициентов.
     void prepare_material_vertices();
     unsigned host_vertices_=0; // Общее число вершин в элементе, ноль для смешанной сетки.
     bool cache_material_=false, material_from_sa_=false;

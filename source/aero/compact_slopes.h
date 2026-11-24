@@ -10,6 +10,7 @@ namespace aero {
 // Геометрические веса и порядок обращения к полю совпадают с исходным CSR.
 class CompactSlopes {
     using Index = ReconstructionIndex;
+    // Число строк и ненулевых весов компактного шаблона.
     struct Counts { Index rows, terms; };
     std::vector<TwoNodeSlope> pairs_;
     std::vector<Index> offsets_, nodes_;
@@ -35,6 +36,7 @@ class CompactSlopes {
         const auto& left=pairs_[a];
         return left.first==TwoNodeSlope::marker && !left.second ? pairs_[b] : left;
     }
+    // Находит строки шаблона, которые можно адресовать через общее ребро.
     void share_edge_rows(const ReconstructionStencilView& s, Index blocks) {
         std::vector<unsigned char> compatible(blocks,1);
         parallel_for(blocks,[&](Index b) {
@@ -81,6 +83,7 @@ public:
             parallel_for(s.edge_count,[&](Index e) {edge_epsilon_[e]=s.weno_epsilon_scale[2*e];});
         }
     }
+    // Подключает геометрию рёбер вместо отдельных массивов владельцев и длин.
     void use_edge_data(ReconstructionStencilView& s, const residual_detail::Surface* device_edges) const {
         if (owners_match_) {
             s.row_owner=nullptr;
@@ -91,6 +94,7 @@ public:
             s.weno_epsilon_scale=edge_epsilon_.data();
         }
     }
+    // Упаковывает подходящие строки WENO в двухузловой формат и проверяет совместимость владельцев.
     void prepare(const ReconstructionStencilView& s,bool share=false) {
         if (!s.weno_order || !s.edge_count || s.node_count > TwoNodeSlope::marker) return;
         const Index rows = 8*s.edge_count;

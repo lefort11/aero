@@ -12,19 +12,28 @@ namespace aero {
 template<class Index, std::size_t Capacity> class SmallWeightRow {
 public:
     using value_type = std::pair<Index,double>;
+    // Инициализирует объект стандартными значениями его полей.
     SmallWeightRow() = default;
+    // Создаёт компактную строку из заданных пар индекса и веса.
     SmallWeightRow(std::initializer_list<value_type> entries) {
         for (const auto& entry : entries) (*this)[entry.first] = entry.second;
     }
+    // Возвращает начало диапазона для последовательного обхода.
     const value_type* begin() const { return large_.empty() ? small_.data() : large_.data(); }
+    // Возвращает границу диапазона после последнего элемента.
     const value_type* end() const { return begin() + size(); }
+    // Возвращает число хранимых элементов.
     std::size_t size() const { return large_.empty() ? used_ : large_.size(); }
+    // Проверяет отсутствие элементов в контейнере.
     bool empty() const { return size() == 0; }
+    // Проверяет наличие указанного номера узла в разреженной строке.
     bool count(Index n) const {
         const auto k = position(n);
         return k < size() && begin()[k].first == n;
     }
+    // Удаляет все пары индекса и веса из строки.
     void clear() { used_ = 0; large_.clear(); }
+    // Удаляет пару с заданным индексом из компактной строки.
     void erase(Index n) {
         const auto k = position(n);
         if (k == size() || begin()[k].first != n) return;
@@ -36,6 +45,7 @@ public:
             large_.erase(large_.begin()+k);
         }
     }
+    // Возвращает вес узла; отсутствующий узел вставляет с нулевым весом, сохраняя порядок индексов.
     double& operator[](Index n) {
         const auto k = position(n);
         if (large_.empty()) {
@@ -54,6 +64,7 @@ public:
         return large_.insert(large_.begin()+k,{n,0.})->second;
     }
 private:
+    // Находит позицию индекса в упорядоченной строке весов.
     std::size_t position(Index n) const {
         return static_cast<std::size_t>(std::lower_bound(begin(),end(),n,
             [](const value_type& entry, Index node) { return entry.first < node; }) - begin());

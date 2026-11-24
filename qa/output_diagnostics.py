@@ -16,6 +16,7 @@ def check_pressure_rhs(coords, fields, linear):
     xs, ys = (sorted({point[axis] for point in coords}) for axis in (0, 1))
     dx, dy = xs[1]-xs[0], ys[1]-ys[0]
     nodes = {(x, y): i for i, (x, y, _) in enumerate(coords)}
+    # Вычисляет эталонный газодинамический поток диагностической задачи.
     def flux(i, axis):
         rho, u, v, p, energy = (fields[k][i] for k in ("rho", "ux", "uy", "p", "E"))
         un = (u, v)[axis]
@@ -56,6 +57,7 @@ def check_pressure_rhs(coords, fields, linear):
     return error
 
 
+# Проверяет значения и расписания дополнительных диагностических полей.
 def check(case, args, linear=False):
     coords = setup(case, args.meshdec.resolve() if args.mpi else None)
     (case / "bc.txt").write_text("[xmin]\nbc_type periodic\npair xmax\ntranslation 1 0 0\n"
@@ -74,6 +76,7 @@ def check(case, args, linear=False):
         "[flow]\nfile=state.fields\nformat=binary\nlayout=global\nevery_steps=1\nmulti=1\n"
         f"variables={FLOW_VARIABLES}\n"
         "[surface]\nfile=wall.fields\nformat=binary\nlayout=global\nevery_steps=1\nvariables=Cp\nwall_label=ymin\n")
+    # Запускает выбранный вариант решателя и читает результаты для сравнения.
     def solve(folder, end, gpu=False, mpi=False, recover=False, scheme='ssprk3', viscosity='off'):
         command=[args.aero.resolve(), f"--input={case}", f"--output={folder}",f"main:final_time={end}",
                  f"main:viscosity={viscosity}",f"main:time_scheme={scheme}","main:cfl=.45","main:mpi_timing=1"]
@@ -196,6 +199,7 @@ def check(case, args, linear=False):
         output.write_text(config.replace(FLOW_VARIABLES, "primary,dp_dt"))
         dt = .0001
         for gpu in ([False, True] if args.gpu else [False]):
+            # Создаёт снимок с заданным тепловым полем для проверки диагностик.
             def heat_snapshot(end):
                 records, _ = solve(case / f"heat-{gpu}-{end}", end, gpu=gpu, scheme="euler", viscosity="normal")
                 assert len(records) == 1 and records[0][0][3] == int(end > 0)

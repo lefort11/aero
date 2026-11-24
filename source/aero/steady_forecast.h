@@ -17,6 +17,7 @@ class SteadyResidualTrend {
         bool half_pair = false;
         double first = 0.;
 
+        // Добавляет значение в кольцевое окно и передаёт среднее пары следующему масштабу.
         bool append(double& value) {
             values[next] = value;
             next = (next+1)%12;
@@ -38,6 +39,7 @@ class SteadyResidualTrend {
             return std::max(std::min(a,b),std::min(std::max(a,b),c));
         }
 
+        // Оценивает шаги до заданного снижения логарифма невязки по оконному тренду.
         double steps_to(double distance, double recent, std::uint64_t width, std::uint64_t remainder) const {
             const double a = median_at(0), b = median_at(3), c = median_at(6), d = median_at(9);
             const double span = 3.*static_cast<double>(width); // Расстояние между центрами соседних троек.
@@ -63,6 +65,7 @@ class SteadyResidualTrend {
     std::uint64_t samples_ = 0;
 
   public:
+    // Добавляет логарифм положительной невязки в окна прогноза; недопустимые данные сбрасывают историю.
     void add(double residual) {
         if (!(residual > 0.) || !std::isfinite(residual)) {
             *this = SteadyResidualTrend{};
@@ -74,6 +77,7 @@ class SteadyResidualTrend {
             if (!window.append(value)) break;
     }
 
+    // Прогнозирует оставшиеся шаги; -1 означает недостаток пригодных данных.
     double remaining_steps(double tolerance) const {
         const auto& short_window = windows_.front();
         if (short_window.count < 12 || !(tolerance > 0.)) return -1.;

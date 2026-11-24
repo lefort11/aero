@@ -17,6 +17,7 @@ namespace {
 using namespace aero;
 typedef std::int32_t I32;
 using aero_test::require;
+// Проверяет, что некорректный ввод завершается ожидаемой ошибкой.
 template <class F> void rejects(F action) {
     try {
         action();
@@ -27,13 +28,16 @@ template <class F> void rejects(F action) {
 }
 typedef std::pair<std::string, std::function<void()>> Test;
 std::vector<Test> tests;
+// Добавляет именованную проверку в список тестов модуля.
 void add(const std::string& name, std::function<void()> action) {
     tests.push_back(std::make_pair(name, action));
 }
+// Добавляет грань в заготовку тестовой сетки Tecplot.
 void face(MeshData& d, std::initializer_list<MeshIndex> nodes) {
     d.face_nodes.indices.insert(d.face_nodes.indices.end(), nodes.begin(), nodes.end());
     d.face_nodes.offsets.push_back(d.face_nodes.indices.size());
 }
+// Создаёт сетку из одной ячейки с заданной оболочкой.
 void single(MeshData& d) {
     d.patch_names = {"wall"};
     const std::size_t n = d.face_nodes.offsets.size() - 1;
@@ -45,6 +49,7 @@ void single(MeshData& d) {
     d.cell_face_orientation.assign(n, 1);
     d.boundary_patch.assign(n, 0);
 }
+// Создаёт одномерную сетку для проверки алгоритма.
 Mesh line(std::size_t n = 2) {
     MeshData d;
     d.dimension = 1;
@@ -67,6 +72,7 @@ Mesh line(std::size_t n = 2) {
     d.boundary_patch = {0, 0};
     return Mesh(d);
 }
+// Создаёт многоугольную ячейку тестовой сетки.
 Mesh polygon() {
     MeshData d;
     d.dimension = 2;
@@ -78,6 +84,7 @@ Mesh polygon() {
     single(d);
     return Mesh(d);
 }
+// Создаёт полосу соседних ячеек для проверки общей топологии зоны.
 Mesh strip(std::size_t n) {
     MeshData d;
     d.dimension = 2;
@@ -104,6 +111,7 @@ Mesh strip(std::size_t n) {
     d.boundary_patch.assign(d.boundary_faces.size(), 0);
     return Mesh(d);
 }
+// Создаёт соседние тетраэдры с общей гранью.
 Mesh tetrahedra() {
     MeshData d;
     d.x = {0, 1, 0, 0, 0};
@@ -123,6 +131,7 @@ Mesh tetrahedra() {
     d.patch_names = {"wall"};
     return Mesh(d);
 }
+// Создаёт призматическую сетку для проверки геометрии и связности.
 Mesh prism(std::size_t n) {
     MeshData d;
     const double pi = std::acos(-1.0);
@@ -144,6 +153,7 @@ Mesh prism(std::size_t n) {
     single(d);
     return Mesh(d);
 }
+// Создаёт тестовые поля с разными размещениями и числом компонент.
 FieldSnapshot fields(const Mesh& mesh, bool all = true) {
     FieldSnapshot result(mesh, 123, 0.25);
     for (FieldLocation loc :
@@ -162,6 +172,7 @@ FieldSnapshot fields(const Mesh& mesh, bool all = true) {
     }
     return result;
 }
+// Экспортирует тестовую сетку в строку двоичного Tecplot.
 std::string export_bytes(const Mesh& mesh, const FieldSnapshot& data, int threads = 1) {
     std::ostringstream out(std::ios::binary);
     tecplot::Options options;
@@ -181,13 +192,16 @@ struct DecodedZone {
     // В зоне узловая и ячеечная переменные имеют разную длину. Их начала
     // указывают на срезы единого массива, пассивная переменная даёт пустой срез.
     std::vector<std::size_t> starts;
+    // Получает значение переменной с учётом перенумерации узлов зоны.
     double value(std::size_t variable,std::size_t i) const { return data[starts[variable]+i]; }
 };
+// Декодирует двоичный Tecplot в независимые тестовые структуры.
 class PltReader {
 public:
     std::vector<std::string> variables;
     std::vector<DecodedZone> zones;
     std::map<std::pair<I32, std::string>, std::string> variable_aux;
+    // Начинает независимое тестовое декодирование двоичного Tecplot.
     explicit PltReader(const std::string& bytes) : bytes_(bytes), pos_(0) {
         require(bytes.substr(0, 8) == "#!TDV112", "PLT signature");
         pos_ = 8;
@@ -304,6 +318,7 @@ public:
     }
 
 private:
+    // Преобразует числовое значение в его двоичное представление.
     std::uint64_t bits(unsigned size) {
         require(size <= bytes_.size() - pos_, "Truncated PLT");
         std::uint64_t result = 0;
@@ -311,24 +326,28 @@ private:
             result |= std::uint64_t(static_cast<unsigned char>(bytes_[pos_++])) << (8 * i);
         return result;
     }
+    // Декодирует 32-битное целое из тестового потока Tecplot.
     I32 integer() {
         const std::uint32_t b = static_cast<std::uint32_t>(bits(4));
         I32 value;
         std::memcpy(&value, &b, 4);
         return value;
     }
+    // Декодирует вещественный маркер одинарной точности Tecplot.
     float real32() {
         const std::uint32_t b = static_cast<std::uint32_t>(bits(4));
         float value;
         std::memcpy(&value, &b, 4);
         return value;
     }
+    // Декодирует значение двойной точности Tecplot.
     double real64() {
         const std::uint64_t b = bits(8);
         double value;
         std::memcpy(&value, &b, 8);
         return value;
     }
+    // Записывает строку в представлении кодов символов Tecplot.
     std::string string() {
         std::string result;
         for (I32 c = integer(); c; c = integer()) {
@@ -340,8 +359,10 @@ private:
     const std::string& bytes_;
     std::size_t pos_;
 };
+// Владеет временным файлом проверки и удаляет его при выходе из области видимости.
 struct Temp {
     std::string path;
+    // Создаёт уникальное имя временного файла теста.
     Temp() {
         static unsigned counter = 0;
         path = "build/tecplot-test-" +
@@ -350,14 +371,17 @@ struct Temp {
         std::ifstream in(path.c_str());
         require(!in, "Test file exists");
     }
+    // Удаляет временные файлы и каталоги, созданные объектом.
     ~Temp() { std::remove(path.c_str()); }
 };
+// Читает содержимое тестового файла для проверки результата.
 std::string read_file(const std::string& path) {
     std::ifstream in(path.c_str(), std::ios::binary);
     std::ostringstream out;
     out << in.rdbuf();
     return out.str();
 }
+// Проверяет запуск утилиты Tecplot через интерфейс командной строки.
 int cli(const std::vector<std::string>& args, std::string* errors = nullptr) {
     std::vector<const char*> argv;
     for (const std::string& s : args)
@@ -618,11 +642,13 @@ void register_cli() {
     });
 }
 
+// Формирует набор проверок модуля и выполняемых тестовых сценариев.
 void register_tests() {
     register_zones();
     register_cli();
 }
 }
+// Запускает проверки модуля и возвращает ненулевой код при ошибке.
 int main() {
     register_tests();
     std::size_t failed = 0;

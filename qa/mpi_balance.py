@@ -50,6 +50,7 @@ def verify(case, aero, meshdec, launcher):
         "format = text\nvariables = " + ", ".join(names) + "\n"
     )
 
+    # Создаёт файлы и параметры тестовой постановки для выбранного сценария.
     def configure(**extra):
         main.write_text("".join(f"{k} = {v}\n" for k, v in dict(options, **extra).items()))
 
@@ -128,6 +129,7 @@ def verify(case, aero, meshdec, launcher):
     print("OK collective diagnostics for invalid weights and insufficient node RAM")
 
 
+# Разбирает параметры запуска, выполняет набор QA-проверок и возвращает статус результата.
 def main():
     parser = mpi_parser(__doc__, require_programs=True)
     args = parser.parse_args()

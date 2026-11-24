@@ -2,6 +2,7 @@
 
 namespace aero {
 enum class ResidualLimit { Off, Node, Stencil, Work };
+// Возвращает текстовое имя режима ограничения по невязке.
 inline const char* residual_limit_name(ResidualLimit limit) {
     switch (limit) {
     case ResidualLimit::Off: return "off";
@@ -13,6 +14,7 @@ inline const char* residual_limit_name(ResidualLimit limit) {
 }
 enum class LocalStepMode { Off, On, Auto };
 
+// Возвращает текстовое имя режима локального шага.
 inline const char* local_step_name(LocalStepMode mode) {
     switch (mode) {
     case LocalStepMode::Off: return "off";

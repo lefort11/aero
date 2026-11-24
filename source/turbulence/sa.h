@@ -13,7 +13,9 @@ struct Settings {
     LesSettings les;
     bool ddes = false;
     double c_des = .65; // Коэффициент сеточного масштаба в модели DDES Спаларта.
+    // Проверяет, нужен ли перенос рабочей вязкости SA для выбранной модели.
     bool uses_sa() const { return enabled && (ddes || les.scale==Scale::Off); }
+    // Проверяет, использует ли выбранная модель замыкание Sigma.
     bool uses_sigma() const { return enabled && !uses_sa(); }
     bool high_order = false; // Восстанавливать nu_tilde на газовом шаблоне перед конвективным переносом.
     double nut_nu_amb = 0.; // Отношение физической турбулентной вязкости к молекулярной в набегающем потоке.
@@ -103,6 +105,7 @@ AERO_HOST_DEVICE inline double source_rate_from_chi(double w, double chi, double
     return cb1 * (1. - ft2) * shear - (cw1 * fw * kappa * kappa - cb1 * ft2) * scale;
 }
 
+// Вычисляет локальные источники рождения и разрушения рабочей вязкости SA.
 AERO_HOST_DEVICE inline double source_rate(double w, double nu, double rotation, double inv_d) {
     const double chi=w/nu;
     return source_rate_from_chi(w,chi,inv_d==0. ? 0. : fv1(chi),rotation,inv_d);
@@ -155,6 +158,7 @@ struct FaceColumns {
     const std::uint32_t *orientation, *neighbour;
     const double* area;
     MeshIndex count;
+    // Восстанавливает запись площадки SA из раздельных массивов компонент.
     template<unsigned dimension>
     AERO_HOST_DEVICE FaceTerm read(MeshIndex p) const {
         FaceTerm face{orientation[p],neighbour[p],{}};
@@ -162,6 +166,7 @@ struct FaceColumns {
         return face;
     }
 };
+// Полуинтервал элементов строки: начало включительно, конец исключительно.
 struct RowRange {
     MeshIndex first, end;
 };
@@ -187,6 +192,7 @@ struct DiffusionCell {
 };
 // Поток диффузии от элемента в вершину и его вклад в оценку шага.
 struct ScalarContribution { double rate, diagonal; };
+// Представление строк и коэффициентов диффузии рабочей вязкости SA.
 struct Diffusion {
     const RowRange *rows;
     const MeshIndex *anchor; // Первый элемент строки при общей геометрии с другими узлами.
@@ -204,12 +210,14 @@ struct Diffusion {
 // На вытянутых элементах две наибольшие связи скалярной диффузии образуют
 // короткие линии. Их геометрические веса постоянны, а вязкость меняется в итерациях.
 struct LineVertex { MeshIndex node; double left, right; };
+// Короткие цепочки узлов и их диапазоны для линейного сглаживания SA.
 struct SaLines {
     static constexpr unsigned length = 16;
     const LineVertex* vertices;
     const RowRange* segments;
     MeshIndex count;
 };
+// Невладеющее представление геометрии и коэффициентов турбулентного оператора.
 struct View {
     SaLines lines;
     Diffusion diffusion;
@@ -219,6 +227,7 @@ struct View {
     FaceColumns face_columns;
     unsigned face_stride;
     double *incoming; // Входящий поток массы, делённый на плотность, пока в BDF газ фиксирован.
+    // Молекулярная и вихревая вязкости узла с коэффициентом демпфирования SA.
     struct Material {
         double nu, eddy_mu;
         double damping; // fv1 на текущей явной стадии. Внутри BDF рабочая вязкость меняется.
@@ -239,6 +248,7 @@ struct View {
         const double value=stage.combine(stage.uses_step_start() ? old[i] : w[i], w[i]+dt*rate[i]);
         w[i]=zero_working_viscosity(i) ? 0. : (value<0. ? 0. : value);
     }
+    // Закрепляет нулевую рабочую вязкость на узлах стенки с прилипанием.
     AERO_HOST_DEVICE bool zero_working_viscosity(MeshIndex i) const {
         return inverse_distance[i]<0. || (ddes && inverse_distance[i]==0. && ddes[i].grid_length==0.);
     }

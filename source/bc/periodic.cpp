@@ -12,13 +12,16 @@ namespace aero {
 namespace {
 using Id = MeshIndex;
 using Ids = std::vector<Id>;
+// Преобразует координаты в геометрический вектор контрольного объёма.
 Coordinate vector_of(CvVector v) {
     return {{v.x, v.y, v.z}};
 }
 // Для каждой группы периодических копий представителем служит узел или ребро с наименьшим номером.
 struct Groups {
     Ids parent;
+    // Инициализирует отдельное множество для каждого элемента.
     explicit Groups(Id count) : parent(count) { std::iota(parent.begin(), parent.end(), Id(0)); }
+    // Находит представителя группы периодически объединяемых узлов.
     Id root(Id i) {
         while (parent[i] != i) {
             // Укорачиваем путь до представителя при каждом следующем поиске.
@@ -27,17 +30,20 @@ struct Groups {
         }
         return i;
     }
+    // Объединяет группы двух сопряжённых периодических узлов.
     void join(Id a, Id b) {
         a = root(a);
         b = root(b);
         parent[std::max(a, b)] = std::min(a, b);
     }
 };
+// Узлы, грани и рёбра одного участка для периодического сопоставления.
 struct Patch {
     std::set<Id> nodes;
     std::map<Ids, Id> faces;
     std::map<std::pair<Id, Id>, Id> edges;
 };
+// Добавляет грань и её связность в описание периодического участка.
 void add_face(Patch& patch, MeshFace f) {
     const MeshIndexSpan nodes = f.node_ids();
     Ids key(nodes.begin(), nodes.end());
@@ -47,6 +53,7 @@ void add_face(Patch& patch, MeshFace f) {
     for (Id j = 0; j < f.edge_count(); ++j)
         patch.edges[std::minmax(nodes[j], nodes[(j + 1) % nodes.size])] = f.edge_id(j);
 }
+// Сопоставляет узлы сопряжённых участков после геометрического сдвига.
 std::map<Id, Id> match_nodes(MeshView m, const Patch& a, const Patch& b, Coordinate shift, double tol,
                              const std::string& label) {
     if (a.nodes.empty() || a.nodes.size() != b.nodes.size() || a.faces.size() != b.faces.size())
@@ -126,6 +133,7 @@ void join_patch_topology(const Patch& a, const Patch& b, const std::map<Id, Id>&
     }
 }
 }
+// Выбирает геометрический допуск сопоставления периодических участков.
 double periodic_detail::match_tolerance(const std::vector<PeriodicPair>& pairs, double tol) {
     if (pairs.empty() || !std::isfinite(tol) || tol < 0)
         throw MeshError("invalid periodic pairs or tolerance");
@@ -142,9 +150,11 @@ double periodic_detail::match_tolerance(const std::vector<PeriodicPair>& pairs, 
         throw MeshError("unresolved periodic translation");
     return tol;
 }
+// Проверяет согласованность площадей сопряжённых периодических граней.
 bool periodic_detail::compatible_areas(const Coordinate& a, const Coordinate& b) {
     return coordinate_length(a + b) <= 1e-8 * std::max(coordinate_length(a), coordinate_length(b));
 }
+// Сопоставляет периодические участки и строит общие степени свободы.
 PeriodicDomain::PeriodicDomain(const Mesh& mesh, const std::vector<PeriodicPair>& pairs, double tol)
     : mesh_(mesh), tolerance_(periodic_detail::match_tolerance(pairs, tol)) {
     const MeshView m = mesh.view();
@@ -211,6 +221,7 @@ PeriodicDomain::PeriodicDomain(const Mesh& mesh, const std::vector<PeriodicPair>
         boundary_.push_back(piece);
     }
 }
+// Возвращает невладеющее представление склеенной периодической геометрии.
 PeriodicView PeriodicDomain::view() const {
     return {volumes_.size(),  edges_.size(),   boundary_.size(), node_dof_.size(),
             node_dof_.data(), volumes_.data(), edges_.data(),    boundary_.data()};

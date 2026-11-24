@@ -7,6 +7,7 @@
 #include <set>
 
 namespace aero {
+// По номеру листа находит его интервал и возвращает ранг владельца.
 int LeafLayout::owner(MeshIndex leaf) const {
     mdec::check(leaf < cuts.back(), "reference to nonexistent leaf");
     return ranks[static_cast<std::size_t>(std::upper_bound(cuts.begin(), cuts.end(), leaf) - cuts.begin() -
@@ -95,6 +96,7 @@ void fetch(const Addresses& needed, Kind kind, Records& records, const LeafLayou
         }
     });
 }
+// Читает связи сущностей, требуемые для сборки локальной подобласти.
 Addresses links(const Addresses& source, const Records& records, bool secondary) {
     Addresses result;
     for (const auto& a : source) {
@@ -105,6 +107,7 @@ Addresses links(const Addresses& source, const Records& records, bool secondary)
     }
     return result;
 }
+// Находит запись сущности по её исходному глобальному номеру.
 std::vector<Address> by_id(const Addresses& addresses, const Records& records) {
     std::vector<std::pair<Id, Address>> keys;
     keys.reserve(addresses.size());
@@ -121,6 +124,7 @@ std::vector<Address> by_id(const Addresses& addresses, const Records& records) {
     }
     return sorted;
 }
+// Собирает локальную сетку из записей архива и таблиц перенумерации.
 MeshPartition assemble(const Archive& archive, const Records& records, const LeafLayout& layout, int slot,
                        const Addresses& nodes, const Addresses& faces, const Addresses& cells) {
     MeshData d;
@@ -193,6 +197,7 @@ MeshPartition assemble(const Archive& archive, const Records& records, const Lea
     return result;
 }
 }
+// Открывает архив сетки и выбирает листья текущего MPI-процесса.
 PartitionInput::PartitionInput(const std::string& path, const Processes& world, const LeafLayout& layout)
     : archive_(path), layout_(layout), slot_(world.rank) {
     if (layout_.cuts.empty()) {
@@ -211,17 +216,20 @@ PartitionInput::PartitionInput(const std::string& path, const Processes& world, 
             owned_.insert(item.first);
 }
 
+// Возвращает строку граней указанной ячейки.
 Addresses PartitionInput::cell_faces(const Addresses& cells) {
     archive_.read_records(cells, Cell, records_);
     auto faces = links(cells, records_, false);
     archive_.read_records(faces, Face, records_);
     return faces;
 }
+// Возвращает строку узлов указанной грани.
 Addresses PartitionInput::face_nodes(const Addresses& faces) {
     auto nodes = links(faces, records_, false);
     archive_.read_records(nodes, Node, records_);
     return nodes;
 }
+// Строит локальную сетку из выбранных глобальных сущностей.
 MeshPartition PartitionInput::indexed_mesh(const Addresses& cells) {
     const auto faces = cell_faces(cells);
     auto nodes = face_nodes(faces);
@@ -229,6 +237,7 @@ MeshPartition PartitionInput::indexed_mesh(const Addresses& cells) {
     return assemble(archive_, records_, layout_, slot_, nodes, faces, cells);
 }
 
+// Расширяет входные данные геометрией, необходимой шаблону реконструкции.
 void PartitionInput::prepare_stencil(const std::set<Id>& periodic_nodes, bool fifth,
                                      NodeOwners* near_vertices) {
     if (fifth)
@@ -259,6 +268,7 @@ void PartitionInput::prepare_stencil(const std::set<Id>& periodic_nodes, bool fi
     for (Id i = layout_.cuts[slot_]; i < layout_.cuts[slot_ + 1]; ++i)
         archive_.far_cells(i, cells_);
 }
+// Добавляет ячейки вокруг запрошенных вершин, в том числе у периодических копий.
 void PartitionInput::add_stars(const std::set<Id>& vertices) {
     for (Id n : vertices)
         archive_.cell_star(n, cells_);
@@ -281,6 +291,7 @@ void PartitionInput::complete_layer_faces() {
     }
 }
 
+// Собирает номера узлов указанных граничных участков.
 PartitionInput::NodeOwners PartitionInput::boundary_nodes(std::set<Id>* incomplete_stars) {
     const auto nodes = face_nodes(cell_faces(cells_));
     archive_.read_records(links(nodes, records_, false), Face, records_);
@@ -305,10 +316,12 @@ PartitionInput::NodeOwners PartitionInput::boundary_nodes(std::set<Id>* incomple
     return boundary;
 }
 
+// Возвращает вспомогательную сетку со всеми запрошенными опорными ячейками.
 MeshPartition PartitionInput::stencil() {
     return indexed_mesh(cells_);
 }
 
+// Читает собственные узлы и все ячейки, необходимые для их контрольных объёмов.
 MeshPartition PartitionInput::core(const Processes& world) {
     verify_owners(owned_, records_, archive_.counts[Node], world);
     MeshPartition result;
@@ -337,6 +350,7 @@ MeshPartition PartitionInput::core(const Processes& world) {
     return result;
 }
 
+// Загружает собственную геометрию и требуемые halo-связи подобласти.
 MeshPartition load_partition(const std::string& path, const Processes& world,
                              std::unique_ptr<PartitionInput>* stencil_input, const LeafLayout& layout) {
     std::unique_ptr<PartitionInput> input;

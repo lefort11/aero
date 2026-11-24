@@ -22,6 +22,7 @@ public:
     // Выделяет одну непрерывную область памяти и нарезает её на буферы соседей.
     void allocate(bool cuda) {
         std::size_t total = 0;
+        // Подсчитывает число значений для буфера обмена с одним процессом.
         const auto size_buffer = [&](DoubleExchange::Buffer& b, std::size_t items) {
             if (items > (host_.max_size() - total) / stride_) {
                 throw std::length_error("MPI buffer too large");
@@ -96,6 +97,7 @@ public:
     void transfer(const Processes& world, partition_detail::RecordField field,
                   PartitionGpu* gpu = nullptr, double* seconds = nullptr) {
         WallTimer timer(seconds);
+        // Обрабатывает один выбранный диапазон или набор узлов текущей операции.
         const auto visit = [&](bool pack) {
             for (std::size_t j = 0; j < peers_.size(); ++j) {
                 const int p = peers_[j];

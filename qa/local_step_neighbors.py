@@ -183,6 +183,7 @@ def check_spread_restart(case, args, mode):
                   "main:backend=cuda" if label == "gpu" else "main:backend=cpu"]
         whole, out = case / ("whole-" + label), case / ("continued-" + label)
 
+        # Продвигает тестовый расчёт на следующий интервал проверки.
         def advance(directory, until, *options):
             log = run([*common, f"--output={directory}", f"implicit:steady_max_steps={until}", *options],
                       success=False)
@@ -223,6 +224,7 @@ def check_spread_restart(case, args, mode):
         print(f"PASS LTS {mode} after LO to EBR5 and mid-block restart ({label}), maximum field difference {delta:.3g}")
 
 
+# Разбирает параметры запуска, выполняет набор QA-проверок и возвращает статус результата.
 def main():
     parser = mpi_parser(__doc__)
     parser.add_argument("--mpi", action="store_true")

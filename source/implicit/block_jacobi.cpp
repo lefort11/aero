@@ -11,6 +11,7 @@
 
 namespace aero {
 namespace implicit {
+// Диагональные блоки и память предобусловливателя на CPU или GPU.
 struct BlockJacobi::Storage {
     JacobiBlocks blocks{};               // На CPU и GPU ядро получает адреса местных массивов.
     int device = -1;                     // Владелец разложения, -1 обозначает оперативную память.
@@ -18,6 +19,7 @@ struct BlockJacobi::Storage {
     bool use_matrix_diagonal = false;    // Повторно читаем исходный блок вместо второй копии всей диагонали.
     std::vector<double> host_factors;    // LU в памяти CPU.
     std::vector<unsigned char> host_pivots; // Перестановки при разложении на CPU.
+    // Освобождает принадлежащие объекту ресурсы при завершении его времени жизни.
     ~Storage() {
 #ifdef AERO_WITH_KOKKOS_GPU
         if (device >= 0 && (blocks.factors || blocks.pivots))
@@ -26,6 +28,7 @@ struct BlockJacobi::Storage {
     }
 };
 
+// Выделяет или подключает диагональные блоки на выбранном исполнителе.
 BlockJacobi::BlockJacobi(MeshIndex owned_nodes, unsigned dimension, int device, bool use_matrix_diagonal)
     : storage_(new Storage) {
     if (dimension < 1 || dimension > 3 || device < -1)
@@ -54,6 +57,7 @@ BlockJacobi::BlockJacobi(MeshIndex owned_nodes, unsigned dimension, int device, 
     throw std::invalid_argument("Block Jacobi on GPU requires a Kokkos GPU build");
 #endif
 }
+// Освобождает принадлежащие объекту ресурсы при завершении его времени жизни.
 BlockJacobi::~BlockJacobi() = default;
 
 namespace {
@@ -64,10 +68,12 @@ std::domain_error bad_diagonal(MeshIndex node) {
 }
 }
 
+// Разлагает диагональные блоки и помечает предобусловливатель готовым только при успехе.
 void BlockJacobi::prepare(const double* diagonal) {
     prepare(diagonal, nullptr);
 }
 
+// Разлагает диагональные блоки и помечает предобусловливатель готовым только при успехе.
 void BlockJacobi::prepare(const double* diagonal, const MeshIndex* row_starts) {
     auto& s = *storage_;
     s.ready = false; // После неудачного пересчёта нельзя использовать смесь старых и новых блоков.
@@ -94,8 +100,12 @@ void BlockJacobi::prepare(const double* diagonal, const MeshIndex* row_starts) {
     s.ready = true;
 }
 
+// Применяет подготовленный предобусловливатель к новому вектору BiCGSTAB.
+// На GPU оба указателя относятся к памяти выбранной карты, ядро ставится
+// в стандартный поток. Допускается запись поверх входного вектора.
 const JacobiBlocks& BlockJacobi::factors() const { return storage_->blocks; }
 
+// Решает независимые системы разложенных диагональных блоков.
 void BlockJacobi::apply(const double* residual, double* correction) const {
     const auto& s = *storage_;
     if (!s.ready)

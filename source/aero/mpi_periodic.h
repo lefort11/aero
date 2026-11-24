@@ -15,6 +15,7 @@ struct PeriodicPartition {
     std::vector<double> volumes;
     // Для CFL берём наименьшую высоту со всех сторон периодического шва.
     std::vector<double> min_heights;
+    // Объединённое периодическое ребро с площадью и исходными номерами концов.
     struct Edge {
         MeshIndex begin, end;
         CvVector area;
@@ -24,6 +25,7 @@ struct PeriodicPartition {
     std::vector<Edge> edges;
     std::vector<CvBoundary> boundary;
 };
+// Строит компактные данные для тех же узловых сумм, что и в обычной периодической области.
 PeriodicPartition partition_periodic(const MeshPartition&, CvView, const std::vector<PeriodicPair>&,
                                      const Processes&);
 }

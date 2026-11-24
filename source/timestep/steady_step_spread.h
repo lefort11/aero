@@ -28,8 +28,11 @@ public:
     // Сбрасываем и незавершённый блок, и базу для сравнения затрат BiCGSTAB.
     void reset() { *this = SteadyStepSpread(); }
 
+    // Возвращает опорное значение статистики разброса локальных шагов.
     double reference() const { return reference_; }
+    // Возвращает последнюю оценку разброса локальных шагов.
     double last() const { return last_; }
+    // Возвращает число накопленных измерений разброса.
     unsigned samples() const { return samples_; }
 
     // Ручной предел из настроек служит дополнительной верхней границей.
@@ -147,6 +150,7 @@ private:
                     previous_work_ >= block_size && previous_work_ <= block_size * max_work));
     }
 
+    // Создаёт признак отсутствующего или недопустимого измерения.
     static void invalid_record() { throw std::runtime_error("Invalid checkpoint for steady local time steps"); }
 };
 

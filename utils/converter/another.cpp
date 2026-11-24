@@ -12,11 +12,13 @@ namespace aero {
 namespace converter {
 namespace {
 typedef std::uint64_t U64;
+// Приводит строку к нижнему регистру для сравнения ключевых слов.
 std::string lower(std::string s) {
     for (char& c : s)
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return s;
 }
+// Удаляет комментарии и лишние пробелы строки исходного формата.
 std::string clean(std::string s) {
     if (s.compare(0, 3, "\xef\xbb\xbf") == 0)
         s.erase(0, 3);
@@ -25,6 +27,7 @@ std::string clean(std::string s) {
         s.erase(comment);
     return s;
 }
+// Разбирает числовое значение и отвергает некорректную запись.
 U64 number(const std::string& s) {
     if (s.empty())
         throw MeshError("another: missing integer");
@@ -36,6 +39,7 @@ U64 number(const std::string& s) {
     }
     return n;
 }
+// Возвращает каталог входного файла для поиска связанных таблиц.
 std::string directory(std::string path) {
     if (path.empty() || path.find('\0') != std::string::npos)
         throw MeshError("another: invalid input path");
@@ -44,14 +48,17 @@ std::string directory(std::string path) {
         return slash == std::string::npos ? "." : path.substr(0, slash + 1);
     return path;
 }
+// Соединяет каталог и относительное имя файла исходного формата.
 std::string join(const std::string& dir, const char* file) {
     return dir + "/" + file;
 }
+// Проверяет существование указанного пути.
 bool exists(const std::string& path) {
     std::ifstream in(path.c_str(), std::ios::binary);
     return static_cast<bool>(in);
 }
 typedef std::map<std::string, std::string> Header;
+// Читает заголовок таблицы и проверяет ожидаемые размеры.
 Header header(const std::string& path) {
     std::ifstream in(path.c_str());
     if (!in)
@@ -72,6 +79,7 @@ Header header(const std::string& path) {
         throw MeshError("another: header read failed");
     return h;
 }
+// Читает обязательную строку или токен с диагностикой конца файла.
 std::string get(const Header& h, const char* name, const char* alias = nullptr) {
     auto i = h.find(name);
     if (i == h.end() && alias)
@@ -82,6 +90,7 @@ std::string get(const Header& h, const char* name, const char* alias = nullptr) 
         throw MeshError("another: conflicting header aliases");
     return i->second;
 }
+// Проверяет попадание индекса или размера в разрешённый диапазон.
 U64 bounded(U64 n) {
     if (n > 1000000000ULL)
         throw MeshError("another: array count exceeds converter limit");
@@ -90,11 +99,14 @@ U64 bounded(U64 n) {
 // Координаты и связность читаем из текстовых .msh по одному значению.
 class TextArray {
 public:
+    // Открывает текстовую таблицу исходного формата сетки.
     explicit TextArray(const std::string& path) : in_(path.c_str()) {
         if (!in_)
             throw MeshError("another: cannot open " + path);
     }
+    // Читает целое значение с учётом формата и порядка байтов.
     U64 integer() { return number(token()); }
+    // Читает вещественное значение с учётом формата и порядка байтов.
     double real() {
         std::istringstream value(token());
         value.imbue(std::locale::classic());
@@ -103,6 +115,7 @@ public:
             throw MeshError("another: invalid coordinate");
         return d;
     }
+    // Проверяет, что таблица прочитана полностью и лишних записей нет.
     void finish() {
         std::string extra;
         if (next(extra))
@@ -112,6 +125,7 @@ public:
     }
 
 private:
+    // Переходит к следующей содержательной записи исходной таблицы.
     bool next(std::string& t) {
         while (!(row_ >> t)) {
             std::string line;
@@ -124,6 +138,7 @@ private:
         }
         return true;
     }
+    // Читает следующий токен текстовой таблицы.
     std::string token() {
         std::string t;
         if (!next(t))
@@ -133,6 +148,7 @@ private:
     std::ifstream in_;
     std::istringstream row_;
 };
+// Читает имена и номера граничных участков.
 std::map<U64, std::string> labels(const std::string& path) {
     std::ifstream in(path.c_str());
     if (!in)
@@ -249,6 +265,7 @@ void read_boundaries(detail::Builder& builder, const std::string& dir, bool hybr
 }
 }
 
+// Читает многокомпонентную сетку формата NTTE.
 Mesh read_another(const std::string& input, const Options& options) {
     const std::string dir = directory(input);
     const Header h = header(join(dir, "mesh.txt"));

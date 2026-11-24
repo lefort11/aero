@@ -2,6 +2,9 @@
 #include "../parallel/parallel_for.h"
 #include "convection.h"
 #include "../timestep/bdf_weights.h"
+#ifdef AERO_HAS_MULTIGRID
+#include "../multigrid/scalar_smoother.h"
+#endif
 #ifdef AERO_WITH_KOKKOS_GPU
 #include "../parallel/device_work.h"
 #include "../parallel/device_check.h"
@@ -10,6 +13,7 @@
 namespace aero {
 using turbulence::Norm;
 using turbulence::Operation;
+// Готовит поле SA, расстояния до стенок, границы и рабочую память.
 void PartitionOperator::prepare_sa(const MeshPartition &part, const PeriodicPartition *periodic,
                                    const BoundaryPatches &patches, const std::vector<PeriodicPair> &pairs,
                                    const turbulence::Settings &settings, bool gpu, bool implicit, bool steady, bool has_stencil) {
@@ -29,6 +33,7 @@ void PartitionOperator::prepare_sa(const MeshPartition &part, const PeriodicPart
     });
     sa_lines_ = use_lines && world_.reduce_double(aes_->turbulence_field.line_segments.empty() ? 0. : 1., true) > 0.;
 }
+// Собирает представление текущей стадии переноса SA.
 turbulence::Step PartitionOperator::sa_step() const {
     turbulence::Step s{};
     auto &t = s.transport;
@@ -68,6 +73,7 @@ turbulence::Step PartitionOperator::sa_step() const {
     return s;
 }
 namespace {
+// Вычисляет узловые строки оператора SA на CPU.
 template <unsigned dim, bool same_gas> void host_sa_rows(const turbulence::Step &step) {
     const auto &transport = step.transport;
     // На CPU строки лежат подряд. Размерность и повторное использование газа
@@ -81,6 +87,7 @@ template <unsigned dim, bool same_gas> void host_sa_rows(const turbulence::Step 
     }
 }
 
+// Вычисляет невязку переноса SA на CPU.
 template <bool same_gas> void host_sa_residual(const turbulence::Step &step) {
     const auto launch = for_dimension(step.transport.dim, host_sa_rows<1,same_gas>,
                                       host_sa_rows<2,same_gas>, host_sa_rows<3,same_gas>);
@@ -88,6 +95,7 @@ template <bool same_gas> void host_sa_residual(const turbulence::Step &step) {
 }
 }
 
+// Выполняет выбранную операцию SA на CPU или GPU.
 void PartitionOperator::sa_apply(const turbulence::Step &s, Operation op) const {
 #ifdef AERO_WITH_KOKKOS_GPU
     if (gpu_) {
@@ -108,8 +116,10 @@ void PartitionOperator::sa_apply(const turbulence::Step &s, Operation op) const 
     parallel_for(s.transport.count, [&](MeshIndex k) { s.apply(op, k); });
 }
 namespace {
+// Вычисляет максимальную норму выбранной величины SA на CPU.
 template<unsigned dim,bool refresh>
 double host_sa_norm(const turbulence::Step& s,Norm which) {
+    // Вычисляет максимальный модуль выбранной величины SA.
     const auto magnitude=[&](MeshIndex k) {
         return refresh ? s.updated_defect<dim,true>(k) : s.magnitude(which,k);
     };
@@ -124,6 +134,7 @@ double host_sa_norm(const turbulence::Step& s,Norm which) {
     return value;
 }
 }
+// Вычисляет глобальную норму SA с редукцией между процессами.
 double PartitionOperator::sa_max(const turbulence::Step &s, Norm which,bool refresh) const {
     double value = 0.;
     world_.local([&] {
@@ -169,11 +180,13 @@ void PartitionOperator::update_les(const std::vector<double>& state, SolverTimin
     if (gpu_ && seconds) PartitionGpu::synchronize();
 #endif
 }
+// Обновляет значения рабочей вязкости в halo-узлах.
 void PartitionOperator::sa_exchange() {
     if (turbulence_exchange_)
         turbulence_exchange_->transfer(world_, {1, sa_step().transport.sa.w, nullptr}, device());
 }
 
+// Готовит геометрию и веса конвективных потоков SA.
 void PartitionOperator::prepare_sa_convection(const turbulence::Step& step) const {
     if (!sa_high_order_ || first_order_start) return;
     // Список начинается со своих внутренних рёбер. Физические границы в конце
@@ -215,6 +228,7 @@ void PartitionOperator::evaluate_sa(const std::vector<double> &state, SolverTimi
         PartitionGpu::synchronize();
 #endif
 }
+// Решает текущую стадию SA с согласованием потоков и диффузии.
 void PartitionOperator::solve_sa_stage(const std::vector<double> &state, bool rates_ready, bool rows_ready) {
     // Для явной стадии достаточно пространственной невязки. В BDF уточняем рабочую
     // вязкость при фиксированном газе до проверки полной невязки нового слоя.
@@ -225,6 +239,7 @@ void PartitionOperator::solve_sa_stage(const std::vector<double> &state, bool ra
     }
     if (!sa_dt_)
         return;
+    // Вычисляет согласованную норму невязки текущего пробного состояния.
     const auto residual_norm = [&](bool refresh) {
         if (refresh) prepare_sa_convection(s);
         const double value = sa_max(s, Norm::Bdf, refresh);
@@ -237,20 +252,45 @@ void PartitionOperator::solve_sa_stage(const std::vector<double> &state, bool ra
         sa_target_ =
             std::max(sa_tol_ * norm, 32. * std::numeric_limits<double>::epsilon() * s.transport.sa.ambient);
     unsigned count = 0;
+    bool use_lines = sa_lines_;
+#ifdef AERO_HAS_MULTIGRID
+    multigrid::ScalarSmoother polynomial;
+    const double initial_norm = norm;
+#endif
     // При достижении допуска или лимита используем текущее поле рабочей вязкости.
     // Ниже по этому полю обновляются напряжения и тепловой поток газа.
     while (norm > sa_target_ && count < sa_iterations_) {
         const double previous_norm=norm;
         // На небольшом псевдошаге нескольких точечных поправок обычно достаточно.
         // Прогонку запускаем, только если после четырёх итераций перенос ещё не сошёлся.
-        const bool line_trial=sa_lines_ && count>=4;
+        const bool line_trial=use_lines && count>=4;
         s.extrapolate=line_trial || (count%2==1 && count+1<sa_iterations_);
+#ifdef AERO_HAS_MULTIGRID
+        const bool polynomial_trial = sa_multigrid_ && !line_trial && count >= 4;
+        if (polynomial_trial) {
+            polynomial.next(initial_norm,norm,count);
+            s.polynomial_current = polynomial.current;
+            s.polynomial_previous = polynomial.previous;
+            s.extrapolate = true;
+        }
+#endif
         world_.local([&] { sa_apply(s,line_trial ? Operation::LineRelax : Operation::Relax); });
         sa_exchange();
         norm = residual_norm(true);
         // Проверяем настоящую нелинейную невязку по всем процессам. Если
         // ускоренная поправка её не уменьшила, принимаем обычную итерацию.
-        if (s.extrapolate && !(norm<previous_norm)) {
+        bool reject = s.extrapolate && !(norm<previous_norm);
+#ifdef AERO_HAS_MULTIGRID
+        if (polynomial_trial) reject = !polynomial.accepts(norm);
+#endif
+        if (reject) {
+            // Если прогонка по сильным связям проиграла обычной итерации,
+            // для этого же газа не повторяем её при каждой следующей поправке.
+            // На новом слое и после обновления газа снова разрешаем пробу.
+            if (line_trial && sa_multigrid_) use_lines = false;
+#ifdef AERO_HAS_MULTIGRID
+            if (polynomial_trial) polynomial.restart();
+#endif
             s.extrapolate=false;
             world_.local([&] { sa_apply(s,Operation::RestorePlain); });
             sa_exchange();
@@ -279,6 +319,7 @@ void PartitionOperator::solve_sa_stage(const std::vector<double> &state, bool ra
         aes_->evaluate(state.data(), grid_.packed.gas, true, phase);
     });
 }
+// Формирует пары рабочей и физической вихревой вязкости для вывода.
 std::vector<double> PartitionOperator::sa_output(const std::vector<double> &state) {
     if (les_active()) {
         std::vector<double> columns(2*state_nodes(),0.);
@@ -310,11 +351,13 @@ std::vector<double> PartitionOperator::sa_output(const std::vector<double> &stat
     });
     return columns;
 }
+// Сохраняет или восстанавливает текущее и предыдущее поля SA.
 void PartitionOperator::sa_checkpoint(std::vector<double> &current, std::vector<double> &previous, bool restore,
                                       double previous_dt) {
     // На диск пишем поле с активного исполнителя. Соседние значения после чтения заполнит MPI.
     const auto s = sa_step().transport.sa;
     const size_t n = state_nodes();
+    // Переносит рабочую вязкость между основным полем и буфером пробной стадии.
     const auto transfer = [&](double *field, std::vector<double> &host) {
         host.resize(n);
         if (!n)

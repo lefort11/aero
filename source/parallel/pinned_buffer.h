@@ -9,7 +9,9 @@ namespace aero {
 // Закреплённая память CPU для обмена с картой. Если устройство поддерживает
 // отображение, ядро может обратиться к той же памяти по адресу device().
 template <class T> class PinnedBuffer {
+    // Удалитель закреплённого буфера для автоматического управления временем жизни.
     struct Release {
+        // Освобождает закреплённую память через GPU-интерфейс.
         void operator()(T* p) const {
             aero::gpu::wait(nullptr);
             aero::gpu::release_pinned(p);
@@ -37,7 +39,9 @@ public:
         }
         return status;
     }
+    // Возвращает адрес буфера, доступный коду CPU.
     T* host() const { return host_.get(); }
+    // Возвращает номер устройства; отрицательное значение соответствует CPU.
     T* device() const { return device_; }
 };
 }

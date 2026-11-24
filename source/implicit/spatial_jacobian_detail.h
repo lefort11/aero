@@ -24,7 +24,9 @@ struct SpatialBlocks {
     NodeSteps local_steps;
     bool roe;                    // Выбор численного потока для матрицы поправки.
     bool simplified;             // Фиксировать диссипацию LF или Роу при дифференцировании.
+    // Возвращает узел диагонального блока указанной строки.
     AERO_HOST_DEVICE MeshIndex node(MeshIndex row) const { return columns[rows[row]]; }
+    // Переводит позицию вычисляемой площадки в её геометрический номер.
     AERO_HOST_DEVICE MeshIndex face(MeshIndex k) const { return computed ? computed[k] : k; }
     double* values;             // Единственный массив коэффициентов пространственной матрицы.
     BlockLayout layout;         // Адреса коэффициентов в CSR или в порядке проходов CSGS.
@@ -40,7 +42,9 @@ struct SpatialBlocks {
         mass=volumes[i]/local_steps.at(i,dt);
         return mass>0. && euler_detail::finite(mass);
     }
+    // Возвращает число коэффициентов квадратного блока газовых компонент.
     AERO_HOST_DEVICE unsigned stride() const { return (grid.dim + 2) * (grid.dim + 2); }
+    // Возвращает адрес блока производных, соответствующего площадке.
     AERO_HOST_DEVICE double* face_block(MeshIndex f) const {
         return face_values + (f < grid.edges ? 2*f : grid.edges + f) * stride();
     }
@@ -94,6 +98,7 @@ struct SpatialBlocks {
         }
         return true;
     }
+    // Вычисляет производные потока площадки по состояниям её узлов.
     AERO_HOST_DEVICE bool differentiate(MeshIndex f,const double* u,const double* initial) const {
         return face_derivatives(f,u,initial,face_block(f));
     }
@@ -197,6 +202,7 @@ struct SpatialBlocks {
         return true;
     }
 
+    // Собирает одну строку блоков якобиана из потоковых вкладов.
     AERO_HOST_DEVICE bool assemble_row(MeshIndex row, const double* volumes, double dt) const {
         switch (grid.dim) {
         case 1: return assemble_equations<3,3>(row,0,volumes,dt);
@@ -218,6 +224,7 @@ struct SpatialBlocks {
         }
         for (unsigned r=0; r<Equations; ++r) y[row*Width+first+r] = sum[r];
     }
+    // Вычисляет произведение одной блочной строки матрицы на вектор.
     AERO_HOST_DEVICE void multiply_row(MeshIndex row, const double* x, double* y) const {
         switch (grid.dim) {
         case 1: return multiply_equations<3,3>(row,0,x,y);

@@ -19,6 +19,7 @@
 
 namespace aero {
 namespace tecplot {
+// Сообщает, собрана ли утилита с поддержкой OpenMP.
 bool openmp_available() noexcept {
 #ifdef _OPENMP
     return true;
@@ -33,14 +34,17 @@ typedef std::uint64_t U64;
 static_assert(sizeof(float) == 4 && sizeof(double) == 8 && std::numeric_limits<float>::is_iec559 &&
                   std::numeric_limits<double>::is_iec559,
               "PLT requires IEEE-754 binary32/binary64");
+// Сообщает ошибку подготовки или записи Tecplot.
 [[noreturn]] void fail(const std::string& message) {
     throw ExportError(message);
 }
+// Проверяет вместимость размера или индекса в ограниченный тип формата Tecplot.
 I32 checked(U64 value, const char* what) {
     if (value > static_cast<U64>(std::numeric_limits<I32>::max()))
         fail(std::string(what) + " exceeds PLT v112 INT32 limit");
     return static_cast<I32>(value);
 }
+// Преобразует размещение исходного поля в размещение переменной Tecplot.
 const char* location(FieldLocation loc) {
     switch (loc) {
     case FieldLocation::Node:
@@ -54,6 +58,7 @@ const char* location(FieldLocation loc) {
     }
     fail("Invalid field location");
 }
+// Выбирает число потоков экспорта с учётом OpenMP и настроек.
 int workers(const Options& options) {
     if (options.threads < 0)
         fail("Negative thread count");
@@ -65,6 +70,7 @@ int workers(const Options& options) {
     return 1;
 #endif
 }
+// Скалярная переменная Tecplot, её источник, диапазон и число значений.
 struct Variable {
     std::string name;
     const Field* field;
@@ -73,6 +79,7 @@ struct Variable {
     std::size_t count;
     double minimum, maximum;
 };
+// Топология, нумерация и источники значений одной зоны Tecplot.
 struct Zone {
     std::string name;
     FieldLocation source;
@@ -81,13 +88,17 @@ struct Zone {
     std::vector<MeshIndex> node_ids;
     std::vector<I32> offsets, connectivity, left, right;
     std::vector<std::pair<double, double>> ranges;
+    // Инициализирует пустую ячеечную зону до определения её топологии.
     Zone() : source(FieldLocation::Cell), type(0), nodes(0), cells(0), faces(0) {}
+    // Проверяет, содержит ли зона данные выбранной переменной.
     bool active(const Variable& v) const {
         return !v.field || v.field->location == FieldLocation::Node || v.field->location == source;
     }
+    // Определяет, записывается ли переменная по ячейкам текущей зоны.
     I32 cell_centered(const Variable& v) const {
         return type != 0 && v.field && v.field->location != FieldLocation::Node ? 1 : 0;
     }
+    // Возвращает число значений переменной для текущей зоны.
     std::size_t count(const Variable& v) const {
         return static_cast<std::size_t>(cell_centered(v) ? cells : nodes);
     }
@@ -95,10 +106,12 @@ struct Zone {
     bool contiguous(const Variable& v) const {
         return node_ids.empty() || (v.field && v.field->location != FieldLocation::Node);
     }
+    // Получает значение переменной с учётом перенумерации узлов зоны.
     double value(const Variable& v, std::size_t i) const {
         return v.values[contiguous(v) ? i : static_cast<std::size_t>(node_ids[i])];
     }
 };
+// Владеет переменными и зонами экспорта, сохраняющими ссылки на исходные поля.
 struct Plan {
     int threads;
     std::string mesh_sha256;
@@ -106,7 +119,9 @@ struct Plan {
     std::vector<Zone> zones;
     // Копирование запрещено: указатели переменных ссылаются на данные исходной сетки и снимка.
     Plan(const Plan&) = delete;
+    // Запрещает копирование, чтобы ресурсы объекта сохраняли единственного владельца.
     Plan& operator=(const Plan&) = delete;
+    // Подготавливает переменные, зоны и связи для записи Tecplot.
     Plan(const Mesh& mesh, const FieldSnapshot* snapshot, const Options& options)
         : threads(workers(options)) {
         if (snapshot) {
@@ -146,6 +161,7 @@ private:
         }
     }
 
+    // Признаки необходимости отдельных зон рёбер и граней.
     struct RequestedZones {
         bool edges = false, faces = false;
     };
@@ -350,36 +366,45 @@ private:
     }
 };
 
+// Буферизует двоичную запись слов, строк и массивов формата Tecplot.
 class Writer {
 public:
+    // Подключает поток и выделяет буфер двоичного вывода Tecplot.
     explicit Writer(std::ostream& output) : output_(output), buffer_(65536), used_(0) {}
+    // Записывает блок байтов через буфер выходного потока.
     void raw(const char* data, std::size_t size) {
         flush();
         output_.write(data, static_cast<std::streamsize>(size));
         check();
     }
+    // Записывает 32-битное целое значение Tecplot.
     void i32(I32 value) { bits(static_cast<std::uint32_t>(value), 4); }
+    // Записывает вещественный маркер одинарной точности.
     void f32(float value) {
         std::uint32_t v;
         std::memcpy(&v, &value, 4);
         bits(v, 4);
     }
+    // Записывает значение переменной двойной точности.
     void f64(double value) {
         U64 v;
         std::memcpy(&v, &value, 8);
         bits(v, 8);
     }
+    // Записывает строку в представлении кодов символов Tecplot.
     void string(const std::string& value) {
         for (unsigned char c : value)
             i32(c);
         i32(0);
     }
+    // Записывает вспомогательную пару имени и значения метаданных.
     void aux(const std::string& key, const std::string& value) {
         i32(1);
         string(key);
         i32(0);
         string(value);
     }
+    // Передаёт накопленные байты в выходной поток.
     void flush() {
         if (used_) {
             output_.write(buffer_.data(), static_cast<std::streamsize>(used_));
@@ -389,10 +414,12 @@ public:
     }
 
 private:
+    // Проверяет, что выходной поток не сообщил об ошибке записи.
     void check() {
         if (!output_)
             fail("Tecplot output failed");
     }
+    // Преобразует числовое значение в его двоичное представление.
     void bits(U64 value, unsigned count) {
         if (buffer_.size() - used_ < count)
             flush();
@@ -489,6 +516,7 @@ void write_variable_values(Writer& writer, const Zone& z, const Variable& v, std
     }
 }
 
+// Записывает значения переменных и топологию одной зоны.
 void write_zone_data(Writer& writer, const Plan& plan, const Zone& z, std::vector<char>& bytes) {
     writer.f32(299);
     for (std::size_t i = 0; i < plan.variables.size(); ++i)
@@ -536,6 +564,7 @@ void write_plan(std::ostream& out, const Plan& plan, const FieldSnapshot* snapsh
     writer.flush();
 }
 
+// Записывает заголовок, описания зон и блоки данных файла Tecplot.
 void write_file(const std::string& path, const Mesh& mesh, const FieldSnapshot* snapshot,
                 const Options& options) {
     if (path.empty() || path.find('\0') != std::string::npos)
@@ -550,13 +579,16 @@ void write_file(const std::string& path, const Mesh& mesh, const FieldSnapshot* 
     file.publish(true);
 }
 } // namespace
+// Проверяет входные данные и экспортирует сетку или снимок в Tecplot.
 void write(std::ostream& output, const Mesh& mesh, const FieldSnapshot& snapshot, const Options& options) {
     const Plan plan(mesh, &snapshot, options);
     write_plan(output, plan, &snapshot);
 }
+// Проверяет входные данные и экспортирует сетку или снимок в Tecplot.
 void write(const std::string& path, const Mesh& mesh, const FieldSnapshot& snapshot, const Options& options) {
     write_file(path, mesh, &snapshot, options);
 }
+// Проверяет входные данные и экспортирует сетку или снимок в Tecplot.
 void write(const std::string& path, const Mesh& mesh, const Options& options) {
     write_file(path, mesh, nullptr, options);
 }

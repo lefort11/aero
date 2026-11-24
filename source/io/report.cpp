@@ -13,6 +13,7 @@
 #include <stdexcept>
 
 namespace aero {
+// Единый формат календарного времени для отчёта и прогноза завершения расчёта.
 std::string local_date_time(std::time_t timestamp) {
     std::tm local{};
 #ifdef _WIN32
@@ -42,6 +43,7 @@ void FlowSummary::add_squares(long double scale, long double weight) {
         scaled_squares += weight * ratio * ratio;
     }
 }
+// Объединяет диапазоны и масштабированные нормы локальных отчётных данных.
 void FlowSummary::merge(const FlowSummary& other, unsigned fields) {
     add_squares(other.rate_scale, other.scaled_squares);
     volume += other.volume;
@@ -51,6 +53,7 @@ void FlowSummary::merge(const FlowSummary& other, unsigned fields) {
         field[k].integral += other.field[k].integral;
     }
 }
+// Настраивает период отчётов, параметры газа и объёмные веса узлов.
 Report::Report(std::uint64_t every, double gamma, unsigned dimension, std::size_t nodes,
                        const double* volumes, const LinearBackground& background)
     : every_(every), captured_step_(0), background_(background), gamma_(gamma), dimension_(dimension), total_volume_(0) {
@@ -70,12 +73,15 @@ Report::Report(std::uint64_t every, double gamma, unsigned dimension, std::size_
     previous_energy_.resize(nodes);
 }
 
+// Проверяет наступление отчётного шага или срока.
 bool Report::due(std::uint64_t step) const {
     return due(step, every_);
 }
+// Проверяет наступление отчётного шага или срока.
 bool Report::due(std::uint64_t step, std::uint64_t every) {
     return every && step && step % every == 0;
 }
+// Сохраняет начальное поле интервала для последующей оценки изменения.
 void Report::capture(std::uint64_t step, const std::vector<double>& previous) {
     if (!due(step))
         return;
@@ -83,6 +89,7 @@ void Report::capture(std::uint64_t step, const std::vector<double>& previous) {
         throw std::invalid_argument("report: previous field size");
     capture_values(step, previous.data());
 }
+// Сохраняет значения начала отчётного интервала для измерения изменений.
 void Report::capture_values(std::uint64_t step, const double* u) {
     captured_step_ = 0;
     const unsigned width = dimension_ + 2;
@@ -95,6 +102,7 @@ void Report::capture_values(std::uint64_t step, const double* u) {
     });
     captured_step_ = step;
 }
+// Измеряет и печатает отчёт о текущем состоянии расчёта.
 void Report::write(std::uint64_t step, double time, double cfl, double dt,
                        const std::vector<double>& current, std::ostream& out) {
     if (!due(step))
@@ -103,6 +111,7 @@ void Report::write(std::uint64_t step, double time, double cfl, double dt,
         throw std::invalid_argument("report: current field size");
     write_values(step, time, cfl, dt, current.data(), out);
 }
+// Печатает отчётные показатели переданного поля.
 void Report::write_values(std::uint64_t step, double time, double cfl, double dt, const double* u,
                               std::ostream& out) {
     const auto total = measure_values(step, u);
@@ -111,6 +120,7 @@ void Report::write_values(std::uint64_t step, double time, double cfl, double dt
     write_flow_summary(total, step, time, cfl, dt, dimension_, out, details);
     captured_step_ = 0;
 }
+// Вычисляет отчётные показатели принятого поля.
 FlowSummary Report::measure(std::uint64_t step, const std::vector<double>& current) {
     if (!due(step) || current.size() != volumes_.size() * (dimension_ + 2))
         throw std::invalid_argument("report: unexpected step or field size");
@@ -118,6 +128,7 @@ FlowSummary Report::measure(std::uint64_t step, const std::vector<double>& curre
     captured_step_ = 0;
     return result;
 }
+// Вычисляет диапазоны и объёмные нормы по текущему полю.
 FlowSummary Report::measure_values(std::uint64_t step, const double* u) {
     if (captured_step_ != step)
         throw std::logic_error("report: capture the state before this step");
@@ -155,6 +166,7 @@ FlowSummary Report::measure_values(std::uint64_t step, const double* u) {
     total.volume = total_volume_;
     return total;
 }
+// Печатает диапазоны величин и норму изменения поля.
 void write_flow_summary(const FlowSummary& total, std::uint64_t step, double time, double cfl, double dt,
                         unsigned dimension, std::ostream& out, const ReportDetails& details) {
     if (!(dt > 0 && std::isfinite(dt) && cfl > 0 && std::isfinite(cfl) && total.volume > 0))

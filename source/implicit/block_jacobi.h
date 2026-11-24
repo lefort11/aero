@@ -9,14 +9,18 @@ namespace implicit {
 // решаем D_i z_i = r_i, где D_i — полный диагональный блок A в этом узле.
 // Порядок переменных тот же, что у потока: плотность, импульсы, полная энергия.
 struct JacobiBlocks;
+// Разлагает диагональные блоки и применяет блочный предобусловливатель Якоби.
 class BlockJacobi {
 public:
     // dimension = 1, 2 или 3. device = -1 выбирает CPU, иначе это номер GPU Kokkos.
     // use_matrix_diagonal разлагает диагональ на месте применения. Переданные в prepare
     // массивы в этом режиме должны оставаться живыми и неизменными до следующего prepare.
     BlockJacobi(MeshIndex owned_nodes, unsigned dimension, int device = -1, bool use_matrix_diagonal = false);
+    // Освобождает принадлежащие объекту ресурсы при завершении его времени жизни.
     ~BlockJacobi();
+    // Запрещает копирование, чтобы ресурсы объекта сохраняли единственного владельца.
     BlockJacobi(const BlockJacobi&) = delete;
+    // Запрещает копирование, чтобы ресурсы объекта сохраняли единственного владельца.
     BlockJacobi& operator=(const BlockJacobi&) = delete;
 
     // Вызывать после сборки или обновления якобиана. Для BDF1 блок уже должен
@@ -32,6 +36,7 @@ public:
     // На GPU оба указателя относятся к памяти выбранной карты, ядро ставится
     // в стандартный поток. Допускается запись поверх входного вектора.
     const JacobiBlocks& factors() const; // Разложение той же диагонали для проходов CSGS.
+    // Решает независимые системы разложенных диагональных блоков.
     void apply(const double* residual, double* correction) const;
 
 private:

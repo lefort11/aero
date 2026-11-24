@@ -1,6 +1,7 @@
 #include "euler.h"
 
 namespace aero {
+// Возвращает диагностический текст кода газодинамического ядра.
 const char* euler_status_message(EulerStatus status) {
     switch (status) {
     case EulerStatus::Success:
@@ -32,15 +33,18 @@ unsigned dimension_of(const std::vector<double>& direction) {
         throw EulerError(EulerStatus::InvalidDimension);
     return static_cast<unsigned>(direction.size());
 }
+// Проверяет размерность и число компонент перед вызовом потокового ядра.
 void check_components(const std::vector<double>& values, unsigned dimension) {
     if (values.size() != dimension + 2)
         throw std::invalid_argument("Expected dimension+2 Euler components");
 }
+// Преобразует неуспешный код газодинамического ядра в исключение.
 void require_success(EulerStatus status) {
     if (status != EulerStatus::Success)
         throw EulerError(status);
 }
 }
+// Вычисляет поток по состояниям и сообщает ошибку через исключение.
 EulerFluxResult checked_state_flux(StateFluxKernel kernel, const std::vector<double>& left,
                                    const std::vector<double>& right, const std::vector<double>& direction,
                                    double gamma) {
@@ -51,6 +55,7 @@ EulerFluxResult checked_state_flux(StateFluxKernel kernel, const std::vector<dou
     require_success(kernel(dimension, left.data(), right.data(), direction.data(), gamma, &result));
     return result;
 }
+// Вычисляет численный поток с заданными физическими потоками и проверяет статус.
 EulerFluxResult checked_supplied_flux(SuppliedFluxKernel kernel, const std::vector<double>& flux_left,
                                       const std::vector<double>& flux_right, const std::vector<double>& left,
                                       const std::vector<double>& right, const std::vector<double>& direction,

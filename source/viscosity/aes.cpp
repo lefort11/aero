@@ -12,6 +12,7 @@
 namespace aero {
 namespace viscosity {
 namespace {
+// Определяет топологический тип и локальные вершины объёмного элемента.
 Element describe(const MeshPartition& part, const PeriodicPartition* seam, const ResidualFrame& frame,
                  MeshIndex local) {
     Element e{};
@@ -41,6 +42,7 @@ Element describe(const MeshPartition& part, const PeriodicPartition* seam, const
     return e;
 }
 
+// Подготавливает геометрию и коэффициенты одного элемента AES.
 Cell prepare_cell(GradientBuilder& gradients, const Element& e, unsigned dim, double gamma, double prandtl,
                   std::vector<PairMetric>& metrics, MeanGradient* mean = nullptr) {
     Cell cell{};
@@ -85,6 +87,7 @@ void Aes::prepare_local_cells(const MeshPartition& part, const PeriodicPartition
     merge_cell_metrics(pairs);
 }
 
+// Сохраняет исходную аффинную геометрию для последующего фильтра LES/DDES.
 void Aes::remember_affine_input(MeshIndex cell,const Element& element,const MeanGradient& mean) {
     auto& input=affine_input_[cell];
     std::copy_n(element.position,element.count,input.position);
@@ -94,6 +97,7 @@ void Aes::remember_affine_input(MeshIndex cell,const Element& element,const Mean
         input.adjacency |= std::uint64_t(element.neighbours[i])<<(8*i);
 }
 
+// Переключает вычисление на компактное представление аффинных гексаэдров.
 bool Aes::use_affine_geometry() {
     // На смешанной сетке сохраняется общий оператор AES для всех типов элементов.
     // Этот исполнитель обрабатывает произвольные гексаэдры, включая криволинейные сетки.
@@ -115,6 +119,7 @@ void Aes::prepare_compact_geometry() {
     prepare_gradient_tiles();
 }
 
+// Завершает подготовку и размещение геометрии вязкого оператора на устройстве.
 void Aes::finish_device_geometry() {
     if (compact_geometry_ && !coordinate_geometry_) {
         affine_.resize(cells_.size());
@@ -301,6 +306,7 @@ void Aes::prepare_gradient_tiles(MeshIndex capacity) {
     }
 }
 
+// Превращает локальные номера пар из каждого блока в номера общей таблицы.
 void Aes::merge_cell_metrics(std::vector<std::vector<PairMetric>>& pairs) {
     const MeshIndex blocks = pairs.size();
     // Сумма длин предыдущих блоков даёт адрес первой пары данного блока.
@@ -314,6 +320,7 @@ void Aes::merge_cell_metrics(std::vector<std::vector<PairMetric>>& pairs) {
     }, 2);
 }
 
+// Собирает список вязких вкладов каждого узла в исходном порядке элементов.
 void Aes::index_local_vertices() {
     // Формируем строки в исходном порядке ячеек: порядок сложения вязкой невязки сохраняется.
     offsets_.assign(op_.row_count+1,0);
@@ -332,6 +339,7 @@ void Aes::index_local_vertices() {
     }
 }
 
+// Строит геометрию и рабочие связи AES для выбранной подобласти и базиса импульса.
 void Aes::prepare(const MeshPartition& part, const PeriodicPartition* seam, const ResidualFrame& frame,
                   const Processes& world, const ViscositySettings& settings, double gamma, double mach,
                   MeshIndex rows, const Locate& locate) {
@@ -370,6 +378,7 @@ void Aes::prepare(const MeshPartition& part, const PeriodicPartition* seam, cons
     // порядок вершин, связность и относительные координаты при совпадении одинаковы.
     std::map<MeshIndex,MeshIndex> filter_by_shape;
 #endif
+    // Добавляет элементный вклад в строящуюся геометрию AES.
     const auto add = [&](const Element& e) {
         MeanGradient mean{};
         MeanGradient* requested=keep_affine_input_ ? &mean : nullptr;
@@ -531,6 +540,7 @@ void Aes::prepare(const MeshPartition& part, const PeriodicPartition* seam, cons
     });
 }
 #ifdef AERO_HAS_TURBULENCE
+// Формирует связи элементов с узлами для осреднения материальных коэффициентов.
 void Aes::prepare_material_vertices() {
     if (cells_.empty() || (!material_from_sa_ && !op_.computes_les())) return;
     // На CPU выбираем границы цикла один раз для всей однородной сетки.
@@ -564,6 +574,7 @@ void Aes::prepare_material_vertices() {
         for (unsigned i=0; i<count; ++i) first[i*lanes]=static_cast<std::uint32_t>(cells_[e].node[i]);
     });
 }
+// Готовит геометрию гексаэдрального фильтра LES/DDES.
 void Aes::prepare_hex_filter() {
     using Table=turbulence::HexFilterData;
     // Для повторяющихся форм таблица исходной геометрии уже помещается в кэш.
@@ -609,6 +620,7 @@ void Aes::prepare_hex_filter() {
 }
 #endif
 
+// Выделяет рабочие массивы вязкого оператора на CPU.
 void Aes::allocate_host(MeshIndex nodes) {
     if (op_.element_order) {
         gradient_cache_.resize(op_.vertex_count);
@@ -664,6 +676,8 @@ void average_host_material(const Operator& op) {
         parallel_for(op.cell_count,[&](MeshIndex e){op.average_material<dimension,vertices,Operator::Mixing::Sigma>(e);});
 }
 #endif
+// После явной стадии на одном процессе узловая вязкость уже готова.
+// В остальных случаях пересчитываем её по текущему полю, включая узлы соседей.
 void Aes::evaluate(const double* state, const EulerState* cached, bool gas_is_current, Evaluation phase) {
     const EvaluationPlan work(phase);
     if (!gas_is_current && op_.needs_gas(phase))

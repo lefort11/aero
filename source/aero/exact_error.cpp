@@ -8,6 +8,7 @@
 #include <sstream>
 
 namespace aero {
+// Подготавливает эталон и объёмные веса для вычисления ошибки решения.
 ExactError::ExactError(const RunSettings& run, const Processes& world, const MeshPartition& part,
                        const PeriodicPartition* seam, const FieldNodeSelection& selection,
                        const double* volumes, const std::string& directory)
@@ -58,6 +59,7 @@ std::array<double, 6> ExactError::reference(std::size_t i, double time) const {
     return primitive_output_values(dimension_, q, run_.gamma, run_.background);
 }
 
+// Вычисляет глобальные нормы ошибки относительно эталона и записывает их для текущего шага.
 void ExactError::write(MeshIndex step, double time, const std::vector<double>& state) {
     const unsigned width = dimension_ + 2, fields = width + 1;
     std::vector<double> local(2 * fields, 0.), gathered(world_.size * local.size());

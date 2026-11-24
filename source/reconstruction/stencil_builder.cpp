@@ -162,6 +162,7 @@ class StraightLayers {
     FaceLists neighbours_, near_, far_;
     std::vector<std::once_flag> pending_, pending_neighbours_;
 
+    // Строит списки соседей узлов для расширения шаблонов.
     void build_neighbours(MeshIndex node) {
         auto& result = neighbours_[node];
         for (MeshIndex cell : cells_[node])
@@ -169,6 +170,7 @@ class StraightLayers {
                 if (other != node) result.push_back(other);
         sort_unique(result);
     }
+    // Возвращает соседние узлы, пригодные для продолжения шаблона.
     const NodeList& neighbours(MeshIndex node) {
         if (!pending_neighbours_.empty())
             std::call_once(pending_neighbours_[node], [&] { build_neighbours(node); });
@@ -193,6 +195,7 @@ class StraightLayers {
     }
 
   public:
+    // Подготавливает связи узлов и граней для прямолинейных слоёв шаблона.
     StraightLayers(MeshView mesh, const NodeIncidence& cells, bool fifth, bool on_demand)
         : mesh_(mesh), fifth_(fifth), cells_(cells),
           node_faces_(mesh.node_count, mesh.face_count, [&](MeshIndex f) { return mesh.face_nodes(f); }),
@@ -208,6 +211,7 @@ class StraightLayers {
         }
     }
 
+    // Возвращает грани, через которые продолжается геометрический слой.
     const NodeList& faces(MeshIndex node, bool far) {
         // На структуре рёбра сразу получают опорные точки. Оболочка потребуется
         // только при возврате к прямому шаблону, один раз на все рёбра данного узла.
@@ -231,6 +235,7 @@ void build_far_layer_slope(const RayPoint& far, unsigned side, double length, do
 }
 }
 
+// EBR и WENO одного порядка используют одни и те же опорные грани и расстояния.
 void build_layer_stencil(const Mesh& mesh, const ReconstructionOptions& options,
                         const ReconstructionSchemeInfo& scheme, ReconstructionStencilData& data) {
     const ReconstructionGeometry geometry(mesh, options.relative_tolerance);

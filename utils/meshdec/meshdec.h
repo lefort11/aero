@@ -4,6 +4,7 @@
 
 namespace aero {
 namespace meshdec {
+// Пути исходной сетки и архива, ограничения памяти и параметры разбиения.
 struct Options {
     // Исходная сетка, готовый архив и каталог промежуточных таблиц.
     std::string source, target, temp;
@@ -20,6 +21,7 @@ struct Header {
 // Ключ пространственной сортировки и размер будущей записи узла, грани или ячейки.
 struct Entity {
     Id morton, kind, id, bytes;
+    // Сравнивает ключи сущностей для упорядочения и поиска.
     bool operator<(const Entity& other) const {
         if (morton != other.morton)
             return morton < other.morton;
@@ -37,12 +39,16 @@ inline void write_address(std::ostream& out, Address a) {
     word(out, a.leaf);
     word(out, a.offset);
 }
+// Номер граничной сущности и её метка участка.
 struct Boundary {
     Id id, patch;
 };
+// Минимальные и максимальные координаты ограничивающего объёма.
 struct Box {
     double low[3], high[3];
+    // Создаёт вырожденный ограничивающий объём для одной точки.
     static Box point(double x, double y, double z) { return {{x, y, z}, {x, y, z}}; }
+    // Расширяет геометрические границы, включая другой ограничивающий объём.
     void include(const Box& other) {
         for (unsigned k = 0; k < 3; ++k) {
             low[k] = std::min(low[k], other.low[k]);
@@ -54,6 +60,7 @@ struct Box {
 struct Leaf {
     Id first, records, raw_bytes, nodes, faces, cells;
 };
+// Полуинтервал записей, назначенный одному рабочему процессу.
 struct Chunk {
     Id begin, end;
 };
@@ -63,6 +70,7 @@ inline Chunk divide(Id count, int rank, int size) {
     const Id r = static_cast<unsigned>(rank), start = r * n + std::min(r, extra);
     return {start, start + n + (r < extra ? 1u : 0u)};
 }
+// Формирует имя файла части архива для указанного рабочего процесса.
 inline std::string part(const std::string& base, int rank) {
     return base + "-" + std::to_string(rank);
 }

@@ -16,15 +16,19 @@ struct TwoNodeSlope {
     double weight;
     static constexpr unsigned marker = ~0u;
 };
+// Разреженная строка весов и её привязка к узловому полю.
 struct StencilRow {
     ReconstructionIndex count;
     const ReconstructionIndex* nodes;
     const double* weights;
     const TwoNodeSlope* pair;
+    // Возвращает номер опорного узла строки реконструкции.
     AERO_HOST_DEVICE ReconstructionIndex node(ReconstructionIndex i) const {
         return pair ? (i ? pair->second : pair->first) : nodes[i];
     }
+    // Возвращает коэффициент выбранной опоры строки реконструкции.
     AERO_HOST_DEVICE double weight(ReconstructionIndex i) const { return pair ? pair->weight : weights[i]; }
+    // Возвращает разреженное представление строки шаблона.
     AERO_HOST_DEVICE static StencilRow sparse(const ReconstructionIndex* starts, const ReconstructionIndex* ids,
                                               const double* factors, ReconstructionIndex row) {
         if (!starts) return {0,nullptr,nullptr,nullptr}; // Все строки таблицы пусты.
@@ -54,21 +58,27 @@ struct ReconstructionStencilView {
     bool shared_edge_slopes; // Общие центральный и два ближних наклона хранятся один раз на ребро.
     const residual_detail::Surface* owner_edges; // Номера узлов уже хранятся в геометрии потоков.
     bool epsilon_per_edge; // Обе стороны используют один вес, если значения совпали точно.
+    // Проверяет наличие отдельной таблицы владельцев сторон шаблона.
     AERO_HOST_DEVICE bool has_owners() const { return row_owner || owner_edges; }
+    // Возвращает узел, от которого отсчитывается приращение реконструкции.
     AERO_HOST_DEVICE ReconstructionIndex owner(ReconstructionIndex row) const {
         if (!owner_edges) return row_owner[row];
         const auto& edge = owner_edges[row/2];
         return row%2 ? edge.end : edge.begin;
     }
+    // Возвращает масштабированный параметр регуляризации нелинейных весов.
     AERO_HOST_DEVICE double epsilon(ReconstructionIndex row) const {
         return weno_epsilon_scale[epsilon_per_edge ? row/2 : row];
     }
+    // Возвращает число пар опорных наклонов текущей схемы.
     AERO_HOST_DEVICE ReconstructionIndex pair_count() const {
         return pairs ? edge_count * (shared_edge_slopes ? 5 : 8) : 0;
     }
+    // Возвращает линейную строку реконструкции для выбранной стороны.
     AERO_HOST_DEVICE StencilRow linear_row(ReconstructionIndex row) const {
         return StencilRow::sparse(offsets,nodes,weights,row);
     }
+    // Возвращает строку одного опорного наклона WENO.
     AERO_HOST_DEVICE StencilRow slope_row(ReconstructionIndex row) const {
         if (pairs) {
             auto slot=row;
@@ -91,9 +101,11 @@ struct ReconstructionStencilView {
     }
 };
 
+// Читает скалярные значения поля через нумерацию узлов и шаг компонент.
 struct ReconstructionFieldView {
     const double* values;
     ReconstructionIndex node_stride, component_stride;
+    // Читает компоненту узла с учётом шагов размещения поля.
     AERO_HOST_DEVICE double operator()(ReconstructionIndex /*row*/, ReconstructionIndex node,
                                        ReconstructionIndex component) const {
         return values[node * node_stride + component * component_stride];
@@ -143,11 +155,13 @@ evaluate_reconstruction_row(StencilRow row, ReconstructionIndex read_row, Recons
         *buffer = read(read_row,row.node(i),component);
         return buffer;
     };
+    // Возвращает вес опоры в текущей строке реконструкции.
     const auto weight = [&](ReconstructionIndex i) { return row.weight(i); };
     double result;
     reconstruction_detail::sum_slope<1>(1,row.count,values,weight,&result);
     return result;
 }
+// Вычисляет взвешенную сумму значений на опорах разреженной строки.
 template <class Reader>
 AERO_HOST_DEVICE inline double evaluate_reconstruction_sparse(const ReconstructionIndex* offsets,
         const ReconstructionIndex* nodes,const double* weights,ReconstructionIndex row,
@@ -168,6 +182,7 @@ AERO_HOST_DEVICE inline double nonlinear_increment(unsigned order, const double*
 // Выбирает формулу по запрошенной схеме и числу доступных слоёв на этой стороне.
 struct NonlinearFormula {
     Mp5Settings mp5;
+    // Вычисляет нелинейное приращение выбранной схемы реконструкции.
     AERO_HOST_DEVICE double operator()(unsigned order, const double* slopes, double epsilon) const {
         return nonlinear_increment(order, slopes, epsilon, mp5);
     }
@@ -184,18 +199,23 @@ template <class Reader> struct ReconstructionSideInput {
     const double* own;
     ReconstructionIndex own_stride; // Расстояние в элементах между компонентами состояния владельца.
     const Reader& neighbours; // Чтение остальных узлов, в том числе импортированных для MPI.
+    // Подставляет собственный след владельца и читает остальные опоры из соседнего поля.
     AERO_HOST_DEVICE double operator()(ReconstructionIndex r, ReconstructionIndex node,
                                        ReconstructionIndex component) const {
         return node == stencil.owner(row) ? own[component * own_stride] : neighbours(r, node, component);
     }
+    // Вычисляет линейную часть приращения на стороне ребра.
     AERO_HOST_DEVICE double linear(ReconstructionIndex component) const {
         return evaluate_reconstruction_sparse(stencil.offsets, stencil.nodes, stencil.weights, row, row,
                                               component, *this);
     }
+    // Возвращает доступный порядок реконструкции выбранной стороны.
     AERO_HOST_DEVICE unsigned order() const { return stencil.weno_order ? stencil.weno_order[row] : 0; }
+    // Вычисляет опорный наклон по соответствующей строке весов.
     AERO_HOST_DEVICE double slope(unsigned k, ReconstructionIndex component) const {
         return evaluate_reconstruction_row(stencil.slope_row(4*row+k),row,component,*this);
     }
+    // Выбирает масштаб регуляризации WENO для текущей стороны.
     AERO_HOST_DEVICE double epsilon_scale() const { return stencil.epsilon(row); }
 };
 
@@ -232,10 +252,14 @@ reconstruct_increment2(ReconstructionStencilView stencil, ReconstructionIndex ed
 
 // Объект владеет геометрией на CUDA. Обход рёбер и запуск ядер выполняет вызывающий код.
 extern "C" {
+// Возвращает число доступных устройств через интерфейс GPU-модуля реконструкции.
 int aero_reconstruction_device_count(int* count, char* error, unsigned capacity);
+// Создаёт GPU-копию шаблона реконструкции и возвращает её дескриптор.
 int aero_reconstruction_device_create(aero::ReconstructionStencilView view, int device, void** state,
                                     char* error, unsigned capacity);
+// Освобождает GPU-копию шаблона реконструкции.
 void aero_reconstruction_device_destroy(void* state);
+// Возвращает представление шаблона из GPU-дескриптора.
 void aero_reconstruction_device_view(void* state, aero::ReconstructionStencilView* view);
 }
 
@@ -250,6 +274,7 @@ namespace aero {
 enum class ReconstructionSideScheme { FirstOrder, EdgeAverage, Ebr3, Ebr5, Weno3, Weno5, Mp5, MPWENO5 };
 
 enum class StencilGeometry { Straight, Ijk, Pl, Auto };
+// Выбранная схема, допуски и параметры построения опор реконструкции.
 struct ReconstructionOptions {
     StencilGeometry geometry = StencilGeometry::Straight;
     double max_turn_degrees = 36.; // Максимальное отклонение опоры от продолжения ребра.
@@ -266,11 +291,13 @@ struct ReconstructionOptions {
     double weno_epsilon;
     // В строгом режиме понижение порядка относительно запрошенной схемы считается ошибкой.
     bool require_complete_stencil;
+    // Задаёт исходную схему EBR3 и стандартные допуски реконструкции.
     ReconstructionOptions()
         : scheme(ReconstructionScheme::Ebr3), relative_tolerance(1.e-10), weno_epsilon(1.e-40),
           require_complete_stencil(false) {}
 };
 
+// Владеет CSR-строками, весами и геометрическими масштабами шаблона.
 struct ReconstructionStencilData {
     ReconstructionScheme
         scheme; // Запрошенная схема; фактический выбор для каждой стороны хранит side_scheme.
@@ -296,40 +323,56 @@ struct ReconstructionStencilData {
     // Суммарная длина от конца ребра до дальней опоры через ближнюю.
     // Все схемы пятого порядка берут дальний наклон со знаменателем far_distance − outer_distance.
     std::vector<double> far_distance;
+    // Создаёт пустые CSR-таблицы шаблона реконструкции EBR3.
     ReconstructionStencilData()
         : scheme(ReconstructionScheme::Ebr3), node_count(0), edge_count(0), offsets(1, 0),
           slope_offsets(1, 0) {}
 };
 
+// Проверяет и хранит подготовленные данные шаблона реконструкции.
 class ReconstructionStencil {
 public:
+    // Возвращает владеющее хранилище коэффициентов шаблона.
     const ReconstructionStencilData& data() const { return data_; }
+    // Передаёт владение массивами шаблона вызывающему коду.
     ReconstructionStencilData release_data() && { return std::move(data_); }
+    // Формирует невладеющее представление массивов подготовленного шаблона.
     ReconstructionStencilView view() const;
+    // Подсчитывает стороны рёбер с неполным высокопорядковым шаблоном.
     ReconstructionIndex incomplete_sides() const;
 
 private:
     ReconstructionStencilData data_;
     friend class PeriodicDomain;
+    // Одна точка входа для обычной сетки, периодического покрытия и локальной сетки MPI.
     friend ReconstructionStencil prepare_reconstruction(const Mesh&, const ReconstructionOptions&);
 };
 
 // Общие геометрические операции подготовки EBR и WENO. Координаты и топология должны существовать всё время работы помощника.
 namespace detail {
 using SparseRow = SmallWeightRow<ReconstructionIndex,8>;
+// Пересечение луча с геометрией и строка интерполяции в найденной точке.
 struct RayPoint {
     double distance;   // Расстояние от начала луча до пересечения.
     bool outward;      // Луч направлен наружу относительно грани.
     SparseRow weights; // Веса интерполяции в точке пересечения; пусто, если опоры нет.
+    // Создаёт пустой результат пересечения луча с бесконечным расстоянием.
     RayPoint();
 };
+// Добавляет строку коэффициентов с заданным множителем.
 void add_scaled_row(SparseRow& destination, const SparseRow& source, double factor);
+// Строит строку направленной производной по геометрическим опорам луча.
 SparseRow ray_derivative(MeshIndex node, const RayPoint& hit, double h, unsigned side);
+// Управляет геометрическим поиском опор прямолинейной реконструкции.
 class ReconstructionGeometry {
 public:
+    // Готовит геометрический поиск опор на заданной сетке с указанным допуском.
     ReconstructionGeometry(const Mesh& mesh, double tolerance);
+    // Освобождает принадлежащие объекту ресурсы при завершении его времени жизни.
     ~ReconstructionGeometry();
+    // Запрещает копирование, чтобы ресурсы объекта сохраняли единственного владельца.
     ReconstructionGeometry(const ReconstructionGeometry&) = delete;
+    // Запрещает копирование, чтобы ресурсы объекта сохраняли единственного владельца.
     ReconstructionGeometry& operator=(const ReconstructionGeometry&) = delete;
     // Проверяет положительность и конечность длины ребра.
     double edge_length(MeshIndex edge) const;
@@ -345,6 +388,7 @@ private:
 };
 } // namespace detail
 
+// Одна точка входа для обычной сетки, периодического покрытия и локальной сетки MPI.
 ReconstructionStencil prepare_reconstruction(const Mesh& mesh,
                                              const ReconstructionOptions& options = ReconstructionOptions());
 
@@ -368,17 +412,27 @@ enum class ReconstructionBackend { Auto, Cpu, Cuda };
 // Поля решения и обход сетки принадлежат вызывающему коду. Режим Auto выбирает CPU при отсутствии CUDA или устройства.
 class ReconstructionContext {
 public:
+    // Размещает подготовленный шаблон на выбранном исполнителе.
     explicit ReconstructionContext(ReconstructionStencil stencil,
                                    ReconstructionBackend backend = ReconstructionBackend::Auto,
                                    int device = 0);
+    // Освобождает принадлежащие объекту ресурсы при завершении его времени жизни.
     ~ReconstructionContext();
+    // Запрещает копирование, чтобы ресурсы объекта сохраняли единственного владельца.
     ReconstructionContext(const ReconstructionContext&) = delete;
+    // Запрещает копирование, чтобы ресурсы объекта сохраняли единственного владельца.
     ReconstructionContext& operator=(const ReconstructionContext&) = delete;
+    // Возвращает выбранный исполнитель вычислений.
     ReconstructionBackend backend() const;
+    // Возвращает номер устройства; отрицательное значение соответствует CPU.
     int device() const;
+    // Возвращает представление шаблона с адресами, доступными CPU.
     ReconstructionStencilView host_view() const;
+    // Возвращает представление шаблона с адресами выбранного GPU.
     ReconstructionStencilView device_view() const;
+    // Сообщает, собран ли модуль с поддержкой CUDA.
     static bool cuda_compiled();
+    // Возвращает число доступных CUDA-устройств.
     static int cuda_device_count();
 
 private:

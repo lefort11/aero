@@ -6,6 +6,7 @@
 namespace aero {
 namespace turbulence {
 enum class Scale { Off, Max, Min, Vol, Omega, OmegaTilde, Sla };
+// Возвращает имя выбранного масштаба фильтра LES/DDES.
 inline const char* scale_name(Scale scale) {
     switch (scale) {
     case Scale::Max: return "max";
@@ -17,6 +18,7 @@ inline const char* scale_name(Scale scale) {
     default: return "off";
     }
 }
+// Настройки масштаба фильтра и параметров LES/DDES.
 struct LesSettings {
     Scale scale = Scale::Off;
     // Для трёх направленных масштабов размер фильтра зависит от текущей скорости.
@@ -167,6 +169,7 @@ struct FilterLengths {
             diameter2=::fmax(diameter2,transverse_square(axis,points.point(i)-points.point(j)));
         return diameter2/3.;
     }
+    // Вычисляет квадрат нормы используемого геометрического вектора.
     template<class Points>
     AERO_HOST_DEVICE double squared(const Points& points,Scale scale, unsigned count, const Coordinate& axis) const {
         if (scale==Scale::Max) return max_edge*max_edge;
@@ -211,21 +214,28 @@ struct FilterLengths {
         return transverse(points,count,axis);
     }
 };
+// Вершины элемента и его геометрические протяжённости для фильтра.
 struct FilterExtent : FilterLengths {
     Coordinate position[8];
+    // Возвращает координаты локальной вершины фильтра.
     AERO_HOST_DEVICE const Coordinate& point(unsigned i) const { return position[i]; }
+    // Возвращает длинную диагональ элемента для оценки размера фильтра.
     AERO_HOST_DEVICE Coordinate long_diagonal(unsigned k) const { return diagonal(*this,k); }
+    // Вычисляет поперечный масштаб фильтра по геометрии всего элемента.
     AERO_HOST_DEVICE double full_transverse_filter(unsigned count,const Coordinate& axis) const {
         return transverse(*this,count,axis);
     }
+    // Возвращает квадрат геометрического масштаба фильтра.
     AERO_HOST_DEVICE double length_squared(Scale scale,unsigned count,const Coordinate& axis) const {
         return squared(*this,scale,count,axis);
     }
 };
+// Геометрия элемента и средние градиенты базиса для LES/DDES.
 struct FilterCell : FilterExtent {
     Coordinate gradient[8];           // Средние производные базисных функций в вершинах.
     Coordinate face_gradient;         // Коэффициенты средней производной для прямоугольного элемента.
     unsigned char corner_node[8];     // Соответствие локальной вершины геометрическому углу.
+    // Возвращает компоненту среднего градиента базиса локальной вершины.
     AERO_HOST_DEVICE double basis(unsigned vertex,unsigned direction) const {
         return gradient[vertex][direction];
     }
@@ -327,6 +337,7 @@ struct FilterCell : FilterExtent {
         return speed;
     }
 };
+// Оценивает наклон завихренности по градиенту скорости.
 AERO_HOST_DEVICE inline double vortex_tilting(const VelocityGradient& g, const Coordinate& axis) {
     const double trace_third=(g(0, 0)+g(1, 1)+g(2, 2))/3.;
     Coordinate strain_axis{};
@@ -347,12 +358,14 @@ AERO_HOST_DEVICE inline double vortex_tilting(const VelocityGradient& g, const C
     const Coordinate tilt=cross3(strain_axis,axis);
     return norm2>0. ? ::sqrt(2.*dot3(tilt,tilt)/norm2) : 0.;
 }
+// Вычисляет ограниченный множитель Кельвина–Гельмгольца для масштаба SLA.
 AERO_HOST_DEVICE inline double kh_factor(double mean_vtm, double lower) {
     const double ramp=::fmax(0.,::fmin(1.,(mean_vtm-.15)/.15));
     return lower+(1.-lower)*ramp;
 }
 // В одной ячейке это квадрат масштаба с VTM или вязкость Sigma с тем же VTM.
 struct LesSample { double value, tilt; };
+// Нормирует градиент скорости перед вычислением сингулярных величин.
 AERO_HOST_DEVICE inline double normalize_gradient(VelocityGradient& g) {
     // В определителе G^T G появляются шестые степени производных. Для обычных
     // величин они представимы в double. Крайне большие или малые градиенты
@@ -401,6 +414,7 @@ AERO_HOST_DEVICE inline LesSample filter_scale(const VelocityGradient& g, const 
     return {delta2,tilt};
 }
 
+// Вычисляет подсеточную вязкость модели Sigma по градиенту и масштабу.
 template<class Geometry>
 AERO_HOST_DEVICE inline LesSample evaluate_sigma(VelocityGradient& g, const Geometry& cell,
                                                  unsigned count, const LesSettings& settings, double rotation_floor=0.) {

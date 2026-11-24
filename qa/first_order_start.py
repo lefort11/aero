@@ -9,6 +9,7 @@ from mpi_geometry import run
 from run import settings
 
 
+# Проверяет момент перехода с начального первого порядка на выбранную реконструкцию.
 def check(args, work, name, equation, time_scheme, parallel):
     case = work / f"{name}-{time_scheme}-{parallel}"
     case.mkdir()

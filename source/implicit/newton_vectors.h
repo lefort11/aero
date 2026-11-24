@@ -35,6 +35,9 @@ struct NewtonUpdate {
             if (operation == SpatialRate) {
                 // Критерий выхода на стационар использует скорость изменения поля.
                 value = valid ? spatial[k] / volumes[node] : HUGE_VAL;
+                // Грубая система суммирует подписанные интегральные балансы.
+                // Нормировка на объём нужна только критерию останова steady.
+                if (rhs) rhs[row*width+k] = valid ? -spatial[k] : HUGE_VAL;
             } else {
                 const MeshIndex i = row * width + k;
                 const double current = state[node * width + k];

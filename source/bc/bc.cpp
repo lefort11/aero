@@ -7,6 +7,7 @@
 #include <string>
 
 namespace aero {
+// Восстанавливает плотность по параметрам граничного газа.
 double BoundaryTemperature::density(double pressure, double temperature, bool linear) const {
     const double scale = gas.gamma * gas.mach * gas.mach;
     if (!(scale > 0.) || !std::isfinite(scale)) throw std::invalid_argument("reference_state T requires a positive mach in gas.txt");
@@ -188,6 +189,7 @@ struct BoundarySection {
                 throw std::invalid_argument("free boundary is missing outflow");
             if (rules->reference.mask) {
                 unsigned needed = (1u << (dimension + 2)) - 1;
+                // Проверяет, требует ли граничное правило явного задания давления.
                 const auto needs_pressure = [](BoundarySource s) {
                     return takes_reference(s) && s != BoundarySource::InteriorPressure;
                 };

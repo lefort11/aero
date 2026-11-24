@@ -11,15 +11,19 @@ struct FieldNodeSelection;
 // Сравнивает расчёт с формулами во времени или с узловыми полями одной сетки.
 class ExactError {
 public:
+    // Подготавливает эталон и объёмные веса для вычисления ошибки решения.
     ExactError(const RunSettings&, const Processes&, const MeshPartition&, const PeriodicPartition*,
                const FieldNodeSelection&, const double* volumes, const std::string& directory);
+    // Вычисляет глобальные нормы ошибки относительно эталона и записывает их для текущего шага.
     void write(MeshIndex step, double time, const std::vector<double>& state);
 private:
+    // Координаты представителя узла, строка численного поля и корень объёмного веса.
     struct Node {
         Coordinate point; // Координаты представителя периодического узла.
         MeshIndex slot;   // Строка в массиве численного решения.
         double root_volume; // Вес для евклидовой нормы ошибки.
     };
+    // У снимка значения постоянны во времени. Формулы вычисляем в момент текущего отчёта.
     std::array<double, 6> reference(std::size_t i, double time) const;
     unsigned dimension_;
     const RunSettings& run_;

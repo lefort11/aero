@@ -49,11 +49,13 @@ struct PhysicalColumn {
     unsigned col, energy;
     double dp, dmn, rho_dun; // d(p), d(m·n), rho*d(u·n) для данного столбца.
 
+    // Подготавливает производную физического потока по одной консервативной компоненте.
     AERO_HOST_DEVICE PhysicalColumn(unsigned column, unsigned dimension, double gamma, const EulerState& state,
                                     const double* normal, double un, double kinetic)
         : col(column), energy(dimension + 1), dp(pressure_column(col, energy, gamma, kinetic, state)),
           dmn(col > 0 && col < energy ? normal[col - 1] : 0.), rho_dun(dmn - (col == 0 ? un : 0.)) {}
 
+    // Возвращает компоненту производной физического потока по выбранной переменной.
     AERO_HOST_DEVICE double flux(unsigned row, const EulerState& state, const double* normal, double un) const {
         if (row == 0) return dmn;
         if (row == energy) return state.enthalpy * rho_dun + un * (dp + (col == energy ? 1. : 0.));
@@ -61,6 +63,7 @@ struct PhysicalColumn {
     }
 };
 
+// Восстанавливает физические параметры состояний по обе стороны ребра.
 AERO_HOST_DEVICE inline bool read_states(const euler_detail::FaceStates& face, double area,
                                          euler_detail::InterfaceGas& gas) {
     return area > 0. && euler_detail::finite(area) && face.upw_coeff >= 0. && face.upw_coeff <= 1. &&

@@ -13,6 +13,7 @@
 
 namespace aero {
 namespace mesh_input {
+// Сообщает ошибку чтения или несогласованности сетки.
 [[noreturn]] inline void fail(const std::string& message) {
     throw MeshError(message);
 }
@@ -21,6 +22,7 @@ inline bool valid_name(const std::string& name) {
     return !name.empty() && io::valid_label_text(name);
 }
 
+// Проверяет пробельный разделитель текстового формата сетки.
 inline bool whitespace(int c) {
     return c == ' ' || c == '\n' || c == '\r' || c == '\t' || c == '\f' || c == '\v';
 }
@@ -28,7 +30,9 @@ inline bool whitespace(int c) {
 // Ведёт общий остаток байтов для выделений при чтении одного файла сетки.
 class Budget {
 public:
+    // Начинает учёт разрешённого объёма памяти чтения.
     explicit Budget(std::uint64_t bytes) : remaining_(bytes) {}
+    // Уменьшает остаток разрешённой памяти и отклоняет превышение лимита.
     void consume(std::uint64_t count, std::uint64_t width = 1) {
         // Делим до умножения, чтобы счётчик проверял и переполнение размера.
         if (width == 0 || count > remaining_ / width)
@@ -45,6 +49,7 @@ private:
 class Reader {
     friend struct io::NativeFileCodec;
 public:
+    // Подключает входной поток и ограничения безопасного чтения сетки.
     Reader(std::istream& input, const MeshReadLimits& limits)
         : input_(&input), limits_(limits), budget_(limits.max_payload_bytes) {
         char magic[8];
@@ -76,6 +81,7 @@ public:
             block("TEXT");
     }
 
+    // Передаёт блок байтов формата сетки с проверкой состояния потока.
     void block(const char* expected) {
         if (text_ && token() != expected)
             fail(std::string("Expected block: ") + expected);
@@ -98,6 +104,7 @@ public:
         return number_codec::real_bits(real());
     }
 
+    // Читает или записывает беззнаковое 64-битное значение формата сетки.
     std::uint64_t u64() {
         return io::NativeFileCodec::read_unsigned(*this,fail);
     }
@@ -122,6 +129,7 @@ public:
         fail("Cell face orientation must be +1 or -1");
     }
 
+    // Читает или записывает координату в вещественном представлении формата.
     double real() {
         if (!text_) {
             return number_codec::real_from_bits(u64());
@@ -191,6 +199,7 @@ public:
         return result;
     }
 
+    // Проверяет корректное завершение обработки сеточного файла.
     void finish() {
         block("END");
         if (text_)
@@ -202,16 +211,19 @@ public:
     }
 
 private:
+    // Читает точный блок байтов с проверкой преждевременного конца файла.
     void bytes(char* destination, std::size_t size) {
         if (size > static_cast<std::size_t>(std::numeric_limits<std::streamsize>::max()))
             fail("Input block is too large");
         if (size != 0 && !input_->read(destination, static_cast<std::streamsize>(size)))
             fail("Truncated mesh input");
     }
+    // Пропускает пробельные разделители текстового формата.
     void skip_space() {
         while (whitespace(input_->peek()))
             input_->get();
     }
+    // Читает следующий токен текстового сеточного файла.
     std::string token() {
         skip_space();
         std::string result;

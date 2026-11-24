@@ -11,9 +11,13 @@ namespace gpu {
 struct DeviceArrays {
     int device = -1;
     std::vector<void*> allocations; // Запоминаем адрес до копирования для очистки и при ошибке.
+    // Инициализирует объект стандартными значениями его полей.
     DeviceArrays() = default;
+    // Запрещает копирование, чтобы ресурсы объекта сохраняли единственного владельца.
     DeviceArrays(const DeviceArrays&) = delete;
+    // Запрещает копирование, чтобы ресурсы объекта сохраняли единственного владельца.
     DeviceArrays& operator=(const DeviceArrays&) = delete;
+    // Резервирует участок массива на GPU с учётом количества элементов и типа.
     template <class T> T* allocate(std::size_t n, const T* src = nullptr) {
         if (!n) return nullptr;
         if (n > std::numeric_limits<std::size_t>::max() / sizeof(T))
@@ -24,9 +28,11 @@ struct DeviceArrays {
         if (src) checked(copy(p, src, n * sizeof(T), Copy::ToDevice));
         return p;
     }
+    // Выделяет массив GPU и копирует в него содержимое CPU-вектора.
     template <class T> T* upload(const std::vector<T>& values) {
         return allocate(values.size(),values.data());
     }
+    // Освобождает принадлежащие объекту ресурсы при завершении его времени жизни.
     ~DeviceArrays() {
         if (allocations.empty()) return;
         DeviceScope scope(device);

@@ -25,6 +25,7 @@ class CompletionForecast {
     unsigned cost_samples_ = 0;
     bool was_startup_ = false, restart_cost_ = false;
 
+    // Переводит оставшееся время в календарный срок с проверкой переполнения.
     static std::string finish_time(double remaining) {
         const auto now = std::time(nullptr);
         // Слабое продвижение способно дать очень большой срок. Проверяем диапазон
@@ -40,6 +41,7 @@ class CompletionForecast {
     }
 
   public:
+    // Начинает измерение скорости расчёта и при необходимости создаёт тренд стационарной невязки.
     CompletionForecast(double time, bool steady)
         : sample_(Clock::now()), time_(time),
           steady_trend_(steady ? new SteadyResidualTrend : nullptr), last_accepted_(sample_) {}
@@ -63,6 +65,7 @@ class CompletionForecast {
         else if (!startup) steady_trend_->add(residual);
     }
 
+    // Обновляет оценку скорости расчёта и печатает прогноз завершения.
     void report(const TimeStep& accepted, const RunSettings& run, bool finished) {
         const auto now = Clock::now();
         const double elapsed = std::chrono::duration<double>(now - sample_).count();
@@ -144,6 +147,7 @@ void write_step_results(const TimeStep& step, OutputSchedule& output, Recovery& 
 }
 }
 
+// Ведёт расчёт до конечного времени от начального состояния или контрольной точки.
 void integrate_time(const RunSettings& run, const Processes& world, OutputSchedule& output,
                     Recovery& recovery, const std::vector<double>& initial,
                     const StepOperations& operations) {

@@ -219,6 +219,7 @@ def verify_batches(case, aero, meshdec, launcher):
     print("OK multiple batches, noncontiguous source IDs and different per-rank batch counts")
 
 
+# Разбирает параметры запуска, выполняет набор QA-проверок и возвращает статус результата.
 def main():
     parser = mpi_parser(__doc__)
     args = parser.parse_args()

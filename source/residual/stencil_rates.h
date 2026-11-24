@@ -26,6 +26,7 @@ struct StencilRates {
     // номера источников: по одному на газ и SA, независимо от нумерации сетки.
     AERO_HOST_DEVICE unsigned stride() const { return ranks ? 4u : 2u; }
 
+    // Учитывает ограничение одной опоры при поиске максимальной скорости изменения.
     AERO_HOST_DEVICE void include(const double* input, double* result, unsigned k) const {
         if (input[k] > result[k] || (ranks && input[k] == result[k] && input[k+2] > result[k+2])) {
             result[k] = input[k];
@@ -33,6 +34,7 @@ struct StencilRates {
         }
     }
 
+    // Обходит опоры разреженной строки для ограничения локального шага.
     AERO_HOST_DEVICE void include_row(StencilRow row, bool gas, bool sa, double* maximum) const {
         for (ReconstructionIndex j=0; j<row.count; ++j) {
             const double* input = nodes + stride()*row.node(j);
@@ -40,6 +42,7 @@ struct StencilRates {
             if (sa) include(input,maximum,1);
         }
     }
+    // Возвращает наибольшее ограничение среди опор двух сторон ребра.
     AERO_HOST_DEVICE void edge_maximum(Index edge) const {
         const auto& face = faces[edge];
         double* maximum = edges + stride()*edge;
@@ -67,6 +70,7 @@ struct StencilRates {
                 include_row(stencil.slope_row(4*row+k),gas,sa,maximum);
         }
     }
+    // Выполняет проход ограничений по рёбрам или собирает их в узловые значения.
     AERO_HOST_DEVICE void operator()(Index index) const {
         if (pass == Edges) {
             edge_maximum(computed ? computed[index] : index);

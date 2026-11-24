@@ -10,6 +10,7 @@ namespace viscosity {
 struct TetrahedronGeometry {
     Coordinate normal[4];
     double determinant;
+    // Вычисляет геометрию тетраэдра по указанным вершинам.
     template<class Points>
     AERO_HOST_DEVICE TetrahedronGeometry(const Points& point,const unsigned char* v) {
         const auto origin=point[v[0]];
@@ -18,6 +19,7 @@ struct TetrahedronGeometry {
         normal[0]=Coordinate{}-(normal[1]+normal[2]+normal[3]);
         determinant=dot3(a,normal[1]);
     }
+    // Возвращает объёмный множитель геометрического симплекса.
     AERO_HOST_DEVICE double factor(double divisor) const { return 1./(divisor*::fabs(determinant)); }
 };
 // Локальная связность зависит от порядка вершин в исходной ячейке.
@@ -48,6 +50,7 @@ struct VolumePattern {
         pair_offsets[28]=static_cast<unsigned char>(used);
     }
 };
+// Геометрические номера вершин и индекс шаблона объёмного элемента.
 struct VolumeCellNodes {
     std::uint32_t vertex[8]; // Номера геометрических узлов, до периодической склейки.
     std::uint32_t pattern;
@@ -57,22 +60,28 @@ struct VolumeCellNodes {
 struct VolumeVertices {
     const MeshIndex* shared;
     const std::uint32_t* separate;
+    // Возвращает элемент по индексу; допустимость индекса обеспечивает вызывающий код.
     AERO_HOST_DEVICE MeshIndex operator[](unsigned i) const { return shared ? shared[i] : separate[i]; }
 };
+// Вершины одного элемента и индекс его объёмного шаблона.
 struct VolumeCellView {
     VolumeVertices vertex;
     std::uint32_t pattern;
 };
+// Выбирает общую или отдельную таблицу геометрических вершин элементов.
 struct VolumeCellTable {
     const VolumeCellNodes* separate; // Геометрическая связность, если номера отличаются.
     const Cell* shared;              // Вершины уже есть в таблице вязкого оператора.
     const std::uint32_t* patterns;   // Для единственного разбиения индекс всегда равен нулю.
+    // Проверяет наличие подключённой таблицы геометрических вершин.
     AERO_HOST_DEVICE explicit operator bool() const { return separate || shared; }
+    // Возвращает элемент по индексу; допустимость индекса обеспечивает вызывающий код.
     AERO_HOST_DEVICE VolumeCellView operator[](MeshIndex e) const {
         if (shared) return {{shared[e].node,nullptr},patterns ? patterns[e] : 0u};
         return {{nullptr,separate[e].vertex},separate[e].pattern};
     }
 };
+// Координаты вершин и связность элементов для объёмного оператора AES.
 struct VolumeCoordinates {
     const Coordinate* position;       // Исходные координаты всех точек в базисе уравнений.
     VolumeCellTable cells;            // Локальные номера вершин и тип их нумерации.
@@ -87,10 +96,13 @@ struct VolumeCoordinates {
 struct VolumePoints {
     const Coordinate* position;
     VolumeVertices vertex;
+    // Подключает геометрические координаты к локальной нумерации элемента.
     AERO_HOST_DEVICE VolumePoints(const Coordinate* points,const VolumeCellView* cell)
         : position(points),vertex(cell->vertex) {}
+    // Подключает геометрические координаты к локальной нумерации элемента.
     VolumePoints(const Coordinate* points,const VolumeCellNodes* cell)
         : position(points),vertex{nullptr,cell->vertex} {}
+    // Возвращает элемент по индексу; допустимость индекса обеспечивает вызывающий код.
     AERO_HOST_DEVICE const Coordinate& operator[](unsigned i) const { return position[vertex[i]]; }
 };
 
@@ -113,22 +125,26 @@ AERO_HOST_DEVICE inline PairStress integrate_pair(const VolumePattern& pattern,u
         stress(m,n)=PairMetric::stress_entry(m,n,trace,products(m,n),products(n,m));
     return stress;
 }
+// Вычисляет парные геометрические множители по нормалям объёмных симплексов.
 struct PairNormals {
     VolumePoints points;
     const VolumePattern* pattern;
     const double* factors;
+    // Возвращает нормали двух вершин симплекса и соответствующий объёмный множитель.
     AERO_HOST_DEVICE double operator()(unsigned t,unsigned i,unsigned j,Coordinate& left,Coordinate& right) const {
         const TetrahedronGeometry tetra(points,pattern->nodes.row(t));
         left=tetra.normal[i]; right=tetra.normal[j];
         return factors ? factors[t] : tetra.factor(pattern->volume_divisor);
     }
 };
+// Рабочая плитка парных тензоров напряжений для группы элементов.
 struct CoordinatePairTile {
     PairStress* pairs;
     MeshIndex first_cell;
     // Верхний треугольник восьми вершин содержит максимум 28 тензоров по 9 чисел.
     // Этой же оценкой пользуются разбиение сетки на CPU и размещение группы на GPU.
     static MeshIndex capacity(MeshIndex bytes) { return bytes/(28*sizeof(PairStress)); }
+    // Возвращает парный тензор из рабочей плитки по локальным индексам.
     AERO_HOST_DEVICE PairStress get(const VolumeCoordinates& g,MeshIndex e,unsigned i,unsigned j) const {
         const unsigned pair=i<j ? Cell::pair_offset(8,i,j) : Cell::pair_offset(8,j,i);
         if (pairs) return pairs[(e-first_cell)*28+pair];

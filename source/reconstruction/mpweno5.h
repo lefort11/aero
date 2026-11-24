@@ -10,6 +10,7 @@ namespace mpweno5 {
 struct ProductWeight {
     double a;  // Множитель другого кандидата в общем знаменателе.
     double n;  // Числитель собственного нелинейного веса.
+    // Вычисляет масштабированный нелинейный вес по индикаторам гладкости.
     AERO_HOST_DEVICE ProductWeight(double beta, double b, double maximum, double tau, double delta, double h2,
                                    double boost) {
         const double r = b + delta;
@@ -23,10 +24,12 @@ struct ProductWeight {
 struct Indicators {
     double first, middle, last;
 
+    // Возвращает масштаб наибольшего индикатора для устойчивого вычисления весов.
     AERO_HOST_DEVICE double maximum() const {
         return ::fmax(first, ::fmax(middle, last));
     }
 
+    // Вычисляет нелинейные веса MPWENO5 по индикаторам гладкости.
     template <bool packed = false> AERO_HOST_DEVICE bool nonlinear() const {
 #ifndef KOKKOS_ACTIVE_EXECUTION_MEMORY_SPACE_HOST
         if (packed) {
@@ -60,6 +63,7 @@ struct Indicators {
 struct Polynomials {
     double first, middle, last;
 
+    // Строит индикаторы гладкости по набору наклонов шаблона.
     AERO_HOST_DEVICE static Polynomials from_slopes(double outer, double inner, double center, double opposite) {
         return {inner + (2. / 3.) * (inner - outer),
                 inner + (2. / 3.) * (center - inner),
@@ -104,9 +108,11 @@ struct Side {
     Indicators indicators;                // Гладкость трёх полиномов именно с этой стороны.
     mp5::Bounds bounds;                   // Допустимый MP-интервал содержит ноль.
 
+    // Определяет, требуется ли нелинейное взвешивание текущей стороны.
     template <bool packed = false> AERO_HOST_DEVICE bool needs_weights() const {
         return !bounds.fixed<packed>() && indicators.nonlinear<packed>() && !indicators.all_zero<packed>();
     }
+    // Вычисляет кандидаты интерполяционных полиномов MPWENO5.
     AERO_HOST_DEVICE Polynomials polynomials() const {
         return Polynomials::from_slopes(outer, inner, center, opposite);
     }
@@ -117,6 +123,7 @@ struct Side {
             return bounds.clamp<packed>(0.);
         return bounds.clamp<packed>(mp5::linear(outer, inner, center, opposite));
     }
+    // Собирает след одной стороны ребра из полиномов и нелинейных весов.
     AERO_HOST_DEVICE double trace(bool correction) const {
         if (!needs_weights())
             return direct_trace();
@@ -190,6 +197,7 @@ AERO_HOST_DEVICE inline double increment(double fl, double nl, double c, double 
         .trace(correction);
 }
 
+// Вычисляет левый и правый следы MPWENO5 с общими промежуточными данными.
 AERO_HOST_DEVICE inline void pair(double fl, double nl, double c, double nr, double fr, double alpha,
                                   bool correction, double& left, double& right) {
     Side l, r;

@@ -15,6 +15,7 @@ struct CsgsOrder {
     std::vector<MeshIndex> row_of_node; // Собственная строка узла. Для чужих узлов равна числу строк.
     std::vector<MeshIndex> position;    // Место строки в прямом проходе.
     std::vector<MeshIndex> domain;      // Номер участка CPU. На GPU весь ранг образует один участок.
+    // Строит порядок строк для последовательных или раскрашенных проходов CSGS.
     CsgsOrder(MeshIndex nodes, const std::vector<MeshIndex>& rows, const std::vector<MeshIndex>& columns,
               bool gpu, MeshIndex workers) {
         const MeshIndex count = rows.size() - 1;
@@ -64,6 +65,7 @@ struct CsgsOrder {
         const auto n = position.size();
         std::vector<MeshIndex> roots(n);
         std::iota(roots.begin(), roots.end(), MeshIndex(0));
+        // Упорядочивает узлы по степени графа для построения обхода CSGS.
         const auto degree_order = [&](MeshIndex i, MeshIndex j) {
             const auto a = rows[i + 1] - rows[i], b = rows[j + 1] - rows[j];
             return a == b ? i < j : a < b;
@@ -104,10 +106,12 @@ struct CsgsLayout {
     std::vector<CsgsRow> rows;
     std::vector<MeshIndex> source, neighbours;
     unsigned lanes = 1;
+    // Строит порядок строк и границы групп для проходов CSGS.
     void build(const CsgsOrder& order, const std::vector<MeshIndex>& starts,
                const std::vector<MeshIndex>& columns, bool gpu) {
         const auto n=order.sequence.size();
         rows.assign(n, CsgsRow{});
+        // Определяет проход CSGS, к которому относится зависимость строки.
         const auto pass_for=[&](MeshIndex row, MeshIndex other, MeshIndex index) {
             return other<n && (order.domain.empty() || order.domain[row]==order.domain[other]) &&
                    order.position[other]<index ? 0u : 1u;

@@ -142,3 +142,11 @@ local-step-neighbors-qa: aero $(if $(filter 1,$(WITH_MPI)),meshdec)
 	$(running_test)
 	"$(PYTHON)" qa/local_step_neighbors.py $(if $(filter 1,$(WITH_MPI)),--mpi $(MPI_QA_ARGS),--aero "$(BIN)/aero$(EXE)") $(if $(filter 1,$(kokkos_gpu)),--gpu)
 test: local-step-neighbors-qa
+
+ifneq ($(wildcard source/multigrid/coarse_step.h),)
+.PHONY: steady-multigrid-qa
+steady-multigrid-qa: aero $(if $(filter 1,$(WITH_MPI)),meshdec)
+	$(running_test)
+	"$(PYTHON)" qa/steady_multigrid.py $(if $(filter 1,$(WITH_MPI)),--mpi $(MPI_QA_ARGS),--aero "$(BIN)/aero$(EXE)") $(if $(filter 1,$(kokkos_gpu)),--gpu)
+test: steady-multigrid-qa
+endif

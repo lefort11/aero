@@ -17,6 +17,7 @@ struct KrylovVectors {
     double* t;        // Образ A*M^{-1}*r, также буфер для проверки A*x.
 };
 enum class KrylovStep { Begin, Restart, Direction, Advance, TrueResidual };
+// Параметры поэлементного обновления рабочих векторов BiCGSTAB.
 struct KrylovUpdate {
     KrylovVectors work;
     const double* rhs;      // Правая часть системы в исходных единицах.
@@ -25,6 +26,7 @@ struct KrylovUpdate {
     double scale, a, omega; // Масштаб правой части и коэффициенты текущего обновления.
     KrylovStep step;
 
+    // Выполняет выбранную поэлементную операцию итерации BiCGSTAB.
     AERO_HOST_DEVICE void operator()(MeshIndex i) const {
         switch (step) {
         case KrylovStep::Begin:
@@ -73,16 +75,21 @@ inline double krylov_reduce(const Execution& exec, MeshIndex size, const double*
 // Для omega нужны <t,t> и <t,r>. Каждый поток читает t один раз; обе суммы
 // возвращаются с устройства вместе. Норму остановки по-прежнему считаем в L_inf.
 struct KrylovProjection {
+    // Одновременно накапливаемые квадрат нормы t и скалярное произведение t с r.
     struct value_type { double square, mixed; };
     const double *t, *r;
+    // Обнуляет обе компоненты редукции скалярных произведений.
     AERO_HOST_DEVICE void init(value_type& v) const {v={0.,0.};}
+    // Суммирует частичные результаты двух скалярных произведений.
     AERO_HOST_DEVICE void join(volatile value_type& a,const volatile value_type& b) const {
         a.square+=b.square; a.mixed+=b.mixed;
     }
+    // Добавляет вклад одной компоненты в два скалярных произведения.
     AERO_HOST_DEVICE void operator()(MeshIndex i,value_type& v) const {
         v.square+=t[i]*t[i]; v.mixed+=t[i]*r[i];
     }
 };
+// Вычисляет пару скалярных произведений для коэффициента omega одним проходом.
 template<class Execution>
 inline void krylov_project(const Execution& exec,MeshIndex count,const double* t,const double* r,double* pair) {
     using Range=Kokkos::RangePolicy<Execution,Kokkos::IndexType<MeshIndex>>;
@@ -90,6 +97,7 @@ inline void krylov_project(const Execution& exec,MeshIndex count,const double* t
     Kokkos::parallel_reduce("Aero: BiCGSTAB omega",Range(exec,0,count),KrylovProjection{t,r},sums);
     pair[0]=sums.square; pair[1]=sums.mixed;
 }
+// Совмещает обновление векторов Крылова с редукцией нормы.
 template<class Execution>
 inline double krylov_update_norm(const Execution& exec,MeshIndex count,KrylovUpdate step) {
     using Range=Kokkos::RangePolicy<Execution,Kokkos::IndexType<MeshIndex>>;

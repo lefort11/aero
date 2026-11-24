@@ -7,6 +7,7 @@
 
 namespace {
 using aero::ReconstructionIndex;
+// Дескриптор GPU-шаблона и его рабочего состояния.
 struct State {
     aero::ReconstructionStencilView view;
     int device;
@@ -16,12 +17,14 @@ struct State {
     size_t value_capacity, result_capacity;
 };
 
+// Сохраняет текст ошибки GPU-интерфейса реконструкции.
 int report(aero::gpu::Status code, char* error, unsigned capacity) {
     if (code != aero::gpu::Status::Success && error && capacity)
         snprintf(error, capacity, "CUDA: %s", aero::gpu::message(code));
     return code == aero::gpu::Status::Success ? 0 : 1;
 }
 using namespace aero::device_tests;
+// Запускает GPU-проверку реконструкции с выбранными входными данными.
 aero::gpu::Status launch(State* s, const double* values, ReconstructionIndex components, double* left,
                    double* right, aero::gpu::Stream stream) {
     if (!s->view.edge_count)
@@ -29,6 +32,7 @@ aero::gpu::Status launch(State* s, const double* values, ReconstructionIndex com
     aero::device_work::check(reconstruct_kernel(stream, s->view, values, components, left, right));
     return aero::gpu::Status::Success;
 }
+// Выделяет необходимые GPU-буферы проверки реконструкции.
 aero::gpu::Status reserve(double** pointer, size_t* capacity, size_t count) {
     if (count <= *capacity)
         return aero::gpu::Status::Success;
@@ -47,6 +51,7 @@ aero::gpu::Status reserve(double** pointer, size_t* capacity, size_t count) {
 }
 }
 
+// Освобождает GPU-ресурсы тестового реконструктора.
 extern "C" void test_reconstruction_device_destroy(void* opaque) {
     State* s = static_cast<State*>(opaque);
     if (!s)
@@ -57,6 +62,7 @@ extern "C" void test_reconstruction_device_destroy(void* opaque) {
     aero::gpu::release(s->right);
     free(s);
 }
+// Создаёт GPU-состояние тестового реконструктора.
 extern "C" int test_reconstruction_device_create(aero::ReconstructionStencilView view, int device,
                                                void** opaque, char* error, unsigned capacity) {
     *opaque = nullptr;
@@ -71,6 +77,7 @@ extern "C" int test_reconstruction_device_create(aero::ReconstructionStencilView
     *opaque = s;
     return 0;
 }
+// Выполняет проверку реконструкции над полем, уже находящимся на GPU.
 extern "C" int test_reconstruction_device_device(void* opaque, const double* values,
                                                ReconstructionIndex components, double* left, double* right,
                                                void* stream, char* error, unsigned capacity) {
@@ -81,6 +88,7 @@ extern "C" int test_reconstruction_device_device(void* opaque, const double* val
     return report(launch(s, values, components, left, right, static_cast<aero::gpu::Stream>(stream)), error,
                   capacity);
 }
+// Переносит тестовое поле на GPU и вычисляет реконструкцию.
 extern "C" int test_reconstruction_device_host(void* opaque, const double* values,
                                              ReconstructionIndex components, double* left, double* right,
                                              char* error, unsigned capacity) {
@@ -118,6 +126,7 @@ extern "C" int test_reconstruction_device_host(void* opaque, const double* value
     return report(code, error, capacity);
 }
 
+// Вычисляет одну выбранную сторону реконструкции на GPU.
 extern "C" int test_reconstruction_device_one(aero::ReconstructionStencilView view, ReconstructionIndex edge,
                                             unsigned side, const double* own, ReconstructionIndex components,
                                             const double* values, double* output, void* stream) {

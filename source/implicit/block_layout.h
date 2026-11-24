@@ -16,22 +16,27 @@ struct BlockView {
     double* first;
     unsigned step;
     LinearCoefficient* neighbours; // Отдельное хранение коэффициентов соседних блоков.
+    // Возвращает элемент по индексу; допустимость индекса обеспечивает вызывающий код.
     AERO_HOST_DEVICE double operator[](unsigned k) const {
         return neighbours ? static_cast<double>(neighbours[k*step]) : first[k*step];
     }
+    // Записывает коэффициент блока с учётом шага упакованного хранения.
     AERO_HOST_DEVICE void set(unsigned k,double value) const {
         if (neighbours) neighbours[k*step] = mixed_linear && ::fabs(value) > FLT_MAX
                 ? static_cast<LinearCoefficient>(HUGE_VAL) : static_cast<LinearCoefficient>(value);
         else first[k*step] = value;
     }
+    // Добавляет вклад к коэффициенту блока с учётом его раскладки.
     AERO_HOST_DEVICE void add(unsigned k,double value) const { set(k, (*this)[k]+value); }
 };
 
+// Адреса и шаг хранения коэффициентов разреженных матричных блоков.
 struct BlockLayout {
     IndexList first;         // Адрес первого коэффициента каждого блока CSR в общей области.
     unsigned lanes;          // Шаг между коэффициентами одного внедиагонального блока.
     LinearCoefficient* neighbours; // Отдельная область соседей. Диагональ целиком остаётся в double.
 
+    // Возвращает представление выбранного матричного блока.
     AERO_HOST_DEVICE BlockView view(double* values, MeshIndex slot, unsigned width,
                                     bool diagonal) const {
         if (!first) return {values + slot * width * width, 1, nullptr};

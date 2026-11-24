@@ -9,6 +9,7 @@ namespace aero {
 class NodeIncidence {
     MeshCsr rows_; // Одна строка на узел, одна запись на инцидентный ему элемент.
 public:
+    // Строит обратные связи от узлов к содержащим их элементам.
     template<class Vertices>
     NodeIncidence(MeshIndex nodes, MeshIndex elements, Vertices vertices) {
         // Соседние элементы могут увеличивать один счётчик. На первом проходе
@@ -31,6 +32,7 @@ public:
                 rows_.indices[next[n].fetch_add(1, std::memory_order_relaxed)] = e;
         });
     }
+    // Возвращает элемент по индексу; допустимость индекса обеспечивает вызывающий код.
     MeshIndexSpan operator[](MeshIndex node) const {
         return mesh_index_row(rows_.offsets.data(), rows_.indices.data(), node);
     }

@@ -8,6 +8,7 @@ namespace aero {
 // Начальный однородный поток и reference_state на границе используют одну систему углов и одну нормировку.
 struct FreestreamGas {
     double gamma, mach, phi, theta;
+    // Возвращает примитивную величину набегающего газа по выбранной компоненте.
     std::vector<double> primitive(unsigned d) const {
         if (!(mach > 0. && std::isfinite(mach)))
             throw std::invalid_argument("freestream requires gas.txt:mach > 0");

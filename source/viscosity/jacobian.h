@@ -24,6 +24,7 @@ constexpr MeshIndex omitted_pair = missing_block-1;
 struct GasDerivative {
     Difference primitive;
     Material transport;
+    // Вычисляет производные примитивных и транспортных величин по компоненте состояния.
     AERO_HOST_DEVICE GasDerivative(unsigned dim, const Law& law, const Gas& gas, unsigned variable)
         : primitive{}, transport{} {
         const double thermal = gas.pressure_over_density;
@@ -46,6 +47,7 @@ struct GasDerivative {
 struct ColumnGraph {
     const MeshIndex* offsets;
     implicit::IndexList columns;
+    // Находит требуемого соседа в строке разреженной матрицы.
     AERO_HOST_DEVICE MeshIndex find_neighbour(MeshIndex row,MeshIndex column) const {
         MeshIndex first=offsets[row]+1;
         const MeshIndex end=offsets[row+1];
@@ -64,6 +66,7 @@ struct ColumnGraph {
     }
 };
 
+// Собирает производные вязкого оператора по столбцам газового состояния.
 struct Jacobian {
     Operator aes;
     const MeshIndex* offsets;       // Все вхождения каждой неизвестной в элементы.
@@ -85,6 +88,7 @@ struct Jacobian {
         else if (aes.dim == 2) aes.stencil.cell_gradients<2>(cell, aes.gas, gradients);
         else aes.stencil.cell_gradients<1>(cell, aes.gas, gradients);
     }
+    // Формирует адреса матричных блоков для производных одного элемента.
     AERO_HOST_DEVICE ColumnGraph column_graph() const { return {row_offsets,column_nodes}; }
     // Обходим столбец: изменение одной компоненты U в одном узле. Потоки CPU
     // и GPU пишут в разные столбцы даже при совпадении строк, атомарные операции не нужны.
@@ -165,6 +169,7 @@ struct Jacobian {
                     layout.view(values,diagonal,width,true).add(r*width+variable,balance[r]);
         }
     }
+    // Добавляет производные вязких вкладов в выбранный столбец матрицы.
     AERO_HOST_DEVICE void assemble_column(MeshIndex node, unsigned variable) const {
         // Весь столбец сразу. На одной карте список смежных элементов уже есть в AES.
         const MeshIndex* starts = column_nodes ? aes.offsets : offsets;

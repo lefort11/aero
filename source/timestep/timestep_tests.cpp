@@ -12,15 +12,20 @@
 
 using namespace aero;
 #ifdef AERO_WITH_KOKKOS_GPU
+// Проверяет обработку входных данных оценки CFL на GPU.
 CflStep gpu_inputs(int device, const CflTimestep&, double, WaveSpeeds);
+// Проверяет выбор CFL по принятому полю GPU.
 CflStep gpu_accepted(const CflTimestep&, const ExplicitField&);
+// Сравнивает ограничения шага, полученные при сборке невязки на GPU.
 void gpu_residual(const ExplicitField&, double*);
 #endif
 namespace {
 using aero_test::require;
+// Проверяет условие теста и сообщает понятную причину нарушения.
 void expect(CflStep step, double dt, std::size_t id) {
     require(std::fabs(step.dt - dt) < 2e-13 * dt && step.node == id, "incorrect CFL dt or limiting node");
 }
+// Проверяет, что некорректный ввод завершается ожидаемой ошибкой.
 template <class F> void rejects(F f) {
     try {
         f();
@@ -29,6 +34,7 @@ template <class F> void rejects(F f) {
     }
     throw std::runtime_error("invalid input accepted");
 }
+// Выполняет один вариант тестовой задачи на выбранном исполнителе.
 CflStep run(int device, const CflTimestep& plan, double cfl, const std::vector<double>& edges,
             const std::vector<double>& boundary = {}) {
     WaveSpeeds s = {edges.data(), edges.size(), boundary.data(), boundary.size()};
@@ -40,6 +46,7 @@ CflStep run(int device, const CflTimestep& plan, double cfl, const std::vector<d
 #endif
     return plan.compute(cfl, s);
 }
+// Создаёт одномерную сетку для проверки алгоритма.
 Mesh line(std::vector<double> coordinates) {
     MeshData m;
     m.dimension = 1;
@@ -61,6 +68,7 @@ Mesh line(std::vector<double> coordinates) {
     m.boundary_patch = {0, 1};
     return Mesh(std::move(m));
 }
+// Выполняет набор сценариев оценки временного шага.
 void cases(int device) {
     Mesh m = line({0, 1, 3});
     const MedianDual cv(m);
@@ -143,6 +151,7 @@ void cases(int device) {
     rejects([&] { run(device, large, .5, speed); });
 }
 }
+// Запускает проверки модуля и возвращает ненулевой код при ошибке.
 int main(int argc, char** argv) {
     try {
         Stabilization policy;

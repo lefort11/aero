@@ -2,6 +2,7 @@
 
 namespace aero {
 namespace explicit_detail {
+// Возвращает коэффициенты трёх стадий SSPRK3.
 Stages ssprk3_stages() {
     // В каждой строке указаны время невязки в долях dt и два веса. E — шаг Эйлера из состояния этой строки.
     static const Stage stages[] = {

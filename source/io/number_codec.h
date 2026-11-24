@@ -22,6 +22,7 @@ constexpr bool native_little_endian = true;
 constexpr bool native_little_endian = false;
 #endif
 
+// Читает целое слово из двоичного представления.
 inline Word read_word(const char* bytes) {
     Word value = 0;
     if (native_little_endian) {
@@ -33,6 +34,7 @@ inline Word read_word(const char* bytes) {
     return value;
 }
 
+// Записывает целое слово в переносимое двоичное представление.
 inline void store_word(char* bytes, Word value) {
     if (native_little_endian) {
         std::memcpy(bytes, &value, sizeof(value));
@@ -48,14 +50,17 @@ inline Word real_bits(double value) {
     std::memcpy(&bits, &value, sizeof(bits));
     return bits;
 }
+// Интерпретирует сохранённые биты как double без численного преобразования.
 inline double real_from_bits(Word bits) {
     double value;
     std::memcpy(&value, &bits, sizeof(value));
     return value;
 }
+// Восстанавливает вещественное число из двоичного представления.
 inline double read_real(const char* bytes) {
     return real_from_bits(read_word(bytes));
 }
+// Записывает биты вещественного числа в двоичное представление.
 inline void store_real(char* bytes, double value) {
     store_word(bytes, real_bits(value));
 }

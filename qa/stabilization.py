@@ -31,6 +31,7 @@ def check_auto_retry_steps(log):
     assert "next CFL is below cfl_min" in log, log
 
 
+# Проверяет откат расчёта при недопустимом граничном состоянии.
 def check_boundary_retry(args, case, mesh, archive):
     # Возмущение давления подходит к правой границе. Узловые плотность и давление
     # ещё положительны, но дозвуковое условие уже отклоняет поправку Ньютона.
@@ -58,6 +59,7 @@ def check_boundary_retry(args, case, mesh, archive):
         print(f"OK steady auto retries after boundary rejection, MPI={parallel}", flush=True)
 
 
+# Проверяет откат неудачного шага, изменение CFL и метки первого порядка.
 def check(args, case):
     source = ROOT / "qa/cases/sod_1d"
     for path in source.glob("*.txt"):

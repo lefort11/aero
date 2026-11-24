@@ -5,6 +5,7 @@
 #include <fstream>
 
 namespace aero {
+// Готовит память для восстановления или читает начальное поле в нумерации решателя.
 void PartitionState::prepare(const RunSettings& run, const MeshPartition& part, const PeriodicPartition* seam,
                              const FieldNodeSelection& selection, MeshIndex state_nodes,
                              const Processes& world) {
@@ -48,6 +49,7 @@ void PartitionState::prepare(const RunSettings& run, const MeshPartition& part, 
     }
 }
 
+// После обмена с соседями проверяет периодические копии и устанавливает начальное решение.
 void PartitionState::start_from_initial(const MeshPartition& part, const PeriodicPartition* seam) {
     if (seam && initial_checkpoint.empty()) {
         const unsigned width = part.mesh.view().dimension + 2;

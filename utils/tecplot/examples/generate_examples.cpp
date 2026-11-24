@@ -13,15 +13,18 @@ namespace {
 using namespace aero;
 typedef std::vector<MeshIndex> Polygon;
 const double pi = std::acos(-1.0);
+// Проверяет обязательное условие и сообщает ошибку при его нарушении.
 void require(bool ok, const char* message) {
     if (!ok)
         throw std::runtime_error(message);
 }
 
+// Собирает пример сетки с общими гранями и учётом их вхождений в ячейки.
 struct Builder {
     MeshData data;
     std::map<Polygon, MeshIndex> faces;
     std::vector<unsigned> incidence;
+    // Добавляет ячейку примера и переиспользует общие грани.
     void cell(const std::vector<Polygon>& shell) {
         for (const Polygon& nodes : shell) {
             Polygon key = nodes;
@@ -62,6 +65,7 @@ struct Builder {
         }
         data.cell_faces.offsets.push_back(data.cell_faces.indices.size());
     }
+    // Завершает сетку примера и маркирует её внешние грани.
     Mesh finish() {
         data.patch_names = {"xmin", "xmax", "ymin", "ymax"};
         if (data.dimension == 3) {
@@ -105,6 +109,7 @@ struct Builder {
     }
 };
 
+// Создаёт одномерную сетку примера.
 Mesh line_mesh() {
     MeshData d;
     d.dimension = 1;
@@ -126,11 +131,14 @@ Mesh line_mesh() {
     d.boundary_patch = {0, 1};
     return Mesh(d);
 }
+// Плоская тестовая сетка для генерации примеров Tecplot.
 struct Plane {
     std::vector<double> x, y;
     std::vector<Polygon> polygons;
+    // Создаёт регулярную плоскую сетку для примеров экспорта.
     Plane() {
         const unsigned nx = 16, ny = 12;
+        // Преобразует локальные координаты или номер узла в используемую нумерацию.
         const auto node = [](unsigned i, unsigned j) -> MeshIndex { return j * 17 + i; };
         for (unsigned j = 0; j <= ny; ++j)
             for (unsigned i = 0; i <= nx; ++i) {
@@ -157,6 +165,7 @@ struct Plane {
             }
     }
 };
+// Создаёт плоскую сетку с выбранной топологией ячеек.
 Mesh planar_mesh(const Plane& plane) {
     Builder b;
     b.data.dimension = 2;
@@ -171,6 +180,7 @@ Mesh planar_mesh(const Plane& plane) {
     }
     return b.finish();
 }
+// Создаёт объёмную сетку примера экспорта.
 Mesh volume_mesh(const Plane& plane) {
     Builder b;
     const MeshIndex stride = plane.x.size();
@@ -197,6 +207,7 @@ Mesh volume_mesh(const Plane& plane) {
         }
     return b.finish();
 }
+// Вычисляет координаты точки, в которой задаётся пример поля.
 Coordinate position(const Mesh& mesh, FieldLocation loc, MeshIndex id) {
     if (loc == FieldLocation::Node) {
         return mesh.view().coordinate(id);
@@ -216,6 +227,7 @@ Coordinate position(const Mesh& mesh, FieldLocation loc, MeshIndex id) {
     for (double& component : p) component /= count;
     return p;
 }
+// Вычисляет аналитический импульс для примера нестационарного поля.
 double pulse(Coordinate p, unsigned dim) {
     double r = (p[0] - 0.45) * (p[0] - 0.45);
     if (dim >= 2)
@@ -224,11 +236,13 @@ double pulse(Coordinate p, unsigned dim) {
         r += (p[2] - 0.5) * (p[2] - 0.5);
     return std::exp(-r / 0.035);
 }
+// Вычисляет скорость аналитического примера поля.
 Coordinate velocity(Coordinate p, unsigned dim) {
     if (dim == 1)
         return {1 + 0.3 * std::sin(2 * pi * p[0]), 0, 0};
     return {-(p[1] - 0.5), p[0] - 0.5, dim == 3 ? 0.2 * std::sin(pi * p[2]) : 0};
 }
+// Создаёт именованное поле примера с нужным размещением и компонентами.
 Field make_field(const Mesh& mesh, FieldLocation loc, const std::string& name, const std::string& unit,
                  const std::vector<std::string>& components) {
     Field f;
@@ -260,6 +274,7 @@ Field make_field(const Mesh& mesh, FieldLocation loc, const std::string& name, c
         }
     return f;
 }
+// Заполняет снимок значениями аналитического решения в заданный момент.
 FieldSnapshot sample(const Mesh& mesh) {
     FieldSnapshot s(mesh, 0, 0);
     s.fields.push_back(make_field(mesh, FieldLocation::Node, "temperature", "K", {"value"}));
@@ -270,6 +285,7 @@ FieldSnapshot sample(const Mesh& mesh) {
     s.fields.push_back(make_field(mesh, FieldLocation::Face, "pressure", "Pa", {"value"}));
     return s;
 }
+// Проверяет корректность геометрии перед экспортом примера.
 void geometry_check(const Mesh& mesh) {
     double total = 0;
     for (MeshIndex c = 0; c < mesh.view().cell_count; ++c) {
@@ -300,6 +316,7 @@ void geometry_check(const Mesh& mesh) {
     }
     require(std::abs(total - 1) < 1e-10, "Expected unit domain measure");
 }
+// Сохраняет сетку и снимки примера в исходном формате и Tecplot.
 void save(const std::string& prefix, const Mesh& mesh, MeshFormat mf, FieldFormat ff) {
     const FieldSnapshot original = sample(mesh);
     geometry_check(mesh);
@@ -321,6 +338,7 @@ void save(const std::string& prefix, const Mesh& mesh, MeshFormat mf, FieldForma
               << ", faces=" << mesh.view().face_count << ", fields=" << read.fields.size() << '\n';
 }
 }
+// Создаёт набор сеток и полей для примеров экспорта Tecplot.
 int main(int argc, char** argv) {
     try {
         if (argc != 2)

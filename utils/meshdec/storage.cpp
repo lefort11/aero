@@ -17,14 +17,17 @@
 
 namespace aero {
 namespace meshdec {
+// Возвращает размер файла для проверки числа и адресов записей.
 Id file_size(const std::string& path) {
     auto f = input(path);
     f.seekg(0, std::ios::end);
     return static_cast<Id>(f.tellg());
 }
+// Читает или записывает целое слово промежуточного двоичного формата.
 void word(std::ostream& out, Id value) {
     number_codec::write_word(out, value, false);
 }
+// Читает или записывает вещественное число промежуточного двоичного формата.
 void real(std::ostream& out, double value) {
     word(out, number_codec::real_bits(value));
 }
@@ -38,6 +41,7 @@ void copy_bytes(std::istream& in, std::ostream& out, Id bytes) {
         bytes -= static_cast<Id>(n);
     }
 }
+// Создаёт рабочий каталог промежуточных таблиц.
 std::string directory(const std::string& path) {
     const auto pos = path.find_last_of("/\\");
     return pos == std::string::npos ? "." : path.substr(0, pos + 1);
@@ -64,6 +68,7 @@ void Scratch::create(const std::string& parent) {
     }
     throw std::runtime_error("Cannot choose a unique scratch directory");
 }
+// Удаляет временные файлы и каталоги, созданные объектом.
 Scratch::~Scratch() {
     if (path.empty())
         return;
@@ -91,6 +96,7 @@ Scratch::~Scratch() {
     rmdir(path.c_str());
 #endif
 }
+// Публикует готовый архив после успешного завершения всех этапов.
 void publish(const std::string& staged, const std::string& target) {
 #ifdef _WIN32
     require(MoveFileA(staged.c_str(), target.c_str()) != 0,

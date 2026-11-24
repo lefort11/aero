@@ -48,6 +48,7 @@ void test_bdf1_step(int device) {
     controls.newton_relative = 1.e-10;
     double dt = .15;
     controls.second_order = true; // Первый шаг BDF2 совпадает с неявным Эйлером.
+    // Пересчитывает зависимые потоки или коэффициенты после изменения поля.
     const auto refresh = [&] {
         const auto& u = state.read();
         for (unsigned i = 0; i < 2; ++i) {
@@ -59,6 +60,7 @@ void test_bdf1_step(int device) {
         if (device >= 0) gpu::checked(gpu::copy(active_flux, flux, sizeof(flux), gpu::Copy::ToDevice));
 #endif
     };
+    // Выполняет один контрольный неявный шаг с выбранными параметрами.
     const auto advance = [&] {
         refresh();
         return solver.advance(state.data(), nullptr, volumes.data(), active_flux, dt, controls, refresh);
@@ -222,6 +224,7 @@ void test_bdf1_step(int device) {
         for (unsigned n = 0; n < 5; ++n) {
             dt = n % 2 ? .014 : .023;
             refresh();
+            // Применяет и оценивает пробную поправку без окончательного принятия шага.
             const auto trial = [&] { rejected_trial = true; return false; };
             const auto step = cached.advance(state.data(), nullptr, volumes.data(), active_flux, dt,
                                               controls, refresh, trial);
@@ -240,6 +243,7 @@ void test_bdf1_step(int device) {
     // dx/dt = sqrt(gamma)*(m-x)/(V0*V1*sqrt(x)), m — средняя плотность.
     // Сравниваем с интегралом этого ОДУ, чтобы ошибка по пространству не скрыла порядок BDF2.
     const double mass = .4 * initial[0] + .6 * initial[3];
+    // Вычисляет объёмный интеграл контрольной величины тестового поля.
     const auto integral = [&](double x) {
         return 2. * (std::sqrt(mass) * std::atanh(std::sqrt(x / mass)) - std::sqrt(x));
     };

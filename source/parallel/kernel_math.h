@@ -18,14 +18,17 @@ KOKKOS_INLINE_FUNCTION unsigned long long double_bits(double x) {
     memcpy(&bits, &x, sizeof(bits));
     return bits;
 }
+// Восстанавливает double по заданному битовому представлению.
 KOKKOS_INLINE_FUNCTION double from_double_bits(unsigned long long bits) {
     double x;
     memcpy(&x, &bits, sizeof(x));
     return x;
 }
+// Извлекает старшее слово представления double для работы с порядком величины.
 KOKKOS_INLINE_FUNCTION unsigned high_word(double x) {
     return static_cast<unsigned>(double_bits(x) >> 32);
 }
+// Вычисляет обратное значение в выбранном численном представлении.
 KOKKOS_INLINE_FUNCTION double inverse_value(double x) { return 1. / x; }
 constexpr double max_finite_double = DBL_MAX;
 // Неконечная компонента должна прервать итерацию. Обычный max с NaN

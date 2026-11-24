@@ -9,6 +9,7 @@
 #include <utility>
 
 namespace aero {
+// Выбирает физическую или диагностическую величину для столбца вывода.
 Field output_field(const std::string& name) {
     Field f;
     f.name = name;
@@ -17,6 +18,7 @@ Field output_field(const std::string& name) {
     return f;
 }
 
+// Связывает расписание зон с геометрией и полями для записи снимков.
 ScheduledOutput::ScheduledOutput(const std::vector<OutputZone>& zones, const std::string& directory,
                                  const Mesh& mesh, double gamma, std::vector<std::uint64_t> node_dof,
                                  std::size_t state_nodes)
@@ -24,6 +26,7 @@ ScheduledOutput::ScheduledOutput(const std::vector<OutputZone>& zones, const std
     if (!zones.empty())
         local_ = LocalFieldOutput(directory, mesh, gamma, std::move(node_dof), state_nodes);
 }
+// Подготавливает локальную запись полей с учётом нумерации узлов.
 LocalFieldOutput::LocalFieldOutput(const std::string& directory, const Mesh& mesh, double gamma,
                                    std::vector<std::uint64_t> node_dof, std::size_t state_nodes, const LinearBackground& background)
     : directory_(directory), gamma_(gamma), background_(background) {
@@ -48,12 +51,14 @@ LocalFieldOutput::LocalFieldOutput(const std::string& directory, const Mesh& mes
     } else if (state_nodes && state_nodes != nodes_)
         throw FieldError("output: missing node map");
 }
+// Создаёт расписание зон и выбирает их столбцы по размерности задачи.
 OutputSchedule::OutputSchedule(const std::vector<OutputZone>& zones, unsigned dimension) {
     validate_output_zones(zones);
     for (const auto& config : zones) {
         Zone z;
         z.config = config;
         z.config.variables.clear();
+        // Добавляет выбранное поле в набор данных записываемой зоны.
         const auto append=[&](unsigned c) {
             const unsigned axis=c>=diagnostic::DensityPrime && c<=diagnostic::EnergyPrime ? c-diagnostic::DensityPrime : c;
             if(axis<=3 && axis>dimension) throw FieldError("["+config.name+"] "+diagnostic::name(c)+" exceeds mesh dimension");
@@ -71,9 +76,11 @@ OutputSchedule::OutputSchedule(const std::vector<OutputZone>& zones, unsigned di
         zones_.push_back(z);
     }
 }
+// Вычисляет ближайшее физическое время записи зоны по целочисленному номеру срока.
 double OutputSchedule::Zone::deadline() const {
     return static_cast<double>(next_tick) * config.every_time;
 }
+// Проверяет, наступил ли шаг или физическое время записи зоны.
 bool OutputSchedule::Zone::due(std::uint64_t step, double time) const {
     if (step <= last_step)
         return false;
@@ -89,6 +96,7 @@ bool OutputSchedule::Zone::due(std::uint64_t step, double time) const {
         throw FieldError("[" + config.name + "] missed output time; use limit_dt before stepping");
     return target - time <= tolerance;
 }
+// Переносит расписание за восстановленные шаг и время, исключая повтор старых снимков.
 void OutputSchedule::resume(std::uint64_t step, double time) {
     for (auto& zone : zones_) {
         zone.last_step = step;
@@ -108,6 +116,7 @@ void OutputSchedule::resume(std::uint64_t step, double time) {
             throw FieldError("output: restored deadline cannot advance");
     }
 }
+// Ограничивает шаг ближайшим сроком записи активной зоны.
 double OutputSchedule::limit_dt(double time, double candidate) const {
     if (!(time >= 0 && std::isfinite(time) && candidate > 0 && std::isfinite(candidate)))
         throw FieldError("output: invalid time or proposed dt");
@@ -120,6 +129,7 @@ double OutputSchedule::limit_dt(double time, double candidate) const {
         }
     return candidate;
 }
+// Проверяет, наступил ли шаг или физическое время записи зоны.
 bool OutputSchedule::due(std::uint64_t step, double time) const {
     if (!(time >= 0 && std::isfinite(time)))
         throw FieldError("output: invalid accepted time");
@@ -129,6 +139,7 @@ bool OutputSchedule::due(std::uint64_t step, double time) const {
             any = true;
     return any;
 }
+// Проверяет, понадобится ли столбец хотя бы одной зоне именно в этом снимке.
 bool OutputSchedule::column_due(unsigned column, std::uint64_t step, double time, bool final_field) const {
     for (const auto& zone : zones_)
         if ((final_field || zone.due(step, time)) &&
@@ -136,11 +147,13 @@ bool OutputSchedule::column_due(unsigned column, std::uint64_t step, double time
             return true;
     return false;
 }
+// Формирует выбранные поля и записывает снимок зоны в нужном формате.
 void ScheduledOutput::write(std::uint64_t step, double time, const std::vector<double>& state) {
     write_due(step, time, [&](const OutputZone& zone, const std::vector<unsigned>& columns) {
         local_.write(zone, columns, step, time, state);
     });
 }
+// Записывает зоны, срок которых наступил на принятом шаге.
 void OutputSchedule::write_due(std::uint64_t step, double time, const Writer& writer, bool final_field) {
     if (!final_field && !due(step, time))
         return;
@@ -152,6 +165,7 @@ void OutputSchedule::write_due(std::uint64_t step, double time, const Writer& wr
                 ++zone.next_tick;
         }
 }
+// Формирует выбранные поля и записывает снимок зоны в нужном формате.
 void LocalFieldOutput::write(const OutputZone& zone, const std::vector<unsigned>& columns, std::uint64_t step,
                              double time, const std::vector<double>& state,const diagnostic::Fields& scalars) const {
     const unsigned width = metadata_.dimension + 2;

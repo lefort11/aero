@@ -11,6 +11,7 @@ namespace partition_detail {
 void check_newton_nodes(Grid g) {
     device_work::check(device_work::aero_device_failed_nodes(g));
 }
+// Запускает GPU-обновление собственных узлов выбранной явной стадией.
 void update(Grid g, explicit_detail::Stage stage, double dt, bool save_original) {
     if (!g.owned_count)
         return;

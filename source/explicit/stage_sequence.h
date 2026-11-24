@@ -6,7 +6,9 @@
 
 namespace aero {
 namespace explicit_detail {
+// Преобразует имя временной схемы в её внутреннее обозначение.
 ExplicitScheme scheme_from_name(const std::string& name);
+// Выбирает таблицу стадий указанной явной схемы.
 Stages stages_for(ExplicitScheme scheme);
 
 // Здесь хранится положение стадии внутри шага. Это определяет, когда сохранить U_n и когда готов отчёт.
@@ -14,8 +16,11 @@ struct StepStage {
     Stage formula;  // Время и веса текущей строки таблицы.
     unsigned index; // Номер стадии с нуля.
     unsigned count; // Число стадий выбранной схемы.
+    // Проверяет, является ли текущая стадия первой в шаге.
     bool first() const { return index == 0; }
+    // Проверяет, является ли текущая стадия последней в шаге.
     bool last() const { return index + 1 == count; }
+    // Определяет необходимость сохранения начального слоя для следующих стадий.
     bool save_start_for_later() const { return first() && count > 1; }
 };
 

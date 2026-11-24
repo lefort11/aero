@@ -13,6 +13,7 @@ Set-Location -LiteralPath $root
 $msys = if ($env:MSYS2_ROOT) { $env:MSYS2_ROOT } else { 'C:\msys64' }
 $makeExe = Join-Path $msys 'usr\bin\make.exe'
 $env:PATH = "$msys\mingw64\bin;$env:PATH;$msys\usr\bin"
+# Преобразует флаг Visual Studio true/false в целочисленный параметр GNU Make.
 function MakeFlag([string]$value) {
     if ($value -in @('true','1')) { return 1 }
     if ($value -in @('false','0')) { return 0 }
@@ -21,6 +22,7 @@ function MakeFlag([string]$value) {
 $arguments = @("-j$([Environment]::ProcessorCount)", "BUILD_TYPE=$Config", "KOKKOS_BACKEND=$Backend",
     "CUDA_ARCH=$Arch", "WITH_MPI=$(MakeFlag $Mpi)", "WITH_OPENMP=$(MakeFlag $OpenMp)",
     "STATIC_LINK=$(MakeFlag $Static)")
+# GNU Make запускается в MSYS2, поэтому путь выходного каталога переводится в его Unix-форму.
 $unixBin = & (Join-Path $msys 'usr\bin\cygpath.exe') -au $Bin
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $arguments += "BIN=$unixBin"

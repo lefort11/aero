@@ -19,6 +19,15 @@ struct BdfHistory {
 };
 // Линейный решатель закончил попытку без решения. Газ к моменту перехвата уже восстановлен.
 struct LinearSolveFailure : std::runtime_error { using std::runtime_error::runtime_error; };
+#ifdef AERO_HAS_MULTIGRID
+// Исходная невязка и принятый масштаб пробной стационарной коррекции.
+struct SteadyCorrection {
+    double initial_norm; // Общая норма газа и дополнительных уравнений до грубой поправки.
+    double scale;        // Принятый множитель. Ноль означает отказ или равновесие.
+    bool history;        // Поправка направлена вдоль изменения газа за предыдущий псевдошаг.
+};
+#endif
+// Число поправок Ньютона и достигнутая относительная нелинейная невязка.
 struct NewtonResult {
     unsigned iterations;       // Сколько поправок применили к полю.
     double relative_residual;  // Отношение норм после последней проверки полного уравнения выбранной схемы BDF.
@@ -30,14 +39,27 @@ struct NewtonResult {
 // CPU строит структуру матрицы по host, значения блоков вычисляются по active на выбранном устройстве.
 class BdfStep {
 public:
+    // Создаёт неявный интегратор с геометрией и обменами заданной подобласти.
     BdfStep(const residual_detail::Geometry& host, const residual_detail::Geometry& active, int device,
              const Partition& partition = Partition());
+    // Освобождает принадлежащие объекту ресурсы при завершении его времени жизни.
     ~BdfStep();
     // Максимум |R_i|/V_i по собственным узлам всех процессов и всем уравнениям.
     double spatial_rate_norm(const double* volumes, const EulerFluxResult* flux, bool save_rows = false);
+    // Вычисляет пространственные скорости изменения поля без временного вклада BDF.
     const double* spatial_rates() const; // Временный буфер доступен до следующей поправки Ньютона.
+    // Возвращает сохранённое поле начала текущего шага.
     const double* start_field() const; // U_n по собственным строкам последнего шага BDF1.
+#ifdef AERO_HAS_MULTIGRID
+    // Пробуем уменьшить невязку стационарного уравнения после обычного шага.
+    SteadyCorrection correct_steady(double* state, const double* initial, const double* volumes,
+                                    const EulerFluxResult* flux, double dt, const NewtonSettings& settings,
+                                    double other_rate, const std::function<double()>& trial_norm,
+                                    const std::function<void()>& restore_flux);
+#endif
+    // Копирует предыдущий слой BDF и его шаг для контрольной точки.
     void export_history(BdfHistory& history) const;
+    // Восстанавливает предыдущий слой BDF и длительность его шага.
     void import_history(const BdfHistory& history);
     // На входе потоки уже вычислены при выборе dt. После каждой поправки refresh_fluxes
     // пересчитывает их тем же пространственным оператором. При ошибке восстанавливаем U_n.

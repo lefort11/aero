@@ -10,6 +10,7 @@ namespace mp6 {
 // В локальном векторе состояния или потока те же позиции занимают
 // касательные компоненты импульса, а последнюю позицию занимает энергия.
 enum class MeanLimit { Shared, Transverse };
+// Ограничивает центральную поправку MP6 по допустимым средним на площадке.
 AERO_HOST_DEVICE inline MeanLimit face_mean_limit(unsigned component, unsigned width) {
     return component >= 2 && component + 1 < width ? MeanLimit::Transverse : MeanLimit::Shared;
 }

@@ -4,6 +4,7 @@
 
 namespace aero {
 struct RunSettings;
+// Прибавляет размер массива к оценке памяти с проверкой переполнения.
 inline MeshIndex partition_bytes(MeshIndex base, MeshIndex count, MeshIndex bytes) {
     if (count && bytes > (mdec::absent - base) / count)
         throw MeshError("MPI partition: estimated mesh size overflow");

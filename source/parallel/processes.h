@@ -14,6 +14,7 @@ namespace aero {
 // Внутри процесса к MPI обращается один поток. OpenMP используется в локальных вычислениях.
 class Processes {
 public:
+    // Подготавливает среду MPI и определяет ранг и число процессов.
     Processes(int& argc, char**& argv) {
 #ifdef AERO_WITH_MPI
         int provided = 0;
@@ -30,12 +31,15 @@ public:
         (void)argv;
 #endif
     }
+    // Завершает созданную объектом среду MPI.
     ~Processes() {
 #ifdef AERO_WITH_MPI
         MPI_Finalize();
 #endif
     }
+    // Запрещает копирование, чтобы ресурсы объекта сохраняли единственного владельца.
     Processes(const Processes&) = delete;
+    // Запрещает копирование, чтобы ресурсы объекта сохраняли единственного владельца.
     Processes& operator=(const Processes&) = delete;
 
     // До следующего обмена все процессы заканчивают локальную операцию и согласуют ошибку, если она возникла.
@@ -79,13 +83,21 @@ public:
     double minimum(double value) const;
     // Глобальная норма либо скалярное произведение распределённых векторов BiCGSTAB.
     double reduce_double(double value, bool maximum) const;
+    // Выбирает первый доступный глобальный идентификатор среди процессов.
     std::uint64_t first_id(std::uint64_t value) const;
+    // Суммирует переданное значение по всем процессам.
     std::uint64_t sum(std::uint64_t value) const;
+    // Передаёт данные корневого процесса всем участникам коммуникатора.
     void broadcast(std::string& value, int root) const;
+    // Передаёт данные корневого процесса всем участникам коммуникатора.
     void broadcast(double* values, int count, int root) const;
+    // Передаёт данные корневого процесса всем участникам коммуникатора.
     void broadcast(std::uint64_t* values, int count, int root) const;
+    // Передаёт данные корневого процесса всем участникам коммуникатора.
     void broadcast(int* values, int count, int root) const;
+    // Собирает данные процессов на корневом ранге.
     void gather(const std::uint64_t* values, int count, std::uint64_t* collected, int root) const;
+    // Собирает данные всех процессов на каждом ранге.
     void allgather(const double* values, int count, double* collected) const;
     // Номер данного процесса и число процессов в MPI_COMM_WORLD; при обычном запуске это 0 и 1.
     int rank = 0, size = 1;
@@ -95,11 +107,13 @@ public:
 // На шагах по времени пересылаются только значения.
 class DoubleExchange {
 public:
+    // Адрес и число элементов одного буфера обмена double.
     struct Buffer {
         double* data = nullptr;
         std::size_t count = 0;
     };
     std::vector<Buffer> send, receive;
+    // Выделяет таблицы отправки и приёма по числу процессов.
     explicit DoubleExchange(int ranks) : send(ranks), receive(ranks) {
 #ifdef AERO_WITH_MPI
         requests_.reserve(2 * static_cast<std::size_t>(ranks));

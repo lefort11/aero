@@ -57,6 +57,7 @@ void test_csgs(int device) {
     sweep.blocks=packing.values;
     sweep.rhs = rhs.data();
     sweep.output = answer.data();
+    // Обновляет тестовые строки одного цвета CSGS.
     const auto solve_color = [&](MeshIndex color) {
         const auto begin = order.offsets[color], end = order.offsets[color + 1];
 #ifdef AERO_WITH_KOKKOS_GPU

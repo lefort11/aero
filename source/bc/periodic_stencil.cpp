@@ -21,6 +21,7 @@ struct Cover {
     std::map<Ids, Id> faces;
     std::set<std::pair<Id, Id>> cells; // Исходная ячейка и пространственный образ её первой вершины.
     std::vector<Ids> incident, members;
+    // Готовит исходную сетку и таблицу периодических образов для расширения шаблона.
     Cover(const Mesh& mesh, const Ids& node_dof, Id count, double tolerance)
         : m(mesh.view()), dof(node_dof), tol(tolerance), data(mesh.data()), field(dof), images(count),
           incident(m.node_count), members(count) {
@@ -40,6 +41,7 @@ struct Cover {
                 incident[n].push_back(c);
         }
     }
+    // Находит или создаёт геометрический образ узла через периодическую границу.
     Id image(Id n, Coordinate shift) {
         const Coordinate target = m.coordinate(n) + shift;
         auto& candidates = images[dof[n]];
@@ -55,6 +57,7 @@ struct Cover {
         field.push_back(dof[n]);
         return id;
     }
+    // Добавляет образ ячейки в расширенную сетку периодического шаблона.
     void add_cell(Id c, Coordinate shift) {
         MeshCell cell = m.cell(c);
         if (!cells.emplace(c, image(cell.node_id(0), shift)).second)
@@ -90,6 +93,7 @@ struct Cover {
         }
         data.cell_faces.offsets.push_back(data.cell_faces.indices.size());
     }
+    // Дополняет сетку периодическими образами, необходимыми для реконструкции.
     void extend(unsigned rings) {
         Id begin = 0, end = m.node_count;
         for (unsigned r = 0; r < rings; ++r) {
@@ -117,6 +121,7 @@ struct Cover {
     }
 };
 using RI = ReconstructionIndex;
+// Переносит строку весов в нумерацию периодически объединённого поля.
 void copy_row(RI row, const Ids& field, const std::vector<RI>& offsets, const std::vector<RI>& nodes,
               const std::vector<double>& weights, std::vector<RI>& dst_offsets, std::vector<RI>& dst_nodes,
               std::vector<double>& dst_weights) {
@@ -128,6 +133,7 @@ void copy_row(RI row, const Ids& field, const std::vector<RI>& offsets, const st
 }
 }
 
+// Строит покрытие сетки периодическими образами для поиска опор.
 Mesh periodic_stencil_cover(const Mesh& mesh, const Ids& dof, Id count, double tolerance, unsigned rings,
                             Ids& field) {
     Cover cover(mesh, dof, count, tolerance);
@@ -135,6 +141,7 @@ Mesh periodic_stencil_cover(const Mesh& mesh, const Ids& dof, Id count, double t
     field = std::move(cover.field);
     return Mesh(std::move(cover.data));
 }
+// Подготавливает реконструкцию на периодическом покрытии и сводит её к общим узлам.
 ReconstructionStencil PeriodicDomain::prepare(const ReconstructionOptions& options) const {
     Ids field;
     Mesh lifted = periodic_stencil_cover(mesh_, node_dof_, volumes_.size(), tolerance_,

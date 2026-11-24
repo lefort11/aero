@@ -5,12 +5,14 @@
 
 namespace aero {
 namespace {
+// Собирает количества узлов, рёбер, граней и ячеек исходной сетки.
 std::array<std::uint64_t, 4> mesh_counts(const Mesh& mesh) {
     const MeshView view = mesh.view();
     return {{view.node_count, view.edge_count, view.face_count, view.cell_count}};
 }
 } // namespace
 
+// Формирует метаданные снимка по сетке, номеру шага и физическому времени.
 FieldSnapshot::FieldSnapshot(const Mesh& mesh, std::uint64_t step_number, double time_seconds)
     : dimension(mesh.data().dimension), counts(mesh_counts(mesh)), mesh_sha256(mesh_fingerprint(mesh)),
       step(step_number), time(time_seconds) {
@@ -26,6 +28,7 @@ std::string FieldSnapshot::mesh_fingerprint(const Mesh& mesh) {
     return buffer.hex_digest();
 }
 
+// Проверяет совпадение метаданных и отпечатка снимка с загруженной сеткой.
 void FieldSnapshot::check_mesh(const Mesh& mesh) const {
     validate();
     // Сначала проверяем дешёвые признаки, затем подтверждаем совпадение нумерации и геометрии полным хешем.

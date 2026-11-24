@@ -23,7 +23,9 @@ struct Stabilization {
             cfl < minimum || cfl > maximum)
             throw std::invalid_argument(where + ": require 0 < cfl_min <= cfl <= cfl_max");
     }
+    // Проверяет, отличается ли режим стабилизации от off.
     bool active() const { return mode != "off"; }
+    // Проверяет, разрешает ли стабилизация локальный переход к первому порядку.
     bool local_order() const { return mode == "low" || mode == "on"; }
 };
 
@@ -33,8 +35,11 @@ class AdaptiveCourant {
     double value_;
     std::uint64_t successes_ = 0;
 public:
+    // Начинает адаптацию CFL с заданного значения и правил стабилизации.
     AdaptiveCourant(const Stabilization& options, double initial) : options_(options), value_(initial) {}
+    // Возвращает текущее адаптивное число Куранта.
     double value() const { return value_; }
+    // Возвращает число успешных шагов после последнего изменения CFL.
     std::uint64_t successes() const { return successes_; }
     // После ручной команды отсчёт начинается заново. Из recovery возвращается сохранённый счётчик.
     void configure(const Stabilization& options, double value, std::uint64_t successes = 0) {
@@ -45,6 +50,7 @@ public:
         value_ = value;
         successes_ = successes;
     }
+    // Уменьшает CFL после отказа шага и проверяет нижний разрешённый предел.
     void reject() {
         const double next = value_ / options_.factor;
         if (next < options_.minimum)
@@ -53,6 +59,7 @@ public:
         value_ = next;
         successes_ = 0;
     }
+    // Учитывает успешный шаг и при достаточной серии увеличивает CFL.
     bool accept() {
         if (value_ >= options_.maximum || ++successes_ < options_.interval) return false;
         value_ = std::min(options_.maximum, value_ * options_.factor);

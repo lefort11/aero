@@ -5,10 +5,12 @@
 namespace aero {
 namespace meshdec {
 namespace {
+// Размер упакованного фрагмента и его ограничивающий параллелепипед.
 struct Packed {
     Id bytes;
     Box box;
 };
+// Записывает минимальные и максимальные координаты ограничивающего параллелепипеда.
 void write_box(std::ostream& out, const Box& box) {
     for (double v : box.low)
         real(out, v);
@@ -16,13 +18,16 @@ void write_box(std::ostream& out, const Box& box) {
         real(out, v);
 }
 
+// Читает промежуточные дисковые таблицы координат и топологических связей.
 class Geometry {
 public:
+    // Открывает набор промежуточных таблиц геометрии из рабочего каталога.
     explicit Geometry(const std::string& d)
         : x(d + "/X"), y(d + "/Y"), z(d + "/Z"), nf(d + "/nf"), fn(d + "/fn"), fc(d + "/fc"), cf(d + "/cf"),
           nf_start(d + "/nf-start"), fn_start(d + "/fn-start"), fc_start(d + "/fc-start"),
           cf_start(d + "/cf-start"), signs(d + "/signs"), bc(d + "/face-bc"), boxes(d + "/face-box"),
           nodes(d + "/address-0"), faces(d + "/address-1"), cells(d + "/address-2") {}
+    // Сериализует геометрическую запись сущности из промежуточных дисковых таблиц.
     Box write(std::ostream& out, const Entity& e) {
         const Id i = e.id;
         word(out, e.kind);
@@ -72,6 +77,7 @@ private:
     Table<Address> nodes, faces, cells;
 };
 
+// Запись ветви дерева разбиения с размерами и геометрическими границами.
 struct Branch {
     Id index, bytes, nodes, faces, cells;
     Box box;
@@ -110,6 +116,7 @@ Branch tree(std::ostream& out, Table<Leaf>& leaves, Table<Packed>& packed, Id fi
 }
 }
 
+// Упаковывает сущности листьев и вычисляет их размеры и геометрические границы.
 void pack_leaves(const std::string& dir, bool compress, int rank, int size) {
     Table<Leaf> leaves(dir + "/leaves");
     Table<Entity> ordered(dir + "/ordered");
@@ -120,6 +127,7 @@ void pack_leaves(const std::string& dir, bool compress, int rank, int size) {
         const auto leaf = leaves.at(i);
         const auto start = payload.tellp();
         Box box{};
+        // Записывает подготовленный блок данных в часть архива.
         const auto write = [&](std::ostream& stream) {
             for (Id k = 0; k < leaf.records; ++k) {
                 const auto extent = geometry.write(stream, ordered.at(leaf.first + k));
@@ -145,6 +153,7 @@ void pack_leaves(const std::string& dir, bool compress, int rank, int size) {
     index.close();
 }
 
+// Записывает каталог листьев и дерево ветвей архива.
 Id write_catalog(const std::string& dir, const std::string& staged, bool compress, int size) {
     const auto h = Table<Header>(dir + "/header").at(0);
     Table<Leaf> leaves(dir + "/leaves");
@@ -203,6 +212,7 @@ Id write_catalog(const std::string& dir, const std::string& staged, bool compres
     require(next == entries && out.tellp() == position(directory), "Catalog size mismatch");
     word(out, star_bytes / 16);
     word(out, halo_bytes / 16);
+    // Сериализует диапазон строк индексированной таблицы архива.
     const auto write_rows = [&](const std::string& name) {
         const auto path = dir + "/" + name;
         Table<Id> starts(path + "-start");
@@ -233,6 +243,7 @@ Id write_catalog(const std::string& dir, const std::string& staged, bool compres
     require(begin == offset, "Payload size mismatch");
     return leaves.count;
 }
+// Записывает назначенную рабочему процессу часть архива разбиения.
 void write_part(const std::string& dir, const std::string& staged, int rank) {
     const auto path = part(dir + "/payload", rank);
     const Id offset = Table<Id>(dir + "/output-start").at(static_cast<unsigned>(rank));

@@ -82,8 +82,10 @@ AERO_HOST_DEVICE inline EulerStatus roe_fluxes(unsigned dimension, const double*
         {dimension, left, right, direction, gamma, 1}, fl, fr, result);
 }
 #if !defined(AERO_EULERSOLVER_KERNEL_ONLY)
+// Вычисляет поток Роу по консервативным состояниям двух сторон.
 EulerFluxResult roe_conservative(const std::vector<double>& left, const std::vector<double>& right,
                                  const std::vector<double>& direction, double gamma);
+// Вычисляет поток Роу с использованием заранее вычисленных физических потоков.
 EulerFluxResult roe_fluxes(const std::vector<double>& fl, const std::vector<double>& fr,
                            const std::vector<double>& left, const std::vector<double>& right,
                            const std::vector<double>& direction, double gamma);

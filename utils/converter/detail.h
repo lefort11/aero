@@ -20,17 +20,21 @@ struct Element {
 // Коды линейных элементов Gmsh: 15 — точка, 1 — отрезок, 2 — треугольник, 3 — четырёхугольник,
 // 4 — тетраэдр, 5 — гексаэдр, 6 — призма, 7 — пирамида. Для многоугольника используем код 100.
 unsigned dimension(int kind);
+// Возвращает число узлов в текущем представлении.
 std::size_t node_count(int kind);
 // Разворачивает вершины одной ячейки в ориентированные контуры её граней.
 Faces cell_faces(int kind, const Nodes& nodes);
 // Возвращает отсортированные номера узлов. По ним можно найти ту же грань при другом обходе.
 Nodes key(Nodes nodes);
+// Собирает ячейки и общие грани внутренней сетки из элементов внешнего формата.
 class Builder {
 public:
     MeshData data;
+    // Создаёт заготовку внутренней сетки заданной размерности и сохраняет настройки границ.
     explicit Builder(unsigned dim, const Options& options);
     // Добавляет ячейку и переиспользует уже созданные грани соседей.
     void cell(const Faces& faces);
+    // Присваивает граничной грани имя участка.
     void mark(const Nodes& nodes, const std::string& name, bool require_boundary = true);
     // Находит внешние грани, все вершины которых входят в заданную группу.
     void mark_vertices(const Nodes& nodes, const std::string& name);

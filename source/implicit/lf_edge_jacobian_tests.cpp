@@ -44,6 +44,7 @@ aero::EulerFluxResult flux(const Case& test, double area, double upwind, bool ro
     return value;
 }
 
+// Вычисляет проверяемую матрицу производных потока на тестовом ребре.
 EdgeFluxJacobian jacobian(const Case& test, double area, double upwind, int device, bool simplified = false, bool roe = false) {
     EdgeFluxJacobian blocks = {};
 #ifdef AERO_WITH_KOKKOS_GPU
@@ -65,6 +66,7 @@ EdgeFluxJacobian jacobian(const Case& test, double area, double upwind, int devi
     return blocks;
 }
 
+// Проверяет совпадение чисел в пределах заданного допуска.
 void near(double actual, double expected, double tolerance, const char* check) {
     if (!(std::abs(actual - expected) <= tolerance * (1. + std::abs(expected))))
         throw std::runtime_error(std::string(check) + ": expected " + std::to_string(expected) +
@@ -98,6 +100,7 @@ void check_columns(const Case& test, double area, double upwind, int device, dou
         }
 }
 
+// Создаёт газовые состояния и нормаль для проверки производных потока.
 Case example(unsigned dimension) {
     Case test = {};
     test.dimension = dimension;
@@ -131,6 +134,7 @@ void check_orientation(Case test, int device) {
 }
 }
 
+// Сравнивает производные потока LF с независимым численным эталоном.
 void test_lf_edge_jacobian(int device) {
     if (device < 0) {
         Case invalid = example(3);

@@ -11,6 +11,7 @@ struct MatrixSettings {
     bool simplified_jacobian = false; // Зафиксировать матрицу диссипации при дифференцировании.
     bool csgs = false;                // Симметричные проходы по соседям вместо независимых узлов BJ.
 };
+// Параметры нелинейных итераций и обновления матрицы Якоби.
 struct NewtonSettings : MatrixSettings {
     bool compact_jacobian = false; // Хранить вязкие производные только для узлов, соединённых ребром.
     // Ноль — обновлять матрицу на каждой поправке Ньютона. N>0 — хранить
@@ -19,6 +20,7 @@ struct NewtonSettings : MatrixSettings {
     // При упрощённом Ньютоне все поправки используют матрицу первой линейной
     // системы шага. Положительный интервал также разрешает хранить её между шагами.
     bool simplified_newton() const { return jacobian_update_every != 0; }
+    // Согласует переключатель упрощённого Ньютона с частотой обновления якобиана.
     void set_simplified_newton(bool enabled) {
         if (!enabled) jacobian_update_every = 0;
         else if (!jacobian_update_every) jacobian_update_every = 1;
@@ -28,6 +30,7 @@ struct NewtonSettings : MatrixSettings {
     double linear_relative = 1.e-8; // Норма линейной невязки относительно нормы текущей правой части.
     double newton_relative = 1.e-6; // Норма невязки BDF относительно начального значения на этом шаге.
     unsigned max_iterations = 20;   // Предельное число поправок к состоянию за один шаг по времени.
+    bool steady_multigrid = false;  // После обычного шага steady разрешить поправку по агрегатам.
 };
 }
 }

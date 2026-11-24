@@ -70,6 +70,7 @@ struct FieldRows {
     const diagnostic::Fields& diagnostics;
     const std::vector<unsigned>& columns;
 
+    // Вычисляет выбранные выходные величины узла и передаёт их функции записи.
     template<class Store> void visit(std::size_t slot, std::uint64_t id, const Store& store) const {
         const auto* u = state + slot * (dimension + 2);
         const auto gas = output_values(dimension, u, gamma, id, background);

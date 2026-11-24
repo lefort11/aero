@@ -10,6 +10,7 @@ using aero::gpu::checked;
 
 using namespace aero::device_tests;
 }
+// Сравнивает граничные потоки на CPU и доступных GPU.
 int check_bc_devices(const BcTestCase* cases, size_t count, const FreeBoundaryRules* rules, size_t rule_count,
                      bool required) {
     int devices = 0;
@@ -42,6 +43,7 @@ int check_bc_devices(const BcTestCase* cases, size_t count, const FreeBoundaryRu
     return 0;
 }
 }
+// Проверяет вычисления периодической задачи на GPU.
 void periodic_gpu(int device, aero::PeriodicView view, aero::ReconstructionStencilView stencil,
                   const double* field, const double* expected) {
     using namespace aero;

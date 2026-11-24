@@ -35,6 +35,7 @@ void write_global_fields(const Processes& world, const std::string& directory, c
     world.broadcast(temporary, 0);
     world.broadcast(offsets.data(), static_cast<int>(offsets.size()), 0);
     const FieldRows rows{state.data(), mesh.dimension, gamma, background, scalars, columns};
+    // Упаковывает узловую запись в формат распределённого файлового обмена.
     const auto encode = [&](const OwnedNode& n, char* dst, std::size_t pitch) {
         // Один раз восстанавливаем физические величины узла, затем раскладываем запрошенные столбцы.
         rows.visit(n.slot, n.id, [&](std::size_t k, double value) { indexed_io::put_real(dst + k * pitch, value); });

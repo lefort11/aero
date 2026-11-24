@@ -16,6 +16,7 @@
 namespace {
 using namespace aero;
 using aero_test::require;
+// Проверяет, что некорректный ввод завершается ожидаемой ошибкой.
 template <class F> void rejects(const F& f) {
     try {
         f();
@@ -76,6 +77,7 @@ void table_example() {
     require(!disabled.due(1) && out.str().find("STEP", 1) == std::string::npos, "disabled reporter");
 }
 
+// Создаёт однородное трёхмерное поле для проверки отчётных норм.
 std::string uniform_3d() {
     const unsigned nodes = 1025;
     std::vector<double> volumes(nodes, 1.0), field;
@@ -129,6 +131,7 @@ void integration(ExplicitBackend backend, int device, ExplicitScheme scheme) {
             "RMS must use consecutive accepted steps");
 }
 }
+// Запускает проверки модуля и возвращает ненулевой код при ошибке.
 int main(int argc, char** argv) {
     try {
         table_example();

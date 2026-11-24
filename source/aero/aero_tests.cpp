@@ -23,6 +23,7 @@
 namespace {
 using aero_test::require;
 
+// Проверяет прогноз шагов на известном экспоненциальном снижении невязки.
 void check_steady_forecast() {
     aero::SteadyResidualTrend trend;
     // Известное решение: log(R)=-0.01*n достигает -1.5 на шаге 150.
@@ -40,6 +41,7 @@ void check_steady_forecast() {
     trend.add(0.);
     require(trend.remaining_steps(target) < 0., "steady forecast begins a fresh history");
 }
+// Проверяет сборку и обновление поля ядрами подобласти.
 void check_partition_kernels() {
     using namespace aero;
     const residual_detail::Index offsets[] = {0, 1, 2};
@@ -85,8 +87,10 @@ void check_partition_kernels() {
     require(std::equal(flux.flux, flux.flux + 3, received.flux) && received.max_wave_speed == 9,
             "flux halo includes speed");
 }
+// Проверяет распределение листьев по памяти и производительности процессов.
 void check_leaf_balance() {
     using namespace aero;
+    // Задаёт равномерную накопленную работу и память для проверки балансировки.
     const auto uniform = [](MeshIndex i) -> LeafCost { return {10 * i, 100 * i}; };
     const std::vector<CpuNodeShare> groups = {{{0, 2}, 500}, {{1, 3}, 1100}};
     const auto plan = balance_leaves(16, uniform, groups, {1, 1, 3, 1});
@@ -111,6 +115,7 @@ void check_leaf_balance() {
 
     // На неоднородной сетке перебираем допустимые пары разрезов и сверяем лучший результат с планировщиком.
     const LeafCost costs[] = {{0, 0}, {8, 20}, {10, 32}, {20, 40}, {42, 67}, {57, 72}, {61, 90}};
+    // Возвращает накопленные ресурсы архива до указанной границы листьев.
     const auto prefix = [&](MeshIndex i) { return costs[i]; };
     const std::vector<long double> speeds = {1, 3, 2};
     for (int cap = 10; cap <= 80; cap += 5) {
@@ -139,18 +144,21 @@ void check_leaf_balance() {
         }
     }
 }
+// Читает содержимое тестового файла для проверки результата.
 std::string read(const std::string& path) {
     std::ifstream in(path.c_str());
     std::ostringstream text;
     text << in.rdbuf();
     return text.str();
 }
+// Записывает исходный файл тестовой постановки.
 void write(const std::string& path, const std::string& text) {
     std::ofstream out(path.c_str());
     out << text;
     out.close();
     require(bool(out), "Cannot write " + path);
 }
+// Удаляет пустой временный каталог проверки средствами текущей ОС.
 void remove_dir(const std::string& path) {
 #ifdef _WIN32
     _rmdir(path.c_str());
@@ -158,6 +166,7 @@ void remove_dir(const std::string& path) {
     rmdir(path.c_str());
 #endif
 }
+// Запускает отдельную тестовую постановку решателя и проверяет ожидаемый результат.
 std::string run_case(const std::string& program, const std::string& device, bool interactive,
                      bool expect_fallback, bool implicit = false) {
     const auto stamp = std::chrono::high_resolution_clock::now().time_since_epoch().count();
@@ -288,6 +297,7 @@ std::string run_case(const std::string& program, const std::string& device, bool
     return expected;
 }
 }
+// Запускает проверки модуля и возвращает ненулевой код при ошибке.
 int main(int argc, char** argv) {
     try {
         require(argc == 2 || argc == 3,

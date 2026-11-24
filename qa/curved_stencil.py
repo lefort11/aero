@@ -132,6 +132,7 @@ def packed_edges(case, aero):
             print(f"PASS packed {scheme} {variables}", flush=True)
 
 
+# Разбирает параметры запуска, выполняет набор QA-проверок и возвращает статус результата.
 def main():
     parser = mpi_parser(__doc__)
     parser.add_argument("--gpu", action="store_true", help="also test the selected visible GPU")

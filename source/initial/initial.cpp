@@ -17,17 +17,21 @@
 namespace aero {
 namespace {
 using settings_detail::trim;
+// Текст настройки и место её определения для диагностики ошибок.
 struct Setting {
     std::string value;
     std::string where; // Имя файла и номер строки для диагностики привязки полей.
 };
+// Непрочитанные настройки начального поля и имя исходного файла.
 struct Settings {
     const char* filename;
     std::map<std::string, Setting> entries;
 };
+// Добавляет имя источника и строку к ошибке задания начального поля.
 std::invalid_argument error(const std::string& where, const std::string& msg) {
     return std::invalid_argument(where + ": " + msg);
 }
+// Читает настройки начального поля в таблицу ещё не использованных ключей.
 Settings read_settings(std::istream& input, const char* filename) {
     Settings out{filename, {}};
     std::string line;
@@ -53,6 +57,7 @@ Settings read_settings(std::istream& input, const char* filename) {
         throw std::runtime_error(std::string(filename) + ": read failed");
     return out;
 }
+// Извлекает и помечает использованной настройку начального поля.
 Setting take(Settings& settings, const std::string& key) {
     const auto it = settings.entries.find(key);
     if (it == settings.entries.end())
@@ -84,23 +89,27 @@ std::vector<std::string> words(const Setting& s) {
     }
     return result;
 }
+// Проверяет единственность требуемого значения или привязки.
 std::string single(const Setting& s) {
     const auto tokens = words(s);
     if (tokens.size() != 1)
         throw error(s.where, "expected one name or path");
     return tokens[0];
 }
+// Разрешает путь поля относительно каталога начальной постановки.
 std::string resolve(const std::string& dir, const std::string& path) {
     if (dir.empty() || path[0] == '/' || path[0] == '\\' || (path.size() > 1 && path[1] == ':'))
         return path;
     return dir + "/" + path;
 }
+// Проверяет отсутствие неизвестных и лишних параметров начального поля.
 void finish_settings(const Settings& settings, std::vector<std::string>* warnings) {
     for (const auto& item : settings.entries) {
         if (!warnings) throw error(item.second.where, "unexpected key " + item.first);
         warnings->push_back(item.second.where + ": unknown parameter " + item.first);
     }
 }
+// Собирает примитивные газовые величины для получения консервативного состояния.
 std::vector<std::string> primitives(unsigned d) {
     std::vector<std::string> names = {"rho", "ux"};
     if (d >= 2)
@@ -113,6 +122,7 @@ std::vector<std::string> primitives(unsigned d) {
 // Однородный поток задаём в осях компонент импульса. Азимут отсчитывается от x к y,
 // угол возвышения — от плоскости xy к z. Оба входных угла заданы в градусах.
 std::vector<double> freestream(Settings& settings, unsigned d, double gamma, double mach) {
+    // Переводит заданный угол начального состояния в используемые единицы.
     const auto angle = [&](const char* name) {
         if (!settings.entries.count(name)) return 0.;
         const auto s = take(settings, name);
@@ -140,16 +150,19 @@ struct Column {
     const Field* field;
     std::size_t column;
 };
+// Находит именованное узловое поле в сохранённом снимке.
 const Field* find_node_field(const FieldSnapshot& snapshot, const std::string& name) {
     for (const Field& field : snapshot.fields)
         if (field.location == FieldLocation::Node && field.name == name) return &field;
     return nullptr;
 }
+// Получает узловое поле и проверяет требуемое размещение и размер.
 const Field& node_field(const FieldSnapshot& snapshot, const std::string& name, const std::string& where) {
     const Field* field = find_node_field(snapshot, name);
     if (!field) throw error(where, "missing NODE field '" + name + "'");
     return *field;
 }
+// Определяет компоненту исходного поля для заданной привязки.
 Column component(const Field& f, const std::string& name, const std::string& where) {
     const auto it = std::find(f.components.begin(), f.components.end(), name);
     if (it == f.components.end())
@@ -187,6 +200,7 @@ struct NodalSnapshot {
     bool conservative = false;  // Составное поле содержит импульсы и полную энергию.
     MeshIndex node_count = 0;    // Расстояние между компонентами одного поля в памяти.
 
+    // Загружает исходный снимок или тестовую постановку начального поля.
     void load(Settings& settings, const Mesh& mesh, const std::string& directory,
               const FieldNodeSelection* selection, const std::vector<std::string>& names, bool exact) {
         const Setting path = take(settings, "path");
@@ -215,9 +229,11 @@ struct NodalSnapshot {
             energy = mapped_column(snapshot, Setting{"E", path.where});
     }
 
+    // Вычисляет или извлекает значение одной начальной физической величины.
     double value(const Column& c, MeshIndex node) const {
         return c.field->values[c.column * node_count + node];
     }
+    // Собирает полное начальное состояние одного узла.
     void read_node(MeshIndex node, double* q) const {
         for (std::size_t k = 0; k < columns.size(); ++k) q[k] = value(columns[k], node);
     }
@@ -253,6 +269,7 @@ RowTable<double,6> read_exact_fields(const Mesh& mesh, double gamma, std::istrea
     return reference;
 }
 
+// Проверяет совпадение начальных значений периодически связанных узлов.
 void check_periodic_initial(const double* ref, const double* q, unsigned width, MeshIndex owner,
                             MeshIndex node) {
     for (unsigned k = 0; k < width; ++k) {
@@ -262,6 +279,7 @@ void check_periodic_initial(const double* ref, const double* q, unsigned width, 
                                     " and " + std::to_string(node));
     }
 }
+// Создаёт начальное поле по формулам или привязкам к сохранённым данным.
 std::vector<double> read_initial(const Mesh& mesh, double gamma, std::istream& input,
                                  const std::string& directory, const PeriodicView* seam,
                                  const FieldNodeSelection* selection, const LinearBackground& background, std::vector<std::string>* warnings,
@@ -373,6 +391,7 @@ std::vector<double> read_initial(const Mesh& mesh, double gamma, std::istream& i
     }
     return result;
 }
+// Открывает источник начального поля и загружает значения для сетки.
 std::vector<double> read_initial_file(const Mesh& mesh, double gamma, const std::string& path,
                                       const PeriodicView* seam, const LinearBackground& background, double mach) {
     std::ifstream in(path.c_str());

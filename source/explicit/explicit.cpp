@@ -19,6 +19,7 @@ using gpu::checked;
 #endif
 }
 
+// Внутренние поля, буферы стадий и состояние исполнителя явного интегратора.
 struct ExplicitIntegrator::Impl {
     std::size_t nodes = 0, components = 0, size = 0; // Число узлов, компонент на узел и элементов поля.
     int device = -1;                                 // Номер карты для CUDA.
@@ -34,6 +35,7 @@ struct ExplicitIntegrator::Impl {
     int* invalid = nullptr;        // Флаг ошибки обновления в ядре CUDA.
     aero::gpu::Stream stream = nullptr; // Очередь сборки невязки и обновления этого интегратора.
 #endif
+    // Освобождает принадлежащие объекту ресурсы при завершении его времени жизни.
     ~Impl() {
 #ifdef AERO_WITH_KOKKOS_GPU
         if (device < 0)
@@ -51,6 +53,7 @@ struct ExplicitIntegrator::Impl {
         }
 #endif
     }
+    // Размечает общий буфер объёмов и полей явных стадий.
     void bind(double* storage) {
         volumes = storage;
         // Два поля одинакового размера позволяют принять целый шаг простой перестановкой указателей.
@@ -58,6 +61,7 @@ struct ExplicitIntegrator::Impl {
         stage_values = accepted + size;
         residual = stage_values + size;
     }
+    // Возвращает поток GPU либо nullptr для последовательного CPU-интерфейса.
     void* stream_handle() const {
 #ifdef AERO_WITH_KOKKOS_GPU
         return stream;
@@ -127,6 +131,7 @@ struct ExplicitIntegrator::Impl {
     }
 };
 
+// Возвращает число доступных CUDA-устройств.
 int ExplicitIntegrator::cuda_device_count() {
 #ifdef AERO_WITH_KOKKOS_GPU
     int count = 0;
@@ -142,6 +147,7 @@ int ExplicitIntegrator::cuda_device_count() {
 #endif
 }
 
+// Создаёт буферы явных стадий и копирует исходные объёмы и поле.
 ExplicitIntegrator::ExplicitIntegrator(std::size_t nodes, std::size_t components, const double* volumes,
                                        const double* initial, ExplicitBackend backend, int device)
     : impl_(new Impl) {
@@ -189,11 +195,14 @@ ExplicitIntegrator::ExplicitIntegrator(std::size_t nodes, std::size_t components
         std::copy(initial, initial + p.size, p.accepted);
     }
 }
+// Освобождает принадлежащие объекту ресурсы при завершении его времени жизни.
 ExplicitIntegrator::~ExplicitIntegrator() {}
+// Возвращает выбранный исполнитель вычислений.
 ExplicitBackend ExplicitIntegrator::backend() const {
     return impl_->backend;
 }
 
+// Даёт доступ к принятому полю между шагами. Для CUDA на время чтения активируется выбранное устройство.
 void ExplicitIntegrator::inspect(const std::function<void(const ExplicitField&)>& reader) const {
     Impl& p = *impl_;
     if (!reader)
@@ -207,6 +216,7 @@ void ExplicitIntegrator::inspect(const std::function<void(const ExplicitField&)>
     });
 }
 
+// Преобразует имя временной схемы в её внутреннее обозначение.
 ExplicitScheme explicit_detail::scheme_from_name(const std::string& name) {
     if (name == "euler")
         return ExplicitScheme::Euler;
@@ -214,6 +224,7 @@ ExplicitScheme explicit_detail::scheme_from_name(const std::string& name) {
         return ExplicitScheme::SSPRK3;
     throw std::invalid_argument("unknown explicit scheme: " + name);
 }
+// Выбирает таблицу стадий указанной явной схемы.
 explicit_detail::Stages explicit_detail::stages_for(ExplicitScheme scheme) {
     switch (scheme) {
     case ExplicitScheme::Euler:
@@ -225,10 +236,12 @@ explicit_detail::Stages explicit_detail::stages_for(ExplicitScheme scheme) {
     }
 }
 
+// Выполняет полный явный шаг выбранной схемы и принимает поле после всех стадий.
 void ExplicitIntegrator::step(ExplicitScheme scheme, double time, double dt,
                               const ExplicitResidual& assemble) {
     step(scheme, time, dt, assemble, nullptr);
 }
+// Выполняет полный явный шаг выбранной схемы и принимает поле после всех стадий.
 void ExplicitIntegrator::step(ExplicitScheme scheme, double time, double dt, const ExplicitResidual& assemble,
                               const double* first_residual) {
     if (!assemble || !std::isfinite(time) || !(dt > 0) || !std::isfinite(time + dt))
@@ -238,9 +251,11 @@ void ExplicitIntegrator::step(ExplicitScheme scheme, double time, double dt, con
     p.with_exclusive_access("recursive explicit step", [&] {
         // На первой стадии читаем принятое U_n. Дальше current указывает на результат предыдущей стадии.
         const double* current = p.accepted;
+        // Вычисляет очередной этап оператора для текущего состояния поля.
         const auto compute = [&](double stage_time) { assemble(stage_time, p.view(current), p.residual); };
         // При наличии готовой первой невязки используем её ровно один раз. Следующие пишет compute.
         const double* rhs = first_residual ? first_residual : p.residual;
+        // Применяет выбранное обновление рабочих полей текущего этапа решателя.
         const auto update = [&](explicit_detail::StepStage stage) {
             p.update_stage(stage.formula, current, rhs, dt);
             current = p.stage_values;
@@ -254,6 +269,7 @@ void ExplicitIntegrator::step(ExplicitScheme scheme, double time, double dt, con
         std::swap(p.accepted, p.stage_values);
     });
 }
+// Возвращает CPU-копию последнего принятого поля.
 std::vector<double> ExplicitIntegrator::state() const {
     const Impl& p = *impl_;
 #ifdef AERO_WITH_KOKKOS_GPU

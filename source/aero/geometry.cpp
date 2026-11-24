@@ -9,6 +9,7 @@
 #include <limits>
 
 namespace aero {
+// Строит контрольные объёмы и записывает геометрию каждого процесса.
 void export_case_geometry(const RunSettings& run, const Processes& world, bool archive) {
     const auto layout = plan_partition(run, world);
     auto partition = read_mesh_with_report(world.rank, [&] {
@@ -33,10 +34,13 @@ void export_case_geometry(const RunSettings& run, const Processes& world, bool a
         std::cout << "CPU geometry complete, processes = " << world.size << '\n';
 }
 
+// Записывает объёмы и площади с исходными номерами узлов и граней.
 void write_geometry(const std::string& output, const Mesh& mesh, const CvView& cv, const MeshPartition* part,
                     int rank, int ranks) {
     const auto m = mesh.view();
+    // Проверяет принадлежность геометрической сущности текущему процессу.
     const auto owned = [&](MeshIndex n) { return !part || part->node_owners[n] == rank; };
+    // Преобразует локальные координаты или номер узла в используемую нумерацию.
     const auto node = [&](MeshIndex n) { return part ? part->nodes[n] : n; };
     const std::string path =
         output + "/geometry-" + std::to_string(rank) + "-of-" + std::to_string(ranks) + ".tsv";
@@ -50,6 +54,7 @@ void write_geometry(const std::string& output, const Mesh& mesh, const CvView& c
     for (MeshIndex i = 0; i < m.node_count; ++i)
         if (owned(i))
             out << "V\t" << node(i) << '\t' << cv.volumes[i] << '\n';
+    // Записывает компоненты геометрического вектора в выбранном базисе.
     const auto vector = [&](CvVector v) { out << '\t' << v.x << '\t' << v.y << '\t' << v.z << '\n'; };
     for (MeshIndex e = 0; e < m.edge_count; ++e)
         if (owned(m.edge_begin[e])) {

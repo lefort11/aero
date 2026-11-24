@@ -7,6 +7,7 @@
 #include <locale>
 #include <sstream>
 namespace {
+// Печатает синтаксис запуска и доступные параметры утилиты.
 void usage(std::ostream& out) {
     out << "Usage: mesh_converter INPUT OUTPUT [OPTIONS]\n"
            "\n"
@@ -27,6 +28,7 @@ void usage(std::ostream& out) {
            "CGNS support: "
         << (aero::converter::cgns_available() ? "enabled" : "disabled") << "\n";
 }
+// Разбирает номер базы или зоны из аргумента командной строки.
 int index(const std::string& text) {
     std::istringstream in(text);
     int value = 0;
@@ -40,6 +42,7 @@ std::string lowercase(std::string value) {
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return value;
 }
+// Определяет формат сетки по параметру или имени входного файла.
 std::string detect_input_format(const std::string& input) {
     const auto slash = input.find_last_of("/\\");
     const auto name = lowercase(input.substr(slash == std::string::npos ? 0 : slash + 1));
@@ -64,6 +67,7 @@ aero::Mesh read_input_mesh(const std::string& format, const std::string& path,
     return aero::converter::read_another(path, options);
 }
 }
+// Разбирает аргументы, выполняет операцию утилиты и возвращает код завершения.
 int aero::converter::run_cli(int argc, const char* const* argv, std::ostream& out, std::ostream& err) {
     try {
         if (argc == 2 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h")) {

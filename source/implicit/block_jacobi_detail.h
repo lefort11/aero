@@ -74,6 +74,7 @@ struct JacobiBlocks {
         return factor_block<size>(source, lu, swaps);
     }
 
+    // Разлагает диагональный блок одного узла с выбором ведущих элементов.
     AERO_HOST_DEVICE bool factor_node(MeshIndex node, const double* values, const MeshIndex* starts) const {
         switch (width) {
         case 3: return prepare_block<3>(node,values,starts);
@@ -111,6 +112,7 @@ struct JacobiBlocks {
         solve_factored<size>(lu, swaps, rhs, answer);
     }
 
+    // Решает малую систему по уже разложенному диагональному блоку.
     template<unsigned size>
     AERO_HOST_DEVICE static void solve_factored(const double* lu, const unsigned char* swaps,
                                                 const double* rhs, double* answer) {

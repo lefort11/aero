@@ -12,6 +12,9 @@
 #include "../turbulence/transport.h"
 #endif
 #include "../implicit/bdf1_step.h"
+#ifdef AERO_HAS_MULTIGRID
+#include "../multigrid/schedule.h"
+#endif
 
 #ifdef AERO_HAS_VISCOSITY
 #include "../viscosity/aes.h"
@@ -38,15 +41,21 @@ public:
     Id state_nodes() const;
     // Средние нужны только при заказе пульсаций. Раскладка GPU учитывает их размер.
     void enable_time_samples() { track_time_ = true; }
+    // Инициализирует накопление статистики с учётом восстановленных моментов.
     void start_samples(const std::vector<double>& state, std::vector<diagnostic::Moments>& saved, bool restored);
+    // Накопление выполняется там же, где хранится принятое состояние. На GPU
+    // за один шаг читаем только узел и его историю, без копирования поля на CPU.
     void sample_accepted(const std::vector<double>& state, double dt);
+    // Копирует накопленные моменты поля для вывода или восстановления.
     void copy_samples(std::vector<diagnostic::Moments>& target) const;
+    // Включает вычисление производной давления по времени.
     void enable_pressure_rate() { need_pressure_rate_ = true; }
     // Берёт потоки записываемого слоя и возвращает dp/dt в нумерации полей вывода.
     std::vector<double> output_pressure_rate(const std::vector<double>& state);
     // Заполняет запрошенные поля из одного обхода площадок контрольного объёма.
     void output_gradients(const std::vector<double>& state, std::vector<double>* rotation,
                           std::vector<double>* schlieren);
+    // Переводит локальный номер узла в исходную глобальную нумерацию.
     Id global_node(Id local) const { return ids_[local]; }
     // Возвращает объём работы и обменов процесса для отчёта о разбиении.
     PartitionWork work(Id leaves) const;
@@ -57,14 +66,19 @@ public:
     // Согласует с соседями порядок узлов и рёбер и выделяет буферы для повторных обменов.
     void connect(bool cuda, bool implicit_time);
 #ifdef AERO_HAS_VISCOSITY
+    // Подготавливает геометрию и рабочие массивы вязкого оператора.
     void prepare_viscosity(const MeshPartition&, const PeriodicPartition*, const ResidualFrame&,
                            const RunSettings&);
 #ifdef AERO_HAS_TURBULENCE
+    // Готовит поле SA, расстояния до стенок и геометрию переноса.
     void prepare_sa(const MeshPartition&,const PeriodicPartition*,const BoundaryPatches&,
                     const std::vector<PeriodicPair>&,const turbulence::Settings&,bool gpu,bool implicit,bool steady,bool has_stencil);
+    // Формирует рабочую и физическую вихревую вязкости для вывода.
     std::vector<double> sa_output(const std::vector<double>& state);
+    // Сохраняет или восстанавливает текущее и предыдущее поля SA.
     void sa_checkpoint(std::vector<double>& current,std::vector<double>& previous,bool restore,double previous_dt);
 #endif
+    // При задании u=0 убираем только кинетическую энергию: начальные p и T сохраняются.
     void apply_wall(std::vector<double>& field) const;
 #endif
 #ifdef AERO_WITH_KOKKOS_GPU
@@ -77,10 +91,15 @@ public:
 #endif
     // Обновляет порядок со стороны отмеченных узлов после согласования маски по MPI.
     bool first_order_start = false; // На текущем шаге все рёбра используют узловые состояния до t_fo.
+    // Подключает метки принудительного первого порядка.
     void set_low_order(std::vector<double>& marks);
+    // Пересобираем матрицу только при ручном изменении потока. Для BDF2 переносим предыдущий слой.
     void set_flux_weights(double upwind, double hybrid);
+    // Обновляет CFL и согласованный с интегратором параметр MP.
     void set_courant(double cfl, bool implicit_time);
+    // Сохраняет поле перед попыткой шага или восстанавливает его после отказа.
     void copy_backup(std::vector<double>& state, std::vector<double>& backup, bool restore);
+    // Собирает номера узлов с недопустимым газодинамическим состоянием.
     void failed_nodes(const std::vector<double>& state, std::vector<Id>& failed, bool implicit);
     // Собирает значения только собственных узлов в компактный буфер.
     void copy_owned(const std::vector<double>& state, std::vector<double>& compact) const;
@@ -104,36 +123,58 @@ public:
             throw std::runtime_error("Auto LTS: cannot reduce the rejected pseudo-time step further");
         return retry_dt_;
     }
+    // Сбрасывает историю адаптации и расписание коррекций после смены схемы.
     void reset_rate_history() {
         rate_samples_ = 0;
         if (step_spread_) step_spread_->reset();
+#ifdef AERO_HAS_MULTIGRID
+        coarse_schedule_ = multigrid::CycleSchedule{}; // Новая пространственная схема начинает свой цикл.
+#endif
     }
+#ifdef AERO_HAS_MULTIGRID
+    // Возвращает расписание попыток многосеточной коррекции.
+    multigrid::CycleSchedule& coarse_schedule() { return coarse_schedule_; }
+#endif
     // work и stencil пользуются одним регулятором диапазона. При on/off он не выделяется.
     SteadyStepSpread* step_spread() {
         return step_mode_ == LocalStepMode::Auto ? step_spread_.get() : nullptr;
     }
+    // Возвращает фактическое отношение шагов последнего обновления.
     double applied_step_ratio() const { return applied_ratio_; }
+    // Проверяет ограничение локальных шагов по скорости изменения поля.
     bool has_node_rate_control() const { return rate_control_; }
+    // Суммирует по процессам число узлов, ограниченных по невязке.
     std::uint64_t limited_rate_nodes() const { return world_.sum(rate_limited_); }
+    // Суммирует по процессам число узлов, достигших предела шага.
     std::uint64_t capped_rate_nodes() const { return world_.sum(rate_capped_); }
+    // Ищем владельца один раз. Для отчёта читаем только данные выбранного узла.
     void set_rate_probe(MeshIndex id);
+    // Считывает диагностику шага и число узлов с растущей невязкой.
     void read_rate_probe(double accepted_dt, double* values, MeshIndex* growth_nodes) const;
+    // Готовит данные ограничения шагов по опорам реконструкции.
     void prepare_stencil_rates(bool cuda);
+    // Настраивает локальные псевдошаги стационарного расчёта.
     void prepare_steady_steps(bool gpu, LocalStepMode mode, double max_ratio, ResidualLimit residual_limit);
     // Готовит второй слой шагов и обмен скалярами на рёбрах между процессами.
     void prepare_neighbour_step_limit(double ratio, bool cuda);
+    // Возвращает отношение соседних шагов до сглаживания.
     double neighbour_ratio_before() const { return neighbour_limit_ && steady_steps_->local ? neighbour_limit_->before : 0.; }
+    // Возвращает отношение соседних шагов после сглаживания.
     double neighbour_ratio_after() const { return neighbour_limit_ && steady_steps_->local ? neighbour_limit_->after : 0.; }
+    // Меняет режим локальных шагов и сбрасывает несовместимую историю адаптации.
     void set_steady_steps(LocalStepMode mode, double max_ratio);
+    // Масштабирует наибольший локальный шаг по фактически принятому минимуму.
     double largest_step(double accepted_minimum) const {
         return steady_steps_ && steady_steps_->local ? (accepted_minimum / minimum_step_) * maximum_step_ : 0.;
     }
     // Геометрия и обмены, которыми будет пользоваться матрица на этом процессе.
     implicit::LinearGrid linear_grid();
+    // Лениво создаёт неявный интегратор подобласти.
     implicit::BdfStep& implicit_step(); // Один решатель для интегрирования и контрольных точек.
     // Решает уравнение BDF, используя потоки, подготовленные для CFL.
     // Норма пространственной невязки по текущим потокам всех процессов.
     double steady_residual(std::vector<double>& state, const std::vector<double>& initial, bool accepted = false);
+    // Выполняет неявный шаг газа с согласованным обновлением турбулентности.
     implicit::NewtonResult advance_bdf(std::vector<double>& state, const std::vector<double>& initial,
                                         double dt, const implicit::NewtonSettings& settings,
                                         SolverTimings& timing, const std::function<void()>& validate);
@@ -164,8 +205,20 @@ private:
         const double* volumes;
         const EulerFluxResult* flux;
     };
+    // Подключает актуальные CPU- или GPU-поля к неявному интегратору.
     ImplicitFields implicit_fields(std::vector<double>& state, const std::vector<double>& initial);
+    // Возвращает максимальную невязку SA либо ноль при выключенной модели.
+    double steady_sa_rate(); // Глобальная пространственная норма переноса SA, ноль для чистого газа.
+#ifdef AERO_HAS_MULTIGRID
+    multigrid::CycleSchedule coarse_schedule_; // Следующая проба только после требуемых обычных шагов.
+    // Пробует грубосеточную коррекцию по текущему расписанию.
+    void try_steady_multigrid(std::vector<double>& state, const std::vector<double>& initial,
+                              double dt, const implicit::NewtonSettings& settings, SolverTimings& timing);
+#endif
+    // Задаёт обмены и редукции распределённой линейной системы.
     implicit::Partition linear_partition();
+    // Раскладываем только собственные компоненты x, затем используем обычный обмен узлами.
+    // На GPU и рабочее поле, и индексы упаковки остаются в памяти выбранной карты.
     const double* extend_linear_vector(const double* compact);
     std::unique_ptr<PartitionTransfers> derivative_exchange_; // Два блока LF на каждое общее ребро.
     std::vector<double> linear_input_; // Вход A*x в локальной нумерации для CPU, включая соседние узлы.
@@ -176,17 +229,26 @@ private:
     bool compact_jacobian_ = false; // Ширину шаблона матрицы задаём до построения таблиц на CPU и GPU.
 #endif
 #ifdef AERO_HAS_TURBULENCE
+    // Обновляет замыкание LES по текущему газовому полю.
     void update_les(const std::vector<double>& state, SolverTimings& timing,
                     viscosity::Evaluation phase=viscosity::Evaluation::LesClosure);
+    // Проверяет, включено ли LES-замыкание без DDES.
     bool les_active() const { return aes_ && aes_->view().les.scale!=turbulence::Scale::Off && !aes_->view().c_des; }
+    // Проверяет наличие активного переноса рабочей вязкости SA.
     bool sa_active() const { return aes_ && aes_->view().sa.active; }
+    // Формирует данные одного шага уравнения SA.
     turbulence::Step sa_step() const;
+    // Выполняет выбранную операцию SA на CPU или GPU.
     void sa_apply(const turbulence::Step&, turbulence::Operation) const;
+    // Вычисляет глобальную максимальную норму SA.
     double sa_max(const turbulence::Step&, turbulence::Norm,bool refresh=false) const;
+    // Обменивает рабочую вязкость с соседними подобластями.
     void sa_exchange();
     // Пересчитывает поправку при каждом изменении газа или рабочей вязкости, затем передаёт её соседу.
     void prepare_sa_convection(const turbulence::Step&) const;
+    // Собирает оператор SA с учётом уже подготовленных потоков и строк.
     void evaluate_sa(const std::vector<double>& state,SolverTimings& timing,bool rates_ready=false,bool rows_ready=false);
+    // Решает стадию SA с учётом готовности потоков и диффузионных строк.
     void solve_sa_stage(const std::vector<double>& state,bool rates_ready,bool rows_ready);
     std::unique_ptr<PartitionTransfers> turbulence_exchange_; // Те же владельцы узлов, один скаляр на запись.
     std::unique_ptr<PartitionTransfers> sa_edge_exchange_; // Одна поправка на общее ребро MPI.
@@ -196,11 +258,15 @@ private:
     double sa_dt_ = 0., sa_previous_dt_ = 0., sa_target_ = 0., sa_tol_ = 0.;
     unsigned sa_iterations_ = 0;
     bool sa_lines_ = false; // Один выбор пробной поправки на всех MPI-процессах.
+    bool sa_multigrid_ = false; // Ускоренный сглаживатель SA во время стационарного цикла.
     bool sa_bdf2_ = false, sa_implicit_time_ = false;
     bool sa_prediction_pending_ = false; // Газовый предиктор изменил газ при фиксированной nu_tilde.
 #endif
+    // Для общего и локального шага используем те же геометрию, газ и вязкие ограничения.
     residual_detail::FluxCfl cfl_grid() const;
+    // Вычисляет локальные шаги по CFL и возвращает общий минимум.
     double prepare_local_steps(double cfl);
+    // Уменьшает шаги до выполнения ограничения на соседних узлах.
     void limit_neighbour_steps();
     // Вся дополнительная память принадлежит опции local_time_step_neighbor_ratio.
     // Два поля dt меняются ролями: обход ни на CPU, ни на GPU не перезаписывает вход.
@@ -235,6 +301,7 @@ private:
         std::unique_ptr<PartitionTransfers> node_exchange, edge_exchange;
     };
     std::unique_ptr<StencilRateStorage> stencil_rates_;
+    // Межпроцессное ребро вычисляет тот же владелец, который строил обе строки его реконструкции.
     void collect_stencil_rates(const double* sa_rate, const EulerFluxResult* flux);
     bool rate_control_ = false; // Память под историю нужна только при включённом ограничителе.
     double* rate_history_ = nullptr;
@@ -256,7 +323,9 @@ private:
         ids_; // Исходный номер каждого локального узла или его периодического представителя.
     const std::vector<int>& owners_;                 // MPI-процесс, отвечающий за каждый узел.
     const Processes& world_;                         // Все процессы этого расчёта.
+    // Выделяет узловой кэш газовых параметров для расчёта потоков.
     void prepare_nodal_gas(); // Резервирует одну запись на собственный или удалённый узел.
+    // Упаковывает рёбра и строки WENO в блоки совместной обработки.
     template <unsigned order> void prepare_weno_tiles(std::vector<residual_detail::WenoEdgeTile<order>>& tiles); // Готовит общую для CPU и GPU геометрию полных двумерных шаблонов WENO3 и WENO5.
     std::vector<residual_detail::WenoEdgeTile<3>> weno3_tiles_; // По 32 шаблона третьего порядка.
     std::vector<residual_detail::WenoEdgeTile<5>> weno5_tiles_; // Дальние наклоны нужны пятому порядку.

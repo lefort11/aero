@@ -9,31 +9,37 @@ namespace {
 // При распаковке вычисляем хеш канонического двоичного представления сетки независимо от исходного формата.
 class Reader : public mesh_input::Reader {
 public:
+    // Подключает ограниченный сеточный ввод и хеширование исходных данных.
     Reader(std::istream& in, const MeshReadLimits& limits) : mesh_input::Reader(in, limits), out_(&hash_) {
         out_.write("AEROMSHB", 8);
         word(out_, mesh_format::legacy_version);
     }
+    // Читает целое слово исходной сетки с добавлением в поток отпечатка.
     Id u64() {
         const Id v = mesh_input::Reader::u64();
         word(out_, v);
         return v;
     }
+    // Читает или записывает вещественное число промежуточного двоичного формата.
     double real() {
         const double v = mesh_input::Reader::real();
         meshdec::real(out_, v);
         return v;
     }
+    // Читает знак ориентации грани и включает его в отпечаток сетки.
     std::int8_t orientation() {
         const auto v = mesh_input::Reader::orientation();
         out_.put(static_cast<char>(v));
         return v;
     }
+    // Читает имя граничного участка и учитывает его в отпечатке.
     std::string name() {
         const auto v = mesh_input::Reader::name();
         word(out_, v.size());
         out_.write(v.data(), position(v.size()));
         return v;
     }
+    // Завершает вычисление и возвращает отпечаток исходной сетки.
     std::string digest() const { return hash_.hex_digest(); }
     // В архив попадает тот же идентификатор сетки, который вычисляет солвер.
     void hash_coordinate_header() { word(out_, read_fingerprint_word()); }
@@ -42,6 +48,7 @@ private:
     io_detail::Sha256Buffer hash_;
     std::ostream out_;
 };
+// Переносит массив индексов исходной сетки в промежуточную таблицу.
 void indices(Reader& r, const std::string& path, const char* name, Id count, Id limit) {
     r.block(name);
     auto out = output(path);
@@ -52,6 +59,7 @@ void indices(Reader& r, const std::string& path, const char* name, Id count, Id 
     }
     out.close();
 }
+// Переносит смещения CSR исходной сетки в промежуточную таблицу.
 void offsets(Reader& r, const std::string& path, const char* name, Id rows, Id entries, Id min_width,
              Id max_width) {
     r.block(name);
@@ -69,10 +77,13 @@ void offsets(Reader& r, const std::string& path, const char* name, Id rows, Id e
     require(prev == entries, "CSR length mismatch");
     out.close();
 }
+// Обратная топологическая ссылка с исходным адресом в таблице.
 struct Link {
     Id target, source, entry;
+    // Сравнивает ключи сущностей для упорядочения и поиска.
     bool operator<(const Link& b) const { return target == b.target ? source < b.source : target < b.target; }
 };
+// Строит обратную топологическую связь с помощью внешней сортировки.
 void reverse(const std::string& dir, const std::string& forward, const std::string& back, Id rows, Id targets,
              Id memory, Table<std::int8_t>* signs = nullptr) {
     Table<Id> starts(dir + "/" + forward + "-start"), references(dir + "/" + forward);
@@ -107,6 +118,7 @@ void reverse(const std::string& dir, const std::string& forward, const std::stri
     off.close();
     ids.close();
 }
+// Нормирует координату для построения пространственного ключа.
 unsigned coordinate(double x, double lo, double hi) {
     if (lo == hi)
         return 0;
@@ -115,6 +127,7 @@ unsigned coordinate(double x, double lo, double hi) {
     const double t = std::isfinite(span) ? (x - lo) / span : (x * 0.5 - lo * 0.5) / (hi * 0.5 - lo * 0.5);
     return static_cast<unsigned>(std::min(1.0, std::max(0.0, t)) * 2097151.0);
 }
+// Перемежает биты координат, формируя пространственный ключ Мортона.
 Id morton(const unsigned p[3]) {
     Id key = 0;
     for (unsigned b = 0; b < 21; ++b)
@@ -123,6 +136,7 @@ Id morton(const unsigned p[3]) {
     return key;
 }
 }
+// Читает исходную сетку и раскладывает её данные по временным таблицам.
 void unpack(const Options& options, const std::string& dir) {
     std::ifstream source(options.source.c_str(), std::ios::binary);
     require(source.is_open(), "Cannot open mesh: " + options.source);
@@ -207,6 +221,7 @@ void unpack(const Options& options, const std::string& dir) {
     put(meta, h);
     meta.close();
 }
+// Строит индексы прямых и обратных связей геометрических сущностей.
 void index_topology(const std::string& dir, Id memory) {
     const auto h = Table<Header>(dir + "/header").at(0);
     reverse(dir, "fn", "nf", h.faces, h.nodes, memory);

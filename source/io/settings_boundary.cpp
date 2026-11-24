@@ -9,6 +9,7 @@
 namespace aero {
 namespace {
 using namespace settings_detail;
+// Промежуточные правила, участки и профиль одной секции граничного файла.
 struct Section {
     std::vector<std::string> patches;
     std::string pair, where, rules, profile_path;
@@ -134,6 +135,7 @@ void add_rule(Section& section, const std::string& line, const std::string& wher
 }
 }
 
+// Связывает граничные секции постановки с участками загруженной сетки.
 CaseBoundaries read_case_boundaries(const std::string& path, const MeshData& mesh, bool linear,
                                    std::vector<std::string>* warnings, BoundaryTemperature temperature) {
     auto input = settings_detail::open(path);
@@ -144,6 +146,7 @@ CaseBoundaries read_case_boundaries(const std::string& path, const MeshData& mes
         if (!unassigned.emplace(mesh.patch_names[i], i).second)
             throw std::invalid_argument(path + ": ambiguous mesh label '" + mesh.patch_names[i] + "'");
     Section section;
+    // Связывает разобранные граничные правила с соответствующими участками.
     auto assign = [&](const std::string& name, const BoundaryConfig& config) {
         const auto it = unassigned.find(name);
         if (it == unassigned.end())
@@ -152,6 +155,7 @@ CaseBoundaries read_case_boundaries(const std::string& path, const MeshData& mes
         result.patches.by_patch[it->second] = config;
         unassigned.erase(it);
     };
+    // Завершает разбор текущей граничной секции и проверяет её полноту.
     auto finish = [&]() {
         if (section.patches.empty())
             return;

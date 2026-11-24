@@ -12,6 +12,7 @@ namespace implicit { class SpatialJacobian; }
 namespace residual_detail { struct Geometry; }
 enum class ResidualVariables { Conservative, Characteristic, Flux };
 enum class ResidualSolver { Roe, LocalLF };
+// Параметры потоков, реконструкции, вязкости и фонового состояния.
 struct ResidualOptions {
 #ifdef AERO_HAS_VISCOSITY
     const viscosity::Row* diffusion = nullptr; // Интегральный вклад AES в невязку каждого узла.
@@ -25,6 +26,7 @@ struct ResidualOptions {
     bool retry_nonphysical = false; // Активный откат сам собирает номера всех отказавших узлов.
     double mp6_hybrid = 0; // Доля ограниченной центральной поправки на полном MP-шаблоне.
     double trace_ratio_min, trace_ratio_max;
+    // Задаёт способ реконструкции, поток, параметры газа и пределы допустимости.
     ResidualOptions(ResidualVariables v = ResidualVariables::Conservative,
                     ResidualSolver s = ResidualSolver::Roe, double g = 1.4, double lo = 0, double hi = 1e16)
         : variables(v), solver(s), gamma(g), trace_ratio_min(lo), trace_ratio_max(hi) {}
@@ -36,6 +38,7 @@ struct ResidualOptions {
 #include <memory>
 
 namespace aero {
+// Переносит настройки постановки в параметры пространственного оператора.
 ResidualOptions residual_options(const std::string& variables, const std::string& solver, double gamma,
                                  double trace_ratio_min = 0, double trace_ratio_max = 1e16);
 
@@ -43,18 +46,25 @@ ResidualOptions residual_options(const std::string& variables, const std::string
 // касательные оси задаются в мировых координатах.
 struct ResidualFrame {
     CvVector axis[3];
+    // Инициализирует декартов базис компонент импульса.
     ResidualFrame() : axis{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}} {}
 };
 
+// Собирает потоки площадок и пространственную невязку узлов.
 class SpatialResidual {
 public:
+    // Подготавливает геометрию, реконструкцию и границы пространственного оператора.
     SpatialResidual(MeshView mesh, CvView cv, ReconstructionStencil stencil, const BoundaryPatches& patches,
                     ResidualOptions options, int device = -1, const ResidualFrame& frame = ResidualFrame());
+    // Подготавливает геометрию, реконструкцию и границы пространственного оператора.
     SpatialResidual(unsigned dimension, PeriodicView grid, ReconstructionStencil stencil,
                     const BoundaryPatches& patches, ResidualOptions options, int device = -1,
                     const ResidualFrame& frame = ResidualFrame());
+    // Освобождает принадлежащие объекту ресурсы при завершении его времени жизни.
     ~SpatialResidual();
+    // Запрещает копирование, чтобы ресурсы объекта сохраняли единственного владельца.
     SpatialResidual(const SpatialResidual&) = delete;
+    // Запрещает копирование, чтобы ресурсы объекта сохраняли единственного владельца.
     SpatialResidual& operator=(const SpatialResidual&) = delete;
 
     // Все указатели относятся к выбранному исполнителю. Размещение U, U0 и R — [узел][d+2].
@@ -70,6 +80,7 @@ public:
     double assemble_cfl(const double* u, const double* u0, double* residual, const double* volumes,
                         double courant, void* stream = nullptr, double* flux_seconds = nullptr,
                         double* cfl_seconds = nullptr);
+    // Переводит интегральную невязку в правую часть временного уравнения.
     void assemble_rhs(const double* u, const double* u0, double* residual, void* stream = nullptr,
                       double* flux_seconds = nullptr);
 

@@ -16,23 +16,28 @@ struct LocalRateLimit {
 
     const double* stencil_growth; // Признаки роста газа и SA по всей области реконструкции.
     unsigned stencil_stride; // При выводе диагностики следом идут номера двух узлов.
+    // Проверяет, пора ли пересмотреть ограничение шага по истории невязки.
     static bool review_due(std::uint64_t samples) {
         return samples != 0 && samples % interval == 0;
     }
 
+    // Проверяет наличие действующего верхнего предела шага.
     AERO_HOST_DEVICE bool has_cap(MeshIndex row) const {
         return history && history[Width*row + CflFraction] < 1.;
     }
 
+    // Определяет рост невязки по сохранённым контрольным значениям.
     AERO_HOST_DEVICE static bool rising(double rate, double mean, double domain_max) {
         // Не сравниваем относительные изменения почти нулевой невязки.
         return rate > .01*domain_max && rate > 1.05*mean;
     }
 
+    // Вычисляет масштаб изменения рабочей вязкости для ограничения шага.
     AERO_HOST_DEVICE double sa_magnitude(MeshIndex node) const {
         return sa_rate ? ::fabs(sa_rate[node]) : 0.;
     }
 
+    // Уменьшает предложенный шаг по ограничениям скорости изменения поля.
     AERO_HOST_DEVICE double limit(MeshIndex row, MeshIndex node, double cfl_step,
                                   double previous_dt, double proposed, bool initialize) const {
         if (!history || !(proposed > 0.)) return proposed;

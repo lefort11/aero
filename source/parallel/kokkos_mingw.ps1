@@ -5,6 +5,7 @@ $header = Join-Path $Cuda 'include/crt/math_functions.hpp'
 $source = [IO.File]::ReadAllText($header).Replace("`r`n", "`n")
 $guard = "#elif defined(_WIN32)`n`n#if (!defined(_MSC_VER) || _MSC_VER < 1800)"
 $entries = @()
+# Подмена заголовка выполняется через VFS overlay Clang: установленный CUDA Toolkit остаётся исходным.
 if ($source.Contains($guard)) {
     $replacement = Join-Path $Directory 'math_functions.hpp'
     $updated = $guard.Replace('defined(_WIN32)', 'defined(_WIN32) && !defined(__MINGW32__)')
@@ -19,6 +20,7 @@ if ($Static) {
         $version = (Get-Content -Raw (Join-Path $vs 'VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt')).Trim()
         $toolset = Join-Path $vs "VC/Tools/MSVC/$version"
     }
+    # Статическая CUDA Runtime ожидает имена библиотек MSVC; копии получают имена, понятные линковщику MinGW.
     foreach ($pair in @(@('libcmt','LIBCMT'), @('oldnames','OLDNAMES'), @('libvcruntime','vcruntime'))) {
         Copy-Item -LiteralPath (Join-Path $toolset "lib/x64/$($pair[0]).lib") -Destination (Join-Path $Directory "../lib$($pair[1]).a")
     }

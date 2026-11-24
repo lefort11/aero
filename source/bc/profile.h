@@ -33,6 +33,7 @@ inline void append_boundary_profile(std::vector<ProfileState>& samples, const Bo
     auto lo = hi;
     if (hi!=profile.rows.begin() && radius<hi->radius) --lo;
     const double t = lo==hi ? 0. : (radius-lo->radius)/(hi->radius-lo->radius);
+    // Интерполирует выбранную компоненту между соседними строками профиля.
     const auto interpolate = [&](double ProfileRow::*field){return (*lo).*field + t*((*hi).*field-(*lo).*field);};
     const double ux=interpolate(&ProfileRow::axial), ur=interpolate(&ProfileRow::radial);
     CvVector velocity{};

@@ -17,6 +17,7 @@ namespace {
 // Проверяем идентификатор файла, чтобы распознать также относительный путь и ссылки.
 bool same_file(const char* input, const char* output) {
 #ifdef _WIN32
+    // Определяет файловую идентичность путей для защиты исходных данных от перезаписи.
     const auto identify = [](const char* path, BY_HANDLE_FILE_INFORMATION& info) {
         HANDLE h = CreateFileA(path, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                nullptr, OPEN_EXISTING, 0, nullptr);
@@ -38,6 +39,7 @@ bool same_file(const char* input, const char* output) {
     return stat(input, &a) == 0 && stat(output, &b) == 0 && a.st_dev == b.st_dev && a.st_ino == b.st_ino;
 #endif
 }
+// Печатает синтаксис запуска и доступные параметры утилиты.
 void usage(std::ostream& out) {
     out << "Usage: fields_to_tecplot MESH [FIELDS] OUTPUT.plt [--threads N]\n\n"
            "  MESH        Native AEROMESH v2/v3 or a .submesh plane slice.\n"
@@ -50,6 +52,7 @@ void usage(std::ostream& out) {
            "OpenMP: "
         << (openmp_available() ? "enabled" : "disabled (one thread)") << "\n";
 }
+// Разбирает положительное число потоков из аргумента командной строки.
 int positive(const std::string& value) {
     if (value.empty())
         throw ExportError("Missing thread count");

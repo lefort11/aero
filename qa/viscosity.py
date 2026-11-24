@@ -100,6 +100,7 @@ def check_thermal_3d(case,args):
     # один раз. Аналитические средние синусов равны нулю, их квадратов — 1/2.
     interior = [i for i, point in enumerate(coords) if all(x < 1. for x in point)]
     initial_energy = 1.6/.4 + .25*(.07**2+.05**2+.06**2)
+    # Вычисляет среднее контрольных значений поля.
     def average(values):
         return math.fsum(values) / len(interior)
     for scheme, settings in cases:
@@ -117,6 +118,7 @@ def check_thermal_3d(case,args):
         compare_backends(case, args, name, fields, options)
 
 
+# Проверяет вязкую невязку, теплопроводность и согласованность CPU, GPU и MPI.
 def verify(case, args):
     coords = setup(case, args.meshdec.resolve() if args.mpi else None)
     inviscid = solve(case, args, "off", options=["main:viscosity=off"])

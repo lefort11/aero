@@ -25,7 +25,9 @@ struct GasFaces {
     const residual_detail::Surface *faces;
     const residual_detail::OrientedFace *incidence;
     const residual_detail::Index *offsets;
+    // Возвращает диапазон площадок данного узла в CSR-таблице.
     AERO_HOST_DEVICE RowRange row(MeshIndex node) const { return {offsets[node], offsets[node + 1]}; }
+    // Формирует ориентированный вклад площадки в конвективный оператор SA.
     AERO_HOST_DEVICE FaceTerm read(MeshIndex node, MeshIndex entry, MeshIndex edges, unsigned dim) const {
         const auto side = incidence[entry];
         return make_face_term(faces[side.face()], side, node, edges, dim);

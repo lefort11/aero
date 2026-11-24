@@ -238,6 +238,7 @@ def check_exact_report(aero, mpi, case, distributed):
     print("OK Euler and Linear formula and snapshot norms, CPU and MPI", flush=True)
 
 
+# Проверяет комбинации схем и режимов линеаризованного решателя.
 def check_modes(args, case):
     coords = prepare(case)
     aero = args.aero.resolve()

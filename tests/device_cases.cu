@@ -22,6 +22,7 @@ const char* edge_blocks(Case input, double area, double upwind, implicit::EdgeFl
         });
     });
 }
+// Запускает проверку сборки строк периодического оператора на GPU.
 const char* periodic_rows(void* stream, ReconstructionStencilView stencil, const PeriodicEdge* edges, const double* field, double* output) {
     return device_work::on_device(stream, [&](const device_work::Execution& exec) {
         device_work::for_indices(exec, "Aero test: periodic_rows", 2 * stencil.edge_count, KOKKOS_LAMBDA(MeshIndex row) {
@@ -37,6 +38,7 @@ const char* periodic_rows(void* stream, ReconstructionStencilView stencil, const
         });
     });
 }
+// Вычисляет поток тестового газодинамического интерфейса.
 const char* test_flux(void* stream, const BcTestCase* cases, size_t count, const FreeBoundaryRules* rules, int* failed) {
     return device_work::on_device(stream, [&](const device_work::Execution& exec) {
         device_work::for_indices(exec, "Aero test: test_flux", count, KOKKOS_LAMBDA(MeshIndex i) {
@@ -60,6 +62,7 @@ const char* test_flux(void* stream, const BcTestCase* cases, size_t count, const
         });
     });
 }
+// Проверяет результат GPU-ядра и целостность контрольных значений.
 const char* inspect(void* stream, aero::CvView v, double* result) {
     return device_work::on_device(stream, [&](const device_work::Execution& exec) {
         device_work::for_indices(exec, "Aero test: inspect", 1, KOKKOS_LAMBDA(MeshIndex) {
@@ -80,6 +83,7 @@ const char* inspect(void* stream, aero::CvView v, double* result) {
         });
     });
 }
+// Вычисляет один газодинамический интерфейс на GPU.
 const char* one_interface(void* stream, const Case* input, Output* output) {
     return device_work::on_device(stream, [&](const device_work::Execution& exec) {
         device_work::for_indices(exec, "Aero test: one_interface", 1, KOKKOS_LAMBDA(MeshIndex) {
@@ -114,6 +118,7 @@ const char* one_interface(void* stream, const Case* input, Output* output) {
         });
     });
 }
+// Вычисляет выбранный набор газодинамических тестов на GPU.
 const char* evaluate(void* stream, TestProblem problem, double time, aero::ExplicitField field, double* residual) {
     return device_work::on_device(stream, [&](const device_work::Execution& exec) {
         device_work::for_indices(exec, "Aero test: evaluate", field.nodes * field.components, KOKKOS_LAMBDA(MeshIndex k) {
@@ -121,6 +126,7 @@ const char* evaluate(void* stream, TestProblem problem, double time, aero::Expli
         });
     });
 }
+// Запускает пакетное тестовое ядро реконструкции.
 const char* reconstruct_kernel(void* stream, aero::ReconstructionStencilView s, const double* values, ReconstructionIndex components, double* left, double* right) {
     return device_work::on_device(stream, [&](const device_work::Execution& exec) {
         device_work::for_indices(exec, "Aero test: reconstruct_kernel", 2 * s.edge_count, KOKKOS_LAMBDA(MeshIndex row) {
@@ -132,6 +138,7 @@ const char* reconstruct_kernel(void* stream, aero::ReconstructionStencilView s, 
         });
     });
 }
+// Запускает тестовое ядро одной стороны реконструкции.
 const char* one_side_kernel(void* stream, aero::ReconstructionStencilView s, ReconstructionIndex edge, unsigned side, const double* own, ReconstructionIndex components, const double* values, double* output) {
     return device_work::on_device(stream, [&](const device_work::Execution& exec) {
         device_work::for_indices(exec, "Aero test: one_side_kernel", 1, KOKKOS_LAMBDA(MeshIndex) {
@@ -142,6 +149,7 @@ const char* one_side_kernel(void* stream, aero::ReconstructionStencilView s, Rec
         });
     });
 }
+// Запускает тестовое ядро оценки скоростей волн.
 const char* speed_kernel(void* stream, const double* u, double* speed) {
     return device_work::on_device(stream, [&](const device_work::Execution& exec) {
         device_work::for_indices(exec, "Aero test: speed_kernel", 1, KOKKOS_LAMBDA(MeshIndex) {
@@ -152,6 +160,7 @@ const char* speed_kernel(void* stream, const double* u, double* speed) {
         });
     });
 }
+// Запускает тестовое ядро сборки пространственной невязки.
 const char* residual_kernel(void* stream, double* r) {
     return device_work::on_device(stream, [&](const device_work::Execution& exec) {
         device_work::for_indices(exec, "Aero test: residual_kernel", 1, KOKKOS_LAMBDA(MeshIndex) {

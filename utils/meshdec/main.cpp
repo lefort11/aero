@@ -7,8 +7,10 @@
 
 namespace {
 using namespace aero::meshdec;
+// Управляет MPI-процессами утилиты разбиения и согласованием ошибок.
 class Workers {
 public:
+    // Инициализирует MPI-процессы утилиты разбиения сетки.
     Workers(int& argc, char**& argv) {
 #ifdef AERO_MESHDEC_MPI
         if (MPI_Init(&argc, &argv) != MPI_SUCCESS)
@@ -20,11 +22,13 @@ public:
         (void)argv;
 #endif
     }
+    // Завершает созданную объектом среду MPI.
     ~Workers() {
 #ifdef AERO_MESHDEC_MPI
         MPI_Finalize();
 #endif
     }
+    // Распространяет данные или статус работы между процессами утилиты.
     void share(std::string& text, int root = 0) const {
 #ifdef AERO_MESHDEC_MPI
         int bytes = rank == root ? static_cast<int>(text.size()) : 0;
@@ -38,6 +42,7 @@ public:
         (void)root;
 #endif
     }
+    // Выполняет этап с согласованием ошибок между MPI-процессами.
     template <class Work> void phase(const Work& work) const {
         std::string message;
         try {
@@ -58,6 +63,7 @@ public:
     }
     int rank = 0, size = 1;
 };
+// Разбирает положительное целое значение параметра командной строки.
 Id positive(const std::string& text) {
     Id result = 0;
     for (char c : text) {
@@ -75,6 +81,7 @@ void help() {
               << "Defaults: 4 MiB per leaf, 64 MiB sort buffer per process, scratch beside output.\n"
               << "The output must be new. MPI processes require a shared scratch and output directory.\n";
 }
+// Разбирает параметры памяти, разбиения и путей утилиты meshdec.
 Options parse(int argc, char** argv) {
     Options o;
     std::vector<std::string> files;
@@ -103,6 +110,7 @@ Options parse(int argc, char** argv) {
         o.temp = directory(o.target);
     return o;
 }
+// Выполняет этапы чтения, упорядочения, разбиения и упаковки сетки.
 int run(const Workers& w, int argc, char** argv) {
     if (argc == 2 && std::string(argv[1]) == "--help") {
         if (!w.rank)
@@ -158,6 +166,7 @@ int run(const Workers& w, int argc, char** argv) {
     return 0;
 }
 }
+// Запускает построение архива разбиения и согласует ошибки рабочих процессов.
 int main(int argc, char** argv) {
     try {
         Workers workers(argc, argv);

@@ -8,6 +8,7 @@ namespace aero {
 // На GPU достаточно передать на CPU один индекс из уже существующей проверки.
 struct BoundaryFluxFailure : std::domain_error {
     std::size_t face;
+    // Сохраняет номер внешней площадки с недопустимым потоком.
     explicit BoundaryFluxFailure(std::size_t index)
         : std::domain_error("Invalid boundary flux at local face " + std::to_string(index)), face(index) {}
 };

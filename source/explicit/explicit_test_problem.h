@@ -5,6 +5,7 @@
 #include "explicit.h"
 // Три задачи проверяют внешний источник, перенос по кольцу и отказ при недопустимой невязке.
 enum class TestProblem { Forced, Ring, Invalid };
+// Вычисляет правую часть модельного уравнения для теста временной схемы.
 AERO_HOST_DEVICE inline double test_residual(TestProblem problem, double t, aero::ExplicitField f, size_t k) {
     if (problem == TestProblem::Invalid)
         return std::numeric_limits<double>::quiet_NaN();
@@ -16,7 +17,9 @@ AERO_HOST_DEVICE inline double test_residual(TestProblem problem, double t, aero
     return f.values[k] - f.values[upstream * f.components + k % f.components];
 }
 #ifdef AERO_WITH_KOKKOS_GPU
+// Возвращает устройство, выбранное текущей GPU-проверкой.
 int current_test_device();
+// Вычисляет правую часть модельного уравнения для теста временной схемы.
 void device_test_residual(TestProblem, double, aero::ExplicitField, double*);
 #endif
 #endif

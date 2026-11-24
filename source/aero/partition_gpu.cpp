@@ -16,6 +16,7 @@
 namespace aero {
 namespace edge_tile = residual_detail::edge_tile;
 namespace {
+// Преобразует ошибку GPU в исключение с контекстом MPI-подобласти.
 void cuda_check(aero::gpu::Status status) {
     gpu::checked(status, "MPI CUDA: ");
 }
@@ -36,6 +37,7 @@ double PartitionGpu::measure_flux_rate(ResidualOptions options, std::size_t coun
     batch.geometry.dim = 3;
     batch.geometry.options = options;
     batch.geometry.nodes = batch.geometry.edges = batch.geometry.faces = batch.count = count;
+    // Размечает очередной набор массивов в общем буфере GPU.
     const auto layout = [&] {
         batch.geometry.surfaces = sample.storage_.upload(faces);
         batch.state = sample.storage_.upload(state);
@@ -49,6 +51,7 @@ double PartitionGpu::measure_flux_rate(ResidualOptions options, std::size_t coun
         return 0;
     layout();
     check(aero::gpu::fill_async(sample.grid_.bad, 0xff, sizeof(*sample.grid_.bad), nullptr));
+    // Запускает измеряемое вычислительное ядро на выбранном GPU.
     const auto launch = [&] { residual_detail::gpu_face_fluxes(batch, sample.grid_.bad, nullptr); };
     launch();
     cuda_check(aero::gpu::wait(nullptr));
@@ -68,6 +71,7 @@ double PartitionGpu::measure_flux_rate(ResidualOptions options, std::size_t coun
         throw std::runtime_error("GPU calibration: invalid elapsed time");
     return rate;
 }
+// Измеряет скорость вычисления потоков для балансировки работы GPU.
 std::vector<double> PartitionGpu::measure_weights(const Processes& world, ResidualOptions options,
                                                   MeshIndex budget) {
     std::vector<double> rates;
@@ -100,6 +104,7 @@ std::vector<double> PartitionGpu::measure_weights(const Processes& world, Residu
     }
     return rates;
 }
+// Назначает процессу физическую карту с учётом рангов на одном узле.
 void select_partition_gpu(const Processes& world, const std::vector<int>& devices) {
     const auto node = partition_node_resources(world);
     std::string physical, description;
@@ -134,12 +139,15 @@ void select_partition_gpu(const Processes& world, const std::vector<int>& device
             std::cout << "MPI CUDA placement: " << line << '\n';
     });
 }
+// Проверяет статус операции GPU и преобразует ошибку в исключение.
 void PartitionGpu::check(aero::gpu::Status status) {
     cuda_check(status);
 }
+// Ожидает завершения операций GPU перед чтением результатов на CPU.
 void PartitionGpu::synchronize() {
     check(aero::gpu::wait(nullptr));
 }
+// Измеряет доступную память GPU и применяет ограничения пользователя.
 void query_gpu_memory(GpuMemoryFit& fit, const std::vector<double>& limits, const Processes& world) {
     std::size_t available = 0, total = 0;
     cuda_check(aero::gpu::memory_info(&available, &total));
@@ -154,10 +162,12 @@ void query_gpu_memory(GpuMemoryFit& fit, const std::vector<double>& limits, cons
             fit.budget = static_cast<MeshIndex>(bytes);
     }
 }
+// Освобождает принадлежащие объекту ресурсы при завершении его времени жизни.
 PartitionGpu::Storage::~Storage() {
     if (base)
         aero::gpu::release(base);
 }
+// Размечает массивы геометрии, полей и рабочих данных в едином буфере GPU.
 void PartitionGpu::layout(residual_detail::Geometry g,
                           const std::vector<MeshIndex>& computed, const std::vector<MeshIndex>& owned,
                           const double* volumes, std::size_t state_nodes, bool compact_buffer,
@@ -261,6 +271,7 @@ void PartitionGpu::layout(residual_detail::Geometry g,
         device_faces_ = storage_.allocate(1, &batch);
     }
 }
+// Пробует зарезервировать рассчитанный объём и передаёт фактическую потребность планировщику.
 bool PartitionGpu::reserve(GpuMemoryFit& fit, MeshIndex implicit_bytes) {
     fit.array_count = storage_.array_count;
     fit.layout_bytes = storage_.used;
@@ -279,6 +290,7 @@ bool PartitionGpu::reserve(GpuMemoryFit& fit, MeshIndex implicit_bytes) {
     storage_.used = 0;
     return true;
 }
+// Переносит на GPU начальные значения для граничных условий.
 void PartitionGpu::upload_boundary_initial(const std::vector<double>& initial) {
     if (boundary_nodes_.empty()) return;
     const auto width = grid_.geometry.components();
@@ -290,6 +302,7 @@ void PartitionGpu::upload_boundary_initial(const std::vector<double>& initial) {
     });
     check(gpu::copy(grid_.initial, values.data(), values.size()*sizeof(double), gpu::Copy::ToDevice));
 }
+// Загружает текущее и начальное поля в размеченную память GPU.
 void PartitionGpu::upload_state(const std::vector<double>& state, const std::vector<double>& initial) {
     gas_current_ = false;
     if (storage_.used != storage_.capacity)
@@ -321,6 +334,7 @@ void PartitionGpu::upload_state(const std::vector<double>& state, const std::vec
         check(aero::gpu::fill_async(grid_.bad, 0xff, sizeof(*grid_.bad), nullptr));
     }
 }
+// Проверяет ошибку ядра и сообщает фазу и отказавший узел.
 void PartitionGpu::check_kernel(const char* phase, bool checking_flux) {
     partition_detail::Index bad;
     if (error_index_.device()) {
@@ -339,25 +353,30 @@ void PartitionGpu::check_kernel(const char* phase, bool checking_flux) {
         throw std::domain_error(std::string("MPI CUDA ") + phase + " at local index " + std::to_string(bad));
     }
 }
+// Обновляет геометрию площадок в памяти GPU.
 void PartitionGpu::update_surfaces(const std::vector<residual_detail::Surface>& surfaces) {
     if (!surfaces.empty()) check(gpu::copy(const_cast<residual_detail::Surface*>(grid_.geometry.surfaces),
         surfaces.data(), surfaces.size()*sizeof(surfaces[0]), gpu::Copy::ToDevice));
 }
+// Собирает представление данных для обработки площадок на GPU.
 residual_detail::FaceBatch PartitionGpu::face_batch() const {
     return {grid_.geometry, grid_.computed, grid_.computed_count, grid_.state,
             grid_.initial, grid_.flux, nullptr, nullptr, gas_current_};
 }
+// Обновляет параметр ограничителя MP и зависимую запись ядра.
 void PartitionGpu::set_alpha(double alpha) {
     auto& mp = grid_.geometry.stencil.mp5;
     if ((!mp.enabled && !mp.weno) || mp.alpha == alpha) return;
     mp.alpha = alpha;
     update_face_batch();
 }
+// Обновляет коэффициенты диссипации и гибридной поправки потоков.
 void PartitionGpu::set_flux_options(const ResidualOptions& options) {
     grid_.geometry.options.upw_coeff = options.upw_coeff;
     grid_.geometry.options.mp6_hybrid = options.mp6_hybrid;
     update_face_batch();
 }
+// Синхронизирует запись пакетного ядра с текущими параметрами.
 void PartitionGpu::update_face_batch() {
     // Упакованные ядра MP читают настройки из постоянной записи на карте.
     if (device_faces_) {
@@ -365,6 +384,7 @@ void PartitionGpu::update_face_batch() {
         check(gpu::copy(device_faces_, &batch, sizeof(batch), gpu::Copy::ToDevice));
     }
 }
+// Вычисляет потоки площадок с учётом режима первого порядка.
 void PartitionGpu::fluxes(bool first_order_start,bool defer_viscous_rows) {
     (void)defer_viscous_rows;
     auto batch = face_batch();
@@ -384,22 +404,26 @@ void PartitionGpu::fluxes(bool first_order_start,bool defer_viscous_rows) {
 #endif
     check_kernel("flux", true);
 }
+// Выполняет явную стадию собственных узлов и проверяет допустимость результата.
 void PartitionGpu::update(explicit_detail::Stage stage, double dt, bool save_original) {
     if (grid_.failed_count) reset_failed_count();
     partition_detail::update(grid_, stage, dt, save_original);
     check_kernel("invalid stage state");
     gas_current_ = !grid_.owned;
 }
+// Сохраняет поле перед попыткой шага или восстанавливает его после отказа.
 void PartitionGpu::copy_backup(std::size_t count, bool restore) {
     // Индексы соседей входят в снимок: после отката можно сразу пересчитать потоки.
     if (count) check(gpu::copy_async(restore ? grid_.state : accepted_state_,
         restore ? accepted_state_ : grid_.state, count*sizeof(double), gpu::Copy::OnDevice, nullptr));
     if (restore) gas_current_ = false;
 }
+// Обнуляет счётчик отказавших узлов перед проверкой состояния.
 void PartitionGpu::reset_failed_count() {
     if (error_index_.device()) error_index_.host()[1] = 0;
     else check(gpu::fill_async(grid_.failed_count, 0, sizeof(*grid_.failed_count), nullptr));
 }
+// Собирает номера узлов с недопустимым газодинамическим состоянием.
 void PartitionGpu::failed_nodes(std::vector<MeshIndex>& failed, bool implicit) {
     if (implicit) {
         reset_failed_count();
@@ -413,6 +437,7 @@ void PartitionGpu::failed_nodes(std::vector<MeshIndex>& failed, bool implicit) {
     if (count) check(gpu::copy(failed.data(), grid_.failed_nodes, count*sizeof(failed[0]), gpu::Copy::ToHost));
 }
 
+// Собирает только собственные узлы раздела для отчёта или многостадийного шага.
 void PartitionGpu::download_owned(std::vector<double>& compact) const {
     if (compact.empty())
         return;
@@ -426,15 +451,18 @@ void PartitionGpu::download_owned(std::vector<double>& compact) const {
     }
     check(gpu::copy(compact.data(), source, compact.size()*sizeof(double), gpu::Copy::ToHost));
 }
+// Раскладывает компактный вектор собственных узлов в полную нумерацию подобласти.
 double* PartitionGpu::expand_owned(const double* compact) const {
     partition_detail::transfer({grid_.geometry.components(), krylov_input_, nullptr}, grid_.owned,
                                grid_.owned_count, compact, nullptr);
     return krylov_input_;
 }
+// Копирует текущее поле с GPU в CPU-вектор.
 void PartitionGpu::download(std::vector<double>& state) const {
     if (!state.empty())
         check(aero::gpu::copy(state.data(), grid_.state, state.size() * sizeof(double), aero::gpu::Copy::ToHost));
 }
+// Загружает индексы отправки и приёма и готовит буферы одного соседа.
 PartitionGpu::Peer PartitionGpu::prepare(const std::vector<MeshIndex>& out, const std::vector<MeshIndex>& in,
                                          unsigned stride) {
     Peer peer;
@@ -443,6 +471,7 @@ PartitionGpu::Peer PartitionGpu::prepare(const std::vector<MeshIndex>& out, cons
     peer.buffer = storage_.allocate<double>(std::max(out.size(), in.size()) * stride);
     return peer;
 }
+// Упаковывает или распаковывает записи поля для обмена с соседом.
 void PartitionGpu::exchange(const Peer& peer, DoubleExchange::Buffer records, double* mapped, partition_detail::RecordField field,
                             bool pack) {
     if (!records.count)

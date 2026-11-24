@@ -11,6 +11,7 @@ namespace turbulence {
 // несколько координат могут соответствовать одной расчётной неизвестной.
 std::vector<double> wall_distances(const MeshPartition &, const PeriodicPartition *, const BoundaryPatches &,
                                    const std::vector<PeriodicPair> &, const Processes &, MeshIndex nodes);
+// Владеет полями SA, расстояниями до стенки и упакованными диффузионными связями.
 struct Storage {
     std::vector<double> w, distance, work;
     bool implicit_work=false;
@@ -23,6 +24,7 @@ struct Storage {
     std::vector<double> incoming;
     std::vector<LineVertex> line_vertices;
     std::vector<RowRange> line_segments;
+    // Строит короткие цепочки узлов для сглаживания уравнения SA.
     void prepare_lines(const viscosity::Operator& aes,double scale,const std::vector<MeshIndex>& owned);
     unsigned face_stride = 1;
     MeshIndex gas_face_entries=0; // Длина исходного списка: по одному вхождению грани на узел.
@@ -33,6 +35,7 @@ struct Storage {
         if (host || rows.empty())
             return 1;
         constexpr size_t lanes = 32;
+        // Округляет размер массива до границы группы совместного доступа GPU.
         const auto padded = [&](size_t i) {
             size_t longest = 0;
             for (size_t j = i; j < std::min(i + lanes, rows.size()); ++j)
@@ -61,6 +64,7 @@ struct Storage {
         return lanes;
     }
 
+    // Подготавливает представление граней конвективного переноса SA.
     template <class Grid> void prepare_faces(const Grid &grid, View &view, bool host) {
         // В списке инцидентности уже есть место для каждого вклада, включая граничные.
         gas_face_entries=grid.nodes ? grid.offsets[grid.nodes] : 0;
@@ -137,6 +141,7 @@ struct Storage {
     // Несколько пар элемента имеют одну среднюю вязкость. На CPU храним
     // полную строку подряд, на GPU чередуем элементы 32 соседних строк.
     bool prepare_element_pairs(const viscosity::Operator& aes,double scale);
+    // Упаковывает плотные диффузионные строки для регулярного доступа.
     bool pack_dense_rows(MeshIndex possible);
     std::vector<double> element_mean, molecular_mean;
     MeshIndex element_count = 0;
@@ -164,6 +169,7 @@ struct Storage {
             bind_work(v, work.data(), w.size());
         }
     }
+    // Размечает общий рабочий буфер SA и связывает его с представлением оператора.
     void bind_work(View &v, double *data, size_t n) const {
         if (!n || !data)
             return;
@@ -178,6 +184,7 @@ struct Storage {
             v.plain_update=data+7*n;
         }
     }
+    // Переносит подготовленные геометрию и коэффициенты SA на GPU.
     template <class Device> void upload(View &v, Device &device,bool share_faces=false) const {
         v.nodal_material = device.template allocate<View::Material>(w.size());
         v.lines={device.upload(line_vertices),device.upload(line_segments),line_segments.size()};

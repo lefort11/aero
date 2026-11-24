@@ -21,6 +21,7 @@ using namespace aero;
 typedef std::uint64_t U64;
 std::vector<std::pair<std::string, std::function<void()>>> tests;
 using aero_test::require;
+// Проверяет, что некорректный ввод завершается ожидаемой ошибкой.
 template <class F> void rejects(F action, const std::string& part = "") {
     try {
         action();
@@ -31,9 +32,11 @@ template <class F> void rejects(F action, const std::string& part = "") {
     }
     throw std::runtime_error("Expected FieldError");
 }
+// Добавляет именованную проверку в список тестов модуля.
 void add(const std::string& name, std::function<void()> test) {
     tests.push_back(std::make_pair(name, test));
 }
+// Создаёт небольшую тестовую сетку для проверки файлов полей.
 Mesh mesh(unsigned dimension) {
     MeshData d;
     d.dimension = dimension;
@@ -66,6 +69,7 @@ Mesh mesh(unsigned dimension) {
     d.boundary_patch.assign(d.boundary_faces.size(), 0);
     return Mesh(d);
 }
+// Создаёт тестовый снимок с полями разных размещений и компонент.
 FieldSnapshot sample(unsigned dim = 2) {
     FieldSnapshot s(mesh(dim), 100, 0.001);
     for (FieldLocation location :
@@ -102,23 +106,28 @@ bool same(const FieldSnapshot& a, const FieldSnapshot& b) {
     }
     return true;
 }
+// Сериализует тестовые данные в строку выбранного формата.
 std::string encode(const FieldSnapshot& s, FieldFormat format) {
     std::ostringstream out(std::ios::binary);
     s.write(out, format);
     return out.str();
 }
+// Читает тестовые данные из строкового представления.
 FieldSnapshot decode(const std::string& bytes, const FieldReadLimits& limits = FieldReadLimits()) {
     std::istringstream in(bytes, std::ios::binary);
     return FieldSnapshot::read(in, limits);
 }
+// Меняет указанный фрагмент заготовки для проверки повреждённого ввода.
 std::string replaced(std::string text, const std::string& from, const std::string& to) {
     const std::size_t pos = text.find(from);
     require(pos != std::string::npos, "Missing test token: " + from);
     text.replace(pos, from.size(), to);
     return text;
 }
+// Владеет временным файлом проверки и удаляет его при выходе из области видимости.
 struct TempFile {
     std::string path;
+    // Создаёт уникальное имя временного файла теста.
     TempFile() {
         static unsigned counter = 0;
         path = "build/output-test-" +
@@ -127,12 +136,15 @@ struct TempFile {
         std::ifstream existing(path.c_str());
         require(!existing, "Temporary file already exists");
     }
+    // Удаляет временные файлы и каталоги, созданные объектом.
     ~TempFile() { std::remove(path.c_str()); }
 };
+// Читает или записывает беззнаковое 64-битное значение в формате файла полей.
 void u64(std::string& bytes, U64 n) {
     for (unsigned i = 0; i < 8; ++i)
         bytes += static_cast<char>((n >> (8 * i)) & 255);
 }
+// Читает или записывает строку вместе с её длиной.
 void string(std::string& bytes, const std::string& text) {
     u64(bytes, text.size());
     bytes += text;
@@ -143,6 +155,7 @@ void set_u64(std::string& bytes, std::size_t offset, U64 n) {
     for (unsigned i = 0; i < 8; ++i)
         bytes[offset + i] = static_cast<char>((n >> (8 * i)) & 255);
 }
+// Оборачивает тестовые байты в сжатый контейнер для проверки чтения.
 std::string packed(const std::string& bytes) {
     std::ostringstream out(std::ios::binary);
     io::LzmaOutputBuffer buffer(out);
@@ -151,19 +164,28 @@ std::string packed(const std::string& bytes) {
     buffer.finish();
     return out.str();
 }
+// Тестовая локаль с десятичной запятой для проверки независимости формата от ОС.
 struct Comma : std::numpunct<char> {
+    // Возвращает десятичную запятую для проверки работы при нестандартной локали.
     char do_decimal_point() const override { return ','; }
 };
+// Тестовый входной поток, запрещающий произвольное позиционирование.
 struct NoSeek : std::stringbuf {
+    // Подключает строку как входной поток без возможности перемещения позиции.
     explicit NoSeek(const std::string& text) : std::stringbuf(text, std::ios::in) {}
+    // Имитирует запрет позиционирования тестового входного потока.
     pos_type seekoff(off_type, std::ios_base::seekdir, std::ios_base::openmode) override {
         return pos_type(off_type(-1));
     }
+    // Имитирует запрет позиционирования тестового входного потока.
     pos_type seekpos(pos_type, std::ios_base::openmode) override { return pos_type(off_type(-1)); }
 };
+// Тестовый поток, имитирующий ошибку записи после заданного числа символов.
 struct ShortOutput : std::streambuf {
     std::size_t remaining;
+    // Задаёт число символов, после которого тестовый поток откажет в записи.
     explicit ShortOutput(std::size_t n) : remaining(n) {}
+    // Имитирует отказ выходного потока после исчерпания разрешённого объёма записи.
     int_type overflow(int_type value) override {
         if (!remaining)
             return traits_type::eof();
@@ -543,6 +565,7 @@ void register_binary_layout() {
     });
 }
 
+// Формирует набор проверок модуля и выполняемых тестовых сценариев.
 void register_tests() {
     register_mesh_identity();
     register_formats();
@@ -550,6 +573,7 @@ void register_tests() {
     register_binary_layout();
 }
 }
+// Запускает проверки модуля и возвращает ненулевой код при ошибке.
 int main() {
     register_tests();
     std::size_t failed = 0;

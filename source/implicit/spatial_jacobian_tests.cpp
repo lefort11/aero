@@ -76,6 +76,7 @@ void check_product(SpatialResidual& op, unsigned d, MeshIndex nodes, double spee
     TestField state(device,u.size()), u0(device,u.size()), vector(device,u.size()), result(device,u.size());
     implicit::SpatialJacobian matrix(op);
     u0.set(initial);
+    // Вычисляет эталонную невязку для проверки производных или коррекции.
     auto residual = [&](const Vector& field) -> Vector {
         state.set(field);
         op.assemble_rhs(state.data(), u0.data(), result.data());
@@ -133,6 +134,7 @@ void check_product(SpatialResidual& op, unsigned d, MeshIndex nodes, double spee
 }
 }
 
+// Проверяет сборку и действие пространственной матрицы Якоби.
 void test_spatial_jacobian(int device) {
     using namespace aero;
     if (device<0) check_matrix_budget();
@@ -143,6 +145,7 @@ void test_spatial_jacobian(int device) {
     for (unsigned d = 1; d <= 3; ++d) {
         const Mesh mesh = aero_test::test_mesh(d);
         MedianDual dual(mesh);
+        // Выполняет один вариант текущего численного теста.
         auto run = [&](const FreeBoundaryRules* rules, double speed) {
             BoundaryPatches patches;
             const BoundaryConfig config = rules ? patches.add_free(*rules) : BoundaryConfig{};

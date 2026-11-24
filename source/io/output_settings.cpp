@@ -52,6 +52,7 @@ void entry(OutputZone& z, const std::string& key, const std::string& value, cons
     } else
         throw std::invalid_argument(where + ": unknown setting or invalid value: " + key + " = " + value);
 }
+// Определяет расширение выходного имени для выбора формата.
 std::size_t extension(const std::string& name) {
     const auto dot = name.rfind('.');
     // Точку ищем только в имени файла. Точка внутри имени каталога не относится к расширению.
@@ -112,6 +113,7 @@ std::string output_filename(const OutputZone& zone, std::uint64_t step) {
     auto name = zone.file;
     return name.insert(extension(name), suffix.str());
 }
+// Проверяет имена, поля и расписания зон вывода.
 void validate_output_zones(const std::vector<OutputZone>& zones) {
     std::set<std::string> names;
     std::vector<std::string> keys;
@@ -162,6 +164,7 @@ void validate_output_zones(const std::vector<OutputZone>& zones) {
         keys.push_back(key);
     }
 }
+// Разбирает секции зон вывода и проверяет их параметры.
 std::vector<OutputZone> read_output_zones(const std::string& path, std::vector<std::string>* warnings) {
     errno = 0;
     std::ifstream input(path.c_str());

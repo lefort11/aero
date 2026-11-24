@@ -9,12 +9,14 @@
 namespace {
 // Тест показывает запуск ядра вызывающей стороной для набора независимых пар состояний.
 using namespace aero::device_tests;
+// Сохраняет диагностический текст ошибки GPU-проверки.
 int report(aero::gpu::Status code, char* error, unsigned capacity) {
     if (code != aero::gpu::Status::Success && error && capacity)
         snprintf(error, capacity, "CUDA: %s", aero::gpu::message(code));
     return code == aero::gpu::Status::Success ? 0 : 1;
 }
 }
+// Возвращает число устройств, доступных GPU-проверкам потоков.
 extern "C" int euler_test_device_count(int* count, char* error, unsigned capacity) {
     *count = 0;
     aero::gpu::Status code = aero::gpu::count(count);
@@ -25,6 +27,7 @@ extern "C" int euler_test_device_count(int* count, char* error, unsigned capacit
     }
     return report(code, error, capacity);
 }
+// Запускает выбранное потоковое ядро на GPU и возвращает результат проверки.
 extern "C" int euler_test_device_flux(int device, unsigned mode, unsigned dimension, const double* left,
                                     const double* right, const double* aux_left, const double* aux_right,
                                     const double* direction, double gamma, aero::EulerFluxResult* result,

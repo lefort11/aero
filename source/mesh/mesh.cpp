@@ -28,14 +28,17 @@ typedef std::pair<Index, Index> Edge;
 static_assert(sizeof(double) == 8 && std::numeric_limits<double>::is_iec559,
               "The mesh format requires IEEE-754 binary64");
 
+// Сообщает ошибку чтения или несогласованности сетки.
 [[noreturn]] void fail(const std::string& message) {
     throw MeshError(message);
 }
 
+// Возвращает число строк CSR по массиву смещений.
 std::size_t rows(const MeshCsr& csr) {
     return csr.offsets.empty() ? 0 : csr.offsets.size() - 1;
 }
 
+// Проверяет монотонность смещений и допустимость индексов CSR.
 void validate_csr(const MeshCsr& csr, std::size_t target_count, const char* name) {
     if (csr.offsets.empty())
         fail(std::string(name) + ": missing offsets");
@@ -49,6 +52,7 @@ void validate_csr(const MeshCsr& csr, std::size_t target_count, const char* name
             fail(std::string(name) + ": index out of range");
 }
 
+// Получает упорядоченную копию строки для проверки топологии.
 std::vector<Index> sorted_row(const MeshCsr& csr, std::size_t row) {
     const std::size_t first = static_cast<std::size_t>(csr.offsets[row]);
     const std::size_t last = static_cast<std::size_t>(csr.offsets[row + 1]);
@@ -74,11 +78,14 @@ std::vector<Index> canonical_face(const MeshCsr& faces, std::size_t face) {
     return result;
 }
 
+// Система непересекающихся множеств для проверки связности сетки.
 class DisjointSet {
 public:
+    // Инициализирует отдельное множество для каждого элемента.
     explicit DisjointSet(std::size_t count) : parent_(count) {
         std::iota(parent_.begin(), parent_.end(), std::size_t(0));
     }
+    // Возвращает корневую запись дерева или представителя множества.
     std::size_t root(std::size_t x) {
         while (parent_[x] != x) {
             parent_[x] = parent_[parent_[x]];
@@ -86,7 +93,9 @@ public:
         }
         return x;
     }
+    // Объединяет два множества связанных элементов сетки.
     void join(std::size_t a, std::size_t b) { parent_[root(a)] = root(b); }
+    // Проверяет, образуют ли рассматриваемые сущности одну связную компоненту.
     bool connected() {
         if (parent_.empty())
             return true;
@@ -101,13 +110,16 @@ private:
     std::vector<std::size_t> parent_;
 };
 
+// Вхождение ребра в грань с направлением обхода.
 struct EdgeUse {
     Edge edge;
     std::size_t face;
     int direction;
+    // Сравнивает ключи сущностей для упорядочения и поиска.
     bool operator<(const EdgeUse& other) const { return edge < other.edge; }
 };
 
+// Проверяет связность и замкнутость оболочки объёмной ячейки.
 void validate_cell_shell(const MeshData& d, std::size_t cell) {
     const Index first = d.cell_faces.offsets[cell], last = d.cell_faces.offsets[cell + 1];
     // Соседние ячейки одного потока переиспользуют память для проверки оболочки.
@@ -178,6 +190,7 @@ void validate_cell_shell(const MeshData& d, std::size_t cell) {
     }
 }
 
+// Проверяет согласованность границ ячейки с её размерностью.
 void validate_cell_boundary(const MeshData& d, std::size_t cell) {
     const Index first = d.cell_faces.offsets[cell], last = d.cell_faces.offsets[cell + 1];
     if (d.dimension == 3) {
@@ -315,8 +328,10 @@ void validate_topology(const MeshData& d) {
     validate_exterior_faces(d, incidence);
 }
 
+// Записывает геометрию и топологию сетки в выбранной версии формата.
 class Writer {
 public:
+    // Подключает выходной поток и записывает заголовок выбранного формата сетки.
     Writer(std::ostream& output, MeshFormat format, Index version) : output_(output), text_(format == MeshFormat::Text) {
         if (format != MeshFormat::Text && format != MeshFormat::Binary)
             fail("Unsupported mesh encoding");
@@ -329,6 +344,7 @@ public:
         if (text_)
             literal("TEXT\n");
     }
+    // Передаёт блок байтов формата сетки с проверкой состояния потока.
     void block(const char* name) {
         if (text_) {
             output_.put('\n');
@@ -336,13 +352,16 @@ public:
             output_.put('\n');
         }
     }
+    // Читает или записывает беззнаковое 64-битное значение формата сетки.
     void u64(std::uint64_t value) { number_codec::write_word(output_, value, text_); }
+    // Записывает знак ориентации грани относительно ячейки.
     void orientation(std::int8_t value) {
         if (text_)
             literal(value == 1 ? "1 " : "-1 ");
         else
             output_.put(static_cast<char>(value == 1 ? 1 : 255));
     }
+    // Читает или записывает координату в вещественном представлении формата.
     void real(double value) {
         if (text_) {
             numeric_.clear();
@@ -368,9 +387,11 @@ public:
             for (T value : values) (this->*one)(value);
         }
     }
+    // Записывает имя граничного участка с контролем состояния потока.
     void name(const std::string& value) {
         io::NativeFileCodec::write_string(output_,text_,value,'\n',fail,"Boundary name is too large to write");
     }
+    // Проверяет корректное завершение обработки сеточного файла.
     void finish() {
         block("END");
         if (!output_)
@@ -378,6 +399,7 @@ public:
     }
 
 private:
+    // Записывает служебный текстовый разделитель формата сетки.
     void literal(const char* text) { output_.write(text, static_cast<std::streamsize>(std::strlen(text))); }
     std::ostream& output_;
     bool text_;
@@ -399,6 +421,7 @@ template<class Archive, class Data> void transfer_mesh_arrays(Archive& archive, 
     archive.array("BOUNDARY_PATCH", data.boundary_patch, &Archive::u64);
 }
 
+// Записывает геометрию и топологию без внешнего сжатого контейнера.
 void write_payload(const MeshData& d, std::ostream& output, MeshFormat format,
                    const std::uint64_t* fingerprint_word = nullptr) {
     Writer writer(output, format, fingerprint_word ? mesh_format::legacy_version : mesh_format::current_version);
@@ -423,12 +446,14 @@ void write_payload(const MeshData& d, std::ostream& output, MeshFormat format,
 
 } // namespace
 
+// Создаёт хранилище сетки; при переданных данных проверяет их и строит производные связи.
 Mesh::Mesh(MeshData data) : data_(std::move(data)) {
     validate();
     build_edges();
     build_cell_connectivity();
 }
 
+// Нумерует рёбра по возрастанию пары номеров их концов.
 void Mesh::build_edges() {
     if (data_.dimension == 1) {
         build_line_edges();
@@ -438,6 +463,7 @@ void Mesh::build_edges() {
     number_face_edges(node_offsets);
 }
 
+// Строит рёбра одномерной сетки из концов её ячеек.
 void Mesh::build_line_edges() {
     const auto m = view();
     // В одном измерении каждая ячейка уже является отдельным ребром.
@@ -478,6 +504,7 @@ void collect_edge_neighbours(MeshView m, Index n, MeshIndexSpan incident_faces, 
 }
 }
 
+// Делит рёбра по меньшему узлу и возвращает начала этих групп в edge_end_.
 std::vector<MeshIndex> Mesh::group_edges_by_node() {
     const auto m = view();
     // Ребро принадлежит меньшему из двух номеров. Каждый поток сортирует только
@@ -506,6 +533,7 @@ std::vector<MeshIndex> Mesh::group_edges_by_node() {
     return offsets;
 }
 
+// Записывает для каждой грани номера уже построенных рёбер её контура.
 void Mesh::number_face_edges(const std::vector<MeshIndex>& offsets) {
     const auto m = view();
     // В 3D на каждую вершину контура приходится одно ребро, в 2D грань сама является ребром.
@@ -552,11 +580,13 @@ void Mesh::collect_cell_connectivity(Index c, std::vector<Index>& nodes, std::ve
     edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
 }
 
+// Строит производные CSR-связи ячеек с узлами и рёбрами.
 void Mesh::build_cell_connectivity() {
     // Независимые блоки формируют строки в прежнем порядке. Один рабочий
     // буфер блока обслуживает много ячеек, в том числе произвольные многогранники.
     const Index count = rows(data_.cell_faces), block_size = 1024;
     const Index blocks = (count + block_size - 1) / block_size;
+    // Временные списки узлов и рёбер группы ячеек при параллельной сборке.
     struct Block { std::vector<Index> nodes, edges; };
     std::vector<Block> parts(blocks);
     cell_nodes_.offsets.resize(count + 1);
@@ -586,27 +616,33 @@ void Mesh::build_cell_connectivity() {
     }, 2);
 }
 
+// Методы Mesh проверяют номер элемента и выбрасывают MeshError при ошибке.
+// Во вложенных обращениях проверка локальной позиции остаётся обязанностью вызывающего кода.
 MeshNode Mesh::node(MeshIndex id) const {
     if (id >= data_.x.size())
         fail("Node index out of range");
     return view().node(id);
 }
+// Возвращает дескриптор ребра в соответствующей нумерации сетки.
 MeshEdge Mesh::edge(MeshIndex id) const {
     if (id >= edge_begin_.size())
         fail("Edge index out of range");
     return view().edge(id);
 }
+// Возвращает дескриптор грани в соответствующей нумерации сетки.
 MeshFace Mesh::face(MeshIndex id) const {
     if (id >= rows(data_.face_nodes))
         fail("Face index out of range");
     return view().face(id);
 }
+// Возвращает дескриптор ячейки в соответствующей нумерации сетки.
 MeshCell Mesh::cell(MeshIndex id) const {
     if (id >= rows(data_.cell_faces))
         fail("Cell index out of range");
     return view().cell(id);
 }
 
+// Указатели на память CPU действительны, пока существует исходное хранилище и его не заменили.
 MeshView Mesh::view() const noexcept {
     MeshView v = {};
     v.dimension = data_.dimension;
@@ -637,6 +673,7 @@ MeshView Mesh::view() const noexcept {
     return v;
 }
 
+// Проверяет геометрию, индексы, связность и граничные метки сетки.
 void Mesh::validate() const {
     const MeshData& d = data_;
     if (d.dimension < 1 || d.dimension > 3)
@@ -663,6 +700,7 @@ void Mesh::validate() const {
     validate_topology(d);
 }
 
+// Файловый ввод и вывод выполняются на CPU. Путь передаётся в узкой кодировке системы.
 Mesh Mesh::read(const std::string& path, const MeshReadLimits& limits) {
     if (path.find('\0') != std::string::npos)
         fail("NUL in mesh path");
@@ -672,6 +710,7 @@ Mesh Mesh::read(const std::string& path, const MeshReadLimits& limits) {
     return read(input, limits);
 }
 
+// Файловый ввод и вывод выполняются на CPU. Путь передаётся в узкой кодировке системы.
 Mesh Mesh::read(std::istream& input, const MeshReadLimits& limits) try {
     mesh_input::Reader reader(input, limits);
     reader.block("DIMENSION");
@@ -711,6 +750,7 @@ Mesh Mesh::read(std::istream& input, const MeshReadLimits& limits) try {
 }
 
 namespace {
+// Выбирает обычную или сжатую запись сетки по заданному формату.
 void write_encoded(const MeshData& data, std::ostream& output, MeshFormat format) {
     try {
         if (format == MeshFormat::Lzma) {
@@ -728,6 +768,7 @@ void write_encoded(const MeshData& data, std::ostream& output, MeshFormat format
 }
 }
 
+// При ошибке записи часть выходного файла уже может находиться на диске.
 void Mesh::write(const std::string& path, MeshFormat format) const {
     if (format != MeshFormat::Text && format != MeshFormat::Binary && format != MeshFormat::Lzma)
         fail("Unsupported mesh encoding");
@@ -742,12 +783,14 @@ void Mesh::write(const std::string& path, MeshFormat format) const {
         fail("Cannot finish writing mesh: " + path);
 }
 
+// При ошибке записи часть выходного файла уже может находиться на диске.
 void Mesh::write(std::ostream& output, MeshFormat format) const {
     // Исходная связность проверена в конструкторе и доступна только для чтения.
     // В частности, вычисление SHA-256 не требует новой проверки всех оболочек.
     write_encoded(data_, output, format);
 }
 
+// Подаёт канонические байты в SHA-256 полей и recovery, включая старые файлы.
 void Mesh::write_fingerprint_payload(std::ostream& output) const {
     write_payload(data_, output, MeshFormat::Binary, &fingerprint_word_);
 }

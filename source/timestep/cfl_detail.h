@@ -8,16 +8,19 @@
 
 namespace aero {
 namespace cfl_detail {
+// Номер площадки и её площадь в списке связей узла.
 struct Entry {
     size_t face;
     double area;
 };
+// Невладеющая CSR-геометрия площадок и объёмов для оценки шага CFL.
 struct Grid {
     size_t nodes;
     const size_t* offsets;
     const Entry* entries;
     const double* volumes;
 };
+// Возвращает нейтральное ограничение шага для начала минимизации.
 AERO_HOST_DEVICE inline CflStep unconstrained() {
     return {max_finite_double, static_cast<size_t>(-1)};
 }
@@ -25,6 +28,7 @@ AERO_HOST_DEVICE inline CflStep unconstrained() {
 AERO_HOST_DEVICE inline CflStep minimum(CflStep a, CflStep b) {
     return (b.dt < a.dt || (b.dt == a.dt && b.node < a.node)) ? b : a;
 }
+// Переводит сумму спектральных скоростей площадок в допустимый узловой шаг.
 AERO_HOST_DEVICE inline CflStep from_sum(double sum, double volume, double cfl, size_t node) {
     if (sum == 0)
         return unconstrained();
@@ -48,6 +52,7 @@ AERO_HOST_DEVICE inline CflStep from_sum(double sum, double volume, double cfl, 
         return unconstrained();
     return {dt > 0 ? dt : -1, node};
 }
+// Скорость волн на площадке и модуль её площади.
 struct FaceSpeed {
     double speed, area;
 };
@@ -64,9 +69,11 @@ AERO_HOST_DEVICE inline CflStep local(const Offset* offsets, double volume, doub
     }
     return from_sum(sum, volume, cfl, node);
 }
+// Читает скорость волн и площадь по записи связи узла с площадкой.
 struct GridSpeeds {
     const Entry* entries;
     WaveSpeeds speeds;
+    // Читает скорость волны внутренней или внешней площадки узла.
     AERO_HOST_DEVICE FaceSpeed operator()(size_t j) const {
         const Entry e = entries[j];
         return {e.face < speeds.edge_count ? speeds.edge[e.face]
@@ -74,6 +81,7 @@ struct GridSpeeds {
                 e.area};
     }
 };
+// Суммирует по всем площадкам узла произведения скорости на площадь. Ориентация потока для CFL роли не играет.
 AERO_HOST_DEVICE inline CflStep local(Grid grid, WaveSpeeds speeds, double cfl, size_t node) {
     return local(grid.offsets, grid.volumes[node], cfl, node, GridSpeeds{grid.entries, speeds});
 }
@@ -82,8 +90,11 @@ AERO_HOST_DEVICE inline CflStep local(Grid grid, WaveSpeeds speeds, double cfl, 
 template <class ReadNode> struct MinimumStep {
     using value_type = CflStep;
     ReadNode read_node; // Возвращает ограничение CFL для одного узла текущей стадии.
+    // Начинает редукцию с отсутствия ограничения на шаг.
     AERO_HOST_DEVICE void init(CflStep& best) const { best = unconstrained(); }
+    // Сравнивает шаг одного узла с текущим минимумом редукции.
     AERO_HOST_DEVICE void operator()(size_t node, CflStep& best) const { best = minimum(best, read_node(node)); }
+    // Выбирает меньший шаг из двух частичных результатов редукции.
     AERO_HOST_DEVICE void join(volatile CflStep& best, const volatile CflStep& next) const {
         const CflStep chosen = minimum({best.dt, best.node}, {next.dt, next.node});
         best.dt = chosen.dt;
@@ -91,6 +102,7 @@ template <class ReadNode> struct MinimumStep {
     }
 };
 #ifndef KOKKOS_ENABLE_CUDA
+// Находит минимальный допустимый шаг по узлам на CPU.
 template <class ReadNode> CflStep host_min(size_t nodes, const ReadNode& read_node) {
     CflStep result = unconstrained();
     // На малой сетке время запуска команды дороже обхода. Правило выбора шага общее.
@@ -107,7 +119,9 @@ template <class ReadNode> CflStep host_min(size_t nodes, const ReadNode& read_no
 #endif
 // Объект хранит на устройстве сетку и рабочую память для поиска минимума между вызовами.
 void* upload(Grid grid, int device);
+// Освобождает GPU-хранилище геометрии оценки CFL.
 void release(void* storage) noexcept;
+// Вычисляет минимальный шаг по узлам с помощью выбранного исполнителя.
 CflStep reduce(void* storage, WaveSpeeds speeds, double cfl, void* stream);
 }
 }

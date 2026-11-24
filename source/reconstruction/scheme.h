@@ -49,8 +49,10 @@ inline ReconstructionSchemeInfo reconstruction_scheme(const std::string& name,
     throw std::invalid_argument(where + ": unknown value " + name);
 }
 
+// Ошибка параметров или построения шаблона реконструкции.
 class ReconstructionError : public std::runtime_error {
 public:
+    // Создаёт исключение с переданным диагностическим сообщением.
     explicit ReconstructionError(const std::string& message) : std::runtime_error(message) {}
 };
 

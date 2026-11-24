@@ -258,6 +258,7 @@ def verify_case(work, case, aero, meshdec, launcher):
         )
 
 
+# Разбирает параметры запуска, выполняет набор QA-проверок и возвращает статус результата.
 def main():
     parser = mpi_parser(__doc__)
     args = parser.parse_args()

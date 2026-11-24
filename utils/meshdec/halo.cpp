@@ -3,8 +3,10 @@
 namespace aero {
 namespace meshdec {
 namespace {
+// Пара номера строки и значения для внешней сортировки halo-связей.
 struct Pair {
     Id row, value;
+    // Сравнивает ключи сущностей для упорядочения и поиска.
     bool operator<(const Pair& b) const { return row == b.row ? value < b.value : row < b.row; }
 };
 
@@ -52,8 +54,10 @@ void mark_boundary(const std::string& dir, Id count) {
 // Выдаём вершины по одной, чтобы даже большой многоугольник или многогранник помещался в бюджет внешней сортировки.
 struct CellNodes {
     Table<Id> cf, cf_start, fn, fn_start;
+    // Открывает дисковые таблицы связей ячеек, граней и узлов.
     explicit CellNodes(const std::string& dir)
         : cf(dir + "/cf"), cf_start(dir + "/cf-start"), fn(dir + "/fn"), fn_start(dir + "/fn-start") {}
+    // Перебирает узлы ячейки через дисковые связи ячейка–грани–узлы.
     template <class Visit> void each(Id c, Visit visit) {
         for (Id j = cf_start.at(c); j < cf_start.at(c + 1); ++j) {
             const Id f = cf.at(j);
@@ -65,13 +69,17 @@ struct CellNodes {
 // Записывает строки смежности в два файла. Смещение строки — число уже записанных адресов.
 class AddressRows {
 public:
+    // Открывает выходные таблицы смещений и ссылок строк halo.
     explicit AddressRows(const std::string& base)
         : offsets(output(base + "-start")), refs(output(base + "-refs")) {}
+    // Запоминает начальное смещение новой строки ссылок.
     void start_row() { put(offsets, total); }
+    // Добавляет очередную ссылку в текущую строку дисковой таблицы.
     void append(Address a) {
         write_address(refs, a);
         ++total;
     }
+    // Записывает конечное смещение CSR и завершает таблицу ссылок.
     void finish() {
         // Конец последней строки нужен и при пустом последнем списке.
         start_row();
@@ -83,6 +91,7 @@ private:
     std::ofstream offsets, refs; // Начала строк и сами пары (лист, смещение).
     Id total = 0;                // Число пар во всех уже записанных строках.
 };
+// Строит звёзды ячеек для узлов на стыках листьев.
 void boundary_stars(const std::string& dir, Table<Id>& needed, Table<Id>& starts, Table<Id>& incidence,
                     Table<Address>& cells) {
     AddressRows rows(dir + "/stars");
@@ -107,6 +116,7 @@ void leaf_rows(const std::string& dir, Table<Pair>& core, Table<Pair>& outer, Ta
                Visit visit) {
     AddressRows rows(dir + "/halo");
     Id i = 0, j = 0;
+    // Добавляет очередную геометрическую сущность или связь в собираемый список.
     const auto emit = [&](Id leaf, Id c) {
         visit(leaf, c);
         rows.append(cells.at(c));
@@ -149,6 +159,7 @@ void expand_stars(Table<Pair>& centers, Table<Id>& starts, Table<Id>& incidence,
         previous = p;
     }
 }
+// Строит дополнительные строки дальнего halo для расширенных шаблонов.
 void far_rows(const std::string& dir, Table<Pair>& core, Table<Pair>& outer, Table<Pair>& far,
               Table<Address>& cells, Id leaves) {
     AddressRows rows(dir + "/far");
@@ -174,6 +185,7 @@ void far_rows(const std::string& dir, Table<Pair>& core, Table<Pair>& outer, Tab
 }
 }
 
+// Готовит ближние и дальние связи halo для архива разбиения.
 void plan_halo(const std::string& dir, Id memory) {
     const auto h = Table<Header>(dir + "/header").at(0);
     CellNodes topology(dir);
@@ -200,6 +212,7 @@ void plan_halo(const std::string& dir, Id memory) {
     Table<std::uint8_t> boundary(dir + "/boundary-nodes");
     Sorter<Pair> neighbors(dir + "/cross-edges.sort", memory / 2);
     Sorter<Id> near_patch(dir + "/near-patch.sort", memory / 2);
+    // Добавляет связь концов ребра в построение halo.
     const auto edge = [&](Id a, Id b) {
         const Id left = nodes.at(a).leaf, right = nodes.at(b).leaf;
         if (left != right) {

@@ -4,20 +4,24 @@
 namespace aero {
 using namespace periodic_mpi;
 namespace {
+// Ключ периодического ребра, ссылки на концы и вектор площади.
 struct EdgeData {
     Key key;
     Ref a, b;
     Coordinate area;
 };
+// Участник группы периодических рёбер и направление исходного ребра.
 struct Member {
     EdgeData edge;
     Coordinate direction;
 };
+// Объём и характерная высота исходного узла у его представителя.
 struct Volume {
     Ref node;
     Id original;
     double value, height;
 };
+// Фрагмент внешней площадки с порядком сборки, участком и геометрией.
 struct Piece {
     Key order;
     Ref node;
@@ -25,16 +29,19 @@ struct Piece {
     Coordinate area, position;
 };
 
+// Упаковывает ключ, концы и площадь периодического ребра в сообщение.
 void put_edge(std::string& s, const EdgeData& e) {
     put(s, e.key);
     put(s, e.a);
     put(s, e.b);
     put(s, e.area);
 }
+// Восстанавливает периодическое ребро из сообщения.
 EdgeData read_edge(Reader& r) {
     return {r.key(), r.ref(), r.ref(), r.point()};
 }
 
+// Находит представителей узлов с учётом периодических связей MPI.
 std::vector<Ref> node_representatives(const MeshPartition& part, const Labels& labels, const Processes& w) {
     std::vector<Ref> result;
     Messages replies;
@@ -68,6 +75,7 @@ std::vector<Ref> node_representatives(const MeshPartition& part, const Labels& l
     return result;
 }
 
+// Собирает рёбра подобласти в нумерации периодических представителей.
 std::vector<EdgeData> collect_edges(const MeshPartition& part, CvView cv, const Labels& labels,
                                     const std::vector<Ref>& nodes, const Processes& w) {
     const auto m = part.mesh.view();
@@ -97,6 +105,7 @@ std::vector<EdgeData> collect_edges(const MeshPartition& part, CvView cv, const 
     exchange(
         w,
         [&](Messages& out) {
+            // Направляет собранный периодический вклад процессу-владельцу.
             const auto deliver = [&](const EdgeData& e) {
                 if (e.a.rank == w.rank || e.b.rank == w.rank)
                     incident.push_back(e);
@@ -223,6 +232,7 @@ PeriodicPartition partition_periodic(const MeshPartition& part, CvView cv,
             grid.ids.push_back(n.first);
             grid.owners.push_back(n.second);
         }
+        // Переводит глобальную периодическую сущность в локальную нумерацию.
         const auto local = [&](Ref n) -> Id {
             const auto it = std::lower_bound(grid.ids.begin(), grid.ids.end(), n.key.first);
             if (it == grid.ids.end() || *it != n.key.first)

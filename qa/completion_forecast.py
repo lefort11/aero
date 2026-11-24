@@ -8,10 +8,12 @@ from mpi_common import ROOT, mpi_parser, mpi_workspace
 from mpi_geometry import run
 
 
+# Извлекает прогнозы завершения из журнала решателя.
 def forecasts(log):
     return re.findall(r"^ETA  step (\d+)  \|  (.+)$", log, re.M)
 
 
+# Разбирает параметры запуска, выполняет набор QA-проверок и возвращает статус результата.
 def main():
     args = mpi_parser(__doc__).parse_args()
     with mpi_workspace("eta-") as work:

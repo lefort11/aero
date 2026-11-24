@@ -6,6 +6,7 @@
 
 namespace aero {
 namespace detail {
+// Добавляет локальные коэффициенты в итоговые массивы параллельной сборки шаблона.
 template <class T> void append_values(std::vector<T>& to, const std::vector<T>& from) {
     to.insert(to.end(), from.begin(), from.end());
 }

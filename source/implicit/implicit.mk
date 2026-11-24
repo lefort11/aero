@@ -31,13 +31,25 @@ $(BICGSTAB_OBJECT): source/implicit/bicgstab.cpp $(BICGSTAB_HEADERS) $(SPATIAL_H
 $(NEWTON_OBJECT): source/implicit/bdf1_step.cpp source/implicit/linear_iteration_report.h source/implicit/bdf1_step.h source/implicit/newton_vectors.h $(BICGSTAB_HEADERS) $(SPATIAL_HEADERS) $(IMPLICIT_HEADERS) | $(BUILD)
 	$(compiling)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(IMPLICIT_FLAGS) -c $< -o $@
-$(IMPLICIT_LIBRARY): $(IMPLICIT_OBJECT) $(SPATIAL_OBJECT) $(BICGSTAB_OBJECT) $(NEWTON_OBJECT)
+ifneq ($(wildcard source/multigrid/coarse_step.h),)
+MULTIGRID_OBJECTS := $(BUILD)/aggregates_$(EBR_TAG).o $(BUILD)/coarse_step_$(EBR_TAG).o
+MULTIGRID_HEADERS := $(wildcard source/multigrid/*.h)
+$(BUILD)/aggregates_$(EBR_TAG).o: source/multigrid/aggregates.cpp $(MULTIGRID_HEADERS) $(SPATIAL_HEADERS) | $(BUILD)
+	$(compiling)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(IMPLICIT_FLAGS) -c $< -o $@
+$(BUILD)/coarse_step_$(EBR_TAG).o: source/multigrid/coarse_step.cpp $(MULTIGRID_HEADERS) $(IMPLICIT_HEADERS) $(BICGSTAB_HEADERS) | $(BUILD)
+	$(compiling)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(IMPLICIT_FLAGS) -c $< -o $@
+$(NEWTON_OBJECT): $(MULTIGRID_HEADERS)
+endif
+$(IMPLICIT_LIBRARY): $(IMPLICIT_OBJECT) $(SPATIAL_OBJECT) $(BICGSTAB_OBJECT) $(NEWTON_OBJECT) $(MULTIGRID_OBJECTS)
 	$(archiving)
 	$(AR) rcs $@ $^
 IMPLICIT_TEST_SOURCES := source/implicit/csgs_tests.cpp source/implicit/block_jacobi_tests.cpp source/implicit/lf_edge_jacobian_tests.cpp
 IMPLICIT_TEST_SOURCES += source/implicit/spatial_jacobian_tests.cpp
 IMPLICIT_TEST_SOURCES += source/implicit/bdf1_linear_tests.cpp
 IMPLICIT_TEST_SOURCES += source/implicit/bdf1_step_tests.cpp
+IMPLICIT_TEST_SOURCES += $(wildcard source/multigrid/coarse_step_tests.cpp)
 $(IMPLICIT_TEST): $(BICGSTAB_HEADERS)
 $(IMPLICIT_TEST): tests/test_mesh.h tests/test_field.h $(SPATIAL_HEADERS) $(RES_LIB) $(RES_DEPS)
 $(IMPLICIT_TEST): $(IMPLICIT_TEST_SOURCES) source/implicit/lf_edge_jacobian.h source/eulersolver/euler.h source/eulersolver/lax_friedrichs.h tests/device_cases.h tests/test_checks.h tests/device_test_buffer.h $(IMPLICIT_HEADERS) $(IMPLICIT_LIBRARY) $(IMPLICIT_GPU_DEPS)

@@ -20,10 +20,12 @@ using namespace aero;
 typedef std::vector<MeshIndex> Polygon;
 std::vector<std::pair<std::string, std::function<void()>>> tests;
 using aero_test::require;
+// Проверяет совпадение чисел в пределах заданного допуска.
 void near(double actual, double expected, double tolerance = 2.e-11) {
     require(std::abs(actual - expected) <= tolerance * (1 + std::abs(expected)),
             "Expected " + std::to_string(expected) + ", got " + std::to_string(actual));
 }
+// Проверяет, что некорректный ввод завершается ожидаемой ошибкой.
 template <class F> void rejects(F operation) {
     try {
         operation();
@@ -32,10 +34,12 @@ template <class F> void rejects(F operation) {
     }
     throw std::runtime_error("Expected ReconstructionError");
 }
+// Добавляет именованную проверку в список тестов модуля.
 void add(const std::string& name, std::function<void()> operation) {
     tests.push_back({name, operation});
 }
 
+// Проверяет ограничение слабой поперечной компоненты гибрида MP6.
 template<bool weno> void check_weak_transverse_mp6() {
     const Mp5Settings settings{!weno, weno, weno, 4.};
     aero::FixedMatrix<double,5,5> slopes{};
@@ -63,6 +67,7 @@ template<bool weno> void check_weak_transverse_mp6() {
 struct TestResult {
     std::vector<double> left_increment2, right_increment2;
 };
+// Проверяет размер тестового массива перед выделением памяти.
 std::size_t checked_test_size(ReconstructionIndex count, ReconstructionIndex components) {
     const ReconstructionIndex limit =
         static_cast<ReconstructionIndex>((std::numeric_limits<std::size_t>::max)() / sizeof(double));
@@ -70,12 +75,14 @@ std::size_t checked_test_size(ReconstructionIndex count, ReconstructionIndex com
         throw ReconstructionError("Invalid test field size");
     return static_cast<std::size_t>(count * components);
 }
+// Проверяет согласованность размеров входного поля и тестового шаблона.
 void check_test_input(ReconstructionStencilView s, const std::vector<double>& values,
                       ReconstructionIndex components) {
     if (values.size() != checked_test_size(s.node_count, components))
         throw ReconstructionError("Invalid test field length");
     checked_test_size(2 * s.edge_count, components);
 }
+// Вычисляет все стороны через невладеющее представление тестового шаблона.
 TestResult reconstruct_all_view(ReconstructionStencilView s, const std::vector<double>& values,
                                 ReconstructionIndex components) {
     check_test_input(s, values, components);
@@ -95,10 +102,12 @@ TestResult reconstruct_all_view(ReconstructionStencilView s, const std::vector<d
     }
     return result;
 }
+// Вычисляет все стороны реконструкции для тестового поля.
 TestResult reconstruct_all_sides(const ReconstructionStencil& stencil, const std::vector<double>& values,
                                  ReconstructionIndex components) {
     return reconstruct_all_view(stencil.view(), values, components);
 }
+// Вычисляет выбранную сторону шаблона для сравнения реализаций.
 template <class Reader>
 double evaluate_test_side(ReconstructionStencilView s, ReconstructionIndex row, ReconstructionIndex component,
                           const Reader& reader) {
@@ -115,21 +124,28 @@ double evaluate_test_side(ReconstructionStencilView s, ReconstructionIndex row, 
 }
 #ifdef AERO_WITH_KOKKOS_GPU
 extern "C" {
+// Создаёт GPU-состояние тестового реконструктора.
 int test_reconstruction_device_create(ReconstructionStencilView, int, void**, char*, unsigned);
+// Освобождает GPU-ресурсы тестового реконструктора.
 void test_reconstruction_device_destroy(void*);
+// Переносит тестовое поле на GPU и вычисляет реконструкцию.
 int test_reconstruction_device_host(void*, const double*, ReconstructionIndex, double*, double*, char*,
                                   unsigned);
+// Выполняет проверку реконструкции над полем, уже находящимся на GPU.
 int test_reconstruction_device_device(void*, const double*, ReconstructionIndex, double*, double*, void*, char*,
                                     unsigned);
+// Вычисляет одну выбранную сторону реконструкции на GPU.
 int test_reconstruction_device_one(ReconstructionStencilView, ReconstructionIndex, unsigned, const double*,
                                  ReconstructionIndex, const double*, double*, void*);
 }
 #endif
+// Связывает тестовые вызовы реконструкции с CPU- или GPU-контекстом.
 class TestReconstructor {
     ReconstructionContext context_;
     void* gpu_;
 
 public:
+    // Связывает тестовый шаблон с CPU- или GPU-исполнителем.
     explicit TestReconstructor(ReconstructionStencil stencil,
                                ReconstructionBackend backend = ReconstructionBackend::Auto, int device = 0)
         : context_(std::move(stencil), backend, device), gpu_(nullptr) {
@@ -141,14 +157,19 @@ public:
         }
 #endif
     }
+    // Освобождает принадлежащие объекту ресурсы при завершении его времени жизни.
     ~TestReconstructor() {
 #ifdef AERO_WITH_KOKKOS_GPU
         test_reconstruction_device_destroy(gpu_);
 #endif
     }
+    // Сообщает, собран ли модуль с поддержкой CUDA.
     static bool cuda_compiled() { return ReconstructionContext::cuda_compiled(); }
+    // Возвращает число доступных CUDA-устройств.
     static int cuda_device_count() { return ReconstructionContext::cuda_device_count(); }
+    // Возвращает выбранный исполнитель вычислений.
     ReconstructionBackend backend() const { return context_.backend(); }
+    // Восстанавливает тестовые следы на выбранном исполнителе.
     TestResult reconstruct(const std::vector<double>& values, ReconstructionIndex components) {
         const ReconstructionStencilView s = context_.host_view();
         check_test_input(s, values, components);
@@ -165,6 +186,7 @@ public:
 #endif
         return result;
     }
+    // Вычисляет тестовые следы по данным, уже размещённым на GPU.
     void reconstruct_device(const double* values, ReconstructionIndex components, double* left, double* right,
                             void* stream = nullptr) {
         if (backend() != ReconstructionBackend::Cuda)
@@ -185,16 +207,19 @@ public:
     }
 };
 
+// Собирает тестовую сетку из узлов и ячеек с заданной топологией.
 struct Builder {
     MeshData d;
     std::map<Polygon, MeshIndex> faces;
     std::vector<unsigned> count;
+    // Возвращает номер опорного узла строки реконструкции.
     MeshIndex node(double x, double y, double z = 0) {
         d.x.push_back(x);
         d.y.push_back(y);
         d.z.push_back(z);
         return static_cast<MeshIndex>(d.x.size() - 1);
     }
+    // Добавляет ячейку в строящуюся тестовую сетку.
     void cell(const std::vector<Polygon>& shell) {
         for (const Polygon& p : shell) {
             Polygon key = p;
@@ -218,12 +243,14 @@ struct Builder {
         }
         d.cell_faces.offsets.push_back(static_cast<MeshIndex>(d.cell_faces.indices.size()));
     }
+    // Создаёт многоугольную ячейку тестовой сетки.
     void polygon(const Polygon& p) {
         std::vector<Polygon> shell;
         for (std::size_t k = 0; k < p.size(); ++k)
             shell.push_back({p[k], p[(k + 1) % p.size()]});
         cell(shell);
     }
+    // Создаёт тестовую тетраэдральную ячейку.
     void tetra(MeshIndex a, MeshIndex b, MeshIndex c, MeshIndex e) {
         const double ax = d.x[b] - d.x[a], ay = d.y[b] - d.y[a], az = d.z[b] - d.z[a];
         const double bx = d.x[c] - d.x[a], by = d.y[c] - d.y[a], bz = d.z[c] - d.z[a];
@@ -232,6 +259,7 @@ struct Builder {
             std::swap(b, c);
         cell({{a, c, b}, {a, b, e}, {b, c, e}, {c, a, e}});
     }
+    // Выбирает итоговое допустимое пересечение после обхода кандидатов.
     Mesh finish() {
         d.patch_names = {"boundary"};
         for (std::size_t f = 0; f < count.size(); ++f)
@@ -242,6 +270,7 @@ struct Builder {
         return Mesh(d);
     }
 };
+// Создаёт одномерную сетку для проверки алгоритма.
 Mesh line(const std::vector<double>& x) {
     MeshData d;
     d.dimension = 1;
@@ -263,6 +292,7 @@ Mesh line(const std::vector<double>& x) {
     d.boundary_patch = {0, 1};
     return Mesh(d);
 }
+// Создаёт плоскую тестовую сетку для проверки шаблонов реконструкции.
 Mesh plane(bool triangles, MeshIndex nx = 5, MeshIndex ny = 4) {
     Builder b;
     b.d.dimension = 2;
@@ -283,6 +313,7 @@ Mesh plane(bool triangles, MeshIndex nx = 5, MeshIndex ny = 4) {
         }
     return b.finish();
 }
+// Создаёт объёмную тестовую сетку для проверки шаблонов реконструкции.
 Mesh volume(bool tetrahedra, MeshIndex n = 4) {
     Builder b;
     for (MeshIndex k = 0; k < n; ++k)
@@ -312,6 +343,7 @@ Mesh volume(bool tetrahedra, MeshIndex n = 4) {
             }
     return b.finish();
 }
+// Создаёт призматическую сетку для проверки геометрии и связности.
 Mesh prism(bool concave, unsigned layers = 4) {
     Builder b;
     const std::vector<double> x =
@@ -336,6 +368,7 @@ Mesh prism(bool concave, unsigned layers = 4) {
     }
     return b.finish();
 }
+// Вычисляет аналитические значения поля на узлах тестовой сетки.
 std::vector<double> values(const Mesh& mesh, ReconstructionIndex components, bool affine) {
     const ReconstructionIndex n = mesh.view().node_count;
     std::vector<double> v(static_cast<std::size_t>(n * components));
@@ -368,6 +401,7 @@ void affine_test(const Mesh& mesh, bool expect_full,
             near(qj - 0.5 * r.right_increment2[c * e + k], 0.5 * (qi + qj));
         }
 }
+// Сравнивает результаты двух реализаций или представлений с заданным допуском.
 void same(const TestResult& a, const TestResult& b) {
     require(a.left_increment2.size() == b.left_increment2.size() &&
                 a.right_increment2.size() == b.right_increment2.size(),
@@ -378,6 +412,7 @@ void same(const TestResult& a, const TestResult& b) {
     }
 }
 
+// Проверяет значения реконструкции возле концов одномерной сетки.
 void endpoints(const Mesh& mesh, const std::vector<double>& input, ReconstructionIndex components,
                const TestResult& result) {
     const ReconstructionIndex n = mesh.view().node_count, e = mesh.view().edge_count;
@@ -394,23 +429,28 @@ void endpoints(const Mesh& mesh, const std::vector<double>& input, Reconstructio
         }
 }
 
+// Проверяет сохранение нулевого поля при реконструкции.
 void zeros(const TestResult& r) {
     for (double v : r.left_increment2)
         require(v == 0, "Nonzero left increment on constant field");
     for (double v : r.right_increment2)
         require(v == 0, "Nonzero right increment on constant field");
 }
+// Тестовый читатель поля, считающий число обращений к опорным значениям.
 struct CountingReader {
     unsigned* calls;
+    // Считает обращения к полю и возвращает постоянное значение для проверки числа чтений.
     double operator()(ReconstructionIndex, ReconstructionIndex, ReconstructionIndex) const {
         ++*calls;
         return 7.0;
     }
 };
 
+// Читает значения локальных соседей для проверки нестандартной раскладки поля.
 struct LocalNeighbours {
     ReconstructionIndex expected_row, owner;
     std::map<ReconstructionIndex, std::vector<double>> values;
+    // Проверяет локальность чтения опор и возвращает компоненту выбранного соседнего узла.
     double operator()(ReconstructionIndex row, ReconstructionIndex node,
                       ReconstructionIndex component) const {
         require(row == expected_row, "Reconstruction accessed a different edge side");
@@ -437,8 +477,10 @@ double classical_weno5(const std::vector<double>& q, std::size_t i, double epsil
     const double p2 = q[i - 2] / 3 - 7 * q[i - 1] / 6 + 11 * q[i] / 6;
     return (a0 * p0 + a1 * p1 + a2 * p2) / (a0 + a1 + a2);
 }
+// Читает тестовые значения с привязкой к строке реконструкции.
 struct RowReader {
     const std::vector<double>* q;
+    // Возвращает значение, зависящее от строки и компоненты, для проверки адресации шаблона.
     double operator()(ReconstructionIndex row, ReconstructionIndex node,
                       ReconstructionIndex component) const {
         return (*q)[static_cast<std::size_t>(node)] * static_cast<double>(row + component + 1) +
@@ -448,6 +490,7 @@ struct RowReader {
 
 #ifdef AERO_WITH_KOKKOS_GPU
 using aero::gpu::checked;
+// Сравнивает CPU и GPU при вычислении одной стороны шаблона.
 void single_side_device_test(int device) {
     checked(aero::gpu::select(device));
     const Mesh m = line({0, 0.3, 1, 2, 4, 7});
@@ -491,6 +534,7 @@ void single_side_device_test(int device) {
         }
     }
 }
+// Проверяет пакетную реконструкцию на доступных GPU.
 void device_test(int device, ReconstructionScheme scheme = ReconstructionScheme::Ebr3, bool correction = true) {
     checked(aero::gpu::select(device));
     // Пятиузловым схемам нужны два слоя соседей. В середине этой сетки
@@ -1287,6 +1331,7 @@ Mesh sector_mesh(bool prisms) {
     return Mesh(std::move(data));
 }
 
+// Добавляет проверки криволинейных и призматических шаблонов.
 void register_curved_stencils() {
     for (bool prisms : {false, true}) {
         add(prisms ? "PL cuts through triangular prism layers"
@@ -1348,6 +1393,7 @@ void register_curved_stencils() {
     });
 }
 
+// Добавляет проверки реконструкции EBR третьего порядка.
 void register_ebr3() {
     add("uniform 1D EBR3 coefficients, not a midpoint interpolant", [] {
         const ReconstructionStencil s = prepare_reconstruction(line({0, 1, 2, 3}));
@@ -1653,6 +1699,7 @@ void register_lifetime_and_errors() {
 }
 }
 
+// Запускает проверки модуля и возвращает ненулевой код при ошибке.
 int main(int argc, char** argv) {
     using namespace aero;
     const bool require_cuda = argc == 2 && std::string(argv[1]) == "--require-cuda";
@@ -1678,6 +1725,7 @@ int main(int argc, char** argv) {
             const double x = 4*a-b, y = 4*b-a;
             return std::max(0., std::min({x,y,a,b})) + std::min(0., std::max({x,y,a,b}));
         };
+        // Вычисляет независимое эталонное значение тестовой реконструкции.
         const auto reference = [&](double f, double l, double c, double r, double alpha) {
             const double v = -.1*r + .8*c + 11./30*l - f/15;
             const double bound = std::max(0., std::min(c,alpha*l)) + std::min(0., std::max(c,alpha*l));

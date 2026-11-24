@@ -11,6 +11,7 @@ using aero::gpu::checked;
 // Проверяем на GPU все три массива: интегрируем x·n_x по внешней поверхности единичного куба (узлы 4–11).
 using namespace aero::device_tests;
 }
+// Сравнивает геометрию контрольных объёмов на CPU и доступных GPU.
 int check_cv_devices(aero::CvView host, bool required) {
     int count = 0;
     aero::gpu::Status status = aero::gpu::count(&count);

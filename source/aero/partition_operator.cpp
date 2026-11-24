@@ -25,6 +25,7 @@ namespace edge_tile = residual_detail::edge_tile;
 using Id = MeshIndex;
 using residual_detail::Surface;
 
+// Связывает геометрию подобласти, граничные условия и MPI-обмены.
 PartitionOperator::PartitionOperator(const MeshPartition& part, CvView cv, const PeriodicPartition* periodic,
                                      const BoundaryPatches& patches, ResidualOptions options,
                                      const ResidualFrame& frame, const Processes& world,
@@ -65,6 +66,7 @@ PartitionOperator::PartitionOperator(const MeshPartition& part, CvView cv, const
     prepare_nodal_gas();
 }
 
+// Добавляет рёбра с собственным узлом и запоминает, кому нужно передать поток.
 void PartitionOperator::add_edge_surfaces(MeshView mesh, CvView cv, const PeriodicPartition* periodic,
                                           const ResidualFrame& frame, StencilRequests* requests) {
     const Id count = periodic ? periodic->edges.size() : mesh.edge_count;
@@ -79,6 +81,7 @@ void PartitionOperator::add_edge_surfaces(MeshView mesh, CvView cv, const Period
         compute_.resize(count);
         if (requests) requests->edges.resize(count);
     }
+    // Подготавливает геометрию и адреса одного ребра пространственного оператора.
     const auto prepare_edge = [&](Id edge) {
         const Id begin = periodic ? periodic->edges[edge].begin : mesh.edge_begin[edge];
         const Id end = periodic ? periodic->edges[edge].end : mesh.edge_end[edge];
@@ -122,6 +125,7 @@ void PartitionOperator::add_edge_surfaces(MeshView mesh, CvView cv, const Period
     else for (Id edge = 0; edge < count; ++edge) prepare_edge(edge);
 }
 
+// Добавляет физические границы, за которые отвечает эта подобласть.
 void PartitionOperator::add_boundary_surfaces(CvView cv, const PeriodicPartition* periodic,
                                               Id physical_patches, const BoundaryPatches& patches,
                                               const ResidualFrame& frame, double gamma, StencilRequests* requests) {
@@ -144,10 +148,12 @@ void PartitionOperator::add_boundary_surfaces(CvView cv, const PeriodicPartition
     }
 }
 
+// Число узлов состояния с учётом удалённых узлов шаблонов реконструкции.
 Id PartitionOperator::state_nodes() const {
     return ids_.size() + stencil_.extra_nodes.size();
 }
 
+// Возвращает объём работы и обменов процесса для отчёта о разбиении.
 PartitionWork PartitionOperator::work(Id leaves) const {
     // В compute_ граничные площадки идут сразу после рёбер, принадлежащих процессу.
     const Id edges = compute_.size() - (surfaces_.size() - grid_.edges);
@@ -206,6 +212,7 @@ PackedEdgeOrder pack_weno_edge(const PartitionStencil& stencil, MeshIndex edge, 
 }
 }
 
+// Выделяет узловой кэш газовых параметров для расчёта потоков.
 void PartitionOperator::prepare_nodal_gas() {
     if (grid_.options.background.active()) return;
     grid_.packed.state_nodes = state_nodes();
@@ -215,6 +222,7 @@ void PartitionOperator::prepare_nodal_gas() {
     }
 }
 
+// Упаковывает рёбра и строки WENO в блоки совместной обработки.
 template <unsigned scheme_order>
 void PartitionOperator::prepare_weno_tiles(std::vector<WenoEdgeTile<scheme_order>>& tiles) {
     auto& g = grid_;
@@ -283,6 +291,7 @@ void PartitionOperator::prepare_weno_tiles(std::vector<WenoEdgeTile<scheme_order
     g.packed.count = other_faces_.size();
 }
 
+// Строит шаблоны и добавляет в обмен удалённые узлы, нужные для реконструкции.
 Id PartitionOperator::prepare_stencil(const MeshPartition& part, const PeriodicPartition* seam,
                                       const std::vector<PeriodicPair>& pairs, PartitionInput* input,
                                       const StencilRequests& requests, const ReconstructionOptions& options) {
@@ -306,6 +315,7 @@ Id PartitionOperator::prepare_stencil(const MeshPartition& part, const PeriodicP
 }
 
 #ifdef AERO_HAS_VISCOSITY
+// Подготавливает геометрию и рабочие массивы вязкого оператора.
 void PartitionOperator::prepare_viscosity(const MeshPartition& part, const PeriodicPartition* seam,
         const ResidualFrame& frame, const RunSettings& run) {
     const auto& settings=run.viscosity;
@@ -329,6 +339,7 @@ void PartitionOperator::prepare_viscosity(const MeshPartition& part, const Perio
         for (Id k = 0; k < stencil_.extra_nodes.size(); ++k)
             slots.emplace(stencil_.extra_nodes[k].first,ids_.size()+k);
     });
+    // Находит локальный адрес узла или элемента по исходному идентификатору.
     const auto locate = [&](Id global, int owner) {
         if (direct) return global;
         const auto inserted = slots.emplace(global,state_nodes());
@@ -369,6 +380,7 @@ void PartitionOperator::apply_wall(std::vector<double>& field) const {
 }
 #endif
 
+// Готовит данные ограничения шагов по опорам реконструкции.
 void PartitionOperator::prepare_stencil_rates(bool cuda) {
     if (stencil_rates_) {
         auto& patch = *stencil_rates_;
@@ -391,6 +403,7 @@ void PartitionOperator::prepare_stencil_rates(bool cuda) {
     }
 }
 
+// Согласует с соседями порядок узлов и рёбер и выделяет буферы для повторных обменов.
 void PartitionOperator::connect(bool cuda, bool implicit_time) {
     Processes::Messages node_requests, edge_keys;
     world_.local([&] {
@@ -461,6 +474,7 @@ void PartitionOperator::connect(bool cuda, bool implicit_time) {
 }
 
 #ifdef AERO_WITH_KOKKOS_GPU
+// Размещает данные сетки и индексы обмена в общей области памяти GPU.
 void PartitionOperator::layout_gpu(bool compact_buffer) {
 #ifdef AERO_HAS_VISCOSITY
     gpu_->set_viscosity(aes_.get());
@@ -538,6 +552,7 @@ static MeshIndex estimated_matrix_bytes(const residual_detail::Geometry& g, cons
     return bytes;
 }
 
+// Оценивает объём памяти неявных матриц, векторов и вязких рабочих данных.
 static MeshIndex implicit_storage_bytes(const residual_detail::Geometry& g, const std::vector<MeshIndex>& owned,
                                         const implicit::NewtonSettings& settings, MeshIndex gradient_bytes,
                                         const implicit::GpuMatrixPlan* plan=nullptr, unsigned shared_vectors=0) {
@@ -565,6 +580,7 @@ static MeshIndex implicit_storage_bytes(const residual_detail::Geometry& g, cons
                                                 width * sizeof(double));
 }
 
+// Оценивает объём по той же раскладке и резервирует память карты.
 void PartitionOperator::reserve_gpu(bool compact_buffer, GpuMemoryFit& fit, const implicit::NewtonSettings* settings) {
     shared_csgs_ = settings && settings->csgs;
     MeshIndex extra = 0, gradient_bytes = 0;
@@ -583,6 +599,7 @@ void PartitionOperator::reserve_gpu(bool compact_buffer, GpuMemoryFit& fit, cons
     }
 #endif
     if (settings) extra = partition_bytes(extra, 1, implicit_storage_bytes(grid_, owned, *settings, gradient_bytes));
+    // Пробует разместить рабочие данные в доступной памяти GPU.
     const auto try_layout = [&] {
         gpu_.reset(new PartitionGpu);
         layout_gpu(compact_buffer);
@@ -630,11 +647,13 @@ void PartitionOperator::reserve_gpu(bool compact_buffer, GpuMemoryFit& fit, cons
 #endif
 }
 
+// Загружает текущее и начальное поля в размеченную память GPU.
 void PartitionOperator::upload_state(const std::vector<double>& state, const std::vector<double>& initial) {
     gpu_->upload_state(state, initial);
 }
 #endif
 
+// Сохраняет поле перед попыткой шага или восстанавливает его после отказа.
 void PartitionOperator::copy_backup(std::vector<double>& state, std::vector<double>& backup, bool restore) {
     if (restore) gas_current_ = false;
 #ifdef AERO_HAS_TURBULENCE
@@ -650,6 +669,7 @@ void PartitionOperator::copy_backup(std::vector<double>& state, std::vector<doub
     else backup = state;
 }
 
+// Собирает номера узлов с недопустимым газодинамическим состоянием.
 void PartitionOperator::failed_nodes(const std::vector<double>& state, std::vector<Id>& failed, bool implicit) {
 #ifdef AERO_WITH_KOKKOS_GPU
     if (gpu_) { gpu_->failed_nodes(failed, implicit); return; }
@@ -679,6 +699,7 @@ void PartitionOperator::set_flux_weights(double upwind, double hybrid) {
     }
 }
 
+// Обновляет CFL и согласованный с интегратором параметр MP.
 void PartitionOperator::set_courant(double cfl, bool implicit_time) {
     grid_.stencil.mp5.alpha = mp5_alpha_for_time_scheme(cfl, implicit_time);
 #ifdef AERO_WITH_KOKKOS_GPU
@@ -686,6 +707,7 @@ void PartitionOperator::set_courant(double cfl, bool implicit_time) {
 #endif
 }
 
+// Подключает метки принудительного первого порядка.
 void PartitionOperator::set_low_order(std::vector<double>& marks) {
     // Тот же обмен, что у состояния. Отметка хранится в первом компоненте строки.
 #ifdef AERO_WITH_KOKKOS_GPU
@@ -705,6 +727,7 @@ void PartitionOperator::set_low_order(std::vector<double>& marks) {
 #endif
 }
 
+// Собирает значения только собственных узлов в компактный буфер.
 void PartitionOperator::copy_owned(const std::vector<double>& state, std::vector<double>& compact) const {
 #ifdef AERO_WITH_KOKKOS_GPU
     if (gpu_) {
@@ -717,6 +740,7 @@ void PartitionOperator::copy_owned(const std::vector<double>& state, std::vector
     });
 }
 
+// Обновляет копию текущих полей на CPU для записи результатов.
 void PartitionOperator::download(std::vector<double>& state) const {
 #ifdef AERO_WITH_KOKKOS_GPU
     if (gpu_) {
@@ -727,6 +751,7 @@ void PartitionOperator::download(std::vector<double>& state) const {
 #endif
 }
 
+// Обменивает значения узлов после стадии на активном вычислительном устройстве.
 void PartitionOperator::halo(std::vector<double>& u, double* seconds) {
     double* field = u.data();
 #ifdef AERO_WITH_KOKKOS_GPU
@@ -755,6 +780,7 @@ void PartitionOperator::sample_accepted(const std::vector<double>& state, double
     parallel_for(grid_.nodes, [&](MeshIndex i) { sample(i); });
 }
 
+// Копирует накопленные моменты поля для вывода или восстановления.
 void PartitionOperator::copy_samples(std::vector<diagnostic::Moments>& target) const {
     if (!track_time_) { target.clear(); return; }
 #ifdef AERO_WITH_KOKKOS_GPU
@@ -769,6 +795,7 @@ void PartitionOperator::copy_samples(std::vector<diagnostic::Moments>& target) c
     target = moments_;
 }
 
+// Инициализирует накопление статистики с учётом восстановленных моментов.
 void PartitionOperator::start_samples(const std::vector<double>& state, std::vector<diagnostic::Moments>& saved, bool restored) {
     if (!track_time_) { saved.clear(); return; }
     if (!restored) {
@@ -804,6 +831,7 @@ void PartitionOperator::start_samples(const std::vector<double>& state, std::vec
     moments_.swap(saved);
 }
 
+// Берёт потоки записываемого слоя и возвращает dp/dt в нумерации полей вывода.
 std::vector<double> PartitionOperator::output_pressure_rate(const std::vector<double>& state) {
     std::vector<double> compact, result;
     world_.local([&] {
@@ -843,6 +871,7 @@ std::vector<double> PartitionOperator::output_pressure_rate(const std::vector<do
 void PartitionOperator::output_gradients(const std::vector<double>& state, std::vector<double>* rotation,
                                          std::vector<double>* schlieren) {
     std::vector<double> buffer(state.size(),0.);
+    // Извлекает компоненты скорости из текущего газового поля.
     const auto velocity=[&](Id i,unsigned axis) {
         const double* u=state.data()+i*width_;
         return grid_.options.background.active()?u[axis+1]:u[axis+1]/u[0];
@@ -881,10 +910,12 @@ void PartitionOperator::output_gradients(const std::vector<double>& state, std::
     }
 }
 
+// Заполняет узлы соседей в памяти CPU при подготовке и восстановлении расчёта.
 void PartitionOperator::halo_host(std::vector<double>& u) {
     nodes_.transfer(world_, {width_, u.data(), nullptr});
 }
 
+// Вычисляет потоки на принадлежащих процессу поверхностях и получает остальные от соседей.
 bool PartitionOperator::assemble_fluxes(const std::vector<double>& u, const std::vector<double>& initial,
                                         SolverTimings& timing, bool trial, bool retry_boundary) {
 #ifdef AERO_HAS_TURBULENCE
@@ -904,6 +935,7 @@ bool PartitionOperator::assemble_fluxes(const std::vector<double>& u, const std:
     (void)defer_viscous_rows;
     bool physical = true;
     std::vector<Id> failed;
+    // Вычисляет очередной этап оператора для текущего состояния поля.
     const auto compute = [&] {
         WallTimer timer(timing.counter(SolverTimings::Flux));
 #ifdef AERO_WITH_KOKKOS_GPU
@@ -942,6 +974,7 @@ bool PartitionOperator::assemble_fluxes(const std::vector<double>& u, const std:
         if (total) throw RejectedGasState{std::move(failed), total};
     }
 #ifdef AERO_HAS_TURBULENCE
+    // Обновляет рабочую вязкость SA вместе с пробным газовым состоянием.
     const auto update_sa=[&] {
         if (!sa_active()) return;
         sa_prediction_pending_=frozen_sa;
@@ -969,6 +1002,7 @@ bool PartitionOperator::assemble_fluxes(const std::vector<double>& u, const std:
     return true;
 }
 
+// После отказа повторяем ту же попытку с половиной фактически использованного шага.
 void PartitionOperator::retry_auto_step(double failed_dt) {
     // У BDF газ уже восстановлен из U_n. SA имеет собственную копию начала этого шага.
 #ifdef AERO_HAS_TURBULENCE
@@ -994,12 +1028,14 @@ void PartitionOperator::set_rate_probe(MeshIndex id) {
     probe_owner_ = static_cast<int>(world_.sum(owner ? static_cast<unsigned>(world_.rank) : 0));
 }
 
+// Считывает диагностику шага и число узлов с растущей невязкой.
 void PartitionOperator::read_rate_probe(double accepted_dt, double* values, MeshIndex* growth_nodes) const {
     const bool review = stencil_rates_ && LocalRateLimit::review_due(rate_samples_);
     double marks[2]{};
     world_.local([&] {
         if (probe_row_ == ~MeshIndex(0)) return;
         const auto node = owned[probe_row_];
+        // Читает запрошенное значение из текущего представления поля.
         const auto read = [&](const double* p) {
 #ifdef AERO_WITH_KOKKOS_GPU
             if (gpu_) {
@@ -1036,6 +1072,7 @@ void PartitionOperator::read_rate_probe(double accepted_dt, double* values, Mesh
     }
 }
 
+// Меняет режим локальных шагов и сбрасывает несовместимую историю адаптации.
 void PartitionOperator::set_steady_steps(LocalStepMode mode, double max_ratio) {
     // После переключения между глобальным и локальным шагами начинаем историю auto заново.
     steady_steps_->max_ratio = max_ratio;
@@ -1050,6 +1087,7 @@ void PartitionOperator::set_steady_steps(LocalStepMode mode, double max_ratio) {
     steady_steps_->local = mode != LocalStepMode::Off;
 }
 
+// Настраивает локальные псевдошаги стационарного расчёта.
 void PartitionOperator::prepare_steady_steps(bool gpu, LocalStepMode mode, double max_ratio,
                                             ResidualLimit residual_limit) {
     // Адрес описания остаётся постоянным для газа, SA и матрицы на всех шагах.
@@ -1074,6 +1112,7 @@ void PartitionOperator::prepare_steady_steps(bool gpu, LocalStepMode mode, doubl
     }
 }
 
+// Готовит второй слой шагов и обмен скалярами на рёбрах между процессами.
 void PartitionOperator::prepare_neighbour_step_limit(double ratio, bool cuda) {
     if (ratio == 0.) return;
     Processes::Messages needed;
@@ -1114,6 +1153,7 @@ void PartitionOperator::prepare_neighbour_step_limit(double ratio, bool cuda) {
     });
 }
 
+// Уменьшает шаги до выполнения ограничения на соседних узлах.
 void PartitionOperator::limit_neighbour_steps() {
     auto& limit = *neighbour_limit_;
     if (maximum_step_ == minimum_step_) {
@@ -1177,6 +1217,7 @@ residual_detail::FluxCfl PartitionOperator::cfl_grid() const {
     return {grid_, flux_.data(), volumes_, world_.size == 1 ? nullptr : owned.data(), owned.size(), sa_rate, heights_};
 }
 
+// Вычисляет локальные шаги по CFL и возвращает общий минимум.
 double PartitionOperator::prepare_local_steps(double cfl) {
     // После отказа значения в узловом массиве остаются прежними. Отношение
     // dt/minimum_step_ в интеграторе уменьшит сразу все строки газа и SA.
@@ -1267,6 +1308,7 @@ double PartitionOperator::prepare_local_steps(double cfl) {
     return minimum_step_;
 }
 
+// Находит допустимый шаг по собственным узлам и берёт минимум по всем процессам.
 double PartitionOperator::cfl_step(double cfl) {
     if (steady_steps_ && steady_steps_->local) return prepare_local_steps(cfl);
     // Пустая подобласть не ограничивает шаг. Минимум по процессам выбирает конечное значение.
@@ -1305,6 +1347,7 @@ const double* PartitionOperator::extend_linear_vector(const double* compact) {
     return field;
 }
 
+// Задаёт обмены и редукции распределённой линейной системы.
 implicit::Partition PartitionOperator::linear_partition() {
     implicit::Partition part;
 #ifdef AERO_WITH_KOKKOS_GPU
@@ -1350,6 +1393,7 @@ implicit::Partition PartitionOperator::linear_partition() {
     return part;
 }
 
+// Геометрия и обмены, которыми будет пользоваться матрица на этом процессе.
 implicit::LinearGrid PartitionOperator::linear_grid() {
     int id = -1;
     const auto* active = &grid_;
@@ -1362,6 +1406,7 @@ implicit::LinearGrid PartitionOperator::linear_grid() {
     return {grid_, *active, id, linear_partition()};
 }
 
+// Лениво создаёт неявный интегратор подобласти.
 implicit::BdfStep& PartitionOperator::implicit_step() {
     if (!bdf_) {
         const auto grid = linear_grid();
@@ -1370,6 +1415,7 @@ implicit::BdfStep& PartitionOperator::implicit_step() {
     return *bdf_;
 }
 
+// Подключает актуальные CPU- или GPU-поля к неявному интегратору.
 PartitionOperator::ImplicitFields PartitionOperator::implicit_fields(
         std::vector<double>& state, const std::vector<double>& initial) {
     if (!bdf_) world_.local([&] { implicit_step(); });
@@ -1406,6 +1452,7 @@ void PartitionOperator::collect_stencil_rates(const double* sa_rate, const Euler
         owners, computed, grid_.edges, feedback, flux, patch.nodes, patch.edges,
         first_order_start, reconstruct_sa, grid_.options.upw_coeff, grid_.options.mp6_hybrid, StencilRates::NodeGrowth,
         probe_owner_ >= 0 ? static_cast<unsigned>(world_.size) : 0u, static_cast<unsigned>(world_.rank)};
+    // Обрабатывает один выбранный диапазон или набор узлов текущей операции.
     const auto visit = [&](StencilRates::Pass pass, MeshIndex count) {
         work.pass = pass;
         world_.local([&] {
@@ -1427,15 +1474,21 @@ void PartitionOperator::collect_stencil_rates(const double* sa_rate, const Euler
     visit(StencilRates::Volumes, owned.size());
 }
 
+// Возвращает максимальную невязку SA либо ноль при выключенной модели.
+double PartitionOperator::steady_sa_rate() {
+#ifdef AERO_HAS_TURBULENCE
+    if (sa_active()) return sa_max(sa_step(),turbulence::Norm::Rate);
+#endif
+    return 0.;
+}
+
+// Вычисляет стационарную невязку и обновляет диагностику принятого поля.
 double PartitionOperator::steady_residual(std::vector<double>& state, const std::vector<double>& initial, bool accepted) {
     const auto fields = implicit_fields(state, initial);
     const bool sample = accepted && step_mode_ == LocalStepMode::Auto;
     const bool keep_rows = sample && (rate_control_ || probe_row_ != ~MeshIndex(0));
     const double gas = bdf_->spatial_rate_norm(fields.volumes, fields.flux, keep_rows);
-    double sa = 0.;
-#ifdef AERO_HAS_TURBULENCE
-    if (sa_active()) sa = sa_max(sa_step(),turbulence::Norm::Rate);
-#endif
+    const double sa = steady_sa_rate();
     if (sample && rate_control_) {
         gas_rate_max_ = gas;
         sa_rate_max_ = sa;
@@ -1453,6 +1506,46 @@ double PartitionOperator::steady_residual(std::vector<double>& state, const std:
     return std::max(gas, sa);
 }
 
+#ifdef AERO_HAS_MULTIGRID
+// Пробует грубосеточную коррекцию по текущему расписанию.
+void PartitionOperator::try_steady_multigrid(std::vector<double>& state,const std::vector<double>& initial,
+                                            double dt,const implicit::NewtonSettings& settings,SolverTimings& timing) {
+    if (!coarse_schedule_.due()) {
+        coarse_schedule_.ordinary_step();
+        return;
+    }
+    const auto fields = implicit_fields(state,initial);
+    // Здесь SA уже завершил шаг. Каждая проба пересчитывает газовые потоки
+    // и перенос SA по пробному полю, но не создаёт нового слоя по времени.
+    double after = HUGE_VAL;
+    double best_trial = HUGE_VAL;
+    // Вычисляет полную невязку пробного состояния перед принятием коррекции.
+    const auto trial_norm = [&] {
+        if (!assemble_fluxes(state,initial,timing,true)) return HUGE_VAL;
+        try { after = steady_residual(state,initial,false); }
+        catch (const std::domain_error&) { return HUGE_VAL; } // Неконечная проба отклоняется на всех рангах.
+        best_trial = std::min(best_trial,after);
+        return after;
+    };
+    // Восстанавливает потоки принятого состояния после отклонённой пробы.
+    const auto restore_flux = [&] { assemble_fluxes(state,initial,timing); };
+    const auto correction = bdf_->correct_steady(fields.state,fields.initial,fields.volumes,fields.flux,
+                                                 dt,settings,steady_sa_rate(),trial_norm,restore_flux);
+    const double fraction = correction.scale;
+    const double before = correction.initial_norm;
+    coarse_schedule_.tested(fraction > 0.);
+    if (world_.rank == 0) {
+        std::cout << "Steady multigrid: " << (fraction > 0. ? "accepted" : "skipped")
+            << ", scale = " << fraction << ", spatial residual = " << before << " -> "
+            << (fraction > 0. ? after : before);
+        if (!fraction && std::isfinite(best_trial)) std::cout << ", best trial = " << best_trial;
+        if (fraction > 0.) std::cout << ", direction = " << (correction.history ? "last step" : "aggregates");
+        std::cout << '\n';
+    }
+}
+#endif
+
+// Выполняет неявный шаг газа с согласованным обновлением турбулентности.
 implicit::NewtonResult PartitionOperator::advance_bdf(std::vector<double>& state, const std::vector<double>& initial,
         double dt, const implicit::NewtonSettings& settings, SolverTimings& timing, const std::function<void()>& validate) {
     const auto fields = implicit_fields(state, initial);
@@ -1465,6 +1558,7 @@ implicit::NewtonResult PartitionOperator::advance_bdf(std::vector<double>& state
         if (validate) validate();
         assemble_fluxes(state, initial, timing, false, bool(validate));
     };
+    // Применяет и оценивает пробную поправку без окончательного принятия шага.
     const auto trial = [&] { if (validate) validate(); return assemble_fluxes(state, initial, timing, true); };
     std::function<bool()> confirm_prediction;
 #ifdef AERO_HAS_TURBULENCE
@@ -1481,6 +1575,7 @@ implicit::NewtonResult PartitionOperator::advance_bdf(std::vector<double>& state
         };
         sa_dt_=dt_or_fraction; sa_bdf2_=settings.second_order; sa_tol_=settings.newton_relative*.1;
         sa_iterations_=std::max(200u,settings.max_iterations);
+        sa_multigrid_=settings.steady_multigrid;
         sa_target_=0.;
         sa_apply(sa_step(),turbulence::Operation::SaveStart);
         evaluate_sa(state,timing,true); // Первый остаток Ньютона тоже должен учитывать новый слой SA.
@@ -1494,6 +1589,9 @@ implicit::NewtonResult PartitionOperator::advance_bdf(std::vector<double>& state
         sa_previous_dt_=sa_bdf2_?dt:0.; sa_dt_=0.;
     }
 #endif
+#ifdef AERO_HAS_MULTIGRID
+    if (settings.steady_multigrid) try_steady_multigrid(state,initial,dt_or_fraction,settings,timing);
+#endif
     if (step_mode_ == LocalStepMode::Auto) {
         accepted_field_ = fields.state;
         previous_cfl_ = current_step_cfl_;
@@ -1505,6 +1603,7 @@ implicit::NewtonResult PartitionOperator::advance_bdf(std::vector<double>& state
     return result;
 }
 
+// Обновляет собственные узлы на одной стадии интегратора.
 void PartitionOperator::update_owned(explicit_detail::Stage stage, std::vector<double>& start, double dt,
                                      std::vector<double>& state, bool save_original) {
 #ifdef AERO_WITH_KOKKOS_GPU
@@ -1550,6 +1649,7 @@ void PartitionOperator::update_owned(explicit_detail::Stage stage, std::vector<d
     gas_current_ = world_.size == 1;
 }
 
+// Возвращает номер устройства; отрицательное значение соответствует CPU.
 PartitionGpu* PartitionOperator::device() const {
 #ifdef AERO_WITH_KOKKOS_GPU
     return gpu_.get();

@@ -13,6 +13,7 @@ KOKKOS_FORCEINLINE_FUNCTION bool packed_slope(const WenoEdgeTile<order>& tile, u
     constexpr unsigned first = first_slope_term(row);
     // i нумерует слагаемые одной короткой строки, глобальный номер узла храним отдельно.
     const auto values = [&](Index i, double* buffer) { return read(tile.nodes(first + static_cast<unsigned>(i), lane), buffer); };
+    // Возвращает вес опоры в текущей строке реконструкции.
     const auto weight = [&](Index i) { return tile.weights(first - row + static_cast<unsigned>(i) - 1, lane); };
     return reconstruction_detail::sum_slope<4>(4, slope_terms(row), values, weight, result);
 }
@@ -25,6 +26,7 @@ KOKKOS_FORCEINLINE_FUNCTION bool characteristic_slope(const WenoEdgeTile<order>&
                                                   const double* field, const euler_detail::PlaneWaveBasis& basis,
                                                   const double* normal, double gamma, double inverse_sound,
                                                   FixedMatrix<double,WenoEdgeTile<order>::rows_per_edge,4>& waves) {
+    // Читает газовое состояние опорного узла пакетной реконструкции.
     const auto state = [&](Index node, double*) { return field + 4 * node; };
     double slope[4];
     packed_slope<row>(tile, lane, state, slope);
@@ -96,6 +98,7 @@ struct PlaneEdge {
         return edge_gas<true>(g, surface, left, right, gas);
     }
 
+    // Читает узловые состояния ребра и подготавливает его характеристический базис.
     KOKKOS_FORCEINLINE_FUNCTION bool prepare(const Geometry& g, const double* field, Index edge) {
         return read_nodes(g, field, edge) && basis.prepare(gas, g.options.gamma);
     }
@@ -183,6 +186,7 @@ KOKKOS_FORCEINLINE_FUNCTION bool packed_edge_flux(const Geometry& g, const doubl
 template<bool physical, unsigned order, bool mp, bool mpweno, bool hybrid>
 KOKKOS_FORCEINLINE_FUNCTION bool cartesian_packed_values(const Geometry& g, Index edge, const double* field,
         const PlaneEdge& plane, const WenoEdgeTile<order>& tile, unsigned lane, EdgeTraces& traces) {
+    // Читает запрошенное значение из текущего представления поля.
     const auto read = [&](Index node, double* buffer) -> const double* {
         const double* state = field + 4 * node;
         if (!physical) return state;
@@ -216,6 +220,7 @@ KOKKOS_FORCEINLINE_FUNCTION bool cartesian_packed_values(const Geometry& g, Inde
     return true;
 }
 
+// Вычисляет упакованные потоки WENO в декартовых переменных.
 template<bool physical, unsigned order, bool mp, bool mpweno, bool hybrid>
 KOKKOS_FORCEINLINE_FUNCTION bool cartesian_packed_flux(const FaceBatch& batch, Index edge,
                                                         const WenoEdgeTile<order>& tile) {

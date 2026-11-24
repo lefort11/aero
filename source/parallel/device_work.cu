@@ -8,6 +8,9 @@
 #include "../implicit/spatial_jacobian_detail.h"
 #include "../implicit/bicgstab_vectors.h"
 #include "../implicit/newton_vectors.h"
+#ifdef AERO_HAS_MULTIGRID
+#include "../multigrid/transfer.h"
+#endif
 #include "device_execution.h"
 #include "device_faces.h"
 #ifdef AERO_HAS_VISCOSITY
@@ -25,6 +28,7 @@
 // инициализацию её cookie до конструкторов CUDA, как это делает штатный CRT MSVC.
 extern "C" void __cdecl __security_init_cookie();
 namespace {
+// Подготавливает CUDA Runtime до создания контекстов Kokkos.
 int __cdecl initialize_cuda_crt() { __security_init_cookie(); return 0; }
 __attribute__((used, section(".CRT$XIB"))) int (__cdecl* const cuda_crt_initializer)() = initialize_cuda_crt;
 }
@@ -43,12 +47,14 @@ class DeviceRuntime {
     std::map<int, Execution> defaults_; // Остальные карты для библиотечных вызовов из одного процесса.
     std::mutex defaults_mutex_; // Защищает создание исполнителя при обращениях из разных потоков CPU.
 public:
+    // Инициализирует Kokkos и контексты выполнения на заданной карте.
     explicit DeviceRuntime(int device) : primary_(device) {
         Kokkos::InitArguments args;
         args.device_id = device;
         args.disable_warnings = true;
         Kokkos::initialize(args);
     }
+    // Освобождает принадлежащие объекту ресурсы при завершении его времени жизни.
     ~DeviceRuntime() {
         int original = primary_;
         cudaGetDevice(&original);
@@ -61,6 +67,7 @@ public:
         Kokkos::finalize();
         cudaSetDevice(original);
     }
+    // Возвращает контекст исполнения для требуемого устройства или потока.
     Execution execution(int device, cudaStream_t stream) {
         // Чужой поток может быть уничтожен сразу после возврата из библиотечного вызова.
         if (stream)
@@ -75,10 +82,12 @@ public:
     }
 };
 
+// Возвращает единственный объект управления средой GPU в текущем модуле.
 std::unique_ptr<DeviceRuntime>& runtime_holder() {
     static std::unique_ptr<DeviceRuntime> holder;
     return holder;
 }
+// Выбирает устройство и соответствующий контекст выполнения ядра.
 Execution select_execution(int device, cudaStream_t stream) {
     auto& runtime = runtime_holder();
     static std::once_flag initialized;
@@ -109,6 +118,7 @@ KOKKOS_INLINE_FUNCTION void record_failed_node(const partition_detail::Grid& g, 
     g.failed_nodes[slot] = node;
 }
 
+// Запускает поузловое обновление поля на выбранном контексте Kokkos.
 template <unsigned width>
 void update_nodes(const Execution& exec, partition_detail::Grid g, explicit_detail::Stage stage,
                   double dt, bool save) {
@@ -138,6 +148,7 @@ void update_nodes(const Execution& exec, partition_detail::Grid g, explicit_deta
 }
 }
 
+// Возвращает контекст Kokkos для выбранного устройства и потока CUDA.
 Execution current_execution(void* stream) {
     int device;
     const auto status = cudaGetDevice(&device);
@@ -145,9 +156,11 @@ Execution current_execution(void* stream) {
         throw std::runtime_error(cudaGetErrorString(status));
     return select_execution(device, static_cast<cudaStream_t>(stream));
 }
+// Завершает среду выполнения вычислительных ядер GPU.
 void aero_device_shutdown() {
     runtime_holder().reset();
 }
+// Выделяет память диагональных блоков предобусловливателя на GPU.
 const char* aero_device_jacobi_allocate(int device, implicit::JacobiBlocks& blocks) {
     return on_device(nullptr, [&](const Execution&) {
         // Пустому MPI-разделу не нужны буферы. Проверка номера карты уже выполнена.
@@ -159,6 +172,7 @@ const char* aero_device_jacobi_allocate(int device, implicit::JacobiBlocks& bloc
         blocks.pivots = static_cast<unsigned char*>(memory.allocate(rows * sizeof(unsigned char)));
     }, device);
 }
+// Освобождает память диагональных блоков GPU.
 const char* aero_device_jacobi_release(int device, const implicit::JacobiBlocks& blocks) {
     return on_device(nullptr, [&](const Execution&) {
         Execution::memory_space memory;
@@ -169,6 +183,7 @@ const char* aero_device_jacobi_release(int device, const implicit::JacobiBlocks&
             memory.deallocate(blocks.pivots, rows * sizeof(unsigned char));
     }, device);
 }
+// Разлагает диагональные блоки параллельно на GPU.
 const char* aero_device_jacobi_factor(int device, const implicit::JacobiBlocks& input, const double* diagonal,
                                        const MeshIndex* row_starts, MeshIndex* first_bad) {
     const auto blocks = input;
@@ -182,6 +197,7 @@ const char* aero_device_jacobi_factor(int device, const implicit::JacobiBlocks& 
             }, Kokkos::Min<MeshIndex>(*first_bad));
     }, device);
 }
+// Решает независимые диагональные системы на GPU.
 const char* aero_device_jacobi_apply(int device, const implicit::JacobiBlocks& input, const double* residual,
                                      double* correction) {
     const auto blocks = input;
@@ -191,12 +207,14 @@ const char* aero_device_jacobi_apply(int device, const implicit::JacobiBlocks& i
         });
     }, device);
 }
+// Упаковывает коэффициенты матрицы в порядок проходов CSGS.
 const char* aero_device_pack_csgs(int device, const implicit::CsgsPacking& packing, const double* matrix) {
     const auto plan=packing;
     return on_device(nullptr,[&](const Execution& exec) {
         for_indices(exec,"Aero: prepare CSGS coefficients",plan.count,KOKKOS_LAMBDA(Index p){plan.copy(p,matrix);});
     },device);
 }
+// Вычисляет матричный образ для прохода CSGS на GPU.
 const char* aero_device_csgs_image(int device,const implicit::CsgsSweep& input,MeshIndex count,double* image) {
     const auto sweep=input;
     return on_device(nullptr,[&](const Execution& exec) {
@@ -204,6 +222,7 @@ const char* aero_device_csgs_image(int device,const implicit::CsgsSweep& input,M
         else for_indices(exec,"Aero: CSGS matrix product",count,KOKKOS_LAMBDA(Index k){sweep.image<1>(k,image);});
     },device);
 }
+// Обновляет независимые строки одного цвета CSGS на GPU.
 const char* aero_device_csgs_color(int device, const implicit::CsgsSweep& sweep,
                                    MeshIndex first, MeshIndex count) {
     const auto operation = sweep;
@@ -213,6 +232,7 @@ const char* aero_device_csgs_color(int device, const implicit::CsgsSweep& sweep,
     }, device);
 }
 #ifdef AERO_HAS_VISCOSITY
+// Собирает вязкие производные в блоки пространственной матрицы на GPU.
 const char* aero_device_viscous_matrix(int device, const viscosity::Jacobian& matrix, const double* state) {
     const auto v = matrix;
     const auto aes = v.aes;
@@ -255,6 +275,7 @@ const char* aero_device_viscous_matrix(int device, const viscosity::Jacobian& ma
     }, device);
 }
 #endif
+// Вычисляет производные потоков площадок на GPU.
 const char* aero_device_spatial_faces(int device, const implicit::SpatialBlocks& matrix, const double* u,
                                       const double* initial, MeshIndex* bad) {
     const auto blocks = matrix;
@@ -286,6 +307,7 @@ void assemble_matrix_rows(const Execution& exec, implicit::SpatialBlocks blocks,
         }
     }, Kokkos::Min<MeshIndex>(*bad));
 }
+// Собирает строки пространственного якобиана из производных площадок.
 const char* aero_device_spatial_rows(int device, const implicit::SpatialBlocks& matrix,
                                      const double* volumes, double dt, MeshIndex* bad) {
     return on_device(nullptr, [&](const Execution& exec) {
@@ -297,6 +319,7 @@ const char* aero_device_spatial_rows(int device, const implicit::SpatialBlocks& 
         }
     }, device);
 }
+// Обновляет временные диагональные коэффициенты системы на GPU.
 const char* aero_device_time_diagonal(int device, const implicit::SpatialBlocks& matrix,
                                       const double* volumes, double dt, MeshIndex* bad) {
     const auto blocks = matrix;
@@ -312,12 +335,14 @@ const char* aero_device_time_diagonal(int device, const implicit::SpatialBlocks&
             }, Kokkos::Min<MeshIndex>(*bad));
     }, device);
 }
+// Умножает строки блочной матрицы на вектор с заданным типом хранения коэффициентов.
 template<unsigned Width>
 void multiply_matrix_rows(const Execution& exec, implicit::SpatialBlocks blocks, const double* x, double* y) {
     for_indices(exec,"Aero: spatial Jacobian times vector",blocks.row_count*Width,KOKKOS_LAMBDA(Index i) {
         blocks.multiply_equations<Width,1>(i/Width,static_cast<unsigned>(i%Width),x,y);
     });
 }
+// Умножает распределённую пространственную матрицу на вектор на GPU.
 const char* aero_device_spatial_apply(int device, const implicit::SpatialBlocks& matrix,
                                       const double* x, double* y) {
     return on_device(nullptr, [&](const Execution& exec) {
@@ -328,39 +353,61 @@ const char* aero_device_spatial_apply(int device, const implicit::SpatialBlocks&
         }
     }, device);
 }
+#ifdef AERO_HAS_MULTIGRID
+// Выполняет ограничение или продление многосеточного вектора на GPU.
+const char* aero_device_multigrid_transfer(int device, MeshIndex count, const multigrid::Transfer& transfer) {
+    return on_device(nullptr,[&](const Execution& exec) {
+        for_indices(exec,"Aero: steady multigrid transfer",count,transfer);
+    },device);
+}
+// Обновляет рабочие векторы грубосеточной коррекции на GPU.
+const char* aero_device_multigrid_update(int device, MeshIndex count, const multigrid::VectorUpdate& update) {
+    return on_device(nullptr,[&](const Execution& exec) {
+        for_indices(exec,"Aero: steady multigrid coarse vectors",count,update);
+    },device);
+}
+#endif
+// Вычисляет невязку неявного шага и её норму на GPU.
 const char* aero_device_newton_residual(int device, MeshIndex rows, const implicit::NewtonUpdate& update, double* norm) {
     return on_device(nullptr,[&](const Execution& exec) {
         *norm = implicit::form_residual_and_norm(exec,rows,update);
     },device);
 }
+// Применяет выбранное обновление полей Ньютона на GPU.
 const char* aero_device_newton_update(int device, MeshIndex nodes, const implicit::NewtonUpdate& update) {
     const auto operation = update;
     return on_device(nullptr, [&](const Execution& exec) {
         for_indices(exec, "Aero: BDF Newton", nodes, operation);
     }, device);
 }
+// Обновляет рабочие векторы BiCGSTAB на GPU.
 const char* aero_device_krylov_update(int device, MeshIndex count, const implicit::KrylovUpdate& update) {
     const auto operation = update;
     return on_device(nullptr, [&](const Execution& exec) {
         for_indices(exec, "Aero: BiCGSTAB update", count, operation);
     }, device);
 }
+// Вычисляет скалярные произведения для стабилизации BiCGSTAB на GPU.
 const char* aero_device_krylov_project(int device,MeshIndex count,const double* t,const double* r,double* pair) {
     return on_device(nullptr,[&](const Execution& exec){ implicit::krylov_project(exec,count,t,r,pair); },device);
 }
+// Совмещает обновление вектора Крылова с вычислением нормы на GPU.
 const char* aero_device_krylov_update_norm(int device,MeshIndex count,const implicit::KrylovUpdate& step,double* norm) {
     return on_device(nullptr,[&](const Execution& exec){ *norm=implicit::krylov_update_norm(exec,count,step); },device);
 }
+// Вычисляет скалярное произведение или максимальную норму вектора на GPU.
 const char* aero_device_krylov_reduce(int device, MeshIndex count, const double* x, const double* y, double* scalar) {
     return on_device(nullptr, [&](const Execution& exec) {
         *scalar = implicit::krylov_reduce(exec, count, x, y);
     }, device);
 }
+// Вычисляет диагностическую производную давления по времени на GPU.
 const char* aero_device_pressure_rate(const partition_detail::PressureRate& rate, Index count) {
     return on_device(nullptr, [&](const Execution& exec) {
         for_indices(exec, "Aero: pressure time derivative", count, rate);
     });
 }
+// Добавляет вклад текущего поля во временные моменты на GPU.
 const char* aero_device_sample(const diagnostic::Sample& input,Index count) {
     const auto sample=input;
     return on_device(nullptr,[&](const Execution& exec){
@@ -377,6 +424,7 @@ void sa_rows(const Execution& exec,const turbulence::Transport& transport,bool s
         transport.residual_row<dim,same_gas>(i,save_rotation);
     });
 }
+// Собирает локальные невязки уравнения SA на GPU.
 template<bool same_gas>
 void sa_residual(const Execution& exec,const turbulence::Step& step) {
     // На первом обходе неявного газа сохраняем ротор. Во внутренних итерациях
@@ -386,11 +434,13 @@ void sa_residual(const Execution& exec,const turbulence::Step& step) {
                                       sa_rows<2,same_gas>, sa_rows<3,same_gas>);
     launch(exec, step.transport, save_rotation);
 }
+// Собирает конвективный перенос рабочей вязкости SA на GPU.
 const char* aero_device_sa_convection(const turbulence::SaEdgeConvection& edges,MeshIndex count) {
     return on_device(nullptr,[&](const Execution& exec){
         for_indices(exec,"Aero: reconstructed SA convection",count,edges);
     });
 }
+// Выполняет выбранную операцию шага SA на GPU.
 const char* aero_device_sa_step(const turbulence::Step& input,turbulence::Operation op) {
     const auto step=input;
     return on_device(nullptr,[&](const Execution& exec){
@@ -405,6 +455,7 @@ const char* aero_device_sa_step(const turbulence::Step& input,turbulence::Operat
         for_indices(exec,"Aero: SA transport",step.transport.count,KOKKOS_LAMBDA(Index i){step.apply(op,i);});
     });
 }
+// Выполняет редукцию максимальной величины SA на GPU.
 double sa_norm(const Execution& exec,const turbulence::Step& step,turbulence::Norm mode) {
     double norm=0.;
     if (step.transport.count) {
@@ -417,6 +468,7 @@ double sa_norm(const Execution& exec,const turbulence::Step& step,turbulence::No
     }
     return norm;
 }
+// Вычисляет максимальную норму выбранной величины SA на GPU.
 const char* aero_device_sa_norm(const turbulence::Step& input,turbulence::Norm mode,bool refresh,double* result) {
     const auto step=input;
     return on_device(nullptr,[&](const Execution& exec){
@@ -442,6 +494,9 @@ void cell_material(const Execution& exec, const viscosity::Operator& g) {
         g.average_cached_material<vertices,with_sa>(e);
     });
 }
+// На сетке из однотипных элементов число вершин и наличие уравнения SA
+// одинаковы у всей группы. Выбираем их до запуска, чтобы в цикле по вершинам
+// сразу собирать нужные коэффициенты переноса.
 template<bool with_sa>
 void cell_material(const Execution& exec, const viscosity::Operator& g) {
     switch (g.vertices_per_cell) {
@@ -478,6 +533,7 @@ void viscous_rows(const Execution& exec, const viscosity::Operator& g) {
     });
 }
 
+// Запускает сборку узловых вязких строк после подготовки элементных данных.
 template<viscosity::Operator::Gradients mode>
 void launch_viscous_rows(const Execution& exec, const viscosity::Operator& g) {
     if (g.dim == 2) viscous_rows<2,mode>(exec,g);
@@ -485,9 +541,11 @@ void launch_viscous_rows(const Execution& exec, const viscosity::Operator& g) {
     else viscous_rows<1,mode>(exec,g);
 }
 
+// Подготавливает объёмные множители тетраэдрального разбиения на GPU.
 const char* aero_device_prepare_tetra_volumes(const viscosity::Operator& input) {
     return on_device(nullptr,[&](const Execution& exec){coordinate_aes::prepare_volumes(exec,input.tetra);});
 }
+// Запускает требуемые фазы вязкого оператора AES на GPU.
 const char* aero_device_viscosity(const viscosity::Operator& input, const double* state, const EulerState* cached,viscosity::Evaluation phase) {
     const auto g = input;
     return on_device(nullptr, [&](const Execution& exec) {
@@ -540,6 +598,7 @@ const char* aero_device_viscosity(const viscosity::Operator& input, const double
     });
 }
 #endif
+// Подготавливает единичные нормали площадок в базисе решателя.
 const char* aero_device_normals(const Geometry& geometry) {
     const Geometry g = geometry;
     return on_device(nullptr, [&](const Execution& exec) {
@@ -548,6 +607,7 @@ const char* aero_device_normals(const Geometry& geometry) {
         });
     });
 }
+// Вычисляет численные потоки выбранного набора площадок на GPU.
 const char* aero_device_faces(const FaceBatch& input, Index* bad, void* stream, const FaceBatch* device_faces) {
     return on_device(stream, [&](const Execution& exec) {
         FaceBatch batch = input;
@@ -573,6 +633,7 @@ const char* aero_device_faces(const FaceBatch& input, Index* bad, void* stream, 
             face_kernels::compute_unpacked_fluxes(exec, batch, bad);
     });
 }
+// Собирает узловую невязку из ориентированных потоков площадок на GPU.
 const char* aero_device_gather(const Geometry& geometry, const EulerFluxResult* flux, double* residual,
                                Index* bad, void* stream) {
     const Geometry g = geometry;
@@ -583,32 +644,38 @@ const char* aero_device_gather(const Geometry& geometry, const EulerFluxResult* 
         });
     });
 }
+// Собирает ограничения скорости изменения по опорам реконструкции на GPU.
 const char* aero_device_stencil_rates(const StencilRates& work, Index count) {
     return on_device(nullptr, [&](const Execution& exec) {
         Kokkos::parallel_for("Aero: stencil residual maxima", Range(exec,0,count), work);
     });
 }
+// Вычисляет локальные стационарные шаги и их диапазон на GPU.
 const char* aero_device_local_steps(const LocalSteadySteps& steps, StepRange* range) {
     return on_device(nullptr, [&](const Execution& exec) {
         Kokkos::parallel_reduce("Aero: local steady steps", Range(exec, 0, steps.gas.count), steps, *range);
     });
 }
+// Применяет верхние ограничения локальных шагов на GPU.
 const char* aero_device_limit_local_steps(const LimitLocalSteps& limit, Index count) {
     return on_device(nullptr, [&](const Execution& exec) {
         Kokkos::parallel_for("Aero: limit local steady steps", Range(exec, 0, count), limit);
     });
 }
+// Выполняет проход ограничения отношений шагов соседних узлов на GPU.
 const char* aero_device_neighbour_steps(const NeighbourStepSweep& sweep, Index count, NeighbourStepRange* result) {
     return on_device(nullptr, [&](const Execution& exec) {
         Kokkos::parallel_reduce("Aero: neighbouring local steps", Range(exec, 0, count), sweep, *result);
     });
 }
+// Выбирает шаг CFL по спектральным скоростям потоков на GPU.
 const char* aero_device_flux_step(const FluxCfl& input, double courant, CflStep* answer, void* stream) {
     const FluxCfl grid = input;
     return on_device(stream, [&](const Execution& exec) {
         minimum_step(exec, grid.count, KOKKOS_LAMBDA(Index k) { return grid.local(k, courant); }, *answer);
     });
 }
+// Выбирает шаг CFL по узловым скоростям волн на GPU.
 const char* aero_device_wave_step(cfl_detail::Grid grid, WaveSpeeds speeds, double courant, CflStep* answer,
                                   void* stream) {
     return on_device(stream, [&](const Execution& exec) {
@@ -617,6 +684,7 @@ const char* aero_device_wave_step(cfl_detail::Grid grid, WaveSpeeds speeds, doub
         }, *answer);
     });
 }
+// Обновляет узловое поле одной явной стадией на GPU.
 const char* aero_device_stage(explicit_detail::FieldStageUpdate update, size_t count, int* bad, void* stream) {
     return on_device(stream, [&](const Execution& exec) {
         for_indices(exec, "Aero: explicit stage", count, KOKKOS_LAMBDA(Index k) {
@@ -635,6 +703,7 @@ const char* aero_device_failed_nodes(const partition_detail::Grid& input) {
         });
     });
 }
+// Обновляет собственные узлы подобласти одной явной стадией на GPU.
 const char* aero_device_owned_stage(const partition_detail::Grid& input, explicit_detail::Stage stage,
                                     double dt, bool save) {
     const auto g = input;
@@ -646,6 +715,7 @@ const char* aero_device_owned_stage(const partition_detail::Grid& input, explici
         }
     });
 }
+// Упаковывает или распаковывает выбранные узловые записи на GPU.
 const char* aero_device_records(const partition_detail::RecordField& data, const MeshIndex* ids, Index count,
                                 const double* input, double* output) {
     const auto field = data;

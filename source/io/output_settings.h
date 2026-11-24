@@ -4,6 +4,7 @@
 #include "fields.h"
 
 namespace aero {
+// Параметры файла, набора полей и расписания одной зоны вывода.
 struct OutputZone {
     // Имя секции и путь к выходному файлу относительно каталога результатов.
     std::string name, file;
@@ -27,6 +28,7 @@ struct OutputZone {
 std::vector<OutputZone> read_output_zones(const std::string& path, std::vector<std::string>* warnings = nullptr);
 // Проверяет расписание, допустимые имена полей и пересечения выходных путей.
 void validate_output_zones(const std::vector<OutputZone>& zones);
+// Формирует имя файла снимка по настройкам зоны и номеру шага.
 std::string output_filename(const OutputZone& zone, std::uint64_t step);
 // Нормализует имя для проверки, могут ли две зоны записать в один файл.
 std::string output_path_key(std::string file);

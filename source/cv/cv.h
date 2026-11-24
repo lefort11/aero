@@ -8,14 +8,18 @@
 
 namespace aero {
 class Mesh;
+// Трёхмерный вектор геометрии контрольного объёма.
 struct CvVector {
     double x, y, z;
 
+    // Вычисляет скалярное произведение трёхмерных геометрических векторов.
     double dot(CvVector b) const { return x*b.x + y*b.y + z*b.z; }
+    // Вычисляет векторное произведение.
     CvVector cross(CvVector b) const { return {y*b.z-z*b.y, z*b.x-x*b.z, x*b.y-y*b.x}; }
     // hypot сохраняет масштаб и для очень коротких, и для очень длинных векторов.
     double length() const { return std::hypot(std::hypot(x,y),z); }
 };
+// Внешняя площадка контрольного объёма с владельцем и граничной меткой.
 struct CvBoundary {
     // Номера узла-владельца, исходной внешней грани и её граничной метки.
     MeshIndex node, face, patch;
@@ -34,6 +38,7 @@ struct CvView {
     const double* min_heights;  // Минимальная высота исходных ячеек, примыкающих к узлу, в единицах сетки.
 };
 
+// Владеет геометрией медианных контрольных объёмов исходной сетки.
 class MedianDual {
 public:
     // Строит медианные объёмы на неподвижной сетке. Центр равен среднему координат вершин.

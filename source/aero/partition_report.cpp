@@ -19,9 +19,11 @@ namespace aero {
 namespace {
 using Count = std::uint64_t;
 const Count missing = (std::numeric_limits<Count>::max)();
+// Текущая и пиковая резидентная память процесса.
 struct ResidentMemory {
     Count peak = missing, current = missing;
 };
+// Полная и доступная оперативная память вычислительного узла.
 struct HostMemory {
     Count total = missing, available = missing;
 };
@@ -41,6 +43,7 @@ void read_kib(const char* path, const char* key1, Count& value1, const char* key
     }
 }
 #endif
+// Запрашивает у ОС текущую и пиковую память процесса.
 ResidentMemory resident_memory() {
     ResidentMemory memory;
 #ifdef _WIN32
@@ -54,6 +57,7 @@ ResidentMemory resident_memory() {
 #endif
     return memory;
 }
+// Запрашивает у ОС полную и доступную физическую память.
 HostMemory host_memory() {
     HostMemory memory;
 #ifdef _WIN32
@@ -68,11 +72,13 @@ HostMemory host_memory() {
 #endif
     return memory;
 }
+// Форматирует память в КиБ; неизвестное значение выводит как n/a.
 std::string kib(Count value) {
     return value == missing ? "n/a" : std::to_string(value);
 }
 
 using Samples = std::array<Count, 3>;
+// Группа процессов одного узла и суммарные измерения памяти.
 struct NodeMemory {
     int leader, size = 1, local_rank = 0;
     Samples sums;
@@ -82,6 +88,7 @@ struct NodeMemory {
     char host[10] = "localhost";
 #endif
 };
+// Группирует процессы по узлу и суммирует измерения памяти.
 NodeMemory collect_node_memory(const Processes& world, const Samples& memory) {
     NodeMemory node;
     node.leader = world.rank;
@@ -129,10 +136,12 @@ NodeMemory collect_node_memory(const Processes& world, const Samples& memory) {
 }
 }
 
+// Пиковое потребление памяти по данным ОС за построение геометрии и шаблонов, КиБ.
 std::uint64_t process_peak_kib() {
     return resident_memory().peak;
 }
 
+// Возвращает локальный ранг и доступные ресурсы узла.
 NodeResources partition_node_resources(const Processes& world) {
     ResidentMemory process;
     world.local([&] { process = resident_memory(); });
@@ -145,6 +154,7 @@ NodeResources partition_node_resources(const Processes& world) {
     return result;
 }
 
+// Печатает распределение сетки, объёмы обменов и потребление памяти.
 void write_partition_report(const Processes& world, const PartitionWork& work, Count stencil_peak,
                             std::ostream& out) {
     ResidentMemory ready;

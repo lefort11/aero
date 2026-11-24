@@ -11,10 +11,12 @@ struct MeanAreaTerm {
     unsigned char a,b;
     signed char multiplier;
 };
+// Диапазоны слагаемых средней площадки для вершин одной формы элемента.
 struct MeanAreaForm {
     MeshIndex first;
     unsigned char offset[9]; // Диапазон слагаемых каждой из восьми вершин.
 };
+// Общие формы средних площадок и их привязка к элементам.
 struct MeanAreaTable {
     const MeanAreaForm* forms;
     const MeanAreaTerm* terms;
@@ -57,11 +59,13 @@ inline MeanAreaForm append_mean_area_form(const VolumePattern& pattern,std::uint
     return form;
 }
 
+// Вычисляет средние градиенты базиса по площадкам и объёму элемента.
 struct MeanAreaBasis {
     const MeanAreaForm& form;
     const MeanAreaTerm* terms;
     Coordinate relative[8];
     double inverse_volume;
+    // Подключает форму элемента и нормирует средние площадки его объёмом.
     AERO_HOST_DEVICE MeanAreaBasis(const MeanAreaTable& table,const VolumeCoordinates& geo,
                                    MeshIndex e,unsigned count,double volume)
         : form(table.forms[table.cell_ids ? table.cell_ids[e] : 0]), terms(table.terms+form.first) {

@@ -13,6 +13,7 @@
 
 namespace aero {
 using namespace residual_detail;
+// Находит минимальный шаг по скоростям потоков на CPU.
 double residual_detail::cpu_flux_cfl(const FluxCfl& grid, double courant, const MeshIndex* global_ids) {
     const auto limit = cfl_detail::host_min(grid.count, [&](size_t k) { return grid.local(k, courant); });
     if (limit.dt < 0)
@@ -22,6 +23,7 @@ double residual_detail::cpu_flux_cfl(const FluxCfl& grid, double courant, const 
                                                           : limit.dt;
 }
 namespace {
+// Проверяет размеры, параметры газа и допустимость конфигурации пространственного оператора.
 void validate(ResidualOptions o) {
     if (!(o.gamma > 1 && std::isfinite(o.gamma)))
         throw std::invalid_argument("residual: invalid gamma");
@@ -37,6 +39,7 @@ void validate(ResidualOptions o) {
         throw std::invalid_argument("residual: invalid solver");
 }
 }
+// Проверяет касательность фоновой скорости на стенках линейной задачи.
 void residual_detail::validate_linear_walls(const Geometry& g) {
     const auto& background = g.options.background;
     if (!background.active()) return;
@@ -51,6 +54,7 @@ void residual_detail::validate_linear_walls(const Geometry& g) {
             throw std::invalid_argument("linear.txt: background velocity must be tangent to a stationary wall");
     }
 }
+// Переводит вектор площади в базис компонент импульса решателя.
 void residual_detail::project_surface(Surface& s, CvVector world, unsigned d, const ResidualFrame& frame) {
     s.measure = world.length();
     if (!(s.measure > 0 && std::isfinite(s.measure)))
@@ -96,6 +100,7 @@ void residual_detail::build_incidence(Index nodes, Index edges, const std::vecto
                                [&](Index node, OrientedFace entry) { incidence[next[node]++] = entry; });
 }
 namespace {
+// Формирует ошибку вычисления потока с номером проблемной площадки.
 void failure(Index bad, const Geometry& g) {
     if (bad < g.edges)
         throw std::domain_error("residual: invalid flux at edge " + std::to_string(bad));
@@ -105,6 +110,7 @@ void failure(Index bad, const Geometry& g) {
 }
 }
 #ifdef AERO_WITH_KOKKOS_GPU
+// Запускает вычисление потоков и их сборку в узловую невязку.
 void launch_residual(Geometry, const double*, const double*, EulerFluxResult*, double*, double*, double*,
                      Index*, aero::gpu::Stream);
 #endif
@@ -122,6 +128,7 @@ bool cpu_packed_flux(const FaceBatch& batch, Index face, const WenoEdgeTile<orde
     return compute_packed_face<false>(batch, face, tile);
 }
 
+// Вычисляет поток площадки с выбранным типом реконструкции на CPU.
 template <unsigned order> bool cpu_face_with_stencil(const FaceBatch& batch, Index f) {
     // У линейных схем EBR все четыре компоненты в 2D используют одну строку весов.
     if (batch.linear_roe_2d())
@@ -147,6 +154,7 @@ template<unsigned dim> bool cpu_nodal_lf(const FaceBatch& batch, Index face) {
     return batch.compute_face<false,true>(face,dim);
 }
 
+// Вычисляет потоки линеаризованных уравнений Эйлера на CPU.
 bool cpu_linear_flux(const FaceBatch& batch, Index face) { return batch.compute_linear(face); }
 
 // Способ вычисления потока выбран перед обходом. Нумерация MPI и обработка ошибок общие.
@@ -168,6 +176,7 @@ void compute_cpu_faces(const FaceBatch& batch, const MeshIndex* global_nodes) {
 }
 }
 
+// Вычисляет потоки набора внутренних и граничных площадок на CPU.
 void residual_detail::cpu_face_fluxes(const FaceBatch& batch, const MeshIndex* global_nodes) {
     const auto& packed = batch.geometry.packed;
     if (batch.needs_gas_update())
@@ -187,6 +196,7 @@ void residual_detail::cpu_face_fluxes(const FaceBatch& batch, const MeshIndex* g
     }
 }
 
+// Переносит настройки постановки в параметры пространственного оператора.
 ResidualOptions residual_options(const std::string& variables, const std::string& solver, double gamma,
                                  double trace_ratio_min, double trace_ratio_max) {
     ResidualOptions o{};
@@ -211,6 +221,7 @@ ResidualOptions residual_options(const std::string& variables, const std::string
     return o;
 }
 
+// Геометрия, исполнитель и рабочие буферы сборки пространственной невязки.
 struct SpatialResidual::Impl {
     int device;                          // Отрицательное значение выбирает CPU.
     ReconstructionScheme scheme;         // Якобиан первого порядка требует той же схемы у невязки.
@@ -222,6 +233,7 @@ struct SpatialResidual::Impl {
     std::vector<OrientedFace> incidence; // Номера поверхностей с ориентацией относительно узла.
     std::vector<EulerFluxResult> buffer; // На CPU хранит вычисленные потоки до сборки по узлам.
     Geometry g{};                        // Представление массивов на выбранном устройстве.
+    // Собирает пространственную невязку из потоков площадок и дополнительных вкладов.
     void assemble(const double* u, const double* u0, double* r, double* edge, double* boundary, void* stream,
                   double* flux_seconds);
 #ifdef AERO_WITH_KOKKOS_GPU
@@ -229,6 +241,7 @@ struct SpatialResidual::Impl {
     EulerFluxResult* device_flux = nullptr;
     Index* device_error = nullptr; // Первый узел или поверхность с ошибкой расчёта.
 #endif
+    // Сохраняет выбранную схему и создаёт контекст реконструкции нужного исполнителя.
     Impl(ReconstructionStencil stencil, int id)
         : device(id), scheme(stencil.data().scheme),
           context(std::move(stencil), id < 0 ? ReconstructionBackend::Cpu : ReconstructionBackend::Cuda,
@@ -240,6 +253,7 @@ struct SpatialResidual::Impl {
             throw std::invalid_argument("residual: CUDA is not enabled in this build");
 #endif
     }
+    // Строит площадки, узловую связность и граничные данные пространственного оператора.
     template <class EdgeAt>
     void prepare(unsigned d, Index nodes, Index edges, Index pieces, const CvBoundary* boundary,
                  EdgeAt edge_at, const BoundaryPatches& bc, ResidualOptions options,
@@ -320,6 +334,7 @@ struct SpatialResidual::Impl {
     }
 };
 
+// Подготавливает геометрию, реконструкцию и границы пространственного оператора.
 SpatialResidual::SpatialResidual(MeshView mesh, CvView cv, ReconstructionStencil stencil,
                                  const BoundaryPatches& patches, ResidualOptions options, int device,
                                  const ResidualFrame& frame)
@@ -333,6 +348,7 @@ SpatialResidual::SpatialResidual(MeshView mesh, CvView cv, ReconstructionStencil
         [&](Index e) -> PeriodicEdge { return {mesh.edge_begin[e], mesh.edge_end[e], e, cv.edge_areas[e]}; },
         patches, options, frame);
 }
+// Подготавливает геометрию, реконструкцию и границы пространственного оператора.
 SpatialResidual::SpatialResidual(unsigned d, PeriodicView grid, ReconstructionStencil stencil,
                                  const BoundaryPatches& patches, ResidualOptions options, int device,
                                  const ResidualFrame& frame)
@@ -343,8 +359,10 @@ SpatialResidual::SpatialResidual(unsigned d, PeriodicView grid, ReconstructionSt
         d, grid.node_count, grid.edge_count, grid.boundary_count, grid.boundary,
         [&](Index e) { return grid.edges[e]; }, patches, options, frame);
 }
+// Освобождает принадлежащие объекту ресурсы при завершении его времени жизни.
 SpatialResidual::~SpatialResidual() {}
 
+// Для якобиана используем уже спроецированные площади и ту же таблицу границ.
 int SpatialResidual::jacobian_geometry(Geometry& host, Geometry& active) const {
     if (p_->scheme != ReconstructionScheme::FirstOrder || p_->g.options.solver != ResidualSolver::LocalLF)
         throw std::invalid_argument("LF Jacobian requires first-order reconstruction and LF flux");
@@ -358,10 +376,12 @@ int SpatialResidual::jacobian_geometry(Geometry& host, Geometry& active) const {
     return p_->device;
 }
 
+// Собирает пространственную невязку из потоков площадок и дополнительных вкладов.
 void SpatialResidual::assemble(const double* u, const double* u0, double* r, double* edge, double* boundary,
                                void* stream) {
     assemble(u, u0, r, edge, boundary, stream, nullptr);
 }
+// Собирает пространственную невязку из потоков площадок и дополнительных вкладов.
 void SpatialResidual::assemble(const double* u, const double* u0, double* r, double* edge, double* boundary,
                                void* stream, double* flux_seconds) {
     const auto& g = p_->g;
@@ -369,10 +389,13 @@ void SpatialResidual::assemble(const double* u, const double* u0, double* r, dou
         throw std::invalid_argument("residual: missing input or output");
     p_->assemble(u, u0, r, edge, boundary, stream, flux_seconds);
 }
+// Переводит интегральную невязку в правую часть временного уравнения.
 void SpatialResidual::assemble_rhs(const double* u, const double* u0, double* r, void* stream,
                                    double* flux_seconds) {
     p_->assemble(u, u0, r, nullptr, nullptr, stream, flux_seconds);
 }
+// На принятом состоянии сохранённые потоки и связи с узлами используются также для CFL.
+// Объёмы и u находятся на одном исполнителе. На следующих стадиях нужна только правая часть.
 double SpatialResidual::assemble_cfl(const double* u, const double* u0, double* r, const double* volumes,
                                      double courant, void* stream, double* flux_seconds,
                                      double* cfl_seconds) {
@@ -394,6 +417,7 @@ double SpatialResidual::assemble_cfl(const double* u, const double* u0, double* 
         throw std::domain_error("no finite global CFL step");
     return dt;
 }
+// Собирает пространственную невязку из потоков площадок и дополнительных вкладов.
 void SpatialResidual::Impl::assemble(const double* u, const double* u0, double* r, double* edge,
                                      double* boundary, void* stream, double* flux_seconds) {
     if (!u || !r)

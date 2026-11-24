@@ -15,6 +15,7 @@ struct Workspace {
     FixedMatrix<double,3,3> mean;
     FixedMatrix<double,3,4> departure, force;
 };
+// Командное ядро вязких градиентов аффинного гексаэдра.
 struct Apply {
     const Geometry *geometry;
     const viscosity::Cell *cells;
@@ -31,6 +32,7 @@ struct Apply {
             sum += g.basis(axis, i) * (v[i] - v[0]);
         return sum;
     }
+    // Вычисляет отклонение значения вершины от аффинного продолжения базового тетраэдра.
     KOKKOS_INLINE_FUNCTION static double departure(const Geometry &g, const double *v, unsigned r) {
         double result = v[4 + r] - v[0];
         for (unsigned k = 1; k < 4; ++k)
@@ -55,6 +57,7 @@ struct Apply {
             result -= g.interpolation(r, i) * f[r];
         return result;
     }
+    // Вычисляет вклад средних напряжений в поток выбранной вершины.
     KOKKOS_INLINE_FUNCTION double mean_flux(const Geometry &g, const Workspace &w, unsigned m, unsigned i) const {
         double sum = 0.;
         const double dilatation = (2. / 3.) * (w.mean(0, 0) + w.mean(1, 1) + w.mean(2, 2));
@@ -75,6 +78,7 @@ struct Apply {
                 sum += pair_heat[cell.pair_index(local, j)] * (temperature[g.ordered[j]] - temperature[i]);
         return sum;
     }
+    // Совместно вычисляет градиенты одного гексаэдра потоками команды GPU.
     KOKKOS_INLINE_FUNCTION void operator()(const Team::member_type &team) const {
         const MeshIndex e = first_cell + static_cast<unsigned>(team.league_rank());
         const unsigned tid = team.team_rank(), i = tid % 8, m = tid / 8;

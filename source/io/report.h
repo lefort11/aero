@@ -14,15 +14,19 @@ namespace aero {
 // Единый формат календарного времени для отчёта и прогноза завершения расчёта.
 std::string local_date_time(std::time_t timestamp);
 class ExplicitIntegrator;
+// Минимум, максимум и объёмный интеграл физической величины.
 struct FlowRange {
     double low = std::numeric_limits<double>::max(), high = std::numeric_limits<double>::lowest();
     long double integral = 0;
 };
+// Сводные диапазоны полей и масштабированная норма их изменения.
 struct FlowSummary {
     FlowRange field[6];
     // Сумма квадратов хранится в единицах rate_scale² с весами объёмов.
     long double rate_scale = 0, scaled_squares = 0, volume = 0;
+    // Накапливает взвешенные квадраты приращений в масштабе наибольшего из них, чтобы избежать переполнения.
     void add_squares(long double scale, long double weight);
+    // Объединяет диапазоны и масштабированные нормы локальных отчётных данных.
     void merge(const FlowSummary& other, unsigned fields);
 };
 // Сведения о принятом шаге. Нулевой предел Ньютона означает явную схему.
@@ -44,31 +48,41 @@ struct ReportDetails {
     double newton_residual = 0., newton_tol = 0., steady_residual = 0., steady_tol = 0.;
     std::uint64_t failed = 0, first_order = 0;
 };
+// Печатает диапазоны величин и норму изменения поля.
 void write_flow_summary(const FlowSummary&, std::uint64_t step, double time, double cfl, double dt,
                         unsigned dimension, std::ostream& out, const ReportDetails& details = {});
 
 // Один объект обслуживает один расчёт. Объёмы относятся к независимым расчётным узлам.
 class Report {
 public:
+    // Настраивает период отчётов, параметры газа и объёмные веса узлов.
     Report(std::uint64_t every, double gamma, unsigned dimension, std::size_t nodes,
                const double* volumes, const LinearBackground& background = {});
+    // Проверяет наступление отчётного шага или срока.
     static bool due(std::uint64_t step, std::uint64_t every);
+    // Проверяет наступление отчётного шага или срока.
     bool due(std::uint64_t step) const;
 
     // До и после шага передавайте один номер предстоящего шага, начиная с единицы.
     // При повторной попытке шага исходное поле можно сохранить ещё раз.
     void capture(std::uint64_t step, const std::vector<double>& previous);
+    // Вычисляет отчётные показатели принятого поля.
     FlowSummary measure(std::uint64_t step, const std::vector<double>& current);
+    // Измеряет и печатает отчёт о текущем состоянии расчёта.
     void write(std::uint64_t step, double time, double cfl, double dt, const std::vector<double>& current,
                std::ostream& out = std::cout);
     // Обёртки интегратора проверяют срок отчёта до обращения к полю на CPU или GPU.
     void capture(std::uint64_t step, const ExplicitIntegrator& solver);
+    // Измеряет и печатает отчёт о текущем состоянии расчёта.
     void write(std::uint64_t step, double time, double cfl, double dt, const ExplicitIntegrator& solver,
                std::ostream& out = std::cout);
 
 private:
+    // Вычисляет диапазоны и объёмные нормы по текущему полю.
     FlowSummary measure_values(std::uint64_t step, const double* u);
+    // Сохраняет значения начала отчётного интервала для измерения изменений.
     void capture_values(std::uint64_t step, const double* u);
+    // Печатает отчётные показатели переданного поля.
     void write_values(std::uint64_t step, double time, double cfl, double dt, const double* u,
                       std::ostream& out);
     // Период отчётов и номер шага, для которого сохранена энергия перед обновлением.

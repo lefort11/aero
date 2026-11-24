@@ -16,6 +16,7 @@ struct Element {
     int owners[8];
     unsigned count, neighbours[8]; // Битовая маска исходных рёбер для каждой вершины.
     Coordinate position[8];       // Координаты в базисе уравнений, с масштабом сетки.
+    // Возвращает разность координат концов локального ребра элемента.
     bool edge(unsigned a, unsigned b) const { return (neighbours[a] & (1u<<b)) != 0; }
 };
 // Четыре пространственные диагонали гексаэдра задают четыре триангуляции AES.
@@ -44,15 +45,18 @@ struct PairMetric {
         return (m==n ? trace : 0.)+p_nm-(2./3.)*p_mn;
     }
 };
+// Вершины элемента, веса усреднения и геометрические коэффициенты диффузии.
 struct Cell {
     unsigned count;
     double inverse_count; // Вес вершины при усреднении коэффициентов переноса.
     MeshIndex node[8];
     double diffusion[8]; // Сумма геометрических коэффициентов CFL для каждой вершины.
     MeshIndex first_pair, first_vertex; // Начало таблиц пар и вершин данного элемента.
+    // Вычисляет начало строки пар вершин в треугольной упаковке.
     AERO_HOST_DEVICE static unsigned pair_offset(unsigned vertices,unsigned a,unsigned b) {
         return a*(2*vertices-a-1)/2 + b-a-1; // Верхний треугольник без диагонали, a < b.
     }
+    // Преобразует пару локальных вершин в индекс упакованного коэффициента.
     AERO_HOST_DEVICE MeshIndex pair_index(unsigned i, unsigned j) const {
         const unsigned a = i < j ? i : j, b = i < j ? j : i;
         return first_pair + pair_offset(count,a,b);
@@ -64,9 +68,11 @@ struct Gradient {
     double stress[3], heat;
 
 };
+// Разности скорости и отношения давления к плотности между состояниями.
 struct Difference {
     double velocity[3], thermal; // Приращения компонент u и величины p/rho.
 };
+// Вычисляет разности скорости и отношения p/rho между газовыми состояниями.
 template<class GasState>
 AERO_HOST_DEVICE inline Difference difference(unsigned dim, const GasState& from, const GasState& to) {
     Difference change{};
@@ -91,10 +97,12 @@ AERO_HOST_DEVICE inline void add_gradient(const PairMetric& pair, bool reverse,
 struct GradientStencil {
     const PairMetric* pairs; // Для элемента его верхний треугольник лежит подряд в памяти.
     const double* pair_heat; // На тесном GPU диффузия SA читает только скаляр теплопереноса.
+    // Вычисляет тепловой вклад парного геометрического оператора.
     AERO_HOST_DEVICE double heat(const Cell& cell,unsigned i,unsigned j) const {
         const auto index=cell.pair_index(i,j);
         return pair_heat ? pair_heat[index] : pairs[index].heat;
     }
+    // Возвращает геометрический тензор взаимодействия пары вершин.
     AERO_HOST_DEVICE const PairMetric& metric(const Cell& cell, unsigned i, unsigned j) const {
         return pairs[cell.pair_index(i,j)];
     }
@@ -118,6 +126,7 @@ struct GradientStencil {
             add_gradient<d>(pairs[index], false, difference(d, here, gas[cell.node[j]]), gradient);
         return gradient;
     }
+    // Вычисляет градиенты величин по геометрическим коэффициентам элемента.
     template<unsigned d, class GasState>
     AERO_HOST_DEVICE void cell_gradients(const Cell& cell, const GasState* gas, Gradient* output) const {
         for (unsigned i = 0; i < cell.count; ++i)
@@ -131,11 +140,14 @@ struct MeanGradient {
     Coordinate basis[8]; // Средние по объёму производные базисных функций.
     double volume;
 };
+// Подготавливает геометрические коэффициенты вязких градиентов.
 class GradientBuilder {
 public:
+    // Вычисляет геометрические и транспортные коэффициенты градиента одного элемента.
     void prepare(const Element&, unsigned dimension, double gamma, double prandtl,
                  Cell&, std::vector<PairMetric>&, MeanGradient* mean = nullptr);
 private:
+    // Общие градиенты и парные коэффициенты элементов одной геометрической формы.
     struct Shape {
         MeanGradient mean;
         MeshIndex first_pair; // Начало коэффициентов для этой формы элемента.

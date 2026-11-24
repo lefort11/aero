@@ -126,6 +126,12 @@ ifeq ($(WITH_OPENMP),0)
 BUILD := $(BUILD)/serial
 endif
 # Разные наборы модулей меняют раскладку общих структур CPU и Kokkos.
+ifeq ($(wildcard source/multigrid/coarse_step.h),)
+# Отдельный кэш объектов для сборки без необязательного модуля.
+BUILD := $(BUILD)/no-multigrid
+else
+override CPPFLAGS += -DAERO_HAS_MULTIGRID=1
+endif
 ifeq ($(wildcard source/viscosity/transport.h),)
 BUILD := $(BUILD)/inviscid
 else

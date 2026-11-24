@@ -78,6 +78,7 @@ std::vector<CpuNodeShare> node_memory_budgets(const RunSettings& run, const std:
 
     return nodes;
 }
+// Распределяет листья на корневом ранге по ресурсам CPU и GPU.
 void plan_on_root(const RunSettings& run, const std::vector<Id>& resources, LeafLayout& layout,
                   const std::vector<Id>& gpu, std::vector<GpuRankCapacity>* cards) {
     const auto ranks = resources.size() / 3;
@@ -108,6 +109,7 @@ void plan_on_root(const RunSettings& run, const std::vector<Id>& resources, Leaf
     // Храним недавно прочитанные границы листьев. Размер кэша зависит от числа процессов,
     // поэтому планирование не требует загрузки всего каталога архива в память.
     std::map<Id, LeafCost> cache;
+    // Возвращает накопленные ресурсы архива до указанной границы листьев.
     const auto prefix = [&](Id end) -> LeafCost {
         const auto found = cache.find(end);
         if (found != cache.end())
@@ -160,6 +162,7 @@ void plan_on_root(const RunSettings& run, const std::vector<Id>& resources, Leaf
 }
 }
 
+// Подбирает непрерывные диапазоны листьев с учётом скоростей процессов и доступной памяти.
 LeafLayout plan_partition(const RunSettings& run, const Processes& world, GpuPlacement* gpu) {
     LeafLayout plan;
     if (world.size == 1)

@@ -2,6 +2,7 @@
 
 namespace aero {
 namespace explicit_detail {
+// Возвращает таблицу единственной стадии явного метода Эйлера.
 Stages euler_stages() {
     // Один вызов даёт принятое состояние U на момент t_n + dt.
     static const Stage stages[] = {first_euler_stage()};

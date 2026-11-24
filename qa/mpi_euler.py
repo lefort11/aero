@@ -461,6 +461,7 @@ def verify(
             raise AssertionError(rejected)
 
 
+# Разбирает параметры запуска, выполняет набор QA-проверок и возвращает статус результата.
 def main():
     parser = mpi_parser(__doc__)
     parser.add_argument("--time-scheme", choices=("euler", "ssprk3", "bdf1", "bdf2"), default="euler")
