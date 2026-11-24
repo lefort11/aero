@@ -434,13 +434,19 @@ void main_and_cuda(const CaseFiles& files) {
     directories.overrides["implicit"]["local_time_step"] = "auto";
     require(read_run_settings(directories).local_time_step == LocalStepMode::Auto, "adaptive steady step");
     const auto default_feedback = read_run_settings(directories);
-    require(!default_feedback.local_time_step_residual_limit && default_feedback.local_time_step_probe_node == ~std::uint64_t(0),
+    require(default_feedback.local_time_step_residual_limit == ResidualLimit::Off && default_feedback.local_time_step_probe_node == ~std::uint64_t(0),
             "residual limit and probe are optional");
     directories.overrides["implicit"]["local_time_step_residual_limit"] = "on";
     directories.overrides["implicit"]["local_time_step_probe_node"] = "0";
     const auto observed = read_run_settings(directories);
-    require(observed.local_time_step_residual_limit && observed.local_time_step_probe_node == 0,
+    require(observed.local_time_step_residual_limit == ResidualLimit::Node && observed.local_time_step_probe_node == 0,
             "enabled residual limit and probe at first node");
+    directories.overrides["implicit"]["local_time_step_residual_limit"] = "stencil";
+    require(read_run_settings(directories).local_time_step_residual_limit == ResidualLimit::Stencil,
+            "growth measured at stencil nodes");
+    directories.overrides["implicit"]["local_time_step_residual_limit"] = "WORK";
+    require(read_run_settings(directories).local_time_step_residual_limit == ResidualLimit::Work &&
+            std::string(residual_limit_name(ResidualLimit::Work)) == "work", "global step range by linear work");
     directories.overrides["implicit"].erase("local_time_step_residual_limit");
     directories.overrides["implicit"].erase("local_time_step_probe_node");
     auto& ratio = directories.overrides["implicit"]["local_time_step_max_ratio"];

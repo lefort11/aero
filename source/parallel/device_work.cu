@@ -583,6 +583,11 @@ const char* aero_device_gather(const Geometry& geometry, const EulerFluxResult* 
         });
     });
 }
+const char* aero_device_stencil_rates(const StencilRates& work, Index count) {
+    return on_device(nullptr, [&](const Execution& exec) {
+        Kokkos::parallel_for("Aero: stencil residual maxima", Range(exec,0,count), work);
+    });
+}
 const char* aero_device_local_steps(const LocalSteadySteps& steps, StepRange* range) {
     return on_device(nullptr, [&](const Execution& exec) {
         Kokkos::parallel_reduce("Aero: local steady steps", Range(exec, 0, steps.gas.count), steps, *range);

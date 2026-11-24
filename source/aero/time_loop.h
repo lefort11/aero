@@ -26,8 +26,8 @@ struct StepOperations {
     std::function<double(bool accepted)> steady_residual;
     // Выполняет все стадии шага и обмен значениями в граничных узлах подобластей.
     std::function<bool(const TimeStep&, SolverTimings&)> advance;
-    std::function<bool(std::uint64_t)> control; // Применяет команды после принятого шага. STOP запрашивает итоговый вывод.
-    std::function<void()> accepted; // После отчёта можно повысить CFL следующего шага.
+    std::function<bool(std::uint64_t,bool&)> control; // Возвращает STOP, второй аргумент сообщает об изменении режима для прогноза.
+    std::function<void(bool startup_finished)> accepted; // Выбирает CFL следующего шага до записи recovery.
     // Даёт текущее состояние в памяти CPU для вывода полей и контрольной точки.
     std::function<const std::vector<double>&()> output_state;
     std::function<void(const TimeStep&, const std::vector<double>&)> exact_error;

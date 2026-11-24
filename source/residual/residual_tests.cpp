@@ -1,4 +1,5 @@
 #include "../timestep/local_rate_limit.h"
+#include "../timestep/steady_step_spread.h"
 #include "../../tests/test_mesh.h"
 #include "residual_detail.h"
 #include "flux_cfl.h"
@@ -166,10 +167,132 @@ void mixed_face_list(int device) {
     near(flux[2].flux[1], -3.);
 }
 
+void steady_step_spread_test() {
+    SteadyStepSpread spread;
+    spread.start(100.);
+    const auto observe_block = [&](double first, double second, unsigned linear_work) {
+        for (unsigned n = 0; n < 32; ++n) spread.accepted(n < 16 ? first : second,linear_work);
+    };
+    for (unsigned n = 0; n < 31; ++n) spread.accepted(n < 16 ? 50. : 25.,1);
+    near(spread.limit(),1.); // Первая половина наблюдений сама по себе не меняет шаг.
+    spread.accepted(25.,1);
+    near(spread.limit(),4.);
+    observe_block(20.,10.,3); // Каждый шаг стал вдвое дороже: разрешённый рост равен sqrt(4).
+    near(spread.limit(),8.);
+    near(spread.limit(3.),3.);
+    observe_block(20.,10.,0);
+    near(spread.limit(),10.); // Дополнительная граница равна R_start/R_last.
+    observe_block(10.,11.,3);
+    near(spread.limit(),std::sqrt(10.));
+    observe_block(10.,10.,3);
+    near(spread.limit(),std::sqrt(std::sqrt(10.)));
+
+    spread.reset();
+    spread.start(DBL_MAX);
+    observe_block(DBL_MAX,std::numeric_limits<double>::denorm_min(),std::numeric_limits<unsigned>::max());
+    require(spread.limit() == DBL_MAX, "local step range must remain finite");
+    std::ostringstream saved;
+    spread.write(saved);
+    std::istringstream extreme(saved.str());
+    spread.read(extreme);
+    observe_block(std::numeric_limits<double>::denorm_min(),DBL_MAX,0);
+    near(spread.limit(),std::sqrt(DBL_MAX));
+
+    // Продолжаем тот же шаг после каждой возможной позиции внутри блока.
+    spread.reset();
+    spread.start(7.);
+    SteadyStepSpread resumed = spread;
+    for (unsigned step = 0; step < 100; ++step) {
+        std::ostringstream out;
+        resumed.write(out);
+        std::istringstream in(out.str()+" next_key");
+        resumed.reset();
+        resumed.read(in);
+        std::string key;
+        require(bool(in >> key) && key == "next_key", "recovery consumed next setting");
+        const double norm = 7.*std::exp(-.025*step + .15*std::sin(.17*step));
+        spread.accepted(norm,step%31);
+        resumed.accepted(norm,step%31);
+        require(resumed.limit() == spread.limit() && resumed.samples() == spread.samples(),
+                "checkpoint changed local step decisions");
+    }
+    // Старый формат хранит только исходную норму данной реконструкции.
+    std::istringstream legacy("7.125 next_key");
+    resumed.read(legacy);
+    resumed.start(3.);
+    std::string next;
+    require(bool(legacy >> next) && next == "next_key" && resumed.reference() == 7.125 &&
+            resumed.last() == 3. && resumed.limit() == 1. && resumed.samples() == 0, "legacy step range");
+    for (const char* bad : {"7oops", "work1 1 1 4 32 0 0 0 0", "work1 1 1 4 8 0 0 0 0"}) {
+        bool rejected = false;
+        std::istringstream invalid(bad);
+        try { resumed.read(invalid); } catch (const std::runtime_error&) { rejected = true; }
+        require(rejected && resumed.reference() == 7.125, "corrupt range overwrote accepted history");
+    }
+    resumed.reset();
+    resumed.start(0.);
+    resumed.accepted(0.,0);
+    resumed.accepted(std::numeric_limits<double>::quiet_NaN(),0);
+    require(resumed.samples() == 0 && resumed.last() == 0., "invalid or zero observation consumed a step");
+}
+
+void stencil_rates_test() {
+    using namespace residual_detail;
+    Surface face{};
+    face.begin=0; face.end=1;
+    const ReconstructionIndex offsets[]{0,2,4}, nodes[]{0,2,1,3};
+    const double weights[]{-1.,1.,-1.,1.};
+    ReconstructionStencilView stencil{};
+    stencil.edge_count=1; stencil.owner_edges=&face;
+    stencil.offsets=offsets; stencil.nodes=nodes; stencil.weights=weights;
+    double input[]{.1,.2, .3,.4, 1.2,1.4, 1.6,1.8, 2.,2.}, maximum[4]{};
+    EulerFluxResult flux{};
+    StencilRates work{stencil,&face,nullptr,nullptr,nullptr,nullptr,1,{},
+                      &flux,input,maximum,false,true,1.,0.,StencilRates::Edges,0,0};
+    const auto check = [&](double gas, double sa) { work(0); near(maximum[0],gas); near(maximum[1],sa); };
+    flux.flux[0]=1.; check(1.6,1.4);
+    flux.flux[0]=-1.; check(1.6,1.8);
+    face.use_nodal_traces=4; check(1.2,.4);
+    work.upwind=.5; check(1.6,.4);
+    face.use_nodal_traces=0; work.high_order_sa=false; check(1.6,.4);
+    work.first_order=true; check(.3,.4);
+
+    // Узел 2 из левой строки имеет рост газа, узел 3 из правой — рост SA.
+    // Узел 4 тоже растёт, но не принадлежит ни одной строке.
+    const unsigned count = 5;
+    double history[count*LocalRateLimit::Width]{}, diagnostic[4*count]{};
+    double gas[]{100.,0.,20.,0.,100.}, sa[]{0.,0.,.001,10.,10.};
+    for (unsigned row=0; row<count; ++row) {
+        history[row*LocalRateLimit::Width + LocalRateLimit::GasMean] = gas[row];
+        history[row*LocalRateLimit::Width + LocalRateLimit::SaMean] = sa[row];
+    }
+    gas[2] *= 2.; gas[4] *= 2.;
+    sa[3] *= -2.; sa[4] *= 2.; // Производная SA может иметь отрицательный знак.
+    work.feedback = {history,gas,sa,200.,20.,0.,true,nullptr,4};
+    work.first_order = false; work.high_order_sa = true; work.upwind = 1.;
+    work.pass = StencilRates::NodeGrowth;
+    work.ranks = 2; work.rank = 1; work.nodes = diagnostic;
+    for (unsigned row=0; row<count; ++row) work(row);
+    work.pass = StencilRates::Edges;
+    flux.flux[0] = 1.; check(1.,0.); near(maximum[2],6.); near(maximum[3],0.);
+    flux.flux[0] = -1.; check(1.,1.); near(maximum[2],6.); near(maximum[3],8.);
+    work.first_order = true; check(0.,0.); near(maximum[2],0.); near(maximum[3],0.);
+
+    // Каждый примыкающий контрольный объём получает оценку со всего действующего шаблона.
+    work.first_order = false; check(1.,1.);
+    const Index volume_offsets[]{0,1,2};
+    const OrientedFace incidence[]{OrientedFace::outward(0),OrientedFace::inward(0)};
+    work.offsets = volume_offsets; work.incidence = incidence; work.pass = StencilRates::Volumes;
+    for (unsigned node=0; node<2; ++node) {
+        work(node);
+        for (unsigned k=0; k<4; ++k) near(diagnostic[4*node+k],maximum[k]);
+    }
+}
+
 // Рост газа и рост SA ограничивают каждый свой узел; затухание позволяет шагу восстановиться.
 void local_rate_limit_test() {
     double history[6]{}, gas[]{1., 1.}, sa[]{1., 1.};
-    LocalRateLimit feedback{history,gas,sa,1.,1.,.01,true};
+    LocalRateLimit feedback{history,gas,sa,1.,1.,.01,true,nullptr,0};
     for (unsigned i=0;i<2;++i) near(feedback.limit(i,i,2.,1.,1.,true),1.);
     gas[0] = 1.2;
     near(feedback.limit(0,0,2.,1.,1.,false),.75);
@@ -179,6 +302,17 @@ void local_rate_limit_test() {
     sa[1] = .5;
     near(feedback.limit(1,1,2.,.75,1.,false),.9375);
     require(!LocalRateLimit::rising(.001,0.,1.), "ignore weak residuals");
+
+    // Та же формула для роста по шаблону. На узле 0 превышение обнаружено соседом:
+    // его собственное среднее и невязка остаются равны.
+    double signals[]{0.,1., 0.,0.};
+    feedback.stencil_growth = signals;
+    feedback.stencil_stride = 2;
+    for (unsigned i=0;i<2;++i) near(feedback.limit(i,i,2.,1.,1.,true),1.);
+    near(feedback.limit(0,0,2.,1.,1.,false),.75);
+    near(feedback.limit(1,1,2.,1.,1.,false),1.);
+    signals[1] = 0.;
+    near(feedback.limit(0,0,2.,.75,1.,false),.9375);
 }
 
 // Разные объёмы и обратная нумерация владельцев. Проверяем общий шаг газа и SA.
@@ -852,6 +986,8 @@ void sod_step(int device) {
 int main(int argc, char** argv) {
     try {
         local_rate_limit_test();
+        stencil_rates_test();
+        steady_step_spread_test();
         signed_surface_balance();
         local_steady_cfl();
         adaptive_steady_step();

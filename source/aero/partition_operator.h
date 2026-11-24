@@ -2,6 +2,7 @@
 #define AERO_PARTITION_OPERATOR_H
 #include "partition_transfers.h"
 #include "../timestep/local_step_mode.h"
+#include "../timestep/steady_step_spread.h"
 #include "mpi_stencil.h"
 #include "../io/diagnostic_fields.h"
 #include "solver_timings.h"
@@ -103,11 +104,22 @@ public:
             throw std::runtime_error("Auto LTS: cannot reduce the rejected pseudo-time step further");
         return retry_dt_;
     }
-    void reset_rate_history() { rate_samples_ = 0; }
+    void reset_rate_history() {
+        rate_samples_ = 0;
+        if (step_spread_) step_spread_->reset();
+    }
+    // work и stencil пользуются одним регулятором диапазона. При on/off он не выделяется.
+    SteadyStepSpread* step_spread() {
+        return step_mode_ == LocalStepMode::Auto ? step_spread_.get() : nullptr;
+    }
+    double applied_step_ratio() const { return applied_ratio_; }
+    bool has_node_rate_control() const { return rate_control_; }
     std::uint64_t limited_rate_nodes() const { return world_.sum(rate_limited_); }
+    std::uint64_t capped_rate_nodes() const { return world_.sum(rate_capped_); }
     void set_rate_probe(MeshIndex id);
-    void read_rate_probe(double accepted_dt, double* values) const;
-    void prepare_steady_steps(bool gpu, LocalStepMode mode, double max_ratio, bool residual_limit);
+    void read_rate_probe(double accepted_dt, double* values, MeshIndex* growth_nodes) const;
+    void prepare_stencil_rates(bool cuda);
+    void prepare_steady_steps(bool gpu, LocalStepMode mode, double max_ratio, ResidualLimit residual_limit);
     // Готовит второй слой шагов и обмен скалярами на рёбрах между процессами.
     void prepare_neighbour_step_limit(double ratio, bool cuda);
     double neighbour_ratio_before() const { return neighbour_limit_ && steady_steps_->local ? neighbour_limit_->before : 0.; }
@@ -208,10 +220,22 @@ private:
     unsigned retries_ = 0; // Сбрасывается только после успешного шага или переключения режима.
     bool recovered_step_ = false;
     std::uint64_t rate_samples_ = 0; // После сброса первая принятая невязка инициализирует историю.
+    MeshIndex rate_capped_ = 0; // Действующая доля местного CFL меньше единицы.
     MeshIndex rate_limited_ = 0; // Сколько собственных шагов уменьшено до согласования по рёбрам.
     MeshIndex probe_row_ = ~MeshIndex(0); // Только владелец хранит номер строки для наблюдения.
-    int probe_owner_ = 0;
+    int probe_owner_ = -1; // После выбора узла его владелец известен всем процессам.
     double gas_rate_max_ = 0., sa_rate_max_ = 0.;
+    std::unique_ptr<SteadyStepSpread> step_spread_; // Одно состояние на весь процесс, независимо от числа узлов.
+    double applied_ratio_ = 0.; // Отношение шагов, разрешённое при выборе принятого шага.
+    // Поля пар (газ, SA) нужны только при проверке по шаблону. Строки реконструкции общие с потоком.
+    struct StencilRateStorage {
+        double *nodes = nullptr, *edges = nullptr;
+        std::vector<double> host_nodes, host_edges;
+        unsigned stride = 2; // При наблюдении за узлом пересылаем также источник каждой оценки.
+        std::unique_ptr<PartitionTransfers> node_exchange, edge_exchange;
+    };
+    std::unique_ptr<StencilRateStorage> stencil_rates_;
+    void collect_stencil_rates(const double* sa_rate, const EulerFluxResult* flux);
     bool rate_control_ = false; // Память под историю нужна только при включённом ограничителе.
     double* rate_history_ = nullptr;
     std::vector<double> host_rate_history_; // Три double на собственный узел для steady, включая переключение из control.txt.

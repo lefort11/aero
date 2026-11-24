@@ -55,7 +55,7 @@ struct RunSettings {
     bool steady_absolute = false;         // Сравнивать норму напрямую или относительно начального поля.
     double local_time_step_max_ratio = 0.; // Предел dt_i/dt_min в steady. Ноль отключает ограничение.
     double local_time_step_neighbor_ratio = 0.; // Допустимое отношение шагов на двух концах одного ребра.
-    bool local_time_step_residual_limit = false; // Ограничивать LTS по росту узловой невязки газа и SA.
+    ResidualLimit local_time_step_residual_limit = ResidualLimit::Off; // Выбор местной проверки невязки и общей адаптации по работе BiCGSTAB.
     std::uint64_t local_time_step_probe_node = ~std::uint64_t(0); // Необязательный глобальный номер узла для отчёта.
     LocalStepMode local_time_step = LocalStepMode::Off; // Свой псевдошаг CFL в каждом узле при установлении.
     double steady_tol = 1.e-6;            // Порог в единицах выбранного критерия.

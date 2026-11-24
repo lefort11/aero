@@ -32,6 +32,7 @@ AERO_DEVICE_ENTRY const char* aero_device_faces(const residual_detail::FaceBatch
                                                const residual_detail::FaceBatch* device_faces);
 AERO_DEVICE_ENTRY const char* aero_device_gather(const residual_detail::Geometry&, const EulerFluxResult*,
                                                 double* residual, Index* bad, void* stream);
+AERO_DEVICE_ENTRY const char* aero_device_stencil_rates(const residual_detail::StencilRates&, Index count);
 AERO_DEVICE_ENTRY const char* aero_device_local_steps(const residual_detail::LocalSteadySteps&, residual_detail::StepRange*);
 AERO_DEVICE_ENTRY const char* aero_device_limit_local_steps(const residual_detail::LimitLocalSteps&, Index count);
 AERO_DEVICE_ENTRY const char* aero_device_neighbour_steps(const residual_detail::NeighbourStepSweep&, Index count,

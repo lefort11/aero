@@ -1,7 +1,7 @@
 #ifndef AERO_FLUX_CFL_H
 #define AERO_FLUX_CFL_H
 #include "../parallel/kernel_math.h"
-#include "residual_detail.h"
+#include "stencil_rates.h"
 #include "../timestep/cfl_detail.h"
 #include "../timestep/adaptive_step.h"
 #include "../timestep/local_rate_limit.h"
@@ -97,7 +97,7 @@ struct FluxCfl {
 };
 // Один обход сохраняет шаг каждого владельца и собирает границы диапазона для отчёта.
 // Пустая подобласть участвует в MPI-редукции с нейтральными границами.
-struct StepRange { double minimum, maximum; MeshIndex limited; };
+struct StepRange { double minimum, maximum; MeshIndex limited, capped; };
 struct LocalSteadySteps {
     using value_type = StepRange;
     FluxCfl gas;
@@ -107,9 +107,10 @@ struct LocalSteadySteps {
     LocalRateLimit feedback;
     bool initialize_history;
 
-    AERO_HOST_DEVICE void init(StepRange& range) const { range = {max_finite_double, 0., 0}; }
+    AERO_HOST_DEVICE void init(StepRange& range) const { range = {max_finite_double, 0., 0, 0}; }
     AERO_HOST_DEVICE void join(volatile StepRange& range, const volatile StepRange& next) const {
         range.limited += next.limited;
+        range.capped += next.capped;
         if (next.minimum < range.minimum) range.minimum = next.minimum;
         if (next.maximum > range.maximum) range.maximum = next.maximum;
     }
@@ -129,6 +130,8 @@ struct LocalSteadySteps {
         const double previous = feedback.history ? steps[node]*change.fraction : 0.;
         double dt = feedback.limit(row,node,ceiling,previous,proposed,initialize_history);
         if (dt < proposed) ++range.limited;
+        // После повтора с половинным dt потолок может сохраняться, хотя уже не уменьшает шаг.
+        if (proposed > 0. && feedback.has_cap(row)) ++range.capped;
         if (!(dt > 0. && dt < max_finite_double)) dt = -1.;
         steps[node] = dt;
         if (dt < range.minimum) range.minimum = dt;

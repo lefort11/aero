@@ -115,6 +115,14 @@ Entry lowercase(Entry e) {
     return e;
 }
 
+// Используем те же имена режимов, которые солвер затем выведет при запуске.
+ResidualLimit read_residual_limit(const Entry& entry) {
+    const auto name = lower_value(entry.value);
+    for (auto mode : {ResidualLimit::Off, ResidualLimit::Node, ResidualLimit::Stencil, ResidualLimit::Work})
+        if (name == residual_limit_name(mode)) return mode;
+    throw std::invalid_argument(entry.where + ": expected off, on, stencil or work");
+}
+
 double finite_number(const Entry& e) {
     return finite_real(e.value, e.where);
 }
@@ -344,8 +352,8 @@ RunSettings read_run_settings(const RunDirectories& directories) {
                 throw std::invalid_argument("implicit.txt: local_time_step requires time_scheme=steady");
         }
         if (settings.contains("local_time_step_residual_limit")) {
-            run.local_time_step_residual_limit = choice(lowercase(settings.take("local_time_step_residual_limit")), {"on","off"}) == "on";
-            if (run.local_time_step_residual_limit && !run.steady())
+            run.local_time_step_residual_limit = read_residual_limit(settings.take("local_time_step_residual_limit"));
+            if (run.local_time_step_residual_limit != ResidualLimit::Off && !run.steady())
                 throw std::invalid_argument("local_time_step_residual_limit requires steady");
         }
         if (settings.contains("local_time_step_probe_node")) {

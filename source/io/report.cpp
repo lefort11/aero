@@ -181,11 +181,17 @@ void write_flow_summary(const FlowSummary& total, std::uint64_t step, double tim
           << "    dt = " << std::scientific << std::setprecision(6) << dt;
     table << "    CFL = " << std::defaultfloat << cfl << "\n\n" << std::scientific;
     if (details.local_rate_control)
-        table << "LTS residual limit  nodes = " << details.rate_limited << '\n';
+        table << "LTS residual limit  nodes = " << details.rate_limited
+              << "    nodes with stored cap = " << details.rate_capped << '\n';
+    if (details.step_spread_limit > 0.)
+        table << "LTS step ratio limit = " << details.step_spread_limit << '\n';
     if (details.rate_probe != ~std::uint64_t(0))
         table << "LTS probe       node = " << details.rate_probe << "    dt = " << details.probe[0]
               << "    gas rate = " << details.probe[1] << "    SA rate = " << details.probe[2]
               << "    cap/CFL step = " << details.probe[3] << '\n';
+    for (unsigned k=0; k<2; ++k)
+        if (details.growth_nodes[k] != ~std::uint64_t(0))
+            table << "LTS probe stencil  " << (k ? "SA" : "gas") << " response at node = " << details.growth_nodes[k] << '\n';
     if (details.edge_ratio_limit > 0.)
         table << "LTS edge ratio  " << details.edge_ratio_before << " -> " << details.edge_ratio_after
               << "    limit = " << details.edge_ratio_limit << '\n';

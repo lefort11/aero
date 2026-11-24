@@ -63,6 +63,25 @@ def check(args, work, name, equation, time_scheme, parallel):
         rows = report_rows(counted, r"^Stabilization .*first-order now = (\d+)")
         totals = {int(step): int(count) for step, count in rows}
         assert totals[1] == totals[2] > 0 and totals[3] == 0
+        # CFL растёт во время старта. На четвёртом шаге начинается новая серия.
+        (case / "cfl.txt").write_text("cfl_init=.05\ncfl_min=.01\ncfl_max=.2\ncfl_coeff=2\ncfl_num_steps=1\n")
+        options = [selected, "main:stabilization=cfl", "main:steps_fo=3", f"main:final_time={end}"]
+        adaptive = run([*common, f"--output={case / 'adaptive'}", *options])
+        cfl = [float(value) for _,value in report_rows(adaptive, r"^.*? CFL = (\S+)")]
+        assert cfl[:5] == [.05, .1, .2, .05, .1], cfl
+        timed = run([*common, f"--output={case / 'adaptive-time'}", *options, "main:steps_fo=0", f"main:t_fo={switch}"])
+        timed_rows = [(float(t),float(c)) for _,t,c in report_rows(timed, r"^t = (\S+).*? CFL = (\S+)")]
+        last_first = next(i for i,(t,_) in enumerate(timed_rows) if t == switch)
+        assert timed_rows[last_first][1] > .05 and timed_rows[last_first+1][1] == .05
+
+        # Останавливаем steady точно на границе и проверяем CFL после чтения recovery.
+        steady = [*common, f"--output={case / 'steady-restart'}", *options, "main:time_scheme=steady",
+                  "implicit:local_time_step=auto", "implicit:steady_tol=1e-14"]
+        for extra in (["implicit:steady_max_steps=3"], ["--recover", "implicit:steady_max_steps=5"]):
+            result = run([*steady, *extra], success=False)
+            assert "pseudo-step limit reached before convergence" in result, result
+        resumed = [(int(n),float(c)) for n,c in report_rows(result, r"^.*? CFL = (\S+)")]
+        assert resumed == [(4,.05),(5,.1)], resumed
     print(f"OK {equation} {time_scheme}, MPI={parallel}: transition at t={switch}")
 
 

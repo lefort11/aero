@@ -17,6 +17,7 @@ AERO_HEADERS += source/aero/recovery.h source/aero/indexed_io.h source/aero/mpi_
 AERO_HEADERS += source/aero/partition_kernels.h source/aero/time_loop.h source/aero/mpi_periodic.h source/aero/mpi_periodic_detail.h
 AERO_HEADERS += source/aero/partition_state.h source/aero/partition_output.h source/aero/partition_operator.h source/aero/partition_transfers.h
 AERO_HEADERS += source/aero/mpi_stencil.h source/aero/partition_report.h source/aero/mpi_balance.h source/mesh/leaf_balance.h
+AERO_HEADERS += source/timestep/steady_step_spread.h
 AERO_HEADERS += source/aero/compact_slopes.h $(wildcard source/viscosity/affine_hex.h)
 ifeq ($(kokkos_gpu),1)
 AERO_GPU := $(BUILD)/partition_kernels.o
@@ -108,7 +109,8 @@ else
 mpi-timing-test mpi-fields-test mpi-recovery-test mpi-geometry-test mpi-balance-test mpi-euler-test mpi-ssprk3-test mpi-bdf1-test mpi-bdf2-test mpi-linear-test mpi-periodic-test $(MPI_RECONSTRUCTION_TESTS):
 	$(MAKE) WITH_MPI=1 $@
 endif
-$(AERO_TEST): tests/test_checks.h
+$(AERO_TEST): tests/test_checks.h source/aero/steady_forecast.h
+$(AERO_OBJECT_DIR)/aero/time_loop.o: source/aero/steady_forecast.h
 .PHONY: completion-forecast-test curved-stencil-test
 completion-forecast-test: aero
 	$(running_test)

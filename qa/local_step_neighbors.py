@@ -91,6 +91,138 @@ def solve(case, args, label, *, limit=None, global_limit=None, mpi=False, gpu=Fa
     return fields
 
 
+def check_stencil(case, args):
+    """Дальние узлы шаблона WENO5 лежат по обе стороны раздела MPI."""
+    shutil.copyfile(ROOT / "templates/scheme.txt", case / "scheme.txt")
+    baseline = {}
+    for label, mpi, gpu in [("cpu", False, False), ("mpi", True, False), ("gpu", False, True)]:
+        if (mpi and not args.mpi) or (gpu and not args.gpu):
+            continue
+        out = case / ("stencil-" + label)
+        command = ([args.mpiexec, "-n", "2"] if mpi else []) + [
+            args.aero, f"--input={case}", f"--output={out}", "main:reconstruction=weno5",
+            "implicit:local_time_step=auto", "implicit:local_time_step_residual_limit=stencil",
+            "implicit:local_time_step_probe_node=2",
+            "implicit:steady_max_steps=96", "implicit:steady_tol=1e-14",
+            "main:mesh=grid.mdec" if mpi else "main:mesh=grid.mesh",
+            "main:backend=cuda" if gpu else "main:backend=cpu"]
+        log = run(command, success=False)
+        if "pseudo-step limit reached before convergence" not in log:
+            raise AssertionError(log)
+        # Наблюдение начинается с одинаковых шагов. Следующий диапазон
+        # вычисляется только после полного блока из 32 принятых шагов.
+        ratios = reported_limits(log)
+        assert set(ratios) == set(range(1, 97))
+        assert all(ratios[k] == 1. for k in range(1, 33)), ratios
+        assert all(ratios[k] >= 1. and (k % 32 == 1 or ratios[k] == ratios[k-1])
+                   for k in ratios), ratios
+        counts = [int(n) for _, n in report_rows(log, r"^LTS residual limit  nodes = (\d+)")]
+        caps = [int(n) for _, n in report_rows(log, r"nodes with stored cap = (\d+)")]
+        assert len(caps) == len(counts) and all(0 <= active <= cap <= 9 for active,cap in zip(counts,caps))
+        assert len(counts) == 96 and not any(counts[:32]) and max(counts) > 0, counts
+        # Номер относится к одному из узлов шаблона; при разбиении другой
+        # сработавший узел может быть выбран представителем того же события.
+        sources = list(report_rows(log, r"^LTS probe stencil  gas response at node = (\d+)"))
+        reviews = [int(step) for step, node in sources]
+        assert reviews and all(step % 32 == 0 for step in reviews), sources
+        assert all(0 <= int(node) < 9 for _, node in sources), sources
+        _, fields = binary_snapshot(out / "final.fields")
+        if label == "cpu":
+            assert any(int(node) != 2 for _, node in sources), sources
+            baseline, expected, expected_caps, expected_reviews = fields, counts, caps, reviews
+        else:
+            delta = max_difference(baseline, fields)
+            assert reviews == expected_reviews and counts == expected and caps == expected_caps and delta < 2.e-10, (label, delta, counts)
+            print(f"PASS WENO5 stencil {label}: counts match, maximum field difference {delta:.3g}")
+
+
+def reported_limits(log):
+    """Сверяет фактический разброс dt с объявленным пределом на каждом принятом шаге."""
+    limits = {int(k): float(v) for k, v in report_rows(log, r"^LTS step ratio limit = (\S+)")}
+    ranges = list(report_rows(log, r"^dt_min = (\S+)\s+dt_max = (\S+)"))
+    assert {int(k) for k, _, _ in ranges} == limits.keys()
+    for k, small, large in ranges:
+        assert float(large) <= float(small) * limits[int(k)] * (1. + 2e-6), (k, small, large)
+    return limits
+
+
+def spread_record(directory, step):
+    """Читает строку регулятора из контрольной точки указанного принятого шага."""
+    for path in directory.glob("recovery-?.bin"):
+        data = path.read_bytes()
+        if int.from_bytes(data[32:40], "little") == step:
+            # Восемь последних байт — контрольная сумма служебной секции.
+            record = data[:-8].rsplit(b" step_spread ", 1)[-1].split()
+            assert record[1] == b"work1", (step, record[:2])
+            return record[0].decode("ascii"), list(map(float, record[2:10]))
+    raise AssertionError(f"Нет контрольной точки шага {step} в {directory}")
+
+
+def check_spread_restart(case, args, mode):
+    """После LO начинаем историю EBR5 заново и продолжаем её с середины блока."""
+    case.mkdir()
+    prepare(case)
+    points = [i/16 for i in range(17)]
+    sparse_line(case / "grid.mesh", len(points), points)
+    (case / "bc.txt").write_text("[xmin]\nbc_type periodic\npair xmax\ntranslation 1 0 0\n")
+    (case / "init.txt").write_text("initial_type=formula\nrho=1+.04*sin(4*pi*x)\nux=1\np=1\n")
+    shutil.copyfile(ROOT / "templates/scheme.txt", case / "scheme.txt")
+    if args.mpi:
+        run([args.meshdec, case / "grid.mesh", case / "grid.mdec", "--target-ranks=2"])
+    if args.gpu:
+        (case / "cuda.txt").write_text(f"devices={args.device}\n")
+    # После 40 шагов LO регулятор уже вышел из первого блока. В точке 91
+    # у EBR5 завершён один блок и накоплено 19 наблюдений следующего.
+    switch, split, end = 40, 91, 106
+    for label in ["cpu"] + (["mpi"] if args.mpi else []) + (["gpu"] if args.gpu else []):
+        parallel = label == "mpi"
+        solver = [args.mpiexec, "-n", "2", args.aero] if parallel else [args.aero]
+        common = [*solver, f"--input={case}", "main:cfl=1", "implicit:local_time_step=auto",
+                  f"implicit:local_time_step_residual_limit={mode}", "implicit:steady_tol=1e-14",
+                  "main:mesh=grid.mdec" if parallel else "main:mesh=grid.mesh",
+                  "main:backend=cuda" if label == "gpu" else "main:backend=cpu"]
+        whole, out = case / ("whole-" + label), case / ("continued-" + label)
+
+        def advance(directory, until, *options):
+            log = run([*common, f"--output={directory}", f"implicit:steady_max_steps={until}", *options],
+                      success=False)
+            assert "pseudo-step limit reached before convergence" in log, log
+            if mode == "work":
+                # Управление по работе BiCGSTAB ограничивает весь диапазон dt.
+                # У него нет помеченных контрольных объёмов и источников в шаблоне.
+                assert "LTS residual limit" not in log and "nodes with stored cap" not in log, log
+                assert "LTS probe stencil" not in log, log
+            return log
+
+        automatic = advance(whole, end, f"main:steps_fo={switch}", "main:reconstruction=ebr5")
+        first = advance(out, switch, "main:reconstruction=first_order")
+        high_order = advance(out, split, "--recover", "main:reconstruction=ebr5")
+        scheme, (_, _, cap, count, first_sum, second_sum, work, previous_work) = spread_record(out, split)
+        assert scheme.split("/", 1)[0] == "ebr5" and count == (split-switch) % 32, (scheme, count)
+        assert first_sum and second_sum and work >= count and previous_work >= 32 and cap >= 1.
+
+        # Чтение управляемого верхнего предела не начинает новую серию:
+        # значение 100 выше текущего и не меняет разрешённого в тесте шага.
+        (out / "control.txt").write_text("local_time_step_max_ratio = 100\n")
+        more = advance(out, end, "--recover", "main:reconstruction=ebr5")
+        assert "Control accepted: local_time_step_max_ratio" in more, more
+        limits, expected = reported_limits(first + high_order + more), reported_limits(automatic)
+        assert limits.keys() == expected.keys() == set(range(1, end+1))
+        assert limits[switch] > 1. and all(limits[k] == 1. for k in range(switch+1, switch+33)), limits
+        assert limits[split+1] == limits[split] and limits[switch+65] != limits[split], limits
+        for k, ratio in expected.items():
+            assert math.isclose(limits[k], ratio, rel_tol=2e-6), (label, k, limits[k], ratio)
+        # Выбранная зона записывает один общий файл независимо от числа рангов.
+        # Сравниваем именно последний принятый слой обеих веток.
+        resumed, = out.glob(f"resumed-{split}-*")
+        files = [next(directory.rglob("final.fields")) for directory in (whole, resumed)]
+        (a, reference), (b, continued) = map(binary_snapshot, files)
+        assert a[3] == b[3] == end
+        delta = max_difference(reference, continued)
+        assert delta < 2.e-10, (label, delta)
+        print(f"PASS LTS {mode} after LO to EBR5 and mid-block restart ({label}), maximum field difference {delta:.3g}")
+
+
 def main():
     parser = mpi_parser(__doc__)
     parser.add_argument("--mpi", action="store_true")
@@ -130,6 +262,9 @@ def main():
                 if combined_delta > 2.e-11:
                     raise AssertionError(f"{label}: расхождение при двух ограничениях {combined_delta:g}")
                 print(f"PASS LTS neighbor ratio {label}, maximum field difference {delta:.3g}, combined {combined_delta:.3g}, residual limit {feedback_delta:.3g}")
+        check_stencil(case, args)
+        for mode in ("stencil", "work"):
+            check_spread_restart(case / ("startup-restart-" + mode), args, mode)
         print("PASS LTS neighbor ratio on a graded line")
 
 

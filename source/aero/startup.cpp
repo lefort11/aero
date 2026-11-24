@@ -120,7 +120,7 @@ void show_settings(const RunSettings& r) {
     if (r.steady())
         std::cout << "local_time_step = " << local_step_name(r.local_time_step) << "\nsteady_criterion = " << (r.steady_absolute ? "absolute" : "relative") << "\nsteady_tol = " << r.steady_tol << "\nsteady_max_steps = " << r.steady_max_steps << '\n';
     if (r.local_time_step == LocalStepMode::Auto) {
-        std::cout << "local_time_step_residual_limit = " << (r.local_time_step_residual_limit ? "on" : "off") << '\n';
+        std::cout << "local_time_step_residual_limit = " << residual_limit_name(r.local_time_step_residual_limit) << '\n';
         if (r.local_time_step_probe_node != ~std::uint64_t(0))
             std::cout << "local_time_step_probe_node = " << r.local_time_step_probe_node << '\n';
     }

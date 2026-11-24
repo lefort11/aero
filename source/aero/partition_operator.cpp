@@ -369,6 +369,28 @@ void PartitionOperator::apply_wall(std::vector<double>& field) const {
 }
 #endif
 
+void PartitionOperator::prepare_stencil_rates(bool cuda) {
+    if (stencil_rates_) {
+        auto& patch = *stencil_rates_;
+        // Обмен шаблонов переносит double. Проверка нужна только для вывода
+        // номера сработавшего узла: его метка должна представляться точно.
+        if (probe_owner_ >= 0 && owned.size() > (MeshIndex(1) << 53)/static_cast<unsigned>(world_.size))
+            throw std::overflow_error("Too many rows for stencil probe labels");
+        if (!cuda) {
+            patch.host_nodes.resize(patch.stride*state_nodes());
+            patch.host_edges.resize(patch.stride*grid_.edges);
+            patch.nodes = patch.host_nodes.data();
+            patch.edges = patch.host_edges.data();
+        }
+        if (world_.size > 1) {
+            patch.node_exchange.reset(new PartitionTransfers(nodes_, patch.stride));
+            patch.edge_exchange.reset(new PartitionTransfers(edges_, patch.stride));
+            patch.node_exchange->allocate(cuda);
+            patch.edge_exchange->allocate(cuda);
+        }
+    }
+}
+
 void PartitionOperator::connect(bool cuda, bool implicit_time) {
     Processes::Messages node_requests, edge_keys;
     world_.local([&] {
@@ -455,6 +477,13 @@ void PartitionOperator::layout_gpu(bool compact_buffer) {
         if (neighbour_limit_->halo) neighbour_limit_->halo->prepare_gpu(*gpu_);
     }
     if (track_time_) device_moments_ = gpu_->layout_moments(grid_.nodes);
+    if (stencil_rates_) {
+        auto& patch = *stencil_rates_;
+        patch.nodes = gpu_->layout_node_scalars(patch.stride*state_nodes());
+        patch.edges = gpu_->layout_node_scalars(patch.stride*grid_.edges);
+        if (patch.node_exchange) patch.node_exchange->prepare_gpu(*gpu_);
+        if (patch.edge_exchange) patch.edge_exchange->prepare_gpu(*gpu_);
+    }
     nodes_.prepare_gpu(*gpu_);
     edges_.prepare_gpu(*gpu_);
 #ifdef AERO_HAS_TURBULENCE
@@ -965,7 +994,9 @@ void PartitionOperator::set_rate_probe(MeshIndex id) {
     probe_owner_ = static_cast<int>(world_.sum(owner ? static_cast<unsigned>(world_.rank) : 0));
 }
 
-void PartitionOperator::read_rate_probe(double accepted_dt, double* values) const {
+void PartitionOperator::read_rate_probe(double accepted_dt, double* values, MeshIndex* growth_nodes) const {
+    const bool review = stencil_rates_ && LocalRateLimit::review_due(rate_samples_);
+    double marks[2]{};
     world_.local([&] {
         if (probe_row_ == ~MeshIndex(0)) return;
         const auto node = owned[probe_row_];
@@ -981,31 +1012,57 @@ void PartitionOperator::read_rate_probe(double accepted_dt, double* values) cons
         };
         values[0] = read(steady_steps_->values+node)*(accepted_dt/minimum_step_);
         values[1] = read(bdf_->spatial_rates()+probe_row_);
+        if (review) {
+            // На принятый шаг уже есть общая оценка по всем сторонам шаблона.
+            for (unsigned k=0; k<2; ++k) marks[k] = read(stencil_rates_->nodes + stencil_rates_->stride*node+2+k);
+        }
         values[3] = rate_control_ && rate_samples_ > 1 ? read(rate_history_ + LocalRateLimit::Width*probe_row_ + LocalRateLimit::CflFraction) : 1.;
 #ifdef AERO_HAS_TURBULENCE
         if (sa_active()) values[2] = std::abs(read(sa_step().transport.sa.rate+node));
 #endif
     });
     if (world_.size > 1) world_.broadcast(values, 4, probe_owner_);
+    if (!review) return;
+    if (world_.size > 1) world_.broadcast(marks, 2, probe_owner_);
+    for (unsigned k=0; k<2; ++k) {
+        if (marks[k] == 0.) continue;
+        // Глобальный номер сетки может быть произвольным 64-битным целым.
+        // Из обмена получаем только строку и владельца; сам номер читает владелец.
+        const MeshIndex key = static_cast<MeshIndex>(marks[k])-1;
+        const auto ranks = static_cast<unsigned>(world_.size);
+        const int owner = static_cast<int>(key%ranks);
+        if (owner == world_.rank) growth_nodes[k] = global_node(owned[key/ranks]);
+        if (world_.size > 1) world_.broadcast(growth_nodes+k, 1, owner);
+    }
 }
 
 void PartitionOperator::set_steady_steps(LocalStepMode mode, double max_ratio) {
     // После переключения между глобальным и локальным шагами начинаем историю auto заново.
+    steady_steps_->max_ratio = max_ratio;
+    if (step_mode_ == mode) return; // Изменение одного потолка сохраняет историю auto и принятую попытку.
     accepted_field_ = nullptr;
     previous_cfl_ = retry_dt_ = 0.;
     retries_ = 0;
     recovered_step_ = false;
     reset_rate_history();
-    rate_limited_ = 0;
+    rate_limited_ = rate_capped_ = 0;
     step_mode_ = mode;
     steady_steps_->local = mode != LocalStepMode::Off;
-    steady_steps_->max_ratio = max_ratio;
 }
 
-void PartitionOperator::prepare_steady_steps(bool gpu, LocalStepMode mode, double max_ratio, bool residual_limit) {
+void PartitionOperator::prepare_steady_steps(bool gpu, LocalStepMode mode, double max_ratio,
+                                            ResidualLimit residual_limit) {
     // Адрес описания остаётся постоянным для газа, SA и матрицы на всех шагах.
     steady_steps_.reset(new SteadyNodeSteps);
-    rate_control_ = residual_limit;
+    // В режиме work достаточно общей пространственной нормы и счётчика СЛАУ.
+    // Поля с историей по узлам и межпроцессный обмен шаблонов ему не нужны.
+    rate_control_ = residual_limit == ResidualLimit::Node || residual_limit == ResidualLimit::Stencil;
+    if (residual_limit == ResidualLimit::Work || residual_limit == ResidualLimit::Stencil)
+        step_spread_.reset(new SteadyStepSpread);
+    if (residual_limit == ResidualLimit::Stencil) {
+        stencil_rates_.reset(new StencilRateStorage);
+        stencil_rates_->stride = probe_owner_ >= 0 ? 4 : 2;
+    }
     set_steady_steps(mode, max_ratio);
     if (!gpu) {
         host_steps_.resize(grid_.nodes);
@@ -1128,7 +1185,7 @@ double PartitionOperator::prepare_local_steps(double cfl) {
         return retry_dt_;
     }
     const bool adapting = step_mode_ == LocalStepMode::Auto && previous_cfl_ > 0.;
-    residual_detail::StepRange range{max_finite_double, 0., 0};
+    residual_detail::StepRange range{max_finite_double, 0., 0, 0};
     world_.local([&] {
         if (owned.empty()) return;
         AdaptiveStepChange change{};
@@ -1156,7 +1213,9 @@ double PartitionOperator::prepare_local_steps(double cfl) {
         LocalRateLimit feedback{};
         if (adapting && rate_samples_) {
             feedback = {rate_history_, bdf_->spatial_rates(), nullptr, gas_rate_max_, sa_rate_max_,
-                        minimum_step_*change.fraction, rate_samples_ % LocalRateLimit::interval == 0};
+                        minimum_step_*change.fraction, LocalRateLimit::review_due(rate_samples_),
+                        stencil_rates_ ? stencil_rates_->nodes : nullptr,
+                        stencil_rates_ ? stencil_rates_->stride : 0u};
 #ifdef AERO_HAS_TURBULENCE
             if (sa_active()) feedback.sa_rate = sa_step().transport.sa.rate;
 #endif
@@ -1173,6 +1232,7 @@ double PartitionOperator::prepare_local_steps(double cfl) {
         Kokkos::parallel_reduce("Aero: local steady steps", host_parallel::Range(0, owned.size()), steps, range);
     });
     rate_limited_ = range.limited;
+    rate_capped_ = range.capped;
     minimum_step_ = world_.minimum(range.minimum);
     maximum_step_ = world_.reduce_double(range.maximum, true);
     if (!(minimum_step_ > 0. && maximum_step_ >= minimum_step_))
@@ -1180,8 +1240,13 @@ double PartitionOperator::prepare_local_steps(double cfl) {
     // Минимум уже учитывает и газ, и SA на всех процессах. Ограничиваем поле один
     // раз перед Ньютоном: матрица, невязка и перенос SA затем читают один шаг узла.
     // В auto ограничиваем уже адаптированный шаг относительно минимума текущего слоя.
-    if (steady_steps_->max_ratio >= 1. && minimum_step_ <= max_finite_double / steady_steps_->max_ratio) {
-        const double ceiling = minimum_step_ * steady_steps_->max_ratio;
+    double ratio = steady_steps_->max_ratio;
+    if (auto* spread = step_spread()) {
+        ratio = spread->limit(ratio);
+        applied_ratio_ = ratio;
+    }
+    if (ratio >= 1. && minimum_step_ <= max_finite_double / ratio) {
+        const double ceiling = minimum_step_ * ratio;
         if (maximum_step_ > ceiling) {
             world_.local([&] {
                 if (range.maximum <= ceiling) return;
@@ -1317,6 +1382,51 @@ PartitionOperator::ImplicitFields PartitionOperator::implicit_fields(
     return {state.data(), initial.data(), volumes_, flux_.data()};
 }
 
+// Межпроцессное ребро вычисляет тот же владелец, который строил обе строки его реконструкции.
+void PartitionOperator::collect_stencil_rates(const double* sa_rate, const EulerFluxResult* flux) {
+    using residual_detail::StencilRates;
+    auto& patch = *stencil_rates_;
+    const auto* geometry = &grid_;
+    const MeshIndex* computed = world_.size == 1 ? nullptr : compute_.data();
+    const MeshIndex* owners = world_.size == 1 ? nullptr : owned.data();
+#ifdef AERO_WITH_KOKKOS_GPU
+    if (gpu_) {
+        const auto& device_grid = gpu_->active_grid();
+        geometry = &device_grid.geometry;
+        computed = device_grid.computed;
+        owners = device_grid.owned;
+    }
+#endif
+    bool reconstruct_sa = false;
+#ifdef AERO_HAS_TURBULENCE
+    reconstruct_sa = sa_high_order_;
+#endif
+    const LocalRateLimit feedback{rate_history_,bdf_->spatial_rates(),sa_rate,gas_rate_max_,sa_rate_max_,0.,true,nullptr,0};
+    StencilRates work{geometry->stencil, geometry->surfaces, geometry->incidence, geometry->offsets,
+        owners, computed, grid_.edges, feedback, flux, patch.nodes, patch.edges,
+        first_order_start, reconstruct_sa, grid_.options.upw_coeff, grid_.options.mp6_hybrid, StencilRates::NodeGrowth,
+        probe_owner_ >= 0 ? static_cast<unsigned>(world_.size) : 0u, static_cast<unsigned>(world_.rank)};
+    const auto visit = [&](StencilRates::Pass pass, MeshIndex count) {
+        work.pass = pass;
+        world_.local([&] {
+#ifdef AERO_WITH_KOKKOS_GPU
+            if (gpu_) {
+                device_work::check(device_work::aero_device_stencil_rates(work,count));
+                return;
+            }
+#endif
+            parallel_for(count,work);
+        });
+    };
+    // Сначала передаём результаты проверки владельцев на удалённые строки реконструкции.
+    visit(StencilRates::NodeGrowth, owned.size());
+    if (patch.node_exchange) patch.node_exchange->transfer(world_, {patch.stride,patch.nodes,nullptr}, device());
+    visit(StencilRates::Edges, compute_.size() - (grid_.faces-grid_.edges));
+    if (patch.edge_exchange) patch.edge_exchange->transfer(world_, {patch.stride,patch.edges,nullptr}, device());
+    // После обмена каждому владельцу доступны все внутренние рёбра его контрольного объёма.
+    visit(StencilRates::Volumes, owned.size());
+}
+
 double PartitionOperator::steady_residual(std::vector<double>& state, const std::vector<double>& initial, bool accepted) {
     const auto fields = implicit_fields(state, initial);
     const bool sample = accepted && step_mode_ == LocalStepMode::Auto;
@@ -1330,6 +1440,15 @@ double PartitionOperator::steady_residual(std::vector<double>& state, const std:
         gas_rate_max_ = gas;
         sa_rate_max_ = sa;
         ++rate_samples_;
+        // Среднее предыдущих слоёв ещё доступно: текущий слой войдёт в него
+        // при выборе следующего шага. Остальные 31 слой обхода шаблона и MPI-обменов не требуют.
+        if (stencil_rates_ && LocalRateLimit::review_due(rate_samples_)) {
+            const double* sa_rate = nullptr;
+#ifdef AERO_HAS_TURBULENCE
+            if (sa_active()) sa_rate = sa_step().transport.sa.rate;
+#endif
+            collect_stencil_rates(sa_rate, fields.flux);
+        }
     }
     return std::max(gas, sa);
 }

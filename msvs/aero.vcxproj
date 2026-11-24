@@ -73,6 +73,8 @@
     <ClInclude Include="..\source\aero\startup.h" />
     <ClCompile Include="..\source\aero\time_loop.cpp" />
     <ClInclude Include="..\source\aero\time_loop.h" />
+    <ClInclude Include="..\source\aero\steady_forecast.h" />
+    <ClInclude Include="..\source\timestep\steady_step_spread.h" />
     <ClInclude Include="..\source\mesh\archive_format.h" />
     <ClCompile Include="..\source\mesh\leaf_balance.cpp" />
     <ClInclude Include="..\source\mesh\leaf_balance.h" />

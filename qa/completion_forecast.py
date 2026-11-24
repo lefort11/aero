@@ -45,9 +45,23 @@ def main():
                 rows = forecasts(log)
                 if [n for n,_ in rows]!=["2","4"] or not all("residual target:" in s and "step limit:" in s for _,s in rows):
                     raise AssertionError(f"Wrong steady forecasts: {rows}\n{log[-900:]}")
+                if not all(re.search(r"residual target: trend unavailable  \|  step limit: \d{4}-",s) for _,s in rows):
+                    raise AssertionError(f"Premature steady convergence estimate: {rows}")
                 if "limit reached before convergence" not in log:
                     raise AssertionError("Unexpected steady termination")
                 print(f"PASS steady ETA {criterion}, local={local}",flush=True)
+
+        # На гладкой волне первого порядка невязка медленно убывает. К шагу 192
+        # виден тренд до 0.9. После recovery первые два шага дают только цену шага.
+        cmd = [*solver, f"--output={work/'steady-trend'}", "main:time_scheme=steady", "implicit:steady_tol=.9"]
+        rows = forecasts(run([*cmd, "main:prophecy_every_step=32", "implicit:steady_max_steps=192"],success=False))
+        if not any(re.search(r"residual target: \d{4}-", text) for _, text in rows):
+            raise AssertionError(f"Missing estimate on a decreasing steady residual: {rows}")
+        resumed = run([*cmd, "--recover", "main:prophecy_every_step=2", "implicit:steady_max_steps=512"])
+        rows = forecasts(resumed)
+        if not rows or rows[0][0] != "194" or "trend unavailable" not in rows[0][1] or "Steady state converged" not in resumed:
+            raise AssertionError(f"Wrong steady trend after recovery: {rows}")
+        print("PASS steady ETA on a decreasing residual and after recovery",flush=True)
 
 
 if __name__ == "__main__":

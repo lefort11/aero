@@ -147,12 +147,27 @@ public:
 
     double prepare_first_stage(bool first_order_start, SolverTimings& timing) {
         prepare_state_fluxes(first_order_start, timing);
+        // После перехода с первого порядка оцениваем тем же полем начальную
+        // невязку новой схемы. Подготовка этого поля не считается принятым шагом.
+        auto* spread = op_.step_spread();
+        if (spread && spread->last() < 0.)
+            spread->start(op_.steady_residual(fields_.current, fields_.initial));
         WallTimer timer(timing.counter(SolverTimings::Cfl));
         return op_.cfl_step(courant());
     }
 
     // Выполняет стадии выбранной схемы. После каждой стадии соседи получают обновлённые узлы.
     double courant() const { return courant_.value(); }
+
+    // Норму уже собрали по всем процессам. Стоимость шага берём из того же решения
+    // СЛАУ, которое попадает в отчёт. Повтор после отказа не входит в статистику.
+    double steady_residual(bool accepted) {
+        auto* spread = op_.step_spread();
+        if (!accepted && spread && spread->last() >= 0.) return spread->last();
+        const double norm = op_.steady_residual(fields_.current, fields_.initial, accepted);
+        if (accepted && spread) spread->accepted(norm, newton_.linear_iterations);
+        return norm;
+    }
 
     // Снимаем локальные метки также на обменных узлах MPI и в таблице граней на GPU.
     void reset_marks() {
@@ -178,9 +193,11 @@ public:
         if (!world_.rank) control_file_.open(run_.directories.output);
     }
 
-    bool control(Id step) {
+    bool control(Id step, bool& settings_changed) {
         RunControl command(run_, courant());
         if (!command.read(control_file_, world_)) return false;
+        settings_changed = command.change_steady_steps || command.change_cfl || command.reset ||
+                           run_.upw_coeff != command.upwind || run_.mp6_hybrid != command.hybrid;
         if (command.change_steady_steps) set_steady_steps(command.local_time_step, command.local_time_step_max_ratio);
         if (command.reset) reset_marks();
         if (command.change_cfl) {
@@ -210,8 +227,16 @@ public:
         return command.stop;
     }
 
-    void accepted() {
-        if (!courant_.accept()) return;
+    void accepted(bool startup_finished = false) {
+        // Последний принятый шаг первого порядка уже попал в отчёт со своим CFL.
+        // В recovery записываем CFL следующего шага и новый счётчик успешных шагов.
+        if (startup_finished) {
+            const auto& limits = run_.stabilization;
+            const double initial = std::max(limits.minimum, std::min(run_.cfl, limits.maximum));
+            courant_.configure(limits, initial);
+            if (!world_.rank)
+                std::cout << "First-order startup complete: restarting CFL at " << initial << '\n';
+        } else if (!courant_.accept()) return;
         op_.set_courant(courant(), run_.uses_implicit_time());
         accepted_fluxes_ = false;
         if (run_.stabilization.mode == "low" && have_marks_ &&
@@ -264,9 +289,24 @@ public:
         }
     }
 
+    // Сравниваем невязки одной реконструкции. Переход с первого порядка или
+    // смена настроек потока должны начать новый отсчёт даже при том же поле.
+    std::string reconstruction_key() const {
+        std::ostringstream key;
+        key.imbue(std::locale::classic());
+        key << (op_.first_order_start ? "first_order" : run_.reconstruction)
+            << '/' << run_.reconstruction_variables << '/' << run_.euler_solver
+            << '/' << run_.stencil_geometry << '/' << std::setprecision(17) << run_.stencil_max_angle
+            << '/' << run_.upw_coeff << '/' << run_.mp6_hybrid << '/' << run_.mpweno_ad_corr;
+        return key.str();
+    }
+
     // Храним глобальные номера. После перезапуска разбиение MPI может измениться.
     std::string checkpoint() const {
-        if (world_.rank || (!run_.stabilization.active() && !runtime_settings_ && !runtime_steady_steps_)) return {};
+        if (world_.rank) return {};
+        const auto* spread = op_.step_spread();
+        const bool save_spread = spread && spread->reference() >= 0.;
+        if (!save_spread && !run_.stabilization.active() && !runtime_settings_ && !runtime_steady_steps_) return {};
         std::ostringstream out;
         out.imbue(std::locale::classic());
         out << std::setprecision(17) << "ready " << runtime_settings_ << ' ';
@@ -286,6 +326,10 @@ public:
             out << " local_time_step " << local_step_name(run_.local_time_step) << ' ';
             if (run_.local_time_step_max_ratio) out << run_.local_time_step_max_ratio;
             else out << "off";
+        }
+        if (save_spread) {
+            out << " step_spread " << reconstruction_key() << ' ';
+            spread->write(out);
         }
         return out.str();
     }
@@ -320,11 +364,19 @@ public:
             }
         }
         std::string key, local, ratio;
-        if (in >> key) {
-            if (key != "local_time_step" || !(in >> local >> ratio))
-                throw std::runtime_error("Invalid checkpoint local time step settings");
-            if (run_.steady()) set_steady_steps(settings_detail::parse_local_time_step(local, key),
-                settings_detail::parse_local_step_ratio(ratio, "checkpoint local_time_step_max_ratio"));
+        while (in >> key) {
+            if (key == "local_time_step" && (in >> local >> ratio)) {
+                if (run_.steady()) set_steady_steps(settings_detail::parse_local_time_step(local, key),
+                    settings_detail::parse_local_step_ratio(ratio, "checkpoint local_time_step_max_ratio"));
+            } else if (key == "step_spread") {
+                std::string scheme;
+                if (!(in >> scheme)) throw std::runtime_error("Missing checkpoint reconstruction for local time steps");
+                // Читаем всю запись и при смене схемы: за ней могут идти другие параметры.
+                SteadyStepSpread restored;
+                restored.read(in);
+                auto* spread = op_.step_spread();
+                if (spread && scheme == reconstruction_key()) *spread = restored;
+            } else throw std::runtime_error("Invalid checkpoint local time step settings");
         }
         have_marks_ = !master_low_.empty();
         if (have_marks_) {
@@ -380,10 +432,14 @@ public:
             details.steady_tol = run_.steady_tol;
             details.max_local_step = op_.largest_step(step.dt);
             if (run_.local_time_step == LocalStepMode::Auto) {
-                details.local_rate_control = run_.local_time_step_residual_limit;
-                if (details.local_rate_control) details.rate_limited = op_.limited_rate_nodes();
+                details.step_spread_limit = op_.applied_step_ratio();
+                details.local_rate_control = op_.has_node_rate_control();
+                if (details.local_rate_control) {
+                    details.rate_limited = op_.limited_rate_nodes();
+                    details.rate_capped = op_.capped_rate_nodes();
+                }
                 details.rate_probe = run_.local_time_step_probe_node;
-                if (details.rate_probe != ~MeshIndex(0)) op_.read_rate_probe(step.dt, details.probe);
+                if (details.rate_probe != ~MeshIndex(0)) op_.read_rate_probe(step.dt, details.probe, details.growth_nodes);
             }
             if (run_.local_time_step != LocalStepMode::Off && run_.local_time_step_neighbor_ratio > 0.) {
                 details.edge_ratio_limit = run_.local_time_step_neighbor_ratio;
@@ -717,14 +773,12 @@ void integrate_partition(const RunSettings& run, const Processes& world, unsigne
                          PartitionStepper& stepper, PartitionOperator& op, PartitionState& fields,
                          PartitionOutput& output, Recovery& recovery, ExactError* error) {
     StepOperations operations;
-    operations.control = [&](Id step) { return stepper.control(step); };
+    operations.control = [&](Id step, bool& changed) { return stepper.control(step,changed); };
     operations.cfl_step = [&](bool first_order_start, SolverTimings& timing) {
         return stepper.prepare_first_stage(first_order_start, timing);
     };
     if (run.steady()) {
-        operations.steady_residual = [&](bool accepted) {
-            return op.steady_residual(fields.current, fields.initial, accepted);
-        };
+        operations.steady_residual = [&](bool accepted) { return stepper.steady_residual(accepted); };
     }
     bool sample_time=false, write_sa=false;
     for (const auto& zone:run.output_zones) for (const auto& name:zone.variables) {
@@ -738,7 +792,7 @@ void integrate_partition(const RunSettings& run, const Processes& world, unsigne
         if (sample_time) world.local([&]{op.sample_accepted(fields.current,step.dt);});
         return true;
     };
-    if (run.stabilization.active()) operations.accepted = [&] { stepper.accepted(); };
+    if (run.stabilization.active()) operations.accepted = [&](bool startup_finished) { stepper.accepted(startup_finished); };
     operations.output_state = [&]() -> const std::vector<double>& {
         if (run.use_cuda) {
             world.local([&] { op.download(fields.current); });
@@ -824,6 +878,8 @@ int run_partition(RunSettings run, const ReconstructionOptions& reconstruction, 
     if (!single) {
         op->connect(run.use_cuda, run.uses_implicit_time());
     }
+    if (run.local_time_step_residual_limit == ResidualLimit::Stencil)
+        world.local([&] { op->prepare_stencil_rates(run.use_cuda); });
     if (run.local_time_step_neighbor_ratio > 0.)
         op->prepare_neighbour_step_limit(run.local_time_step_neighbor_ratio, run.use_cuda);
 #ifdef AERO_WITH_KOKKOS_GPU

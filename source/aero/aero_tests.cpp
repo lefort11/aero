@@ -1,4 +1,5 @@
 #include "partition_kernels.h"
+#include "steady_forecast.h"
 #include "../../tests/test_checks.h"
 #include "../mesh/mesh.h"
 #include "../mesh/leaf_balance.h"
@@ -21,6 +22,24 @@
 
 namespace {
 using aero_test::require;
+
+void check_steady_forecast() {
+    aero::SteadyResidualTrend trend;
+    // Известное решение: log(R)=-0.01*n достигает -1.5 на шаге 150.
+    const double target = std::exp(-1.5);
+    for (unsigned n=1; n<=96; ++n) trend.add(std::exp(-.01*n));
+    require(std::abs(trend.remaining_steps(target)-54.) < 1.e-9, "steady forecast on exponential decay");
+    require(trend.remaining_steps(1.e-12) < 0., "steady forecast beyond observed decay");
+    trend.add(2.*std::exp(-.97)); // Одна неудачная нелинейная поправка.
+    const double after_spike = trend.remaining_steps(target);
+    require(after_spike > 47. && after_spike < 59., "steady forecast with isolated spike");
+    for (unsigned n=0; n<24; ++n) trend.add(.4);
+    require(trend.remaining_steps(target) < 0., "steady forecast on plateau");
+    for (unsigned n=0; n<24; ++n) trend.add(.4+.01*n);
+    require(trend.remaining_steps(target) < 0., "steady forecast on increasing residual");
+    trend.add(0.);
+    require(trend.remaining_steps(target) < 0., "steady forecast begins a fresh history");
+}
 void check_partition_kernels() {
     using namespace aero;
     const residual_detail::Index offsets[] = {0, 1, 2};
@@ -275,6 +294,7 @@ int main(int argc, char** argv) {
                 "usage: aero_tests <aero executable> [CUDA ordinal | --expect-cpu-fallback]");
         const bool fallback = argc == 3 && std::string(argv[2]) == "--expect-cpu-fallback";
         const std::string device = fallback ? "0" : (argc == 3 ? argv[2] : "");
+        check_steady_forecast();
         check_partition_kernels();
         check_leaf_balance();
         const auto backend = run_case(argv[1], device, false, fallback);

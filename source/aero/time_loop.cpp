@@ -1,4 +1,5 @@
 #include "time_loop.h"
+#include "steady_forecast.h"
 #include "recovery.h"
 #include "../io/report.h"
 #include "../io/scheduled_output.h"
@@ -8,6 +9,7 @@
 #include <sstream>
 #include <iomanip>
 #include <limits>
+#include <memory>
 
 namespace aero {
 namespace {
@@ -16,8 +18,12 @@ namespace {
 class CompletionForecast {
     using Clock = WallTimer::Clock;
     Clock::time_point sample_;
-    std::uint64_t step_;
-    double time_, residual_ = 0.;
+    double time_;
+    std::unique_ptr<SteadyResidualTrend> steady_trend_; // Выделяется только на ведущем процессе при включённом прогнозе steady.
+    Clock::time_point last_accepted_;
+    double step_cost_ = 0.; // Секунды на принятый шаг с учётом повторов и вывода.
+    unsigned cost_samples_ = 0;
+    bool was_startup_ = false, restart_cost_ = false;
 
     static std::string finish_time(double remaining) {
         const auto now = std::time(nullptr);
@@ -34,12 +40,30 @@ class CompletionForecast {
     }
 
   public:
-    CompletionForecast(std::uint64_t number, double time)
-        : sample_(Clock::now()), step_(number), time_(time) {}
+    CompletionForecast(double time, bool steady)
+        : sample_(Clock::now()), time_(time),
+          steady_trend_(steady ? new SteadyResidualTrend : nullptr), last_accepted_(sample_) {}
 
-    void set_initial_residual(double residual) { residual_ = residual; }
+    // Вызывается после записи полей принятого слоя. Неудачные попытки входят во
+    // время этого шага, но не создают дополнительных значений невязки.
+    void accepted_steady(double residual, bool startup, bool settings_changed) {
+        if (!steady_trend_) return;
+        const auto now = Clock::now();
+        const double elapsed = std::chrono::duration<double>(now-last_accepted_).count();
+        last_accepted_ = now;
+        // У итоговой реконструкции и нового режима LTS может быть другая цена шага.
+        if (restart_cost_ || was_startup_ != startup) cost_samples_ = 0;
+        was_startup_ = startup;
+        restart_cost_ = settings_changed;
+        if (cost_samples_ < 128) ++cost_samples_;
+        step_cost_ += (elapsed-step_cost_)/cost_samples_;
+        // Первый порядок на старте имеет другую пространственную невязку.
+        // После ручного изменения режима новая история начинается со следующего шага.
+        if (settings_changed) *steady_trend_ = SteadyResidualTrend{};
+        else if (!startup) steady_trend_->add(residual);
+    }
 
-    void report(const TimeStep& accepted, const RunSettings& run, double residual, bool finished) {
+    void report(const TimeStep& accepted, const RunSettings& run, bool finished) {
         const auto now = Clock::now();
         const double elapsed = std::chrono::duration<double>(now - sample_).count();
         std::ostringstream out;
@@ -51,23 +75,17 @@ class CompletionForecast {
             const double advanced = accepted.end - time_;
             out << "final time: " << finish_time(elapsed * ((run.final_time - accepted.end) / advanced));
         } else {
-            // Линейно продолжаем log(R) по двум концам окна. При стагнации или
-            // смене порядка в этом окне темп сходимости ещё неизвестен.
             out << "residual target: ";
-            if (!run.first_order_start(time_, step_) && residual > 0. && residual_ > residual) {
-                const double decrease = std::log(residual_) - std::log(residual);
-                const double left = std::log(residual) - std::log(run.steady_tol);
-                out << finish_time(elapsed * (left / decrease));
-            } else
+            const double target_steps = steady_trend_->remaining_steps(run.steady_tol);
+            if (target_steps > 0.)
+                out << finish_time(step_cost_ * target_steps);
+            else
                 out << "trend unavailable";
             const double steps_left = static_cast<double>(run.steady_max_steps - accepted.number);
-            const double cost = elapsed / static_cast<double>(accepted.number - step_);
-            out << "  |  step limit: " << finish_time(steps_left * cost);
+            out << "  |  step limit: " << finish_time(steps_left * step_cost_);
         }
         std::cout << out.str() << std::endl;
-        step_ = accepted.number;
         time_ = accepted.end;
-        residual_ = residual;
         sample_ = now;
     }
 };
@@ -142,7 +160,7 @@ void integrate_time(const RunSettings& run, const Processes& world, OutputSchedu
 
     SolverTimings timing(world, run.mpi_timing, run.use_cuda, number);
     const auto first_step = number;
-    CompletionForecast forecast(number, time);
+    CompletionForecast forecast(time, !world.rank && run.steady() && run.prophecy_every_step);
     double& reference = recovery.steady_reference;
     double criterion = 0.;
     // Абсолютный критерий измеряется в единицах |R|/V, относительный —
@@ -169,7 +187,6 @@ void integrate_time(const RunSettings& run, const Processes& world, OutputSchedu
             const double norm = operations.steady_residual(false);
             if (reference < 0.) reference = norm;
             criterion = steady_measure(norm);
-            forecast.set_initial_residual(criterion);
             check_initial = false;
             const bool converged = !first_order_start && criterion <= run.steady_tol;
             if (converged || number >= run.steady_max_steps) {
@@ -194,15 +211,17 @@ void integrate_time(const RunSettings& run, const Processes& world, OutputSchedu
         // Отчёт относится к только что выполненному шагу. Затем выбираем CFL следующего шага
         // и применяем ручные команды. В контрольную точку попадёт уже готовое к продолжению состояние.
         if (step.reporting) operations.report(step, criterion);
-        if (operations.accepted) operations.accepted();
+        if (operations.accepted) operations.accepted(first_order_start && !run.first_order_start(time, number));
+        bool settings_changed = false;
         if (run.control_every && (number == first_step + 1 || number % run.control_every == 0) && operations.control)
-            stopped = operations.control(number);
+            stopped = operations.control(number,settings_changed);
         const bool final_step = stopped || converged || exhausted || (!steady && time == run.final_time);
         // Один вызов обслуживает и расписание, и завершение: у зоны multi=1
         // будет ровно один снимок с номером последнего принятого шага.
         write_step_results(step, output, recovery, initial, operations, timing, run.use_cuda, final_step);
+        forecast.accepted_steady(criterion, first_order_start, settings_changed);
         if (!world.rank && run.prophecy_every_step && number % run.prophecy_every_step == 0)
-            forecast.report(step, run, criterion, final_step);
+            forecast.report(step, run, final_step);
         if (steady && !world.rank && !step.reporting && (converged || exhausted))
             std::cout << "Steady " << criterion_name << " residual, step " << number << ": " << criterion << '\n';
         if (stopped || converged) break;

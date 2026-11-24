@@ -1,6 +1,6 @@
 # Библиотека невязки связывает поток, реконструкцию и геометрию. Тесты проверяют также выбор шага.
 RES_DIR := source/residual
-RES_HDR := $(RES_DIR)/residual.h $(RES_DIR)/residual_detail.h $(RES_DIR)/packed_weno.h $(RES_DIR)/flux_cfl.h source/timestep/adaptive_step.h source/timestep/local_rate_limit.h source/timestep/cfl_detail.h source/timestep/timestep.h source/parallel/kernel_math.h source/mesh/mesh_index.h source/parallel/parallel_for.h source/parallel/wall_timer.h $(BC_HEADERS) $(CV_HEADERS) $(PERIODIC_HEADERS) $(EULER_HEADERS) $(MESH_HEADERS)
+RES_HDR := $(RES_DIR)/residual.h $(RES_DIR)/residual_detail.h $(RES_DIR)/packed_weno.h $(RES_DIR)/flux_cfl.h $(RES_DIR)/stencil_rates.h source/timestep/adaptive_step.h source/timestep/local_rate_limit.h source/timestep/cfl_detail.h source/timestep/timestep.h source/parallel/kernel_math.h source/mesh/mesh_index.h source/parallel/parallel_for.h source/parallel/wall_timer.h $(BC_HEADERS) $(CV_HEADERS) $(PERIODIC_HEADERS) $(EULER_HEADERS) $(MESH_HEADERS)
 # Формула WENO встраивается в поток ребра на CPU и GPU. При изменении весов пересобираем оба варианта.
 RES_HDR += $(RECONSTRUCTION_HEADERS) source/bc/profile.h
 RES_HDR += $(RES_DIR)/boundary_flux_failure.h
@@ -12,7 +12,7 @@ RES_TEST := $(BUILD)/residual_tests_$(EBR_TAG)$(EXE)
 ifneq ($(and $(EXPLICIT_LIBRARY),$(TIMESTEP_LIBRARY)),)
 RES_TIME_LIBS := $(TIMESTEP_LIBRARY) $(EXPLICIT_LIBRARY)
 RES_TIME_SRC := $(TIMESTEP_SRC) $(EXPLICIT_SRC)
-RES_TIME_HEADERS := $(TIMESTEP_HEADERS) $(EXPLICIT_HEADERS)
+RES_TIME_HEADERS := $(TIMESTEP_HEADERS) $(EXPLICIT_HEADERS) source/timestep/steady_step_spread.h
 RES_TIME_GPU := $(TIMESTEP_GPU) $(EXPLICIT_GPU)
 else
 RES_TEST_FLAGS := -DAERO_RESIDUAL_NO_TIME_TEST

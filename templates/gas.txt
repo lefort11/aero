@@ -32,4 +32,5 @@ gamma = 1.4
 # sutherland_s = 110.4
 
 # Все заданные параметры должны быть конечными, sutherland_s >= 0.
-# Для невязкого расчёта достаточно gamma. Режим initial_type = freestream дополнительно требует mach.
+# Для невязкого Euler дополнительно задайте mach, если используете initial_type = freestream,
+# автоматический reference_state или вывод Cp. У Linear опорное давление и скорость для Cp берутся из linear.txt.
