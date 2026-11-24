@@ -7,6 +7,7 @@
 #include "device_memory.h"
 #include <new>
 #include <cstdio>
+#include <cstdlib>
 
 namespace aero {
 namespace gpu {
@@ -107,7 +108,16 @@ Status wait(Stream stream) { return run([&] { device_work::current_execution(str
 // Ожидает завершения всех операций текущего устройства.
 Status wait_all() { return run([] { Execution::impl_static_fence(); }); }
 // Все размеры указаны в байтах. Между стадиями выделенный Kokkos буфер остаётся на карте.
-Status allocate(void** out, std::size_t bytes) { return acquire<Device>(out, bytes); }
+Status allocate(void** out, std::size_t bytes) {
+    // Необязательная диагностика включает поздние выделения матрицы и multigrid,
+    // которые не входят в строку Placing с постоянными массивами подобласти.
+    if (std::getenv("AERO_GPU_MEMORY_TRACE")) {
+        std::size_t available=0,total=0;
+        if (cudaMemGetInfo(&available,&total)==cudaSuccess)
+            std::fprintf(stderr,"GPU allocation: request %zu bytes, free %zu bytes, total %zu bytes\n",bytes,available,total);
+    }
+    return acquire<Device>(out, bytes);
+}
 // Освобождает ранее выделенную память GPU.
 Status release(void* ptr) { return discard<Device>(ptr); }
 // Выделяет закреплённую память CPU для обменов с GPU.

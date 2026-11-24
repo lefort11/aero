@@ -165,8 +165,9 @@ public:
     // СЛАУ, которое попадает в отчёт. Повтор после отказа не входит в статистику.
     double steady_residual(bool accepted) {
         auto* spread = op_.step_spread();
-        if (!accepted && spread && spread->last() >= 0.) return spread->last();
-        const double norm = op_.steady_residual(fields_.current, fields_.initial, accepted);
+        // После recovery сохранённая статистика не заменяет проверку текущих потоков:
+        // граничные условия могли измениться при той же реконструкции.
+        const double norm = op_.steady_residual(fields_.current, fields_.initial, accepted, true);
         if (accepted && spread) spread->accepted(norm, newton_.linear_iterations);
         return norm;
     }
@@ -303,6 +304,7 @@ public:
             << '/' << run_.reconstruction_variables << '/' << run_.euler_solver
             << '/' << run_.stencil_geometry << '/' << std::setprecision(17) << run_.stencil_max_angle
             << '/' << run_.upw_coeff << '/' << run_.mp6_hybrid << '/' << run_.mpweno_ad_corr;
+        if (run_.entropy_fix != 0.) key << "/entropy=" << run_.entropy_fix;
         return key.str();
     }
 
@@ -595,8 +597,10 @@ private:
     RunSettings& run_;             // Схема по времени, допуски и выбранная карта.
     std::set<Id> master_low_; // Глобальные номера узлов с пониженным порядком на процессе 0.
     std::set<Id> report_failed_; // Уникальные отказавшие узлы с предыдущего Report.
+    // Число отказов и размер сетки для статистики шага.
     Id failed_count_ = 0, total_cells_ = 0;
     bool have_marks_ = false; // Одинаков на всех процессах, включая пустые подобласти.
+    // Состояние адаптивного регулятора CFL.
     AdaptiveCourant courant_;
     std::vector<double> backup_, marks_; // Принятый слой и постоянные до сброса метки узлов.
     bool accepted_fluxes_ = false; // После чтения начального поля потоки ещё предстоит вычислить.
@@ -640,6 +644,7 @@ prepare_partition_operator(const RunSettings& run, const ReconstructionOptions& 
     world.local([&] {
         auto physics = residual_options(run.reconstruction_variables, run.euler_solver, run.gamma,
                                               run.trace_ratio_min, run.trace_ratio_max);
+        physics.entropy_fix = run.entropy_fix;
         physics.upw_coeff = run.upw_coeff;
         physics.mp6_hybrid = run.mp6_hybrid;
         physics.retry_nonphysical = run.stabilization.active();
@@ -726,11 +731,23 @@ bool prepare_gpu_memory(PartitionOperator& op, const MeshPartition& part, const 
         fit.end = part.end_leaf;
         op.reserve_gpu(compact, fit, run.uses_implicit_time() ? &run.implicit_settings : nullptr);
     });
+    // Формат журнала общий для плана и размещения массивов, 1 GB = 10^9 байт.
+    const auto format_gb = [](MeshIndex bytes) {
+        std::ostringstream value;
+        value << std::fixed << std::setprecision(6) << static_cast<double>(bytes) / 1.e9 << " GB";
+        return value.str();
+    };
     if (single) {
+        std::cout << "GPU memory plan: resident arrays " << format_gb(fit.layout_bytes)
+                  << " (reconstruction " << format_gb(fit.reconstruction_bytes)
+                  << ", caches " << format_gb(fit.cache_bytes)
+                  << "), implicit workspace " << format_gb(fit.implicit_bytes)
+                  << ", multigrid " << format_gb(fit.coarse_bytes)
+                  << ", total " << format_gb(fit.required) << ", budget " << format_gb(fit.budget) << std::endl;
         if (fit.failed) {
             throw std::runtime_error("Insufficient GPU memory for the mesh: arrays "
-                +std::to_string(fit.layout_bytes)+" bytes, estimated total "
-                +std::to_string(fit.required)+" bytes, budget "+std::to_string(fit.budget)+" bytes");
+                + format_gb(fit.layout_bytes) + ", estimated total "
+                + format_gb(fit.required) + ", budget " + format_gb(fit.budget));
         }
     } else {
         const bool retry = world.sum(fit.failed ? 1 : 0) != 0;
@@ -752,7 +769,7 @@ bool prepare_gpu_memory(PartitionOperator& op, const MeshPartition& part, const 
     if (!single)
         placement << "Rank " << world.rank << ": ";
     placement << "Placing " << fit.array_count << " arrays on GPU ("
-              << std::fixed << std::setprecision(6) << static_cast<double>(fit.layout_bytes) / 1.e9 << " GB)...";
+              << format_gb(fit.layout_bytes) << ")...";
     const auto lines = single ? Processes::Messages{placement.str()} : world.gather_text(placement.str());
     if (!world.rank) {
         for (const auto& line : lines)
@@ -807,7 +824,10 @@ void integrate_partition(const RunSettings& run, const Processes& world, unsigne
         return stepper.prepare_first_stage(first_order_start, timing);
     };
     if (run.steady()) {
-        operations.steady_residual = [&](bool accepted) { return stepper.steady_residual(accepted); };
+        operations.steady_residual = [&](bool accepted,bool first_order_start,SolverTimings& timing) {
+            stepper.prepare_state_fluxes(first_order_start,timing);
+            return stepper.steady_residual(accepted);
+        };
     }
     bool sample_time=false, write_sa=false;
     for (const auto& zone:run.output_zones) for (const auto& name:zone.variables) {

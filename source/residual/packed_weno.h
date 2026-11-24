@@ -87,7 +87,9 @@ KOKKOS_FORCEINLINE_FUNCTION bool recover_traces(const euler_detail::PlaneWaveBas
 struct PlaneEdge {
     const double* left;  // Состояние в начале ориентированного ребра.
     const double* right; // Состояние в конце того же ребра.
+    // Базис плоских характеристических волн на ребре.
     euler_detail::PlaneWaveBasis basis;
+    // Газовые параметры на интерфейсе.
     euler_detail::InterfaceGas gas;
 
     // Узловой газ уже посчитан при обновлении поля. Здесь выбираем его для двух концов ребра.
@@ -95,7 +97,7 @@ struct PlaneEdge {
         const auto& surface = g.surfaces[edge];
         left = field + 4 * surface.begin;
         right = field + 4 * surface.end;
-        return edge_gas<true>(g, surface, left, right, gas);
+        return edge_gas<true>(g, edge, surface, left, right, gas);
     }
 
     // Читает узловые состояния ребра и подготавливает его характеристический базис.

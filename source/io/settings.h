@@ -22,6 +22,7 @@ namespace aero {
 // Каталоги постановки и результатов с переопределениями настроек командной строки.
 struct RunDirectories {
     std::string input, output;  // Каталоги постановки и результатов запуска.
+    // Параметры командной строки по именам ключей.
     using Parameters = std::map<std::string, std::string>;
     std::map<std::string, Parameters> overrides; // Значения по имени файла и ключу для этого запуска.
     bool interactive;           // Разрешить паузу для редактирования граничных условий.
@@ -39,8 +40,10 @@ enum class ExactSolution { Off, Formula, Fields };
 // Названия схем проверяются при чтении настроек независимо от подключённых модулей солвера.
 struct RunSettings {
     mutable std::vector<std::string> input_warnings; // Диагностика пополняется при чтении файлов, зависящих от размерности сетки.
+    // Фон для вычислений линеаризованных уравнений.
     LinearBackground background;
 #ifdef AERO_HAS_TURBULENCE
+    // Настройки модели турбулентности данного запуска.
     turbulence::Settings turbulence;
 #endif
 #ifdef AERO_HAS_VISCOSITY
@@ -48,6 +51,7 @@ struct RunSettings {
 #endif
     unsigned background_velocities = 0; // Число заданных компонент, проверяем по размерности сетки.
     RunDirectories directories; // Режим запуска и каталоги из командной строки.
+    // Разрешённые пути к сетке и файлам исходных условий.
     std::string mesh_path, initial_path,
         boundary_path;                    // Разрешённые пути к сетке, начальному полю и границам.
     std::string reconstruction;           // Схема построения следов слева и справа от грани.
@@ -67,10 +71,13 @@ struct RunSettings {
     // Проверяет, требует ли выбранный режим неявного временного интегратора.
     bool uses_implicit_time() const { return steady() || time_scheme == "bdf1" || time_scheme == "bdf2"; }
     std::string euler_solver;             // Численный поток Roe или LF.
+    // Способ построения геометрического шаблона.
     std::string stencil_geometry = "straight";
+    // Предельный угол отклонения при выборе продолжения шаблона, в градусах.
     double stencil_max_angle = 36.;
     bool mpweno_ad_corr; // Антидиссипативная поправка к весам MPWENO5 из scheme.txt.
     double mp6_hybrid; // Вес связанной центральной коррекции двух следов.
+    double entropy_fix = 0.; // Ширина сглаживания акустических скоростей Роу в долях скорости звука.
     double upw_coeff; // Доля диссипации LF/Roe и доля EBR при смешивании с центральной реконструкцией.
     Stabilization stabilization; // Управление откатом шага и локальным порядком.
     double cfl;                           // Число Куранта для шага по времени.
@@ -86,6 +93,7 @@ struct RunSettings {
     double mach = 0.; // Число Маха набегающего потока при единичном масштабе скорости.
     double reference_phi = 0., reference_theta = 0.; // Направление reference_state из gas.txt, в градусах.
     double gamma;                         // Отношение теплоёмкостей идеального газа.
+    // Границы допустимого отношения реконструированной величины к узловой.
     double trace_ratio_min,
         trace_ratio_max;                  // Границы отношения восстановленной плотности и давления к узловым.
     bool use_cuda;                        // Вычислять потоки и стадии на GPU.

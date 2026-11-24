@@ -6,12 +6,16 @@ namespace turbulence {
 // Все указатели относятся к одному исполнителю. Номера и коэффициенты шаблона
 // принадлежат газовому солверу. Изменяем только поле, по которому вычисляются наклоны.
 struct SaEdgeConvection {
+    // Шаблоны конвективной реконструкции рабочей вязкости.
     ReconstructionStencilView stencil;
-    const residual_detail::Surface* surfaces;
+    // Геометрия и ориентация площадок.
+    residual_detail::SurfaceTable surfaces;
     const MeshIndex* computed; // В MPI здесь только площадки, назначенные данному процессу.
+    // Газовый массовый поток, определяющий направление переноса.
     const EulerFluxResult* gas_flux;
     const double* working;     // Текущее nu_tilde, включая удалённые узлы шаблона.
     double* correction;        // Поправка к потоку первого порядка в направлении begin -> end.
+    // Веса противопоточности и гибридной схемы.
     double upwind, hybrid;
 
     // Восстанавливает приращение рабочей вязкости на выбранной стороне ребра.

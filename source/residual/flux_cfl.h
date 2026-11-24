@@ -11,8 +11,8 @@ namespace aero {
 namespace residual_detail {
 // Связывает площадки узла с их площадями и оценками скоростей волн.
 struct FaceSpeeds {
-    const OrientedFace* incidence; // Из записи списка узла получаем номер площадки.
-    const Surface* surfaces;       // Модуль площади умножает скорость в сумме CFL.
+    FaceIncidence incidence; // Из записи списка узла получаем номер площадки.
+    SurfaceTable surfaces;       // Модуль площади умножает скорость в сумме CFL.
     const EulerFluxResult* flux;   // Скорости, уже вычисленные при сборке потока.
     // Возвращает скорость волны и площадь по записи инцидентности узла.
     AERO_HOST_DEVICE cfl_detail::FaceSpeed operator()(Index j) const {
@@ -22,19 +22,25 @@ struct FaceSpeeds {
 };
 // Без списка узлов обходим всю сетку. При разбиении процесс передаёт список собственных узлов.
 struct FluxCfl {
-    const Index* offsets; // Диапазоны смежных площадок для каждого узла.
+    IndexArray<Index> offsets; // Диапазоны смежных площадок для каждого узла.
     FaceSpeeds speeds;    // Передаём в редукцию Kokkos только нужные ей массивы.
 #ifdef AERO_HAS_VISCOSITY
+    // Узловые строки вязкого ограничения шага.
     const viscosity::Row* diffusion;
 #endif
+    // Объёмы для перевода суммы скоростей на гранях в ограничение шага.
     const double* volumes;
+    // Соответствие обрабатываемых строк собственным узлам.
     const MeshIndex* owned;
+    // Число обрабатываемых строк.
     Index count;
     const double* sa_rate; // Диагональ переноса SA, в единицах обратного времени.
     const double* heights; // Минимум высот исходных ячеек вокруг узла.
     const EulerState* gas; // Уже вычисленные при сборке потоков узловые состояния Euler.
     const double* state; // Консервативное поле, если на GPU нет отдельного массива примитивных переменных.
+    // Показатель адиабаты при оценке скорости волны.
     double gamma;
+    // Размерность газового состояния.
     unsigned dimension;
     double linear_speed;   // Для Linear скорость определяется однородным фоном.
     // Связывает геометрию, скорости волн и объёмы для вычисления шагов CFL.
@@ -105,12 +111,17 @@ struct FluxCfl {
 struct StepRange { double minimum, maximum; MeshIndex limited, capped; };
 // Вычисляет локальные псевдошаги и сводит их диапазон и ограничения.
 struct LocalSteadySteps {
+    // Тип результата объединения локальных экстремумов шага.
     using value_type = StepRange;
+    // Узловая оценка шага по потокам газа.
     FluxCfl gas;
+    // Множитель числа Куранта.
     double courant;
     AdaptiveStepChange change; // Пустое поле означает обычный шаг CFL.
     double* steps;         // Общий шаг газа и SA в нумерации узлов подобласти.
+    // История и ограничения по изменению невязки.
     LocalRateLimit feedback;
+    // Указывает, когда нужно начать новую историю узловых значений.
     bool initialize_history;
 
     // Задаёт нейтральный результат редукции диапазона шагов и счётчиков.
@@ -149,8 +160,11 @@ struct LocalSteadySteps {
 };
 // После MPI-редукции всем процессам известен один предел. Меняем только свои узлы.
 struct LimitLocalSteps {
+    // Номера узлов, шаги которых обновляет этот процесс.
     const MeshIndex* owned;
+    // Массив изменяемых локальных шагов.
     double* steps;
+    // Общая верхняя граница шага.
     double ceiling;
     // Ограничивает локальный шаг узла заданным общим потолком.
     AERO_HOST_DEVICE void operator()(Index row) const {
@@ -161,20 +175,29 @@ struct LimitLocalSteps {
 // За проход измеряем действительный разброс на рёбрах и максимум шага.
 // changed нужен отдельно: отношение двух double может округлиться до заданной границы.
 struct NeighbourStepRange {
+    // Отношение шагов и максимальное значение для редукции.
     double ratio, maximum;
+    // Признак изменения узлового шага при проходе.
     unsigned changed;
 };
 // Уменьшает шаги узлов по ограничениям соседних рёбер.
 struct NeighbourStepSweep {
+    // Собственные строки текущего процесса.
     const MeshIndex* owned;
-    const Index* offsets;
-    const OrientedFace* incidence;
-    const Surface* surfaces;
+    // Границы списков инцидентных площадок.
+    IndexArray<Index> offsets;
+    // Ориентированные площадки в строке узла.
+    FaceIncidence incidence;
+    // Концы и тип каждой площадки.
+    SurfaceTable surfaces;
+    // Граница между внутренними рёбрами и граничными площадками.
     Index edges;
     const double* previous; // Все читают один слой, включая полученные по MPI узлы.
     double* next;           // Поток пишет только шаг своего узла.
+    // Допустимое отношение соседних шагов и минимум по всей сетке.
     double ratio, global_minimum;
 
+    // Результат редукции одного прохода по соседям.
     using value_type = NeighbourStepRange;
     // Задаёт нейтральный результат редукции диапазона шагов и счётчиков.
     AERO_HOST_DEVICE void init(value_type& result) const { result = {1., 0., 0}; }

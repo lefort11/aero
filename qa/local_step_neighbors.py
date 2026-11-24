@@ -225,6 +225,46 @@ def check_spread_restart(case, args, mode):
 
 
 # Разбирает параметры запуска, выполняет набор QA-проверок и возвращает статус результата.
+def check_recovery_and_probe(case, args):
+    """Пересчёт невязки после смены BC и диагностика на границе LO/EBR5."""
+    case.mkdir()
+    prepare(case)
+    shutil.copyfile(ROOT / "templates/scheme.txt", case / "scheme.txt")
+    if args.mpi:
+        run([args.meshdec, case / "grid.mesh", case / "grid.mdec", "--target-ranks=2"])
+    (case / "cuda.txt").write_text(f"devices={args.device}\n")
+    for label in ["cpu"] + (["mpi"] if args.mpi else []) + (["gpu"] if args.gpu else []):
+        command = ([args.mpiexec, "-n", "2"] if label == "mpi" else []) + [
+            args.aero, f"--input={case}", "implicit:local_time_step=auto",
+            "main:mesh=grid.mdec" if label == "mpi" else "main:mesh=grid.mesh",
+            "main:backend=cuda" if label == "gpu" else "main:backend=cpu"]
+        for mode in ("work", "stencil"):
+            out = case / (label + "-" + mode)
+            (case / "init.txt").write_text("initial_type=formula\nrho=1\np=1\nux=0\n")
+            (case / "bc.txt").write_text("[xmin, xmax]\nbc_type novisc_wall\n")
+            settings = [f"--output={out}", f"implicit:local_time_step_residual_limit={mode}",
+                        "implicit:steady_criterion=absolute", "implicit:steady_tol=1e-8",
+                        "implicit:steady_max_steps=1"]
+            initial = run([*command, *settings])
+            assert "Completed 0 steps" in initial, initial
+            (case / "bc.txt").write_text(
+                "[xmin]\nbc_type free\nreference_state rho=1 p=1 ux=.1\n"
+                "superin external\ninflow external\noutflow external\n"
+                "[xmax]\nbc_type novisc_wall\n")
+            resumed = run([*command, *settings, "--recover"], success=False)
+            assert "pseudo-step limit reached before convergence" in resumed and "STEP 1 " in resumed, resumed
+        (case / "bc.txt").write_text("[xmin, xmax]\nbc_type novisc_wall\n")
+        (case / "init.txt").write_text("initial_type=formula\nrho=1+.2*x\np=1+.2*x\nux=0\n")
+        log = run([*command, f"--output={case / (label + '-probe')}",
+                   "main:reconstruction=ebr5", "main:steps_fo=3",
+                   "implicit:local_time_step_residual_limit=stencil",
+                   "implicit:local_time_step_probe_node=7", "implicit:steady_max_steps=5",
+                   "implicit:steady_tol=1e-14"], success=False)
+        rates = {int(k): float(v) for k, v in report_rows(log, r"^LTS probe +node = 7 +dt = \S+ +gas rate = (\S+)")}
+        assert set(rates) == set(range(1, 6)) and all(math.isfinite(v) and v > 0 for v in rates.values()), rates
+        print(f"PASS recovery BC change and LO transition probe ({label})")
+
+
 def main():
     parser = mpi_parser(__doc__)
     parser.add_argument("--mpi", action="store_true")
@@ -234,6 +274,7 @@ def main():
     with mpi_workspace("lts-neighbors-") as work:
         case = Path(work)
         prepare(case)
+        check_recovery_and_probe(case / "regressions", args)
         original = solve(case, args, "default")
         expected = solve(case, args, "limited", limit=2)
         if max_difference(original, expected) < 1.e-7:

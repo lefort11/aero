@@ -35,6 +35,7 @@ public:
     // размером nodes*(dimension+2) должны занимать разные области памяти.
     void apply(const double* vector, double* product) const;
 private:
+    // Линейная система управляет внутренними данными якобиана.
     friend class BdfLinearSystem;
     // Возвращает число узлов в текущем представлении.
     MeshIndex node_count() const;
@@ -60,6 +61,7 @@ private:
     // Выделяет коэффициенты матрицы согласно подготовленной раскладке.
     void allocate_blocks(const residual_detail::Geometry& host, bool for_linear_solver);
     struct Storage;
+    // Владеет коэффициентами и структурой пространственного якобиана.
     std::unique_ptr<Storage> storage_;
 };
 using LfSpatialJacobian = SpatialJacobian;

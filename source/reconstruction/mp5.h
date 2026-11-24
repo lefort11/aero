@@ -13,9 +13,11 @@ void validate_mp5_alpha(double alpha);
 
 // У пустого представления enabled равен false. Нулевой alpha допустим для включённой MP5.
 struct Mp5Settings {
+    // Включает ограничение MP5.
     bool enabled;
     bool weno;       // Выбирает кандидата MPWENO5 перед общим ограничителем.
     bool correction; // Включает антидиссипативную поправку MPWENO5.
+    // Параметр допустимого наклона MP5.
     double alpha;
 };
 
@@ -93,6 +95,7 @@ AERO_HOST_DEVICE inline double curvature(double a, double b) {
 
 // Пересекаем два допустимых интервала и ограничиваем удвоенное приращение.
 struct Bounds {
+    // Нижняя и верхняя границы допустимого значения.
     double low, high;
     // Включает принятое приращение своей стороны в интервал для следующей поправки.
     AERO_HOST_DEVICE void include(double accepted) {

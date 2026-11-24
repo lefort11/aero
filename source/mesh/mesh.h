@@ -32,7 +32,9 @@ public:
 
 // Строка i в CSR занимает индексы от offsets[i] включительно до offsets[i+1] исключительно. Нумерация с нуля.
 struct MeshCsr {
+    // Начальные смещения строк и конец последней строки.
     std::vector<MeshIndex> offsets;
+    // Номера сущностей, последовательно собранные по строкам.
     std::vector<MeshIndex> indices;
     // Инициализирует CSR-строки; пустая таблица содержит единственное нулевое смещение.
     MeshCsr() : offsets(1, 0) {}
@@ -45,6 +47,7 @@ struct MeshCsr {
 struct MeshData {
     // Топологическая размерность равна 1, 2 или 3. Координаты всегда хранятся по трём осям.
     unsigned dimension;
+    // Покомпонентные координаты узлов.
     std::vector<double> x, y, z;
     // Грань в 1D — вершина, в 2D — направленное ребро, в 3D — циклически упорядоченный многоугольник.
     MeshCsr face_nodes;
@@ -54,7 +57,9 @@ struct MeshData {
     // В 2D знак +1 означает обход ребра по его направлению, в 3D — наружную ориентацию цикла грани.
     // Знак −1 обращает соответствующее направление.
     std::vector<std::int8_t> cell_face_orientation;
+    // Номера граней на физической границе.
     std::vector<MeshIndex> boundary_faces;
+    // Номер патча каждой граничной грани.
     std::vector<MeshIndex> boundary_patch;
     // Здесь хранятся имена участков. Физические условия и периодические пары задаются в постановке.
     std::vector<std::string> patch_names;
@@ -64,7 +69,9 @@ struct MeshData {
 
 // Невладеющий диапазон последовательных индексов сетки.
 struct MeshIndexSpan {
+    // Начало непрерывного диапазона номеров.
     const MeshIndex* data;
+    // Количество номеров в диапазоне.
     MeshIndex size;
     // Связывает указатель и длину невладеющего диапазона индексов.
     AERO_HOST_DEVICE MeshIndexSpan(const MeshIndex* values = nullptr, MeshIndex count = 0)
@@ -94,33 +101,47 @@ class MeshCell;
 // Копирование указателей не переносит данные на GPU. Адреса должны быть доступны выбранному исполнителю.
 // Индексы должны быть проверены вызывающим кодом. Имена остаются на CPU.
 struct MeshView {
+    // Число активных координат сетки.
     unsigned dimension;
+    // Размеры таблиц топологических сущностей и патчей.
     MeshIndex node_count, face_count, cell_count, edge_count, boundary_face_count, patch_count;
+    // Первые координаты узлов.
     const double* x;
+    // Вторые координаты узлов.
     const double* y;
+    // Третьи координаты узлов.
     const double* z;
     // Возвращает координаты одного узла из трёх массивов сетки.
     AERO_HOST_DEVICE Coordinate coordinate(MeshIndex node) const { return {{x[node], y[node], z[node]}}; }
     // Связь «грань → вершины»: смещения и номера узлов в порядке обхода грани.
     const MeshIndex* face_offsets;
+    // Номера узлов по граням.
     const MeshIndex* face_indices;
     // Связь «ячейка → грани». Знак в той же позиции задаёт ориентацию грани в ячейке.
     const MeshIndex* cell_offsets;
+    // Номера граней по ячейкам.
     const MeshIndex* cell_indices;
+    // Знак обхода каждой грани относительно ячейки.
     const signed char* cell_orientation;
     // Параллельные массивы: номер внешней грани и номер её граничного участка.
     const MeshIndex* boundary_faces;
+    // Соответствие граничной грани патчу.
     const MeshIndex* boundary_patch;
     // Концы ориентированного ребра. Положительный поток идёт от begin к end.
     const MeshIndex* edge_begin;
+    // Конечный узел ориентированного ребра.
     const MeshIndex* edge_end;
     // Отдельная CSR-таблица рёбер грани: ноль рёбер в 1D, одно в 2D, цикл в 3D.
     const MeshIndex* face_edge_offsets;
+    // Список рёбер каждой грани.
     const MeshIndex* face_edge_indices;
     // Производные строки узлов и рёбер ячейки. Их строят один раз при загрузке сетки.
     const MeshIndex* cell_node_offsets;
+    // Список узлов каждой ячейки.
     const MeshIndex* cell_node_indices;
+    // Начальные смещения списков рёбер ячеек.
     const MeshIndex* cell_edge_offsets;
+    // Рёбра ячеек в порядке строк.
     const MeshIndex* cell_edge_indices;
 
     // Методы Mesh проверяют номер элемента и выбрасывают MeshError при ошибке.
@@ -174,7 +195,9 @@ public:
 protected:
     // Связывает дескриптор с представлением сетки и номером сущности.
     AERO_HOST_DEVICE MeshEntity(MeshView view, MeshIndex id) : view_(view), id_(id) {}
+    // Невладеющее представление сетки для доступа к смежным сущностям.
     MeshView view_;
+    // Номер сущности в таблице своего типа.
     MeshIndex id_;
 };
 
@@ -368,10 +391,13 @@ private:
     void collect_cell_connectivity(MeshIndex cell, std::vector<MeshIndex>& nodes, std::vector<MeshIndex>& edges) const;
     // Строит производные CSR-связи ячеек с узлами и рёбрами.
     void build_cell_connectivity();
+    // Исходные массивы координат и связности.
     MeshData data_;
     // Только для совпадения SHA-256 со снимками, ранее записанными на исходной сетке v2.
     std::uint64_t fingerprint_word_ = mesh_format::default_fingerprint_word;
+    // Концы рёбер и производная таблица соответствия граней рёбрам.
     std::vector<MeshIndex> edge_begin_, edge_end_, face_edge_offsets_, face_edge_indices_;
+    // Производные списки узлов и рёбер каждой ячейки.
     MeshCsr cell_nodes_, cell_edges_;
 };
 

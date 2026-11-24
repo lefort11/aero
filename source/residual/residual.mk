@@ -1,6 +1,6 @@
 # Библиотека невязки связывает поток, реконструкцию и геометрию. Тесты проверяют также выбор шага.
 RES_DIR := source/residual
-RES_HDR := $(RES_DIR)/residual.h $(RES_DIR)/residual_detail.h $(RES_DIR)/packed_weno.h $(RES_DIR)/flux_cfl.h $(RES_DIR)/stencil_rates.h source/timestep/adaptive_step.h source/timestep/local_rate_limit.h source/timestep/cfl_detail.h source/timestep/timestep.h source/parallel/kernel_math.h source/mesh/mesh_index.h source/parallel/parallel_for.h source/parallel/wall_timer.h $(BC_HEADERS) $(CV_HEADERS) $(PERIODIC_HEADERS) $(EULER_HEADERS) $(MESH_HEADERS)
+RES_HDR := $(RES_DIR)/residual.h $(RES_DIR)/residual_detail.h $(RES_DIR)/packed_weno.h $(RES_DIR)/split_flux.h $(RES_DIR)/flux_cfl.h $(RES_DIR)/stencil_rates.h source/timestep/adaptive_step.h source/timestep/local_rate_limit.h source/timestep/cfl_detail.h source/timestep/timestep.h source/parallel/kernel_math.h source/mesh/mesh_index.h source/parallel/parallel_for.h source/parallel/wall_timer.h $(BC_HEADERS) $(CV_HEADERS) $(PERIODIC_HEADERS) $(EULER_HEADERS) $(MESH_HEADERS)
 # Формула WENO встраивается в поток ребра на CPU и GPU. При изменении весов пересобираем оба варианта.
 RES_HDR += $(RECONSTRUCTION_HEADERS) source/bc/profile.h
 RES_HDR += $(RES_DIR)/boundary_flux_failure.h
@@ -55,4 +55,4 @@ residual-cuda-test:
 	$(MAKE) KOKKOS_BACKEND=cuda $(BIN)/residual_tests_cuda1_omp$(WITH_OPENMP)$(EXE)
 	$(running_test)
 	"$(BIN)/residual_tests_cuda1_omp$(WITH_OPENMP)$(EXE)" --require-cuda
-$(RES_TEST) $(RES_DEBUG): tests/test_mesh.h tests/test_checks.h
+$(RES_TEST) $(RES_DEBUG): tests/test_mesh.h tests/test_checks.h source/aero/compact_slopes.h

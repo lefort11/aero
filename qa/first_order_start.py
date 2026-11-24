@@ -1,5 +1,6 @@
 """Сверяет автоматическую смену порядка с двумя отдельными расчётами через контрольную точку."""
 import re
+import math
 import shutil
 from pathlib import Path
 
@@ -7,6 +8,48 @@ from mpi_common import report_rows, ROOT, mpi_parser, mpi_workspace
 from mpi_fields import binary_snapshot
 from mpi_geometry import run
 from run import settings
+
+
+def check_steady_residual(common, case):
+    """На границе старта сверяет отчёт с независимой оценкой той же контрольной точки."""
+    shutil.copyfile(ROOT / "templates/scheme.txt", case / "scheme.txt")
+    command = [*common, "main:time_scheme=steady", "main:stabilization=off", "main:cfl=.05",
+               "implicit:local_time_step=off", "implicit:steady_criterion=absolute",
+               "implicit:steady_tol=1e-14", "implicit:steady_max_steps=3"]
+
+    def last_norm(log):
+        """Берёт пространственную норму последнего принятого слоя из отчёта."""
+        rows = list(report_rows(log, r"^Steady\s+absolute residual = (\S+)"))
+        assert rows and int(rows[-1][0]) == 3, log
+        return float(rows[-1][1])
+
+    low = case / "steady-residual-low"
+    log = run([*command, f"--output={low}", "main:reconstruction=first_order"], success=False)
+    assert "pseudo-step limit reached before convergence" in log, log
+    low_norm = last_norm(log)
+    metadata, low_fields = binary_snapshot(low / "state.fields")
+    switch = metadata[-1]
+    for scheme in ("ebr3", "ebr5", "weno3", "weno5", "mp5", "MPWENO5"):
+        for mode, threshold in (("steps", "main:steps_fo=3"), ("time", f"main:t_fo={switch:.17g}")):
+            target = case / f"steady-residual-{scheme}-{mode}"
+            options = [*command, f"--output={target}", f"main:reconstruction={scheme}", threshold]
+            transition = run(options, success=False)
+            assert "pseudo-step limit reached before convergence" in transition, transition
+            assert f"reconstruction = {scheme.lower()} (first-order startup complete)" in transition.lower(), transition
+            actual = last_norm(transition)
+            current, fields = binary_snapshot(target / "state.fields")
+            assert current[-2:] == metadata[-2:], (current, metadata)
+            for name in fields:
+                assert max(abs(a-b) for a,b in zip(fields[name],low_fields[name])) < 1e-12, name
+            # Большой допуск завершает продолжение до интегрирования нового шага.
+            # Норма вычисляется заново по реконструкции из настроек на том же поле.
+            resumed = run([*options, "--recover", "implicit:steady_tol=1e100"])
+            found = re.search(r"Steady state converged, absolute spatial residual = (\S+)", resumed)
+            assert found and "Completed 3 steps." in resumed, resumed
+            expected = float(found[1])
+            assert math.isclose(actual, expected, rel_tol=2e-6, abs_tol=1e-12), (scheme, mode, actual, expected)
+            assert not math.isclose(low_norm, expected, rel_tol=1e-5, abs_tol=1e-12), (scheme, low_norm, expected)
+    print("OK steady residual switches at steps_fo and t_fo for all higher-order schemes", flush=True)
 
 
 # Проверяет момент перехода с начального первого порядка на выбранную реконструкцию.
@@ -83,6 +126,7 @@ def check(args, work, name, equation, time_scheme, parallel):
             assert "pseudo-step limit reached before convergence" in result, result
         resumed = [(int(n),float(c)) for n,c in report_rows(result, r"^.*? CFL = (\S+)")]
         assert resumed == [(4,.05),(5,.1)], resumed
+        check_steady_residual(common,case)
     print(f"OK {equation} {time_scheme}, MPI={parallel}: transition at t={switch}")
 
 

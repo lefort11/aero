@@ -25,8 +25,11 @@ public:
         }
     }
 private:
+    // Поток, чей буфер временно перенаправлен.
     std::ostream& stream_;
+    // Исходный буфер консоли для вывода и последующего восстановления.
     std::streambuf* terminal_;
+    // Второй приёмник вывода после открытия журнала.
     std::streambuf* file_ = nullptr;
     // Записывает блок символов в терминал и журнал и возвращает общий успешный размер.
     std::streamsize xsputn(const char* data, std::streamsize size) override {
@@ -59,7 +62,9 @@ public:
         errors_.attach(*file_.rdbuf());
     }
 private:
+    // Владеет открытым файлом журнала.
     std::ofstream file_;
+    // Дублируют обычный и диагностический вывод в журнал.
     ConsoleMirror output_{std::cout}, errors_{std::cerr};
 };
 }

@@ -7,8 +7,11 @@ namespace implicit {
 // Счётчики принадлежат отчёту текущего расчёта. Пустое представление выполняет
 // только саму операцию: обычному запуску не нужны ни часы, ни ожидание GPU.
 struct PhaseTiming {
+    // Этапы неявного шага для раздельного хронометража.
     enum Phase { Matrix, ViscousMatrix, PreconditionerSetup, Solve, Prediction, Count };
+    // Накопленные секунды на этап.
     double* seconds;
+    // Число вызовов каждого этапа.
     std::uint64_t* calls;
     void (*wait)(); // Завершить работу очереди Kokkos; для замера CPU всегда nullptr.
 

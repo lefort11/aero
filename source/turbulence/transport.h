@@ -10,18 +10,27 @@ namespace aero {
 namespace turbulence {
 // Все индексы и указатели относятся к одной подобласти и одному исполнителю.
 struct Transport {
+    // Узловая оценка масштаба турбулентности.
     NodalFilter filter;
     GasFaces gas_faces; // При компактном размещении SA не хранит вторую таблицу тех же граней.
     View sa; // Только массивы, нужные уравнению SA на выбранном исполнителе.
+    // Газовые данные для конвекции и источников SA.
     const viscosity::Gas *gas_nodes;
-    const viscosity::Cell *cells;
+    // Связность и коэффициенты элементов.
+    viscosity::CellTable cells;
+    // Число элементов и внутренних рёбер.
     MeshIndex cell_count, edges;
+    // Размерность задачи переноса.
     unsigned dim;
+    // Массовые потоки газа через площадки.
     const EulerFluxResult *flux;
     const double* convection_correction; // Один ориентированный поток на внутреннее ребро, nullptr при первом порядке.
     const ProfileState* profiles; // Входное nu_tilde на физических площадках.
+    // Узловые контрольные объёмы.
     const double *volume;
+    // Соответствие собственной строки узлу.
     const MeshIndex *owned;
+    // Число обрабатываемых строк переноса.
     MeshIndex count;
     viscosity::GradientStencil shared_geometry; // Таблица коэффициентов AES на том же исполнителе.
     double heat_to_diffusion; // Перевод теплового коэффициента AES в коэффициент диффузии SA.
@@ -302,10 +311,15 @@ enum class Operation {
 enum class Norm { Rate, Bdf };
 // Поле и временные коэффициенты одной явной или неявной стадии переноса SA.
 struct Step {
+    // Пространственный оператор рабочего поля.
     Transport transport;
+    // Стадия явного интегратора.
     explicit_detail::Stage stage;
+    // Шаг и коэффициенты временных слоёв неявной формулы.
     double dt, leading, history;
+    // Узловые псевдошаги стационарного режима.
     NodeSteps local_steps;
+    // Требуется сохранить поле начала стадии.
     bool save_stage_start;
     bool extrapolate; // Разрешает ускорение двух последовательных скалярных поправок BDF.
     bool keep_gas; // Давление, плотность и скорость фиксированы между итерациями скалярного уравнения.

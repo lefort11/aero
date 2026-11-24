@@ -23,6 +23,7 @@ public:
     void publish(bool replace);
 
 private:
+    // Конечное имя снимка и путь для записи перед публикацией.
     std::string path_, temporary_;
 };
 
@@ -42,6 +43,7 @@ public:
     bool due(std::uint64_t step, double time) const;
     // Проверяет, понадобится ли столбец хотя бы одной зоне именно в этом снимке.
     bool column_due(unsigned column, std::uint64_t step, double time, bool final_field) const;
+    // Записывает одну зону с выбранными столбцами.
     using Writer = std::function<void(const OutputZone&, const std::vector<unsigned>& columns)>;
     // Проверяет наличие активных зон вывода.
     bool has_zones() const { return !zones_.empty(); }
@@ -51,14 +53,18 @@ public:
 private:
     // Расписание и выбранные столбцы одной зоны с отметкой последней записи.
     struct Zone {
+        // Настройки этой зоны вывода.
         OutputZone config;
+        // Индексы выводимых компонент.
         std::vector<unsigned> columns;
+        // Следующий интервал расписания и последний записанный шаг.
         std::uint64_t next_tick = 1, last_step = 0;
         // Вычисляет ближайшее физическое время записи зоны по целочисленному номеру срока.
         double deadline() const;
         // Проверяет, наступил ли шаг или физическое время записи зоны.
         bool due(std::uint64_t step, double time) const;
     };
+    // Состояние расписания отдельно по зонам.
     std::vector<Zone> zones_;
 };
 
@@ -75,11 +81,17 @@ public:
                const std::vector<double>& state,const diagnostic::Fields& scalars={}) const;
 
 private:
+    // Каталог для выходных файлов.
     std::string directory_;
+    // Заголовок снимка с описанием сетки.
     FieldSnapshot metadata_;
+    // Соответствие исходных узлов степеням свободы.
     std::vector<std::uint64_t> node_dof_;
+    // Число узлов локального поля.
     std::size_t nodes_ = 0;
+    // Показатель адиабаты для преобразования состояния.
     double gamma_ = 0;
+    // Стационарный фон для вывода пульсаций.
     LinearBackground background_;
 };
 
@@ -93,6 +105,7 @@ public:
     void write(std::uint64_t step, double time, const std::vector<double>& state);
 
 private:
+    // Записывает поля текущего процесса по расписанию.
     LocalFieldOutput local_;
 };
 }

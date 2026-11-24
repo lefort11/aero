@@ -65,6 +65,7 @@ template<bool weno> void check_weak_transverse_mp6() {
 
 // Обход всех рёбер организует тест. Так сравниваем результат для всей сетки, вызывая рабочую функцию для каждой стороны.
 struct TestResult {
+    // Второй набор приращений по сторонам для сверки.
     std::vector<double> left_increment2, right_increment2;
 };
 // Проверяет размер тестового массива перед выделением памяти.
@@ -141,7 +142,9 @@ int test_reconstruction_device_one(ReconstructionStencilView, ReconstructionInde
 #endif
 // Связывает тестовые вызовы реконструкции с CPU- или GPU-контекстом.
 class TestReconstructor {
+    // Контекст реконструкции теста.
     ReconstructionContext context_;
+    // Рабочий объект теста на устройстве.
     void* gpu_;
 
 public:
@@ -209,8 +212,11 @@ public:
 
 // Собирает тестовую сетку из узлов и ячеек с заданной топологией.
 struct Builder {
+    // Координаты и топология строящейся тестовой сетки.
     MeshData d;
+    // Поиск повторяющихся граней по вершинам.
     std::map<Polygon, MeshIndex> faces;
+    // Кратность использования граней.
     std::vector<unsigned> count;
     // Возвращает номер опорного узла строки реконструкции.
     MeshIndex node(double x, double y, double z = 0) {
@@ -438,6 +444,7 @@ void zeros(const TestResult& r) {
 }
 // Тестовый читатель поля, считающий число обращений к опорным значениям.
 struct CountingReader {
+    // Внешний счётчик обращений тестового чтения.
     unsigned* calls;
     // Считает обращения к полю и возвращает постоянное значение для проверки числа чтений.
     double operator()(ReconstructionIndex, ReconstructionIndex, ReconstructionIndex) const {
@@ -448,7 +455,9 @@ struct CountingReader {
 
 // Читает значения локальных соседей для проверки нестандартной раскладки поля.
 struct LocalNeighbours {
+    // Ожидаемые номер строки и узел-владелец.
     ReconstructionIndex expected_row, owner;
+    // Тестовые значения компонент по номерам узлов.
     std::map<ReconstructionIndex, std::vector<double>> values;
     // Проверяет локальность чтения опор и возвращает компоненту выбранного соседнего узла.
     double operator()(ReconstructionIndex row, ReconstructionIndex node,
@@ -479,6 +488,7 @@ double classical_weno5(const std::vector<double>& q, std::size_t i, double epsil
 }
 // Читает тестовые значения с привязкой к строке реконструкции.
 struct RowReader {
+    // Источник значений для чтения строки.
     const std::vector<double>* q;
     // Возвращает значение, зависящее от строки и компоненты, для проверки адресации шаблона.
     double operator()(ReconstructionIndex row, ReconstructionIndex node,

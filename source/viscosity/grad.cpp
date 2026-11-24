@@ -35,9 +35,13 @@ PairMetric make_metric(const PairProducts& products, unsigned pair_id, unsigned 
 }
 // Накапливает парные произведения и средние градиенты по симплексам элемента.
 struct Geometry {
+    // Обрабатываемый геометрический элемент.
     const Element& element;
+    // Число пространственных направлений.
     unsigned dim;
+    // Попарные интегралы градиентов базисных функций.
     PairProducts products;
+    // Приёмник средних градиентов элемента.
     MeanGradient* mean;
 
     // Инвертируем матрицу рёбер симплекса. Столбцы обратной матрицы — градиенты

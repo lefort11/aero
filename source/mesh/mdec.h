@@ -59,6 +59,7 @@ public:
     std::vector<Id> partition(int processes);
     // Накопленные размеры геометрии, узлов и halo до границы листа.
     struct Prefix {
+        // Накопленные размеры исходных данных, узлов и ореола.
         Id raw = 0, nodes = 0, halo = 0;
     };
     // Читает накопленные размеры записей до указанной границы листа.
@@ -79,19 +80,24 @@ public:
     void read_records(const Addresses& needed, Kind kind, Records& records);
     // Идентификатор исходной сетки. Пуст для старых архивов без этого поля.
     std::string mesh_sha256;
+    // Размерность сетки в архиве.
     unsigned dimension;
     // Исходные числа узлов, граней и ячеек, до разбиения.
     std::array<Id, 3> counts;
+    // Количество граничных записей и листьев разбиения.
     Id boundaries, leaves;
+    // Имена граничных патчей по номерам архива.
     std::vector<std::string> patches;
 
 private:
+    // Открытый поток для выборочного чтения разделов.
     std::ifstream file_;
     // Файловые смещения, число строк и количество ссылок дисковой CSR-таблицы.
     struct Rows {
         // Смещения таблиц начал и адресов в файле, число строк и общее число ссылок.
         Id offsets, refs, count, entries;
     };
+    // До восьми дочерних записей узла дерева.
     using Branch = std::array<Id, 8>;
     // Таблица имён занимает точный диапазон между заголовком и началом индекса листьев.
     void read_patch_names(Id names);
@@ -111,6 +117,7 @@ private:
     Rows stars_{}, halo_{}, far_{};
     // Версия и длина файла, смещения каталога, дерева и данных, затем размер дерева и индекс корня.
     Id version_, length_, index_, tree_, payload_, entries_, root_;
+    // Признак сжатого представления записей.
     bool compressed_;
 };
 }

@@ -65,6 +65,43 @@ void test_bdf1_step(int device) {
         refresh();
         return solver.advance(state.data(), nullptr, volumes.data(), active_flux, dt, controls, refresh);
     };
+    // Внешний буфер отката совпадает с U_n только до конца попытки BDF1.
+    // При переходе на BDF2 история должна пережить перезапись внешнего буфера.
+    {
+        std::vector<std::vector<double>> reference;
+        for (bool borrow : {false,true}) {
+            aero_test::TestField backup(device,initial.size());
+            Partition partition;
+            if (borrow) partition.step_start=backup.data();
+            BdfStep checked(host,active,device,partition);
+            auto settings=controls;
+            settings.second_order=false;
+            state.set(initial);
+            refresh();
+            bool rejected=false;
+            settings.max_iterations=1;
+            try {
+                checked.advance(state.data(),nullptr,volumes.data(),active_flux,dt,settings,
+                                [] { throw LinearSolveFailure("borrowed rollback"); });
+            } catch (const LinearSolveFailure&) { rejected=true; }
+            require(rejected && state.read()==initial,"borrowed start restores rejected BDF1 step");
+            settings.max_iterations=20;
+            for (unsigned step=0;step<4;++step) {
+                backup.set(std::vector<double>(initial.size(),-123.));
+                settings.second_order=step!=0;
+                refresh();
+                checked.advance(state.data(),nullptr,volumes.data(),active_flux,dt,settings,refresh);
+                if (!borrow) reference.push_back(state.read());
+                else require(state.read()==reference[step],"borrowed start preserves BDF1/BDF2 transition");
+                if (borrow && step==0)
+                    require(checked.start_field()==backup.data() && backup.read()==initial,"BDF1 reuses supplied start field");
+                if (borrow && step>0)
+                    require(checked.start_field()!=backup.data(),"BDF2 owns both history fields");
+            }
+        }
+        state.set(initial);
+        refresh();
+    }
     // Имитируем отказ линейного решателя после изменения пробного поля.
     // Повтор с половиной шага должен совпасть с отдельным расчётом того же шага.
     {

@@ -42,7 +42,9 @@ struct FieldNodeSelection {
     const std::vector<std::uint64_t>& nodes; // Исходные номера узлов строго возрастают.
     // Идентификатор исходной сетки для проверки до загрузки локальных узлов.
     const std::string& mesh_sha256;
+    // Размерность сетки для выборочного чтения.
     unsigned dimension;
+    // Число сущностей каждого типа в исходной сетке.
     std::array<std::uint64_t, 4> counts;
 };
 
@@ -52,6 +54,7 @@ struct FieldReadLimits {
     std::uint64_t max_payload_bytes;
     // Максимальный размер распакованного файла вместе с метаданными и пробелами текстового представления.
     std::uint64_t max_decoded_bytes;
+    // Ограничения размера строки и числа полей и компонент при чтении.
     std::uint64_t max_string_bytes, max_fields, max_components;
     // Устанавливает стандартные пределы размеров данных и памяти чтения.
     FieldReadLimits()
@@ -63,6 +66,7 @@ struct FieldReadLimits {
 // Описание двоичного представления AEROFIELDS v1 приведено в FIELDS.txt.
 class FieldSnapshot {
 public:
+    // Размерность сетки сохранённого снимка.
     unsigned dimension;
     // Число узлов, рёбер, граней и ячеек именно в этом порядке.
     std::array<std::uint64_t, 4> counts;

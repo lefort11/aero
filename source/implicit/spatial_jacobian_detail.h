@@ -12,15 +12,18 @@ namespace implicit {
 // Адреса ссылаются на память выбранного исполнителя. Первая запись каждой
 // строки CSR — её диагональ. Несколько рёбер между узлами делят один блок.
 struct SpatialBlocks {
+    // Связность и геометрия для вычисления производных потоков.
     residual_detail::Geometry grid;
     const MeshIndex* rows;       // Смещения строк в массиве номеров столбцов.
     IndexList columns;           // Номер узла для каждого плотного блока.
     IndexList neighbour;         // Индекс блока соседа для каждого вхождения ребра.
     const MeshIndex* computed;   // Индексы площадок, поток которых вычисляет процесс.
+    // Размеры наборов площадок и строк матрицы.
     MeshIndex face_count, row_count;
 #ifdef AERO_HAS_VISCOSITY
     bool viscous;                // Блоки AES уже заполнены перед добавлением производных конвективных потоков.
 #endif
+    // Шаги для узловой временной диагонали.
     NodeSteps local_steps;
     bool roe;                    // Выбор численного потока для матрицы поправки.
     bool simplified;             // Фиксировать диссипацию LF или Роу при дифференцировании.
@@ -32,7 +35,9 @@ struct SpatialBlocks {
     BlockLayout layout;         // Адреса коэффициентов в CSR или в порядке проходов CSGS.
     double* spatial_diagonal;    // Чистые пространственные коэффициенты A_kk для повторного использования.
     bool direct_faces; // На тесной карте одного процесса не храним по две матрицы на каждое ребро.
+    // Поле в точке линеаризации пространственного оператора.
     const double* assembly_state;
+    // Начальные данные для дифференцирования граничных условий.
     const double* assembly_initial;
     double* face_values;        // Для внутреннего ребра два блока, для границы один.
 
@@ -66,11 +71,11 @@ struct SpatialBlocks {
                                           unit,nullptr,true,flux)) return false;
             } else {
                 face.physical(unit,physical);
-                if (!face.numerical(roe,grid.options.upw_coeff,unit,zero,physical,zero,flux)) return false;
+                if (!face.numerical(roe,grid.options.upw_coeff,unit,zero,physical,zero,flux,grid.options.entropy_fix)) return false;
             }
             for (unsigned r=0; r<width; ++r) out[r*width+k] = s.measure*flux.flux[r];
             if (!boundary) {
-                if (!face.numerical(roe,grid.options.upw_coeff,zero,unit,zero,physical,flux)) return false;
+                if (!face.numerical(roe,grid.options.upw_coeff,zero,unit,zero,physical,flux,grid.options.entropy_fix)) return false;
                 for (unsigned r=0; r<width; ++r) out[stride()+r*width+k] = s.measure*flux.flux[r];
             }
         }
@@ -87,7 +92,7 @@ struct SpatialBlocks {
         EdgeFluxJacobian edge;
         const euler_detail::FaceStates states = {grid.dim, left, grid.node_row(u, s.end), s.area,
                                                  grid.options.gamma, grid.options.upw_coeff};
-        const bool valid = roe ? roe_edge_jacobian(states, s.measure, edge, simplified)
+        const bool valid = roe ? roe_edge_jacobian(states, s.measure, edge, simplified,grid.options.entropy_fix)
                                : lf_edge_jacobian(states, s.measure, edge, simplified);
         if (!valid)
             return false;

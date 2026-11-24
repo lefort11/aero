@@ -19,11 +19,13 @@ struct KrylovVectors {
 enum class KrylovStep { Begin, Restart, Direction, Advance, TrueResidual };
 // Параметры поэлементного обновления рабочих векторов BiCGSTAB.
 struct KrylovUpdate {
+    // Набор рабочих векторов итерации BiCGSTAB.
     KrylovVectors work;
     const double* rhs;      // Правая часть системы в исходных единицах.
     double* x;              // Поправка в физических единицах.
     const double* image;    // v или t для соответствующей половины итерации.
     double scale, a, omega; // Масштаб правой части и коэффициенты текущего обновления.
+    // Выбирает формулу обновления векторов.
     KrylovStep step;
 
     // Выполняет выбранную поэлементную операцию итерации BiCGSTAB.
@@ -77,6 +79,7 @@ inline double krylov_reduce(const Execution& exec, MeshIndex size, const double*
 struct KrylovProjection {
     // Одновременно накапливаемые квадрат нормы t и скалярное произведение t с r.
     struct value_type { double square, mixed; };
+    // Векторы проекции для коэффициентов стабилизации.
     const double *t, *r;
     // Обнуляет обе компоненты редукции скалярных произведений.
     AERO_HOST_DEVICE void init(value_type& v) const {v={0.,0.};}

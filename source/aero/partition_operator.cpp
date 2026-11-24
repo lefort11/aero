@@ -10,6 +10,9 @@
 #include "../implicit/spatial_jacobian.h"
 #include "../parallel/device_check.h"
 #include "../parallel/device_work.h"
+#ifdef AERO_HAS_MULTIGRID
+#include "../multigrid/coarse_step.h"
+#endif
 #include "../io/fields.h"
 #ifdef AERO_HAS_VISCOSITY
 #include "../viscosity/jacobian.h"
@@ -555,7 +558,8 @@ static MeshIndex estimated_matrix_bytes(const residual_detail::Geometry& g, cons
 // Оценивает объём памяти неявных матриц, векторов и вязких рабочих данных.
 static MeshIndex implicit_storage_bytes(const residual_detail::Geometry& g, const std::vector<MeshIndex>& owned,
                                         const implicit::NewtonSettings& settings, MeshIndex gradient_bytes,
-                                        const implicit::GpuMatrixPlan* plan=nullptr, unsigned shared_vectors=0) {
+                                        const implicit::GpuMatrixPlan* plan=nullptr, unsigned shared_vectors=0,
+                                        bool shared_start=false) {
     const MeshIndex width=g.components(), block=width*width*sizeof(double);
     // Для компактного якобиана уже известны все столбцы и выравнивание цветных проходов.
     MeshIndex bytes=plan ? implicit::gpu_matrix_bytes(*plan) : estimated_matrix_bytes(g,owned,settings);
@@ -568,7 +572,7 @@ static MeshIndex implicit_storage_bytes(const residual_detail::Geometry& g, cons
     if (!shared_vectors) bytes = partition_bytes(bytes, owned.size(), block + width * sizeof(unsigned char));
     // История BDF2 и промежуточное поле CSGS выделяются по запросу.
     const auto capacity = std::max<MeshIndex>(1,owned.size()*width);
-    if (g.options.background.active() || settings.jacobian_update_every) bytes = partition_bytes(bytes, owned.size(), width*sizeof(double));
+    if (g.options.background.active() || settings.jacobian_update_every>1) bytes = partition_bytes(bytes, owned.size(), width*sizeof(double));
     if (settings.second_order) bytes=partition_bytes(bytes,capacity,sizeof(double));
     if (settings.csgs && !plan) {
         bytes=partition_bytes(bytes,capacity,sizeof(double));
@@ -576,13 +580,14 @@ static MeshIndex implicit_storage_bytes(const residual_detail::Geometry& g, cons
         bytes=partition_bytes(bytes,g.nodes,sizeof(MeshIndex));       // Полный узел -> собственная строка.
     }
     if (owned.empty()) return partition_bytes(bytes, 2, sizeof(double)); // Рабочие адреса двух пустых буферов.
-    return partition_bytes(bytes, owned.size(), (implicit::NewtonFieldCount + implicit::KrylovFieldCount-shared_vectors) *
+    return partition_bytes(bytes, owned.size(), (implicit::NewtonFieldCount-unsigned(shared_start) + implicit::KrylovFieldCount-shared_vectors) *
                                                 width * sizeof(double));
 }
 
 // Оценивает объём по той же раскладке и резервирует память карты.
 void PartitionOperator::reserve_gpu(bool compact_buffer, GpuMemoryFit& fit, const implicit::NewtonSettings* settings) {
     shared_csgs_ = settings && settings->csgs;
+    shared_step_start_=settings && !settings->second_order && world_.size==1 && grid_.options.retry_nonphysical;
     MeshIndex extra = 0, gradient_bytes = 0;
 #ifdef AERO_HAS_VISCOSITY
     if (settings && aes_) {
@@ -598,12 +603,28 @@ void PartitionOperator::reserve_gpu(bool compact_buffer, GpuMemoryFit& fit, cons
         if (settings->csgs) extra = partition_bytes(extra,state_nodes()-grid_.nodes,sizeof(Id));
     }
 #endif
-    if (settings) extra = partition_bytes(extra, 1, implicit_storage_bytes(grid_, owned, *settings, gradient_bytes));
+    if (settings) extra = partition_bytes(extra, 1, implicit_storage_bytes(grid_, owned, *settings, gradient_bytes,
+                                                                         nullptr,0,shared_step_start_));
+#ifdef AERO_HAS_MULTIGRID
+    if (settings && settings->steady_multigrid)
+        coarse_graph_=std::make_shared<multigrid::Aggregates>(grid_,owned.size(),world_.size==1 ? nullptr : owned.data());
+#endif
     // Пробует разместить рабочие данные в доступной памяти GPU.
     const auto try_layout = [&] {
         gpu_.reset(new PartitionGpu);
         layout_gpu(compact_buffer);
-        fit.failed = !gpu_->reserve(fit, extra);
+        MeshIndex coarse_bytes=0;
+#ifdef AERO_HAS_MULTIGRID
+        if (coarse_graph_) {
+            implicit::KrylovScratch scratch;
+#ifdef AERO_HAS_VISCOSITY
+            if (world_.size==1 && aes_ && aes_->uses_compact_geometry() && settings && settings->compact_jacobian)
+                scratch=krylov_workspace(grid_,aes_->uses_implicit_coordinates());
+#endif
+            coarse_bytes=multigrid::CoarseStep::storage_bytes(*coarse_graph_,owned.size(),width_,scratch,true);
+        }
+#endif
+        fit.failed = !gpu_->reserve(fit, extra,coarse_bytes);
     };
     try_layout();
     // На тесной карте расчёт может поместиться с исходными разреженными строками, без дополнительных буферов.
@@ -628,7 +649,8 @@ void PartitionOperator::reserve_gpu(bool compact_buffer, GpuMemoryFit& fit, cons
                 matrix_plan_=implicit::gpu_matrix_plan(grid_,owned.size(),topology);
             }
             extra=implicit_storage_bytes(grid_,owned,*settings,aes_->has_gradient_tiles() ? 0 : gradient_bytes,
-                                         matrix_plan_.get(),krylov_workspace(grid_,aes_->uses_implicit_coordinates()).count);
+                                         matrix_plan_.get(),krylov_workspace(grid_,aes_->uses_implicit_coordinates()).count,
+                                         shared_step_start_);
         }
         try_layout();
     };
@@ -1353,6 +1375,11 @@ implicit::Partition PartitionOperator::linear_partition() {
 #ifdef AERO_WITH_KOKKOS_GPU
     part.shared_csgs = shared_csgs_;
     part.gpu_matrix_plan = matrix_plan_;
+    part.coarse_graph = coarse_graph_;
+    if (gpu_ && shared_step_start_) part.step_start=gpu_->step_start_buffer();
+    // Пробная steady_residual(false) не сохраняет строки в correction.
+    // Поэтому multigrid может удерживать там сглаживатель до конца поиска.
+    if (gpu_) part.coarse_product_persistent=true;
 #endif
     part.steady_steps = steady_steps_.get();
 #ifdef AERO_HAS_VISCOSITY
@@ -1483,10 +1510,12 @@ double PartitionOperator::steady_sa_rate() {
 }
 
 // Вычисляет стационарную невязку и обновляет диагностику принятого поля.
-double PartitionOperator::steady_residual(std::vector<double>& state, const std::vector<double>& initial, bool accepted) {
+double PartitionOperator::steady_residual(std::vector<double>& state, const std::vector<double>& initial, bool accepted,
+                                          bool observe) {
     const auto fields = implicit_fields(state, initial);
     const bool sample = accepted && step_mode_ == LocalStepMode::Auto;
-    const bool keep_rows = sample && (rate_control_ || probe_row_ != ~MeshIndex(0));
+    // Диагностике нужны свежие нормы и на переходе порядка, когда историю не пополняем.
+    const bool keep_rows = (sample && rate_control_) || ((sample || observe) && probe_row_ != ~MeshIndex(0));
     const double gas = bdf_->spatial_rate_norm(fields.volumes, fields.flux, keep_rows);
     const double sa = steady_sa_rate();
     if (sample && rate_control_) {

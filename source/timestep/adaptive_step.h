@@ -15,11 +15,14 @@ struct AdaptiveStepChange {
         return ::fmin(ceiling, ::fmax(.5, 1. / ::sqrt(::fmax(error, 1.e-30))));
     }
     const double *old_field, *field; // Начало и конец последнего принятого шага.
+    // Фон для измерения изменения линеаризованного решения.
     LinearBackground background;
+    // Размерность сравниваемых полей.
     unsigned dim;
     double gamma, fraction, ceiling; // Доля фактического шага и разрешённый множитель роста.
 #ifdef AERO_HAS_TURBULENCE
     const double *old_sa, *sa; // Рабочая вязкость до и после того же шага.
+    // Узловые коэффициенты турбулентной вязкости для оценки изменения.
     const turbulence::View::Material* material;
 #endif
     // Возвращает предложение для следующей попытки. Старый dt мог быть ограничен сроком вывода.

@@ -8,6 +8,7 @@ namespace implicit {
 namespace boundary_detail {
 // Один столбец производных примитивных переменных по состоянию узла.
 struct Variation {
+    // Вариации плотности, давления и скорости при изменении одной компоненты.
     double rho, p, velocity[3];
 };
 

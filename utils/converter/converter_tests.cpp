@@ -213,6 +213,7 @@ std::string replace(std::string s, const std::string& before, const std::string&
 }
 // Владеет временным файлом проверки и удаляет его при выходе из области видимости.
 struct Temp {
+    // Путь к временному файлу.
     std::string path;
     // Создаёт уникальное имя временного файла теста.
     Temp() {
@@ -226,7 +227,9 @@ struct Temp {
 };
 // Временный набор файлов формата NTTE для проверок конвертера.
 struct AnotherFixture {
+    // Каталог набора файлов тестового формата.
     std::string path;
+    // Список файлов тестового набора.
     std::vector<std::string> files;
     // Создаёт временный набор файлов для проверки формата NTTE.
     AnotherFixture() {
@@ -299,6 +302,7 @@ void cgcheck(int code) {
 }
 // Владеет дескриптором тестового файла CGNS и закрывает его после проверки.
 struct CgFile {
+    // Дескриптор тестового файла CGNS.
     int fn;
     // Создаёт тестовый файл CGNS с выбранным форматом хранения.
     CgFile(const std::string& path, int backend) {

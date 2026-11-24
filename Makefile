@@ -158,7 +158,7 @@ $(error BUILD_TYPE must be Default, Debug or Release)
 endif
 include source/parallel/kokkos.mk
 MESH_SOURCE := source/mesh
-MESH_HEADERS := source/parallel/modules.h $(wildcard source/viscosity/*.h source/turbulence/*.h) $(MESH_SOURCE)/coordinate.h $(MESH_SOURCE)/mesh.h $(MESH_SOURCE)/mesh_index.h $(MESH_SOURCE)/node_incidence.h source/parallel/small_weight_row.h source/parallel/kernel_math.h
+MESH_HEADERS := source/parallel/modules.h $(wildcard source/viscosity/*.h source/turbulence/*.h) $(MESH_SOURCE)/coordinate.h $(MESH_SOURCE)/mesh.h $(MESH_SOURCE)/mesh_index.h $(MESH_SOURCE)/compact_table.h $(MESH_SOURCE)/node_incidence.h source/parallel/small_weight_row.h source/parallel/kernel_math.h source/parallel/upload_compact.h
 ifeq ($(kokkos_gpu),1)
 # Обычный C++ компилирует вызывающую сторону. Только модуль Kokkos
 # собирается компилятором устройства; статическая сборка включает его в EXE.

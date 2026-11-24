@@ -8,17 +8,22 @@ namespace viscosity {
 // треугольников. Для каждой вершины сохраняем только ненулевые слагаемые.
 // Номера и целые множители общие у ячеек с тем же разбиением и ориентациями.
 struct MeanAreaTerm {
+    // Локальные номера пары вершин.
     unsigned char a,b;
+    // Знаковый множитель вклада пары.
     signed char multiplier;
 };
 // Диапазоны слагаемых средней площадки для вершин одной формы элемента.
 struct MeanAreaForm {
+    // Начальная позиция членов формулы.
     MeshIndex first;
     unsigned char offset[9]; // Диапазон слагаемых каждой из восьми вершин.
 };
 // Общие формы средних площадок и их привязка к элементам.
 struct MeanAreaTable {
+    // Формулы площадей для разных топологий.
     const MeanAreaForm* forms;
+    // Последовательность членов формул.
     const MeanAreaTerm* terms;
     const std::uint32_t* cell_ids; // При единственной форме индекс у всех ячеек равен нулю.
 };
@@ -61,9 +66,13 @@ inline MeanAreaForm append_mean_area_form(const VolumePattern& pattern,std::uint
 
 // Вычисляет средние градиенты базиса по площадкам и объёму элемента.
 struct MeanAreaBasis {
+    // Формула для текущей геометрии.
     const MeanAreaForm& form;
+    // Члены формулы для базисных коэффициентов.
     const MeanAreaTerm* terms;
+    // Вершины относительно выбранного начала координат.
     Coordinate relative[8];
+    // Обратный объём для нормировки.
     double inverse_volume;
     // Подключает форму элемента и нормирует средние площадки его объёмом.
     AERO_HOST_DEVICE MeanAreaBasis(const MeanAreaTable& table,const VolumeCoordinates& geo,

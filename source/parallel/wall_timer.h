@@ -6,6 +6,7 @@ namespace aero {
 // Добавляет в счётчик время жизни объекта. При отключённом счётчике часы не опрашиваются.
 class WallTimer {
 public:
+    // Монотонные часы для измерения длительности.
     using Clock = std::chrono::steady_clock;
     // Начинает измерение интервала для добавления к указанному счётчику времени.
     explicit WallTimer(double* seconds) : seconds_(seconds) {
@@ -23,7 +24,9 @@ public:
     WallTimer& operator=(const WallTimer&) = delete;
 
 private:
+    // Приёмник накопленного времени в секундах.
     double* seconds_;
+    // Момент начала измеряемого интервала.
     Clock::time_point start_;
 };
 }

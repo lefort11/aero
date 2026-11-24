@@ -40,7 +40,9 @@ private:
     void flush_block();
     // Поток назначения должен существовать до завершения записи последнего блока.
     std::ostream& output_;
+    // Несжатые байты, ожидающие кодирования.
     std::vector<char> raw_;
+    // Признак завершённой записи потока.
     bool finished_;
     // Запрещает копирование, чтобы ресурсы объекта сохраняли единственного владельца.
     LzmaOutputBuffer(const LzmaOutputBuffer&) = delete;
@@ -59,10 +61,13 @@ protected:
     int_type underflow() override;
 
 private:
+    // Поток, содержащий сжатые данные.
     std::istream& input_;
+    // Буфер декодированных байтов для чтения.
     std::vector<char> raw_;
     // Сколько байтов ещё можно распаковать в пределах лимита вызывающего кода.
     std::uint64_t remaining_;
+    // Достигнут конец закодированного потока.
     bool finished_;
     // Запрещает копирование, чтобы ресурсы объекта сохраняли единственного владельца.
     LzmaInputBuffer(const LzmaInputBuffer&) = delete;

@@ -12,6 +12,7 @@ template<class T, std::size_t Columns>
 // Плотная таблица строк с выровненным доступом к однотипным компонентам.
 class RowTable {
     static_assert(Columns>0,"A row must contain at least one column");
+    // Владеет последовательностью элементов строк.
     std::vector<T> values_;
 public:
     // Создаёт таблицу с указанным числом строк.

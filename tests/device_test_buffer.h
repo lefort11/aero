@@ -8,6 +8,7 @@ namespace aero_test {
 // Владеет массивом на текущем GPU. Длина всех операций задаётся в элементах T.
 template <class T> class DeviceBuffer {
 public:
+    // Массив устройства, которым владеет тестовый объект.
     T* data = nullptr;
     // Выделяет временный массив заданного размера в памяти GPU.
     explicit DeviceBuffer(std::size_t size) {

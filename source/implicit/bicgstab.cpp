@@ -22,6 +22,7 @@ struct BdfLinearSystem::Storage {
     bool ready = false;         // Система готова после успешной сборки и разложения.
     KrylovVectors work{};       // Шесть непересекающихся участков рабочего буфера.
     std::vector<double> host;   // Рабочая память CPU.
+    // Распределяет рабочие векторы между CPU и GPU.
     Workspace workspace;
     // Создаёт матрицу и диагональный предобусловливатель и размечает шесть рабочих векторов BiCGSTAB.
     template<class... GeometryArgs>

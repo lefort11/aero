@@ -11,8 +11,11 @@ using Team=Kokkos::TeamPolicy<Execution>;
 // вершин читаем один раз. До 24 потоков считают напряжения в тетраэдрах, до восьми
 // остальных используют исходные коэффициенты теплопроводности AES.
 struct Work {
+    // Координаты восьми вершин гексаэдра.
     Coordinate point[8];
+    // Компоненты скорости по вершинам.
     FixedMatrix<double,8,3> u;
+    // Узловые температуры рабочего элемента.
     double temperature[8];
     // Соседние потоки одновременно записывают одну и ту же компоненту
     // в разных тетраэдрах. Их адреса в быстрой памяти группы идут подряд.
@@ -22,7 +25,9 @@ struct Work {
 // из тех же нормалей и объёмов дополнительно интегрируем производные по парам.
 // Обе операции пользуются временной памятью одной группы потоков.
 struct GradientsOnly {
+    // Рабочие поля группы для вычисления градиентов.
     using Scratch=Work;
+    // Число одновременно обрабатываемых ячеек группы.
     enum : unsigned { cells_per_team=4 };
     // Возвращает имя запуска Kokkos для профилирования выбранного типа элементов.
     static const char* label(bool all_hex) {
@@ -32,11 +37,13 @@ struct GradientsOnly {
     KOKKOS_INLINE_FUNCTION void remember(Work&,unsigned,const viscosity::TetrahedronGeometry&,double) const {}
     // Записывает парные коэффициенты при включённом расчёте якобиана; в режиме градиентов ничего не делает.
     KOKKOS_INLINE_FUNCTION void write_pair(const Work&,MeshIndex,unsigned,
-                                           const viscosity::VolumePattern&,const viscosity::Cell&) const {}
+                                           const viscosity::VolumePattern&,const viscosity::CellView&) const {}
 };
 // Нормали и объёмные множители симплексов в общей памяти команды GPU.
 struct PairBasis : Work {
+    // Компоненты геометрических нормалей базиса.
     FixedTensor<double,4,3,24> normal;
+    // Масштабные коэффициенты по локальным парам.
     double factor[24];
     // Возвращает сохранённые нормали пары вершин и объёмный множитель симплекса.
     KOKKOS_INLINE_FUNCTION double operator()(unsigned t,unsigned i,unsigned j,Coordinate& left,Coordinate& right) const {
@@ -46,11 +53,14 @@ struct PairBasis : Work {
 };
 // Политика сохранения парных коэффициентов для вязкого якобиана.
 struct JacobianPairs {
+    // Общая память группы для построения пар якобиана.
     using Scratch=PairBasis;
     // Нормали занимают ещё 2496 байт на элемент. Два элемента на группу
     // укладываются примерно в столько же памяти, сколько четыре обычных.
     enum : unsigned { cells_per_team=2 };
+    // Диапазон пар координатной плитки.
     viscosity::CoordinatePairTile tile;
+    // Соответствие пар столбцам матрицы.
     viscosity::ColumnGraph graph;
     // Возвращает имя запуска Kokkos для профилирования выбранного типа элементов.
     static const char* label(bool all_hex) {
@@ -67,7 +77,7 @@ struct JacobianPairs {
 
     // Записывает парные коэффициенты при включённом расчёте якобиана; в режиме градиентов ничего не делает.
     KOKKOS_INLINE_FUNCTION void write_pair(const PairBasis& w,MeshIndex index,unsigned tid,
-                                           const viscosity::VolumePattern& pattern,const viscosity::Cell& cell) const {
+                                           const viscosity::VolumePattern& pattern,const viscosity::CellView& cell) const {
         if (tid>=28) return;
         const unsigned first=pattern.pair_offsets[tid];
         if (first!=pattern.pair_offsets[tid+1]) {
@@ -76,7 +86,7 @@ struct JacobianPairs {
             // может оказаться ребром соседнего элемента и попасть в матрицу.
             const unsigned code=pattern.pair_terms[first];
             const auto* vertices=pattern.nodes.row(code/16);
-            const auto* nodes=cell.node;
+            const auto nodes=cell.node;
             if (!graph.contains_pair(nodes[vertices[(code/4)%4]],nodes[vertices[code%4]])) return;
         }
         // У пары без общего тетраэдра интеграл равен нулю и перезаписывает
@@ -87,10 +97,15 @@ struct JacobianPairs {
 template<bool all_hex,class PairOutput>
 // Командное ядро градиентов AES и необязательных парных производных по координатной геометрии.
 struct Apply {
+    // Число потоков на ячейку и ячеек на группу.
     enum : unsigned { threads_per_cell=32, cells_per_team=PairOutput::cells_per_team };
+    // Представление пространственного вязкого оператора.
     viscosity::Operator grid;
+    // Место записи вычисленных градиентов.
     viscosity::Gradient* output;
+    // Начальные ячейка и вершина плитки, число её ячеек.
     MeshIndex first_cell, first_vertex, cell_count;
+    // Обработчик вклада пар при обходе геометрии.
     PairOutput pair_output;
 
     // Вычисляем площадь противоположной грани для каждой вершины. Один
@@ -140,7 +155,8 @@ struct Apply {
         const bool active=index<cell_count;
         const auto geo=active ? grid.tetra.cells[e] : viscosity::VolumeCellView{};
         const auto* pattern=active ? grid.tetra.patterns+geo.pattern : nullptr;
-        const auto* cell=active ? grid.cells+e : nullptr;
+        const auto selected_cell=active ? grid.cells[e] : viscosity::CellView{};
+        const auto* cell=&selected_cell;
         const unsigned vertices=active ? (all_hex ? 8u : cell->count) : 0u;
         if (tid<vertices) {
             w.point[i]=grid.tetra.position[geo.vertex[i]];

@@ -12,52 +12,113 @@ typedef unsigned long long ReconstructionIndex;
 // Для наклона по двум узлам сумма уже записана через разность поля.
 // Первый коэффициент при этом не читается, а второй сохраняется в double.
 struct TwoNodeSlope {
+    // Номера двух узлов, задающих разность.
     unsigned first, second;
+    // Масштаб двухточечной разности.
     double weight;
+    // Зарезервированный код для специального представления строки.
     static constexpr unsigned marker = ~0u;
 };
+// Один узел объединённого шаблона EBR5 и номера двух точных весов в словаре плитки.
+struct EbrTerm {
+    unsigned node;
+    unsigned short left,right;
+};
+
 // Разреженная строка весов и её привязка к узловому полю.
 struct StencilRow {
+    // Число доступных опорных узлов, включая два конца центральной разности.
     ReconstructionIndex count;
-    const ReconstructionIndex* nodes;
-    const double* weights;
+    // Список узлов общей строки либо первый конец центральной разности.
+    union { const ReconstructionIndex* nodes; ReconstructionIndex central_first; };
+    // Веса общей строки либо второй конец центральной разности.
+    union { const double* weights; ReconstructionIndex central_second; };
+    // Короткая запись для взвешенной разности двух узлов.
     const TwoNodeSlope* pair;
-    // Возвращает номер опорного узла строки реконструкции.
-    AERO_HOST_DEVICE ReconstructionIndex node(ReconstructionIndex i) const {
-        return pair ? (i ? pair->second : pair->first) : nodes[i];
+    unsigned char central; // В центральной строке два указателя заменены номерами концов ребра.
+    unsigned term_mask; // Опоры стороны в объединённой строке плитки.
+    const unsigned* nodes32; // На GPU небольшая сетка хранит номера опор без старших нулевых битов.
+    // Пустая либо обычная строка не обращается к альтернативным полям объединений.
+    AERO_HOST_DEVICE StencilRow(ReconstructionIndex n=0,const ReconstructionIndex* ids=nullptr,
+            const double* factors=nullptr,const TwoNodeSlope* p=nullptr,bool center=false,const unsigned* ids32=nullptr)
+        : count(n),nodes(ids),weights(factors),pair(p),central(center),term_mask(0),nodes32(ids32) {}
+    // Концы уже прочитаны из широкой или короткой геометрии. Копия двух номеров
+    // не требует указателя на временно распакованную площадку и дополнительного массива.
+    AERO_HOST_DEVICE static StencilRow central_row(const residual_detail::Surface& edge) {
+        StencilRow result;
+        result.count=2; result.central=true;
+        result.central_first=edge.begin; result.central_second=edge.end;
+        return result;
     }
-    // Возвращает коэффициент выбранной опоры строки реконструкции.
-    AERO_HOST_DEVICE double weight(ReconstructionIndex i) const { return pair ? pair->weight : weights[i]; }
+    // Позиция i-й опоры данной стороны в объединённом шаблоне на 32 ребра.
+    AERO_HOST_DEVICE unsigned term_offset(unsigned i) const {
+        unsigned mask=term_mask;
+        for (unsigned j=0;j<i;++j) mask &= mask-1;
+        unsigned bit=0;
+        while (!(mask&1u)) { ++bit; mask>>=1; }
+        return 32*bit;
+    }
+    // Номер опоры и её вес во всех поддерживаемых форматах геометрии.
+    AERO_HOST_DEVICE ReconstructionIndex node(ReconstructionIndex i) const {
+        if (central>=2) return reinterpret_cast<const EbrTerm*>(nodes)[term_offset(static_cast<unsigned>(i))].node;
+        return central ? (i ? central_second : central_first) :
+               (pair ? (i ? pair->second : pair->first) : (nodes32 ? nodes32[i] : nodes[i]));
+    }
+    AERO_HOST_DEVICE double weight(ReconstructionIndex i) const {
+        if (central>=2) {
+            const auto term=reinterpret_cast<const EbrTerm*>(nodes)[term_offset(static_cast<unsigned>(i))];
+            return weights[central==2 ? term.left : term.right];
+        }
+        return central ? 1. : (pair ? pair->weight : weights[i]);
+    }
     // Возвращает разреженное представление строки шаблона.
     AERO_HOST_DEVICE static StencilRow sparse(const ReconstructionIndex* starts, const ReconstructionIndex* ids,
                                               const double* factors, ReconstructionIndex row) {
-        if (!starts) return {0,nullptr,nullptr,nullptr}; // Все строки таблицы пусты.
+        if (!starts) return {}; // Все строки таблицы пусты.
         const auto first = starts[row], count = starts[row+1]-first;
-        return {count, count ? ids+first : nullptr, count ? factors+first : nullptr, nullptr};
+        return {count, count ? ids+first : nullptr, count ? factors+first : nullptr};
+    }
+    // В одной компактной таблице сначала смещения строк, затем номера опор.
+    AERO_HOST_DEVICE static StencilRow packed(const unsigned* table, ReconstructionIndex rows,
+                                               const double* factors, ReconstructionIndex row) {
+        const ReconstructionIndex first=table[row], count=table[row+1]-first;
+        return {count,nullptr,count ? factors+first : nullptr,nullptr,false,
+                count ? table+rows+1+first : nullptr};
     }
 };
 
 // Компактная геометрия всех сторон рёбер. Значения поля подставляются при каждом вызове реконструкции.
 struct ReconstructionStencilView {
+    // Габариты узловой и рёберной нумерации.
     ReconstructionIndex node_count, edge_count;
     const ReconstructionIndex*
         offsets; // Всего 2 * edge_count + 1 смещений. Строка 2*edge относится к левой стороне, следующая — к правой.
+    // Номера узлов геометрического шаблона.
     const ReconstructionIndex* nodes;
     const ReconstructionIndex* row_owner; // Узел-владелец каждой строки стороны ребра.
     const double* weights; // Строки с нулевой суммой для удвоенных приращений. Пустая строка даёт ноль.
     // Для нелинейной реконструкции на сторону ребра приходятся четыре строки производных:
     // центральная, ближняя с этой стороны, ближняя с противоположной и дальняя с этой стороны.
     const ReconstructionIndex* slope_offsets;
+    // Узлы строк вычисления наклонов.
     const ReconstructionIndex* slope_nodes;
+    // Веса узлов соответствующих строк.
     const double* slope_weights;
     const unsigned char*
         weno_order; // Ноль задаёт линейную формулу, 3 или 5 — соответствующий порядок WENO-JS.
     const double* weno_epsilon_scale; // h·√ε в единицах поля.
     Mp5Settings mp5; // Для полной строки MP5 подставляем ограничитель вместо весов WENO.
+    // Таблица двухточечных разностей.
     const TwoNodeSlope* pairs;
     bool shared_edge_slopes; // Общие центральный и два ближних наклона хранятся один раз на ребро.
-    const residual_detail::Surface* owner_edges; // Номера узлов уже хранятся в геометрии потоков.
+    residual_detail::SurfaceTable owner_edges; // Номера узлов уже хранятся в геометрии потоков.
     bool epsilon_per_edge; // Обе стороны используют один вес, если значения совпали точно.
+    bool short_slope_rows; // WENO3 хранит только два наклона стороны: 3 общих либо 4 отдельных на ребро.
+    bool central_from_edges; // Точная разность Q_end-Q_begin не требует отдельной строки коэффициентов.
+    const unsigned* linear_edge_mask; // Один бит на сторону для линейных строк, равных центральной разности.
+    const unsigned* linear_indices32; // Смещения и номера линейного CSR, если все значения помещаются в 32 бита.
+    const unsigned* slope_indices32; // Та же упаковка для редких длинных наклонов либо исходного CSR.
+    ReconstructionIndex slope_rows; // Размер таблицы исключений нужен для начала компактных номеров.
     // Проверяет наличие отдельной таблицы владельцев сторон шаблона.
     AERO_HOST_DEVICE bool has_owners() const { return row_owner || owner_edges; }
     // Возвращает узел, от которого отсчитывается приращение реконструкции.
@@ -72,38 +133,69 @@ struct ReconstructionStencilView {
     }
     // Возвращает число пар опорных наклонов текущей схемы.
     AERO_HOST_DEVICE ReconstructionIndex pair_count() const {
-        return pairs ? edge_count * (shared_edge_slopes ? 5 : 8) : 0;
+        return pairs ? edge_count * (shared_edge_slopes ? (short_slope_rows ? 3 : 5)-unsigned(central_from_edges)
+                                                        : (short_slope_rows ? 4 : 8)-2*unsigned(central_from_edges)) : 0;
     }
+    // При наличии плиток nodes хранит EbrTerm, weights — словари double, а
+    // linear_indices32 содержит смещения плиток и маски обеих сторон каждого ребра.
+    AERO_HOST_DEVICE bool tiled_linear() const { return linear_indices32 && nodes; }
     // Возвращает линейную строку реконструкции для выбранной стороны.
     AERO_HOST_DEVICE StencilRow linear_row(ReconstructionIndex row) const {
+        if (tiled_linear()) {
+            const auto edge=row/2,tile=edge/32;
+            const auto* header=linear_indices32+3*tile;
+            const unsigned mask=linear_indices32[3*((edge_count+31)/32)+row];
+            unsigned count=0;
+            for (unsigned bits=mask;bits;bits&=bits-1) ++count;
+            StencilRow result;
+            result.count=count;
+            result.nodes=reinterpret_cast<const ReconstructionIndex*>(reinterpret_cast<const EbrTerm*>(nodes)+header[0]+edge%32);
+            result.weights=weights+header[1];
+            result.term_mask=mask;
+            result.central=static_cast<unsigned char>(2+row%2);
+            return result;
+        }
+        if (linear_edge_mask) {
+            const bool active=(linear_edge_mask[row/32]>>(row%32))&1u;
+            return active ? StencilRow::central_row(owner_edges[row/2]) : StencilRow{};
+        }
+        if (linear_indices32) return StencilRow::packed(linear_indices32,2*edge_count,weights,row);
         return StencilRow::sparse(offsets,nodes,weights,row);
     }
     // Возвращает строку одного опорного наклона WENO.
     AERO_HOST_DEVICE StencilRow slope_row(ReconstructionIndex row) const {
+        if (central_from_edges && row%4==0) {
+            const bool active=weno_order[row/4]!=0;
+            return active ? StencilRow::central_row(owner_edges[row/8]) : StencilRow{};
+        }
         if (pairs) {
             auto slot=row;
+            if (short_slope_rows && row%4>=2) return {};
             if (shared_edge_slopes) {
                 const auto side_row=row/4;
                 const unsigned order=weno_order[side_row];
-                if (!order || row%4>=weno_slope_count(order)) return {0,nullptr,nullptr,nullptr};
+                if (!order || row%4>=weno_slope_count(order)) return {};
                 // Слева: центральный, ближний левый, ближний правый, дальний левый.
                 // Справа меняются местами ближние наклоны и выбирается дальний правый.
                 const unsigned k=static_cast<unsigned>(row%8);
                 const unsigned shared=k<4 ? k : (k==4 ? 0u : (k==5 ? 2u : (k==6 ? 1u : 4u)));
-                slot=(row/8)*5+shared;
-            }
+                slot=(row/8)*((short_slope_rows ? 3 : 5)-unsigned(central_from_edges))+shared-unsigned(central_from_edges);
+            } else slot=(row/4)*((short_slope_rows ? 2 : 4)-unsigned(central_from_edges))+row%4-unsigned(central_from_edges);
             const auto& p = pairs[slot];
             if (p.first != TwoNodeSlope::marker) return {2,nullptr,nullptr,&p};
-            if (!p.second) return {0,nullptr,nullptr,nullptr};
+            if (!p.second) return {};
             row = p.second-1; // Нестандартная строка хранится целиком, в исходном порядке.
         }
+        if (slope_indices32) return StencilRow::packed(slope_indices32,slope_rows,slope_weights,row);
         return StencilRow::sparse(slope_offsets,slope_nodes,slope_weights,row);
     }
 };
 
 // Читает скалярные значения поля через нумерацию узлов и шаг компонент.
 struct ReconstructionFieldView {
+    // Начало массива реконструируемых компонент.
     const double* values;
+    // Смещения при переходе к следующему узлу и следующей компоненте.
     ReconstructionIndex node_stride, component_stride;
     // Читает компоненту узла с учётом шагов размещения поля.
     AERO_HOST_DEVICE double operator()(ReconstructionIndex /*row*/, ReconstructionIndex node,
@@ -181,6 +273,7 @@ AERO_HOST_DEVICE inline double nonlinear_increment(unsigned order, const double*
 
 // Выбирает формулу по запрошенной схеме и числу доступных слоёв на этой стороне.
 struct NonlinearFormula {
+    // Настройки монотонного ограничения.
     Mp5Settings mp5;
     // Вычисляет нелинейное приращение выбранной схемы реконструкции.
     AERO_HOST_DEVICE double operator()(unsigned order, const double* slopes, double epsilon) const {
@@ -194,8 +287,11 @@ enum class ReconstructionStatus { Success, InvalidEdge, InvalidSide, InvalidLayo
 // Состояние на конце ребра передаётся отдельно. Остальные узлы читает read(row,node,component),
 // где row = 2·edge + side. Можно читать компактный локальный шаблон или внешние данные.
 template <class Reader> struct ReconstructionSideInput {
+    // Геометрические строки, доступные при реконструкции этой стороны.
     ReconstructionStencilView stencil;
+    // Номер строки шаблона для данной стороны.
     ReconstructionIndex row;
+    // Значения со стороны узла-владельца.
     const double* own;
     ReconstructionIndex own_stride; // Расстояние в элементах между компонентами состояния владельца.
     const Reader& neighbours; // Чтение остальных узлов, в том числе импортированных для MPI.
@@ -206,8 +302,7 @@ template <class Reader> struct ReconstructionSideInput {
     }
     // Вычисляет линейную часть приращения на стороне ребра.
     AERO_HOST_DEVICE double linear(ReconstructionIndex component) const {
-        return evaluate_reconstruction_sparse(stencil.offsets, stencil.nodes, stencil.weights, row, row,
-                                              component, *this);
+        return evaluate_reconstruction_row(stencil.linear_row(row),row,component,*this);
     }
     // Возвращает доступный порядок реконструкции выбранной стороны.
     AERO_HOST_DEVICE unsigned order() const { return stencil.weno_order ? stencil.weno_order[row] : 0; }
@@ -276,6 +371,7 @@ enum class ReconstructionSideScheme { FirstOrder, EdgeAverage, Ebr3, Ebr5, Weno3
 enum class StencilGeometry { Straight, Ijk, Pl, Auto };
 // Выбранная схема, допуски и параметры построения опор реконструкции.
 struct ReconstructionOptions {
+    // Способ геометрического продолжения шаблона.
     StencilGeometry geometry = StencilGeometry::Straight;
     double max_turn_degrees = 36.; // Максимальное отклонение опоры от продолжения ребра.
     std::vector<std::string> wall_labels; // Физические метки, от которых растут слои PL.
@@ -342,7 +438,9 @@ public:
     ReconstructionIndex incomplete_sides() const;
 
 private:
+    // Владеет построенными таблицами шаблонов.
     ReconstructionStencilData data_;
+    // Периодическая склейка перенумеровывает узлы шаблона.
     friend class PeriodicDomain;
     // Одна точка входа для обычной сетки, периодического покрытия и локальной сетки MPI.
     friend ReconstructionStencil prepare_reconstruction(const Mesh&, const ReconstructionOptions&);
@@ -384,6 +482,7 @@ public:
 
 private:
     struct Impl;
+    // Внутренние данные поиска геометрического шаблона.
     std::unique_ptr<Impl> impl_;
 };
 } // namespace detail
@@ -437,6 +536,7 @@ public:
 
 private:
     struct Impl;
+    // Рабочее состояние выбранного исполнителя реконструкции.
     std::unique_ptr<Impl> impl_;
 };
 } // namespace aero

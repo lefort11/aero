@@ -24,12 +24,15 @@ namespace aero {
 struct RunSettings;
 // Все ранги откатывают одну попытку. Каждый помечает только свои отказавшие узлы.
 struct RejectedGasState {
+    // Номера недопустимых узлов на текущем ранге.
     std::vector<MeshIndex> local_nodes;
+    // Полное число зарегистрированных недопустимых состояний.
     std::size_t total;
 };
 namespace residual_detail { struct FluxCfl; }
 // Пространственный оператор одной подобласти. Сетка и её владельцы живут дольше оператора.
 class PartitionOperator {
+    // Тип номера узла, ребра или строки подобласти.
     using Id = MeshIndex;
 
 public:
@@ -173,7 +176,8 @@ public:
     implicit::BdfStep& implicit_step(); // Один решатель для интегрирования и контрольных точек.
     // Решает уравнение BDF, используя потоки, подготовленные для CFL.
     // Норма пространственной невязки по текущим потокам всех процессов.
-    double steady_residual(std::vector<double>& state, const std::vector<double>& initial, bool accepted = false);
+    double steady_residual(std::vector<double>& state, const std::vector<double>& initial, bool accepted = false,
+                           bool observe = false);
     // Выполняет неявный шаг газа с согласованным обновлением турбулентности.
     implicit::NewtonResult advance_bdf(std::vector<double>& state, const std::vector<double>& initial,
                                         double dt, const implicit::NewtonSettings& settings,
@@ -196,13 +200,19 @@ private:
 #ifdef AERO_WITH_KOKKOS_GPU
     std::unique_ptr<PartitionGpu> gpu_; // Раскладка, рабочая память и ядра текущей карты.
     std::shared_ptr<implicit::GpuMatrixPlan> matrix_plan_; // Фактический граф расчёта памяти переходит в решатель.
+    std::shared_ptr<const multigrid::Aggregates> coarse_graph_; // Граф агрегатов из оценки памяти GPU.
     bool shared_csgs_ = false; // Способ хранения определяем до создания системы Ньютона.
+    bool shared_step_start_ = false; // BDF1 и откат используют одно неизменное начальное поле.
 #endif
     // Подготавливает представление распределённой системы. Формулы и итерации общие для всех режимов.
     struct ImplicitFields {
+        // Изменяемое поле консервативных переменных.
         double* state;
+        // Начальное поле для задания граничных условий.
         const double* initial;
+        // Объёмы, входящие во временную диагональ.
         const double* volumes;
+        // Потоки текущего приближения на гранях.
         const EulerFluxResult* flux;
     };
     // Подключает актуальные CPU- или GPU-поля к неявному интегратору.
@@ -225,6 +235,7 @@ private:
     PartitionTransfers nodes_; // Значения узлов, общие для соседних подобластей.
     PartitionTransfers edges_; // Результаты расчёта потоков на рёбрах между подобластями.
 #ifdef AERO_HAS_VISCOSITY
+    // Владелец вязкой геометрии подобласти.
     std::unique_ptr<viscosity::Aes> aes_;
     bool compact_jacobian_ = false; // Ширину шаблона матрицы задаём до построения таблиц на CPU и GPU.
 #endif
@@ -252,13 +263,17 @@ private:
     void solve_sa_stage(const std::vector<double>& state,bool rates_ready,bool rows_ready);
     std::unique_ptr<PartitionTransfers> turbulence_exchange_; // Те же владельцы узлов, один скаляр на запись.
     std::unique_ptr<PartitionTransfers> sa_edge_exchange_; // Одна поправка на общее ребро MPI.
+    // Использовать газовый шаблон для конвекции SA.
     bool sa_high_order_ = false;
     std::vector<double> host_sa_correction_; // Хранилище потока для CPU.
     double* sa_correction_ = nullptr; // Адрес на активном исполнителе, включая GPU.
+    // Текущий и предыдущий шаг SA, целевое значение и допуск итераций.
     double sa_dt_ = 0., sa_previous_dt_ = 0., sa_target_ = 0., sa_tol_ = 0.;
+    // Число итераций уточнения SA.
     unsigned sa_iterations_ = 0;
     bool sa_lines_ = false; // Один выбор пробной поправки на всех MPI-процессах.
     bool sa_multigrid_ = false; // Ускоренный сглаживатель SA во время стационарного цикла.
+    // Признаки двухслойной истории и неявного интегрирования SA.
     bool sa_bdf2_ = false, sa_implicit_time_ = false;
     bool sa_prediction_pending_ = false; // Газовый предиктор изменил газ при фиксированной nu_tilde.
 #endif
@@ -271,44 +286,58 @@ private:
     // Вся дополнительная память принадлежит опции local_time_step_neighbor_ratio.
     // Два поля dt меняются ролями: обход ни на CPU, ни на GPU не перезаписывает вход.
     struct NeighbourStepLimit {
+        // Предел отношения соседних шагов и экстремумы до и после ограничения.
         double ratio = 0., before = 0., after = 0.;
+        // Рабочий массив итерации распространения ограничений на CPU.
         std::vector<double> host_scratch;
         double* scratch = nullptr; // Свободное поле; второе всегда доступно через steady_steps_->values.
+        // Обмен граничными значениями шагов между подобластями.
         std::unique_ptr<PartitionTransfers> halo;
     };
+    // Рабочие данные ограничения шага между соседями.
     std::unique_ptr<NeighbourStepLimit> neighbour_limit_;
     std::unique_ptr<SteadyNodeSteps> steady_steps_; // Для steady резервируем память сразу, даже при старте с общего шага.
     std::vector<double> host_steps_; // При работе на GPU массив входит в общую раскладку карты.
+    // Действующий способ выбора локального псевдошага.
     LocalStepMode step_mode_ = LocalStepMode::Off;
     const double* accepted_field_ = nullptr; // Поле после принятого шага на активном устройстве.
     double current_step_cfl_ = 0.; // CFL, с которым предложен шаг до ограничения расписанием.
+    // Принятая доля шага, предыдущее число Куранта и шаг повторной попытки.
     double accepted_fraction_ = 1., previous_cfl_ = 0., retry_dt_ = 0.;
     unsigned retries_ = 0; // Сбрасывается только после успешного шага или переключения режима.
+    // Признак загруженного состояния регулятора шага.
     bool recovered_step_ = false;
     std::uint64_t rate_samples_ = 0; // После сброса первая принятая невязка инициализирует историю.
     MeshIndex rate_capped_ = 0; // Действующая доля местного CFL меньше единицы.
     MeshIndex rate_limited_ = 0; // Сколько собственных шагов уменьшено до согласования по рёбрам.
     MeshIndex probe_row_ = ~MeshIndex(0); // Только владелец хранит номер строки для наблюдения.
     int probe_owner_ = -1; // После выбора узла его владелец известен всем процессам.
+    // Максимальные узловые скорости изменения газа и рабочей вязкости.
     double gas_rate_max_ = 0., sa_rate_max_ = 0.;
     std::unique_ptr<SteadyStepSpread> step_spread_; // Одно состояние на весь процесс, независимо от числа узлов.
     double applied_ratio_ = 0.; // Отношение шагов, разрешённое при выборе принятого шага.
     // Поля пар (газ, SA) нужны только при проверке по шаблону. Строки реконструкции общие с потоком.
     struct StencilRateStorage {
+        // Рабочие значения критерия в узлах и на рёбрах.
         double *nodes = nullptr, *edges = nullptr;
+        // Владельцы соответствующих массивов при расчёте на CPU.
         std::vector<double> host_nodes, host_edges;
         unsigned stride = 2; // При наблюдении за узлом пересылаем также источник каждой оценки.
+        // Обмен значениями критерия на стыке подобластей.
         std::unique_ptr<PartitionTransfers> node_exchange, edge_exchange;
     };
+    // Данные проверки невязки на шаблоне реконструкции.
     std::unique_ptr<StencilRateStorage> stencil_rates_;
     // Межпроцессное ребро вычисляет тот же владелец, который строил обе строки его реконструкции.
     void collect_stencil_rates(const double* sa_rate, const EulerFluxResult* flux);
     bool rate_control_ = false; // Память под историю нужна только при включённом ограничителе.
+    // Сохранённые узловые значения для сравнения соседних шагов.
     double* rate_history_ = nullptr;
     std::vector<double> host_rate_history_; // Три double на собственный узел для steady, включая переключение из control.txt.
     double minimum_step_ = 0., maximum_step_ = 0.; // Диапазон до ограничения расписанием.
     bool need_pressure_rate_ = false; // Резервируем рабочую память только при заказе dp_dt.
     std::unique_ptr<PartitionTransfers> pressure_exchange_; // Передаёт dp/dt от владельцев узлов.
+    // Включает сбор времени операций подобласти.
     bool track_time_ = false;
     std::vector<diagnostic::Moments> moments_; // На CPU хранит средние в расчётной нумерации.
 #ifdef AERO_WITH_KOKKOS_GPU

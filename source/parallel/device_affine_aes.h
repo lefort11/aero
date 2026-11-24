@@ -11,18 +11,27 @@ using viscosity::Gradient;
 using Team = Kokkos::TeamPolicy<Execution>;
 // На каждый элемент назначены 32 исполнителя: восемь вершин для каждой из четырёх компонент.
 struct Workspace {
+    // Узловые значения для обработки гексаэдра.
     FixedMatrix<double,4,8> value;
+    // Средние компоненты градиента.
     FixedMatrix<double,3,3> mean;
+    // Отклонения и соответствующие вклады в вязкую силу.
     FixedMatrix<double,3,4> departure, force;
 };
 // Командное ядро вязких градиентов аффинного гексаэдра.
 struct Apply {
+    // Метрики аффинной геометрии.
     const Geometry *geometry;
-    const viscosity::Cell *cells;
+    // Таблица ячеек в выбранном формате индексов.
+    viscosity::CellTable cells;
+    // Газовые величины на узлах.
     const viscosity::Gas *gas;
+    // Выходной массив градиентов.
     Gradient *gradients;
     const double *pair_heat; // Исходные коэффициенты теплопроводности, общие с диффузией SA.
+    // Начальная позиция вершин обрабатываемой плитки.
     MeshIndex first_vertex;
+    // Первая ячейка текущей плитки.
     MeshIndex first_cell;
 
     // При постоянном поле приращения от первого узла точно нулевые.
@@ -69,7 +78,7 @@ struct Apply {
     }
     // Коэффициенты теплопроводности нужны также уравнению SA. Берём готовые
     // значения из одной общей таблицы и суммируем в исходном порядке вершин.
-    KOKKOS_INLINE_FUNCTION double heat_flux(const Geometry &g, const viscosity::Cell &cell,
+    KOKKOS_INLINE_FUNCTION double heat_flux(const Geometry &g, const viscosity::CellView &cell,
                                             const double *temperature, unsigned i) const {
         const unsigned local = g.node[i];
         double sum = 0.;

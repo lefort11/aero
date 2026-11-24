@@ -29,6 +29,7 @@ Nodes key(Nodes nodes);
 // Собирает ячейки и общие грани внутренней сетки из элементов внешнего формата.
 class Builder {
 public:
+    // Собираемые координаты, связность и патчи импортируемой сетки.
     MeshData data;
     // Создаёт заготовку внутренней сетки заданной размерности и сохраняет настройки границ.
     explicit Builder(unsigned dim, const Options& options);
@@ -42,6 +43,7 @@ public:
     Mesh finish();
 
 private:
+    // Настройки преобразования исходной сетки.
     Options options_;
     // Сопоставляет набор узлов с единственным номером грани.
     std::map<Nodes, MeshIndex> face_ids_;

@@ -72,6 +72,7 @@ Copies periodic_copies(const MeshPartition& part, const PeriodicPartition& seam,
 
 // Наборы периодических, узловых и исходных опор граничного шаблона.
 struct BoundarySupport {
+    // Множества парных, узловых и исходных идентификаторов на границе.
     std::set<Id> paired, nodal, originals;
 };
 // Определяет опоры шаблонов возле периодических и проточных границ.
@@ -313,7 +314,7 @@ ReconstructionStencilView PartitionStencil::view(MeshIndex state_nodes) const {
             row_owner.data(),      linear.weights.data(),
             slopes.offsets.data(), slopes.nodes.data(),
             slopes.weights.data(), weno_order.empty() ? nullptr : weno_order.data(),
-            epsilon_scale.data(), mp5,nullptr,false,nullptr,false};
+            epsilon_scale.data(), mp5,nullptr,false,nullptr,false,false,false,nullptr,nullptr,nullptr,0};
 }
 
 namespace {
@@ -368,9 +369,13 @@ MeshPartition build_stencil_support(const MeshPartition& part, const PeriodicPar
 // Каждое ребро выбирает исходные строки для своих двух сторон. По их длинам
 // заранее выделяем непересекающиеся участки в общих массивах узлов и весов.
 class RowTransfer {
+    // Массив индексов реконструкции.
     using Indices = std::vector<ReconstructionIndex>;
+    // Строки, в которые добавляются пересланные коэффициенты.
     PartitionStencil::Rows& dst_;
+    // Исходные границы строк и номера узлов.
     const Indices &offsets_, &nodes_;
+    // Исходные веса переноса.
     const std::vector<double>& weights_;
     Indices source_; // Номер исходной строки для каждой строки приёмника.
 public:

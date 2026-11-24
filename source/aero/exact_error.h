@@ -25,11 +25,17 @@ private:
     };
     // У снимка значения постоянны во времени. Формулы вычисляем в момент текущего отчёта.
     std::array<double, 6> reference(std::size_t i, double time) const;
+    // Число компонент скорости в сравниваемых полях.
     unsigned dimension_;
+    // Настройки эталона и модели газа для вычисления ошибки.
     const RunSettings& run_;
+    // Объединяет локальные нормы ошибки по процессам.
     const Processes& world_;
+    // Узлы, по которым этот процесс накапливает ошибку.
     std::vector<Node> nodes_;
+    // Порядок полей в отчёте об ошибке.
     std::vector<std::string> names_;
+    // Разобранные выражения эталона в порядке полей.
     std::vector<Expression> formulas_;
     RowTable<double,6> fields_; // Эталон в порядке nodes_, читаем один раз при старте.
     std::ofstream file_; // Только процесс 0 пишет общий отчёт.

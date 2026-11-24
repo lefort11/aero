@@ -79,18 +79,24 @@ struct BdfStep::Storage {
     MeshIndex rows;                 // Число узлов, за которые отвечает процесс.
     int device;                     // Отрицательный номер означает расчёт на CPU.
     std::vector<double> host;       // Три непересекающихся поля для расчёта на CPU.
+    // Владелец выделений на выбранном устройстве.
     Workspace workspace;
     double* start;       // Копия принятого поля в начале текущего шага.
+    std::vector<double> detached_start; // Собственная копия при последующем включении BDF2.
     std::vector<double> history_host; // Выделяется только при первом использовании BDF2 на CPU.
     double* previous = nullptr;    // Предыдущий слой BDF2. После принятия шага меняется местами со start.
+    // Длительность предыдущего принятого шага для коэффициентов BDF2.
     double previous_dt = 0.;
     bool cached = false;            // В матрице сохранены производные для последующих шагов.
+    bool cached_diagonal = false;   // Чистая диагональ нужна только при переносе матрицы между шагами.
+    // Сколько принятых шагов прошло с последней сборки матрицы.
     unsigned accepted_since_build = 0;
     MatrixSettings cached_settings; // Переключение потока или предобуславливателя требует полной сборки.
     double* rhs;         // Полная невязка с обратным знаком для решения системы.
     double* correction;  // Последняя поправка BiCGSTAB к состоянию узлов.
 #ifdef AERO_HAS_MULTIGRID
     residual_detail::Geometry host_grid; // Адреса связности на CPU для однократного построения агрегатов.
+    // Владелец грубой коррекции в режиме steady.
     std::unique_ptr<multigrid::CoarseStep> coarse;
     bool matrix_on_step = false; // Предиктор мог закончить шаг без единой сборки матрицы.
 #endif
@@ -105,16 +111,18 @@ struct BdfStep::Storage {
         if (rows > host.max_size() / (NewtonFieldCount * grid.components()))
             throw std::length_error("BDF: field too large");
         const auto size = rows * grid.components();
-        const auto capacity = std::max<MeshIndex>(1, NewtonFieldCount*size);
-        start = workspace.allocate(device, host, capacity);
-        rhs = start + size;
+        const auto capacity = std::max<MeshIndex>(1, (NewtonFieldCount-unsigned(part.step_start!=nullptr))*size);
+        auto* fields = workspace.allocate(device, host, capacity);
+        start = part.step_start ? part.step_start : fields;
+        rhs = part.step_start ? fields : fields+size;
         correction = rhs + size;
     }
 
     // Новая последовательность сборок начинается после изменения настроек или
     // по истечении заданного числа принятых шагов. Потоки для невязки всегда свежие.
     void begin_matrix_step(const NewtonSettings& settings) {
-        cached = cached && (grid.options.background.active() || accepted_since_build < settings.jacobian_update_every) &&
+        cached = cached && cached_diagonal &&
+                 (grid.options.background.active() || accepted_since_build < settings.jacobian_update_every) &&
                  settings.roe == cached_settings.roe &&
                  settings.simplified_jacobian == cached_settings.simplified_jacobian &&
                  settings.csgs == cached_settings.csgs;
@@ -131,7 +139,10 @@ struct BdfStep::Storage {
             // Для линейных уравнений пространственные производные постоянны.
             // В упрощённом Ньютоне сохраняем их вместе с готовым предобусловливателем.
             const bool reuse = grid.options.background.active() || settings.simplified_newton();
-            linear.assemble(state, initial, volumes, effective_dt, settings, reuse, timing);
+            // При интервале 1 время и локальные шаги внутри Ньютона неизменны,
+            // а следующий принятый шаг соберёт новую матрицу. Копия A_kk не нужна.
+            cached_diagonal=grid.options.background.active() || settings.jacobian_update_every>1;
+            linear.assemble(state, initial, volumes, effective_dt, settings, cached_diagonal, timing);
             cached = reuse;
             cached_settings = settings;
             accepted_since_build = 0;
@@ -149,6 +160,11 @@ struct BdfStep::Storage {
     void ensure_history() {
         if (previous) return;
         const auto size = std::max<MeshIndex>(1, rows * grid.components());
+        // BDF2 меняет местами start и previous. Заимствованная копия отката
+        // не должна стать историей: перед первым BDF2 переходим на своё поле.
+        // ensure_history вызывается до InitialRhs, который заново запишет U_n.
+        if (start==partition.step_start)
+            start=workspace.allocate(device,detached_start,size);
         previous = workspace.allocate(device, history_host, size);
     }
 

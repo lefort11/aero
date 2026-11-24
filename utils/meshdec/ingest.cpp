@@ -45,7 +45,9 @@ public:
     void hash_coordinate_header() { word(out_, read_fingerprint_word()); }
 
 private:
+    // Вычисляет контрольную сумму читаемой сетки.
     io_detail::Sha256Buffer hash_;
+    // Поток передачи байтов в хэш.
     std::ostream out_;
 };
 // Переносит массив индексов исходной сетки в промежуточную таблицу.
@@ -79,6 +81,7 @@ void offsets(Reader& r, const std::string& path, const char* name, Id rows, Id e
 }
 // Обратная топологическая ссылка с исходным адресом в таблице.
 struct Link {
+    // Приёмник, источник и индекс записи связи.
     Id target, source, entry;
     // Сравнивает ключи сущностей для упорядочения и поиска.
     bool operator<(const Link& b) const { return target == b.target ? source < b.source : target < b.target; }

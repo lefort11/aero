@@ -100,6 +100,7 @@ BoundaryType read_type(const Tokens& words) {
 
 // Промежуточное состояние одной секции позволяет задавать строки в любом порядке.
 struct BoundarySection {
+    // Температурное условие для данного участка границы.
     BoundaryTemperature temperature{};
     BoundaryType type = BoundaryType::Wall;   // Тип, прочитанный из bc_type.
     std::unique_ptr<FreeBoundaryRules> rules; // Создаётся при первой строке superin, inflow или outflow.

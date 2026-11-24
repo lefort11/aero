@@ -72,6 +72,7 @@ public:
     // false означает физически недопустимую пробу, которую надо откатить.
 private:
     struct Storage;
+    // История шагов и рабочие поля метода Ньютона.
     std::unique_ptr<Storage> storage_;
 };
 using Bdf1Step = BdfStep;

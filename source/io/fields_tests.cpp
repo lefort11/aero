@@ -126,6 +126,7 @@ std::string replaced(std::string text, const std::string& from, const std::strin
 }
 // Владеет временным файлом проверки и удаляет его при выходе из области видимости.
 struct TempFile {
+    // Имя временного файла теста.
     std::string path;
     // Создаёт уникальное имя временного файла теста.
     TempFile() {
@@ -182,6 +183,7 @@ struct NoSeek : std::stringbuf {
 };
 // Тестовый поток, имитирующий ошибку записи после заданного числа символов.
 struct ShortOutput : std::streambuf {
+    // Сколько байтов ещё примет имитатор короткой записи.
     std::size_t remaining;
     // Задаёт число символов, после которого тестовый поток откажет в записи.
     explicit ShortOutput(std::size_t n) : remaining(n) {}

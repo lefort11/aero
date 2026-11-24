@@ -44,7 +44,13 @@ mesh           = "../qa/cases/momentum_2d/grid.mesh"
 reconstruction = ebr3
 # reconstruction_variables — выбор переменных реконструкции:
 # characteristic (характеристические переменные) или flux (потоки).
+# characteristic_flux восстанавливает расщеплённые потоки нелинейного Euler
+# в общем базисе ребра для ebr5, weno3, weno5, mp5 и MPWENO5, с Roe или LF.
 reconstruction_variables = characteristic
+# Энтропийная поправка Роу для двух акустических волн, включая неявный якобиан Роу.
+# off (по умолчанию), on (ширина 0.1*c) или коэффициент ширины от 0 до 1.
+# При |lambda| < delta используется (lambda²/delta + delta)/2. На LF флаг не влияет.
+entropy_fix = off
 # time_scheme — euler, ssprk3, BDF1 (неявный Эйлер), BDF2 или steady (установление). Для неявного расчёта заполните implicit.txt.
 time_scheme    = ssprk3
 # euler_solver — roe или lf (локальный поток Лакса — Фридрихса).
@@ -65,6 +71,8 @@ t_fo           = 0
 # steps_fo необязателен, по умолчанию 0. Первые N принятых шагов (в steady — псевдошагов)
 # выполняются с первым порядком. После recovery отсчёт продолжается. Если задан и t_fo,
 # выбранная реконструкция включается после достижения обоих порогов.
+# В steady на этом же принятом поле солвер заново вычисляет потоки и пространственную
+# невязку по reconstruction. Уже эта норма попадает в отчёт и в проверку steady_tol.
 # При активной стабилизации первый шаг выбранной реконструкции начинает с cfl_init.
 # Если через control.txt изменены границы CFL, cfl_init ограничивается текущим диапазоном.
 steps_fo       = 0
@@ -96,6 +104,7 @@ report_every = 100
 # steady_max_steps оценивается отдельно по реальному времени принятых шагов.
 prophecy_every_step = 0
 # Солвер создаёт control.txt в каталоге --output и очищает его после чтения команд.
+# Примеры команд приведены в templates/control.txt.
 # По одной команде на строку: cfl, cfl_min, cfl_max, cfl_coeff, cfl_num_steps, upw_coeff, mp6_hybrid.
 # Числовое значение задаётся через =. reset_fail и STOP пишутся отдельными строками без значения.
 # В steady также доступны local_time_step и local_time_step_max_ratio.

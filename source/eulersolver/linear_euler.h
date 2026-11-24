@@ -33,8 +33,11 @@ struct LinearBackground {
 // Действие постоянной матрицы потока в единичной нормали. Поле хранится в порядке
 // rho', компоненты u', p'. Фоновый поток здесь отсутствует, поэтому F(0) точно равен нулю.
 struct LinearFace {
+    // Стационарное состояние, относительно которого получен поток.
     const LinearBackground& gas;
+    // Количество активных пространственных компонент.
     unsigned dim;
+    // Направление нормали для проекции скорости.
     const double* normal;
     double transport; // Проекция фоновой скорости на внешнюю нормаль.
     // Подготавливает нормальную скорость и параметры фонового газа для линейного потока.
@@ -67,7 +70,7 @@ struct LinearFace {
     // Центральная часть берётся из двух физических потоков. Для Роу транспортная
     // скорость общая у энтропийной и касательных компонент, поправки нужны только у акустических.
     AERO_HOST_DEVICE bool numerical(bool roe, double upwind, const double* left, const double* right,
-                                    const double* fl, const double* fr, EulerFluxResult& out) const {
+                                    const double* fl, const double* fr, EulerFluxResult& out,double entropy_fix=0.) const {
         double jump[5], dissipation[5];
         for (unsigned k=0; k<dim+2; ++k) {
             jump[k] = right[k]-left[k];
@@ -76,8 +79,8 @@ struct LinearFace {
         if (roe) {
             double minus, plus;
             acoustic(jump, minus, plus);
-            add_acoustic((::fabs(transport-gas.sound)-::fabs(transport))*minus,
-                         (::fabs(transport+gas.sound)-::fabs(transport))*plus, dissipation);
+            add_acoustic((euler_detail::acoustic_modulus(transport-gas.sound,entropy_fix*gas.sound)-::fabs(transport))*minus,
+                         (euler_detail::acoustic_modulus(transport+gas.sound,entropy_fix*gas.sound)-::fabs(transport))*plus, dissipation);
         }
         out.components = dim+2;
         out.max_wave_speed = speed();

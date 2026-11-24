@@ -2,6 +2,9 @@
 #include "../timestep/steady_step_spread.h"
 #include "../../tests/test_mesh.h"
 #include "residual_detail.h"
+#include "../aero/compact_slopes.h"
+#include "../reconstruction/device_stencil.h"
+#include "../parallel/upload_compact.h"
 #include "flux_cfl.h"
 #include "../../tests/test_checks.h"
 #include "../eulersolver/roe.h"
@@ -14,6 +17,7 @@
 #include <array>
 #include <cmath>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #ifdef _OPENMP
 #include <omp.h>
@@ -39,6 +43,7 @@ void near(double a, double b) {
 }
 // Сохраняет узловую невязку и потоки площадок тестового расчёта.
 struct Result {
+    // Проверяемые значения остатка и внутренних и граничных потоков.
     Values r, edge, bc;
     // Выделяет тестовые массивы узловой невязки и потоков внутренних и внешних площадок.
     Result(size_t n, size_t e, size_t b) : r(n), edge(e), bc(b) {}
@@ -512,7 +517,7 @@ void first_order_side_flux() {
     Surface face = {0, 1, 0, {1., 0., 0.}, 1., 0};
     const double u[] = {1., .2, .04, 3., 1.1, .15, -.05, 3.1};
     euler_detail::InterfaceGas base;
-    require(edge_gas(g, face, u, u+4, base), "valid nodal gas");
+    require(edge_gas(g, 0, face, u, u+4, base), "valid nodal gas");
     const EdgeTraces high = {{.97, .23, .03, 2.8}, {1.2, .11, -.04, 3.05}};
     for (unsigned char mask : std::array<unsigned char, 3>{{2, 4, 6}}) {
         EdgeTraces expected = high, actual = high;
@@ -744,6 +749,223 @@ void shared_characteristic_mp5() {
                 require(double_bits(reference.flux[k])==double_bits(result.flux[k]),"MP5 shared flux bits");
             require(reference.max_wave_speed==result.max_wave_speed,"MP5 shared wave speed");
         }
+    }
+}
+
+// CPU-владелец проверяет ту же загрузку компактных таблиц без зависимости от наличия CUDA.
+struct StencilTestStorage {
+    // Владеет буферами тестовых шаблонов.
+    std::vector<std::shared_ptr<void>> arrays;
+    // Суммарный размер выделенных тестом массивов.
+    std::size_t bytes=0;
+    // Сохраняет типизированную копию до завершения сверки строк.
+    template<class T> T* allocate(std::size_t n,const T* source=nullptr) {
+        if (!n) return nullptr;
+        T* data=new T[n];
+        arrays.emplace_back(data,[](void* p) { delete[] static_cast<T*>(p); });
+        if (source) std::copy_n(source,n,data);
+        bytes+=n*sizeof(T);
+        return data;
+    }
+};
+
+// Проверяет обе стороны объединённых строк, переход через границу плитки
+// и сохранение узлов и коэффициентов для обычных потребителей геометрии.
+void split_ebr_geometry() {
+    using aero::ReconstructionIndex;
+    std::vector<ReconstructionIndex> offsets{0},nodes;
+    std::vector<double> weights;
+    const unsigned edges=63;
+    for (unsigned e=0;e<edges;++e) for (unsigned side=0;side<2;++side) {
+        if (e!=7 || !side) {
+            for (unsigned i=0;i<5;++i) {
+                nodes.push_back(e+side+i);
+                weights.push_back(i ? .25 : -1.);
+            }
+        }
+        offsets.push_back(nodes.size());
+    }
+    aero::ReconstructionStencilView s{};
+    s.node_count=edges+6; s.edge_count=edges; s.offsets=offsets.data();
+    s.nodes=nodes.data(); s.weights=weights.data();
+    StencilTestStorage storage;
+    const auto packed=aero::upload_reconstruction_stencil(storage,s,0,true);
+    require(packed.tiled_linear(),"eligible EBR geometry must use tiles");
+    for (unsigned i=0;i<2*edges;++i) {
+        const auto a=s.linear_row(i),b=packed.linear_row(i);
+        require(a.count==b.count,"tiled EBR side length");
+        for (ReconstructionIndex j=0;j<a.count;++j)
+            require(a.node(j)==b.node(j) && a.weight(j)==b.weight(j),"tiled EBR side term");
+    }
+}
+
+// Граница форматов проверяется на коротких таблицах с большими значениями:
+// миллиарды элементов для проверки 64-битного пути выделять не требуется.
+void compact_geometry_indices() {
+    using namespace residual_detail;
+    const MeshIndex last=UINT32_MAX;
+    for (unsigned excess : {0u,1u}) {
+        const MeshIndex value=last+excess;
+        StencilTestStorage memory;
+        const MeshIndex indices[]={0,last,value};
+        const auto offsets=upload_indices(memory,3,indices);
+        require(bool(offsets.narrow)==!excess,"offset width follows largest value");
+        require(offsets[2]==value,"64-bit offset survives upload");
+        const OrientedFace faces[]={{value}};
+        const auto incidence=upload_records<OrientedFace32>(memory,1,faces);
+        require(bool(incidence.narrow)==!excess && incidence[0].encoded==value,
+                "oriented face includes orientation bit in width check");
+        for (unsigned field=0;field<3;++field) {
+            Surface surface{last,last,last,{-.0,.125,-2.75},3.125,3};
+            (field==0 ? surface.begin : field==1 ? surface.end : surface.patch)=value;
+            const auto table=upload_records<Surface32>(memory,1,&surface);
+            const auto copy=table[0];
+            require(bool(table.narrow)==!excess && copy.begin==surface.begin &&
+                    copy.end==surface.end && copy.patch==surface.patch,"surface index width");
+            for (unsigned d=0;d<3;++d)
+                require(double_bits(copy.area[d])==double_bits(surface.area[d]),"packed surface area bits");
+            require(double_bits(copy.measure)==double_bits(surface.measure) &&
+                    copy.use_nodal_traces==surface.use_nodal_traces,"packed surface metadata");
+        }
+#ifdef AERO_HAS_VISCOSITY
+        for (unsigned field=0;field<3;++field) {
+            viscosity::Cell cell{};
+            cell.count=8; cell.inverse_count=.125;
+            cell.first_pair=cell.first_vertex=last;
+            for (unsigned i=0;i<8;++i) { cell.node[i]=last-i; cell.diffusion[i]=i ? i*.13 : -.0; }
+            (field==0 ? cell.node[7] : field==1 ? cell.first_pair : cell.first_vertex)=value;
+            const auto table=upload_records<viscosity::Cell32>(memory,1,&cell);
+            const auto copy=table[0];
+            require(bool(table.narrow)==!excess && copy.count==8 && copy.inverse_count==.125 &&
+                    copy.first_pair==cell.first_pair && copy.first_vertex==cell.first_vertex,"cell index width");
+            for (unsigned i=0;i<8;++i)
+                require(copy.node[i]==cell.node[i] && double_bits(copy.diffusion[i])==double_bits(cell.diffusion[i]),
+                        "packed cell retains nodes and coefficient bits");
+            require(copy.pair_index(6,7)==cell.pair_index(6,7) && copy.pair_index(6,7)>last,
+                    "pair address arithmetic widens before addition");
+            viscosity::GradientSlice slice{last,last,last};
+            (field==0 ? slice.node : field==1 ? slice.first : slice.end)=value;
+            const auto slices=upload_records<viscosity::GradientSlice32>(memory,1,&slice);
+            const auto decoded=slices[0];
+            require(bool(slices.narrow)==!excess && decoded.node==slice.node &&
+                    decoded.first==slice.first && decoded.end==slice.end,"gradient slice width");
+        }
+#endif
+    }
+    StencilTestStorage empty;
+    require(!upload_indices(empty,0,static_cast<const MeshIndex*>(nullptr)) &&
+            !upload_records<Surface32>(empty,0,static_cast<const Surface*>(nullptr)) && !empty.bytes,
+            "empty compact tables allocate nothing");
+}
+
+// Проверяет точность EBR после упаковки индексов и сохранение больших номеров.
+void compact_linear_indices() {
+    const ReconstructionIndex starts[]={0,3,5}, nodes[]={0,2,3,1,4}, owners[]={0,1};
+    const double weights[]={-.3,.1,.2,-.5,.5};
+    for (bool wide : {false,true}) {
+        ReconstructionStencilView original{};
+        original.node_count=wide ? ReconstructionIndex(1)<<33 : 5;
+        original.edge_count=1; original.offsets=starts; original.nodes=nodes;
+        original.row_owner=owners; original.weights=weights;
+        StencilTestStorage memory;
+        const auto copy=upload_reconstruction_stencil(memory,original);
+        require(bool(copy.linear_indices32)!=wide,"CSR index width follows mesh extent");
+        for (ReconstructionIndex row=0;row<2;++row) {
+            const auto a=original.linear_row(row), b=copy.linear_row(row);
+            require(a.count==b.count,"compact EBR row size");
+            for (ReconstructionIndex i=0;i<a.count;++i) {
+                require(a.node(i)==b.node(i),"compact EBR node");
+                require(double_bits(a.weight(i))==double_bits(b.weight(i)),"compact EBR weight bits");
+            }
+        }
+        const auto index_bytes=(wide ? sizeof(ReconstructionIndex) : sizeof(unsigned));
+        require(memory.bytes==8*index_bytes+sizeof(weights)+sizeof(owners),"CSR exact memory accounting");
+    }
+}
+
+// Упаковка должна сохранять порядок опор, биты коэффициентов и результат суммирования,
+// в том числе на границах и в разреженных исключениях неструктурированной сетки.
+void compact_stencil_rows() {
+    for (unsigned dim : {2u,3u}) for (auto scheme : {ReconstructionScheme::Weno3,ReconstructionScheme::Weno5}) {
+        const auto mesh=aero_test::test_mesh(dim);
+        ReconstructionOptions options;
+        options.scheme=scheme;
+        options.solver_rows_only=true;
+        const auto stencil=prepare_reconstruction(mesh,options);
+        const auto original=stencil.view();
+        std::vector<residual_detail::Surface> edges(original.edge_count);
+        const auto geometry=mesh.view();
+        for (ReconstructionIndex e=0;e<original.edge_count;++e) {
+            edges[e].begin=geometry.edge_begin[e]; edges[e].end=geometry.edge_end[e];
+        }
+        for (bool share : {false,true}) for (bool edge_data : {false,true}) {
+            CompactSlopes storage;
+            if (edge_data) storage.inspect_edges(original,edges.data());
+            storage.prepare(original,share);
+            auto packed=original;
+            const auto exceptions=storage.bind(packed);
+            storage.use_edge_data(packed,edges.data());
+            StencilTestStorage memory;
+            packed=upload_reconstruction_stencil(memory,packed,exceptions);
+            require(packed.pairs!=nullptr,"test stencil must exercise compact slopes");
+            if (scheme==ReconstructionScheme::Weno3)
+                require(packed.short_slope_rows && packed.pair_count()<=4*packed.edge_count,"WENO3 omits unused rows");
+            // Поле с разными знаками выявляет изменение порядка суммирования и нумерации.
+            const auto read=[](ReconstructionIndex, ReconstructionIndex node, ReconstructionIndex component) {
+                return std::sin(.31*double(node+1)*double(component+1));
+            };
+            for (ReconstructionIndex side=0;side<2*original.edge_count;++side) {
+                require(original.owner(side)==packed.owner(side),"compact owner");
+                require(double_bits(original.epsilon(side))==double_bits(packed.epsilon(side)),"compact epsilon bits");
+                for (unsigned c=0;c<5;++c)
+                    require(double_bits(evaluate_reconstruction_row(original.linear_row(side),side,c,read))==
+                            double_bits(evaluate_reconstruction_row(packed.linear_row(side),side,c,read)),"compact fallback bits");
+                const auto order=original.weno_order[side];
+                for (unsigned k=0;k<(order ? weno_slope_count(order) : 0);++k) {
+                    const auto a=original.slope_row(4*side+k), b=packed.slope_row(4*side+k);
+                    require(a.count==b.count,"compact row length");
+                    for (ReconstructionIndex i=0;i<a.count;++i) {
+                        require(a.node(i)==b.node(i),"compact row node order");
+                        if (i) require(double_bits(a.weight(i))==double_bits(b.weight(i)),"compact row weight bits");
+                    }
+                    for (unsigned c=0;c<5;++c)
+                        require(double_bits(evaluate_reconstruction_row(a,side,c,read))==
+                                double_bits(evaluate_reconstruction_row(b,side,c,read)),"compact sum bits");
+                }
+            }
+        }
+    }
+}
+
+// Специализированное CUDA-ядро должно считать ту же WENO3 для всех переменных,
+// включая неполные стороны, локальный первый порядок и ограничение следов.
+void pure_weno_flux() {
+    using namespace residual_detail;
+    Surface face{2,3,0,{1./3.,2./3.,2./3.},1.,0};
+    const TwoNodeSlope pairs[]={{2,3,1.},{1,2,.8},{3,4,1.2}};
+    unsigned char orders[2]={3,3};
+    const double epsilon[]={.01,.02};
+    Geometry g{};
+    g.dim=3; g.nodes=6; g.faces=g.edges=1; g.surfaces=&face;
+    g.options=ResidualOptions(ResidualVariables::Characteristic,ResidualSolver::Roe,1.4);
+    auto& s=g.stencil;
+    s.node_count=6; s.edge_count=1; s.owner_edges=&face;
+    s.weno_order=orders; s.weno_epsilon_scale=epsilon;
+    s.pairs=pairs; s.shared_edge_slopes=true; s.short_slope_rows=true;
+    for (auto variables : {ResidualVariables::Characteristic,ResidualVariables::Conservative,ResidualVariables::Flux})
+    for (unsigned left : {0u,3u}) for (unsigned right : {0u,3u}) for (unsigned mask : {0u,1u,2u,4u,6u}) {
+        g.options.variables=variables;
+        orders[0]=static_cast<unsigned char>(left); orders[1]=static_cast<unsigned char>(right);
+        face.use_nodal_traces=static_cast<unsigned char>(mask);
+        double field[30];
+        for (unsigned n=0;n<6;++n) for (unsigned c=0;c<5;++c)
+            field[5*n+c]=(c==0 ? 1. : (c==4 ? 3. : 0.))+.15*std::sin(.23*(n+1)*(c+1));
+        EulerFluxResult reference{}, result{};
+        require(integrated_edge_flux(g,0,field,reference),"generic WENO flux");
+        require(integrated_edge_flux<false,false,0,false,false,3>(g,0,field,result),"pure WENO3 flux");
+        for (unsigned c=0;c<5;++c)
+            require(double_bits(reference.flux[c])==double_bits(result.flux[c]),"pure WENO3 flux bits");
+        require(reference.max_wave_speed==result.max_wave_speed,"pure WENO3 wave speed");
     }
 }
 
@@ -1019,6 +1241,11 @@ int main(int argc, char** argv) {
         first_order_side_flux();
         trace_limiter_test();
         shared_characteristic_mp5();
+        compact_linear_indices();
+        compact_geometry_indices();
+        split_ebr_geometry();
+        compact_stencil_rows();
+        pure_weno_flux();
         oblique_mp_limit();
         const int devices = ReconstructionContext::cuda_device_count();
         if (argc > 1 && std::string(argv[1]) == "--require-cuda")

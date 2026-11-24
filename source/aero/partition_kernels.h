@@ -11,24 +11,35 @@ namespace partition_detail {
 using residual_detail::Index;
 // Указатели этого представления действительны на устройстве, выбранном данным MPI-процессом.
 struct Grid {
+    // Связность и метрики для обхода контрольных объёмов.
     residual_detail::Geometry geometry;
+    // Списки вычисляемых узлов и узлов во владении ранга.
     const MeshIndex *computed, *owned;
+    // Число элементов в каждом из двух списков.
     Index computed_count, owned_count;
+    // Объёмы узловых контрольных объёмов.
     const double* volumes;
+    // Начальные данные, текущее состояние и сохранённое поле шага.
     double *initial, *state, *original;
+    // Потоки газа, индексируемые по площадке.
     EulerFluxResult* flux;
 #ifdef AERO_HAS_TURBULENCE
     const viscosity::Operator* filtered_gas; // На цельной сетке готовим материал при обновлении газа.
 #endif
+    // Рабочая память для регистрации недопустимых состояний.
     Index* bad;
     Index *failed_count, *failed_nodes; // Список недопустимых собственных узлов для отката на GPU.
 };
 // Пространственный оператор хранит интегральные потоки на гранях. Складываем их
 // с теми же знаками и вязкими членами, что и при обновлении решения.
 struct PressureRate {
+    // Геометрия для суммирования потоков вокруг узла.
     residual_detail::Geometry geometry;
+    // Потоки через площадки на текущем поле.
     const EulerFluxResult* flux;
+    // Объём и консервативное поле для пересчёта скорости изменения давления.
     const double *volumes, *state;
+    // Отображение собственной строки в узел подобласти.
     const MeshIndex* owned;
     double* values; // По одному результату на собственный узел процесса.
 
@@ -106,8 +117,11 @@ AERO_HOST_DEVICE inline bool update_node(const residual_detail::Geometry& geomet
 // Вид передаваемой записи. Обычное поле имеет width последовательных чисел.
  // Для потока к ним добавляется оценка скорости, хранящаяся отдельно в EulerFluxResult.
 struct RecordField {
+    // Число компонент в записываемой строке.
     unsigned width;
+    // Плоский буфер компонент поля.
     double* values;
+    // Буфер результатов вычисления потоков.
     EulerFluxResult* flux;
     // Возвращает число значений записи, включая скорость волны для потоков.
     AERO_HOST_DEVICE unsigned stride() const { return width + unsigned(flux != nullptr); }

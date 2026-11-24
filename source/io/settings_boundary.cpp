@@ -11,10 +11,15 @@ namespace {
 using namespace settings_detail;
 // Промежуточные правила, участки и профиль одной секции граничного файла.
 struct Section {
+    // Имена патчей, к которым применяется секция.
     std::vector<std::string> patches;
+    // Имя пары, место определения, правила и путь к профилю.
     std::string pair, where, rules, profile_path;
+    // Разобранный радиальный профиль секции.
     BoundaryProfile profile;
+    // Признак явного задания внешних величин.
     bool external_set = false;
+    // Отмечают явно заданные ось и центр профиля.
     bool has_axis = false, has_center = false;
 };
 

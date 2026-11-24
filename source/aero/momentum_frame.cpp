@@ -21,8 +21,11 @@ CvVector orient(CvVector v) {
 const MeshIndex absent = std::numeric_limits<MeshIndex>::max();
 // Ребро-кандидат на ось импульса с направлением и оценкой пригодности.
 struct Candidate {
+    // Номера концов рассматриваемого ребра.
     MeshIndex begin = absent, end = absent;
+    // Критерий выбора опорного направления.
     double score = -1;
+    // Геометрический вектор кандидата.
     CvVector vector{};
 };
 // Берём ребро с наибольшей оценкой. При равенстве используем первое по исходным номерам узлов.

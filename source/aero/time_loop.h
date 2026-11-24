@@ -22,14 +22,16 @@ struct TimeStep {
 struct StepOperations {
     // Вычисляет ограничение CFL и оставляет потоки готовыми для первой стадии.
     std::function<double(bool first_order_start, SolverTimings&)> cfl_step;
-    // Использует готовые физические потоки для проверки выхода на стационар.
-    std::function<double(bool accepted)> steady_residual;
+    // Готовит потоки нужного порядка и проверяет стационар. На переходе accepted=false:
+    // это начальное поле новой схемы, а не её первый выполненный псевдошаг.
+    std::function<double(bool accepted, bool first_order_start, SolverTimings&)> steady_residual;
     // Выполняет все стадии шага и обмен значениями в граничных узлах подобластей.
     std::function<bool(const TimeStep&, SolverTimings&)> advance;
     std::function<bool(std::uint64_t,bool&)> control; // Возвращает STOP, второй аргумент сообщает об изменении режима для прогноза.
     std::function<void(bool startup_finished)> accepted; // Выбирает CFL следующего шага до записи recovery.
     // Даёт текущее состояние в памяти CPU для вывода полей и контрольной точки.
     std::function<const std::vector<double>&()> output_state;
+    // Сравнивает принятое поле с эталоном на отчётном шаге.
     std::function<void(const TimeStep&, const std::vector<double>&)> exact_error;
     // Выгружает предыдущий принятый слой только при записи контрольной точки BDF2.
     std::function<void(implicit::BdfHistory&)> checkpoint_history;

@@ -44,7 +44,8 @@ ReconstructionStencilView ReconstructionStencil::view() const {
                                               data_.weno_order.empty() ? nullptr : data_.weno_order.data(),
                                               data_.weno_epsilon_scale.data(),
                                               {data_.scheme == ReconstructionScheme::Mp5, data_.scheme == ReconstructionScheme::MPWENO5,
-                                               data_.mpweno_ad_corr, data_.mp5_alpha},nullptr,false,nullptr,false};
+                                               data_.mpweno_ad_corr, data_.mp5_alpha},nullptr,false,nullptr,false,false,false,nullptr,
+                                              nullptr,nullptr,0};
     return result;
 }
 // Подсчитывает стороны рёбер с неполным высокопорядковым шаблоном.
@@ -106,9 +107,13 @@ ReconstructionStencil prepare_weno(const Mesh& mesh, const ReconstructionOptions
 
 // Владеет шаблоном CPU и его возможной копией на GPU.
 struct ReconstructionContext::Impl {
+    // Построенные строки реконструкции.
     ReconstructionStencil stencil;
+    // Выбранный исполнитель реконструкции.
     ReconstructionBackend backend;
+    // Внутренние данные реализации GPU.
     void* gpu;
+    // Номер устройства, которому принадлежат данные.
     int device;
     // Принимает владение шаблоном и начинает с CPU-представления без GPU-копии.
     explicit Impl(ReconstructionStencil s)

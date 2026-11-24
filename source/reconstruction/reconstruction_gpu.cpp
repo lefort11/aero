@@ -7,6 +7,7 @@
 namespace {
 // Дескриптор GPU-шаблона и его рабочего состояния.
 struct State {
+    // Адреса таблиц тестового шаблона.
     aero::ReconstructionStencilView view{};
     aero::gpu::DeviceArrays storage; // Освобождает и частично загруженный шаблон при ошибке.
 };

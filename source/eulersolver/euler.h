@@ -306,6 +306,12 @@ struct FaceStates {
     double upw_coeff;        // Доля противопоточной поправки.
 };
 
+// Квадратическая энтропийная поправка Хартена к модулю акустической скорости.
+AERO_HOST_DEVICE inline double acoustic_modulus(double lambda,double width) {
+    const double a = ::fabs(lambda);
+    return a < width ? .5*(width+lambda*(lambda/width)) : a;
+}
+
 // Общий путь для реконструкции состояний. Тип схемы известен компилятору и задаёт формулу диссипации.
 template <class Scheme>
 AERO_HOST_DEVICE inline EulerStatus flux_from_states(const FaceStates& face, EulerFluxResult* result) {

@@ -3,6 +3,7 @@
 #include "csgs_sweep.h"
 #include <algorithm>
 #include <numeric>
+#include <utility>
 #include <vector>
 
 namespace aero {
@@ -56,6 +57,40 @@ struct CsgsOrder {
         sequence.resize(n);
         for (MeshIndex i = 0; i < n; ++i)
             sequence[next[colors[i]]++] = i;
+        // В одном цвете нет взаимных зависимостей. В небольшом окне группируем
+        // строки с одинаковой длиной обоих проходов: меньше пустых блоков SELL,
+        // без изменения сумм в строках и без потери локальности всего цвета.
+        std::vector<std::pair<MeshIndex,MeshIndex>> lengths(n);
+        for (MeshIndex row=0;row<n;++row)
+            for (auto p=rows[row]+1;p<rows[row+1];++p) {
+                const auto other=row_of_node[columns[p]];
+                if (other<n && colors[other]<colors[row]) ++lengths[row].first;
+                else ++lengths[row].second;
+            }
+        // Цена окна совпадает с числом мест в 32-полосной раскладке CSGS.
+        const auto cost=[&](const std::vector<MeshIndex>& window) {
+            MeshIndex total=0;
+            for (std::size_t i=0;i<window.size();i+=32) {
+                MeshIndex lower=0,upper=0;
+                for (std::size_t j=i;j<i+32;++j) {
+                    lower=std::max(lower,lengths[window[j]].first);
+                    upper=std::max(upper,lengths[window[j]].second);
+                }
+                total+=32*(lower+upper);
+            }
+            return total;
+        };
+        for (std::size_t c=0;c+1<offsets.size();++c) {
+            const auto end=offsets[c+1]/32*32;
+            for (auto first=(offsets[c]+31)/32*32;first<end;first+=256) {
+                const auto last=std::min(end,first+256);
+                auto begin=sequence.begin()+static_cast<std::ptrdiff_t>(first);
+                std::vector<MeshIndex> window(begin,begin+static_cast<std::ptrdiff_t>(last-first));
+                const auto previous=cost(window);
+                std::stable_sort(window.begin(),window.end(),[&](MeshIndex a,MeshIndex b) { return lengths[a]<lengths[b]; });
+                if (cost(window)<previous) std::copy(window.begin(),window.end(),begin);
+            }
+        }
     }
 
     // Обход Катхилла–Макки посещает соседей в порядке возрастания степени.
@@ -103,8 +138,11 @@ struct CsgsOrder {
 // Граф CSGS строится на CPU один раз по тому же порядку, которым пользуется
 // предобусловливатель. Все внедиагональные блоки попадают ровно в один проход.
 struct CsgsLayout {
+    // Диапазоны блоков для обхода строк по цветам.
     std::vector<CsgsRow> rows;
+    // Порядок исходных элементов и столбцы соседей.
     std::vector<MeshIndex> source, neighbours;
+    // Шаг между последовательными блоками одной строки.
     unsigned lanes = 1;
     // Строит порядок строк и границы групп для проходов CSGS.
     void build(const CsgsOrder& order, const std::vector<MeshIndex>& starts,

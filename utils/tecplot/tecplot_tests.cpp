@@ -183,11 +183,17 @@ std::string export_bytes(const Mesh& mesh, const FieldSnapshot& data, int thread
 
 // Независимый читатель теста следует описанию PLT v112. Проверяем типы, длины, диапазоны, конец файла и связность.
 struct DecodedZone {
+    // Прочитанное имя тестовой зоны.
     std::string name;
+    // Код типа и размеры прочитанных разделов зоны.
     I32 type, nodes, cells, faces, total_face_nodes;
+    // Прочитанное расчётное время.
     double time;
+    // Атрибуты размещения переменных и прочитанные массивы связности.
     std::vector<I32> locations, passive, connectivity, offsets, left, right;
+    // Дополнительные именованные атрибуты зоны.
     std::map<std::string, std::string> auxiliary;
+    // Числовые данные для сверки экспорта.
     std::vector<double> data;
     // В зоне узловая и ячеечная переменные имеют разную длину. Их начала
     // указывают на срезы единого массива, пассивная переменная даёт пустой срез.
@@ -198,8 +204,11 @@ struct DecodedZone {
 // Декодирует двоичный Tecplot в независимые тестовые структуры.
 class PltReader {
 public:
+    // Имена прочитанных переменных.
     std::vector<std::string> variables;
+    // Разобранные зоны тестового PLT.
     std::vector<DecodedZone> zones;
+    // Атрибуты переменных по номеру и имени.
     std::map<std::pair<I32, std::string>, std::string> variable_aux;
     // Начинает независимое тестовое декодирование двоичного Tecplot.
     explicit PltReader(const std::string& bytes) : bytes_(bytes), pos_(0) {
@@ -356,11 +365,14 @@ private:
         }
         return result;
     }
+    // Байты проверяемого файла.
     const std::string& bytes_;
+    // Текущая позиция разбора в байтах.
     std::size_t pos_;
 };
 // Владеет временным файлом проверки и удаляет его при выходе из области видимости.
 struct Temp {
+    // Путь к временному файлу проверки.
     std::string path;
     // Создаёт уникальное имя временного файла теста.
     Temp() {

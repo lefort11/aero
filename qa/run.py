@@ -225,6 +225,8 @@ def case_variants(name):
     variants = []
     for scheme in reconstructions:
         variables = ("characteristic",) if name == "sod_1d" else reconstruction_variables(scheme)
+        if scheme in ("weno3", "weno5") and not name.startswith("linear_acoustic_"):
+            variables = (*variables, "characteristic_flux")
         variants.extend(itertools.product((scheme,), variables, FLUXES, TIME_SCHEMES))
     return variants
 

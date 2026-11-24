@@ -63,11 +63,17 @@ inline std::array<double, 6> output_values(unsigned dimension, const double* u, 
 // Один узел декодируется один раз на зону. slot — адрес в поле процесса,
 // id — номер узла для диагностики. Получатель сам выбирает раскладку записи.
 struct FieldRows {
+    // Узловые консервативные переменные для выгрузки.
     const double* state;
+    // Размерность задачи, задающая число компонент скорости.
     unsigned dimension;
+    // Показатель адиабаты при восстановлении давления.
     double gamma;
+    // Фон для вывода полей линеаризованных уравнений.
     const LinearBackground& background;
+    // Доступные производные и усреднённые поля.
     const diagnostic::Fields& diagnostics;
+    // Номера компонент в порядке выходных столбцов.
     const std::vector<unsigned>& columns;
 
     // Вычисляет выбранные выходные величины узла и передаёт их функции записи.

@@ -13,11 +13,15 @@ enum class ExplicitBackend { Auto, Cpu, Cuda };
 // Представление действительно во время обратного вызова для невязки или чтения поля.
 // На CUDA указатели и поток принадлежат выбранной карте. На CPU device = −1, stream = nullptr.
 struct ExplicitField {
+    // Количество узлов и компонент на узел.
     size_t nodes, components;
     const double* values;  // Индекс компоненты равен node * components + component.
     const double* volumes; // Положительный постоянный объём каждого расчётного узла.
+    // Исполнитель операций над полем.
     ExplicitBackend backend;
+    // Номер GPU для указателей поля.
     int device;
+    // Поток выполнения операций устройства.
     void* stream;
 };
 
@@ -56,6 +60,7 @@ public:
 
 private:
     struct Impl;
+    // Владеет рабочими массивами стадий интегратора.
     std::unique_ptr<Impl> impl_;
 };
 }

@@ -42,6 +42,7 @@ struct EvaluationPlan {
 
 // Узловые скорость, плотность, отношение p/rho и динамическая вязкость.
 struct Gas {
+    // Скорость, отношение давления к плотности, плотность и вязкость.
     double velocity[3], pressure_over_density, density, mu;
 };
 // Осреднённые коэффициенты переноса и взвешенная вязкостью скорость элемента.
@@ -65,16 +66,20 @@ struct Material {
 };
 // Вязкая невязка одного узла и вклад диффузии в ограничение CFL.
 struct Row {
+    // Вязкие вклады в уравнения газа и оценка ограничения CFL.
     double residual[5], cfl_rate;
 };
 // В компактном неявном расчёте газ и вязкие строки занимают соседние части
 // буфера потоков. Между сборками этот же участок используется решателем СЛАУ.
 struct FlowScratch {
+    // Рабочие узловые параметры газа.
     Gas* gas;
+    // Выходные строки вязкого остатка.
     Row* rows;
 };
 // Безразмерные параметры молекулярной вязкости и теплопроводности.
 struct Law {
+    // Показатель адиабаты, температурный масштаб, обратное число Рейнольдса, число Прандтля и параметр Сазерленда.
     double gamma, temperature_scale, inverse_reynolds, prandtl, sutherland_ratio;
     // Масштабы: rho_inf = U_inf = 1. При T = T_inf получаем mu = 1/Re для обоих законов.
     AERO_HOST_DEVICE double dynamic_viscosity(double p_over_rho) const {
@@ -87,39 +92,72 @@ struct Law {
 struct GradientSlice {
     MeshIndex node,first,end; // Какие вхождения текущего узла принадлежат группе элементов.
 };
+// Срез содержит только номера; общий формат сохраняется при превышении UINT32_MAX.
+struct GradientSlice32 {
+    // Короткие номер узла и границы диапазона вкладов.
+    std::uint32_t node,first,end;
+    // Общий тип записи после расширения индексов.
+    using View=GradientSlice;
+    // Проверяет оба конца диапазона и номер узла независимо.
+    static bool fits(GradientSlice s) { return s.node<=UINT32_MAX && s.first<=UINT32_MAX && s.end<=UINT32_MAX; }
+    // Копирует проверенный диапазон в короткую запись.
+    static GradientSlice32 pack(GradientSlice s) {
+        return {static_cast<std::uint32_t>(s.node),static_cast<std::uint32_t>(s.first),static_cast<std::uint32_t>(s.end)};
+    }
+    // Сохраняет исходные номера больших таблиц.
+    AERO_HOST_DEVICE static GradientSlice view(GradientSlice s) { return s; }
+    // Восстанавливает широкие номера перед обходом диапазона.
+    AERO_HOST_DEVICE static GradientSlice view(GradientSlice32 s) { return {s.node,s.first,s.end}; }
+};
 // Диапазоны элементов, срезов и вершин группы вычисления градиентов.
 struct GradientTile {
     MeshIndex first_cell,cells,first_slice,slices,first_vertex; // Начало градиентов группы в общей нумерации.
 };
 // Представление геометрии и материалов для вычисления вязких и турбулентных вкладов.
 struct Operator {
+    // Число направлений производной.
     unsigned dim;
+    // Параметры молекулярного переноса.
     Law law;
 #ifdef AERO_HAS_TURBULENCE
+    // Состояние рабочего уравнения SA.
     turbulence::View sa;
+    // Параметры подсеточной модели.
     turbulence::LesSettings les;
+    // Предвычисленные метрики элементов для фильтра.
     const turbulence::FilterCell* filters;
     const turbulence::FilterExtent* filter_extents; // Для упакованного GPU-фильтра нужны только размеры и координаты.
     const turbulence::FilterLengths* coordinate_filters; // При общей сетке точки уже доступны в tetra.position.
     MeanAreaTable mean_areas; // Интегралы градиентов фильтра по координатам вершин ячейки.
+    // Соответствие элементов записям метрик.
     const MeshIndex* filter_indices;
     // При явном шаге один узел обслуживает все свои элементы. Вес для
     // напряжений, тепла и работы напряжений меняется только вместе с полем узла.
     struct NodalMaterial {
+        // Динамическая вязкость, добавка теплопереноса, взвешенная скорость и скалярная диффузия.
         double mu, extra_heat, mu_velocity[3], scalar_diffusion;
     };
+    // Кэш коэффициентов материала по узлам.
     NodalMaterial* material_nodes;
+    // Номера вершин для чтения кэша.
     const std::uint32_t* material_vertices;
+    // Количество вершин в элементе выбранного типа.
     unsigned vertices_per_cell;
     // В этой таблице GPU одинаковые вершины 32 соседних элементов лежат рядом.
     static constexpr unsigned material_lanes = 32;
+    // Упакованные данные гексаэдрального фильтра.
     turbulence::HexFilterData hex_filter;
+    // Короткие номера вершин прямоугольных ячеек.
     const std::uint32_t* box_nodes;
+    // Шаги адресации узлов прямоугольных ячеек.
     MeshIndex box_stride,box_pitch;
+    // Объёмы элементов для узлового фильтра.
     const double* les_volumes;
+    // Рабочие данные LES по элементам.
     turbulence::LesSample* samples;
     double* eddy_nu; // Значения ν_t в узлах, включая копии с соседних процессов.
     double les_pr_ratio, c_des; // c_des положителен только для гибридной модели SA-DDES.
+    // Признаки постоянного масштаба DDES и возможности пропуска фильтра.
     bool fixed_ddes_length, skip_ddes_filter;
     double* cell_gradient_norm; // Объёмно-взвешенная норма градиента скорости для защиты слоя DDES.
     const unsigned char* no_slip; // Маска узлов неподвижной стенки AES.
@@ -143,7 +181,7 @@ struct Operator {
     }
     // Вычисляет средний по элементу градиент скорости.
     template<unsigned fixed_dim,unsigned fixed_count,class Geometry,class Index>
-    AERO_HOST_DEVICE double mean_velocity_gradient(const Geometry& geometry,const Index* nodes,unsigned stride,
+    AERO_HOST_DEVICE double mean_velocity_gradient(const Geometry& geometry,Index nodes,unsigned stride,
                                   unsigned count,turbulence::VelocityGradient& grad) const {
         const unsigned dimension=fixed_dim ? fixed_dim : dim;
         const unsigned vertices=fixed_count ? fixed_count : count;
@@ -177,12 +215,14 @@ struct Operator {
     // Средние производные здесь те же, что использованы для линейной части AES.
     // Возвращаем номер вершины в порядке сетки: порядок суммирования модели сохраняется.
     struct AffineBasis {
+        // Метрики активной аффинной ячейки.
         const AffineHex& cell;
         // Возвращает компоненту градиента локальной базисной функции.
         AERO_HOST_DEVICE double basis(unsigned i,unsigned axis) const { return cell.basis(axis,cell.ordered[i]); }
     };
     // Представление постоянных средних градиентов тетраэдрального элемента.
     struct TetraBasis {
+        // Средние градиенты для тетраэдрального базиса.
         const MeanGradient& cell;
         // Возвращает компоненту градиента локальной базисной функции.
         AERO_HOST_DEVICE double basis(unsigned i,unsigned axis) const { return cell.basis[i][axis]; }
@@ -191,9 +231,13 @@ struct Operator {
     // Геометрические номера берутся до периодической склейки; прикладная
     // модель читает один и тот же диаметр при обеих раскладках памяти.
     struct CoordinateFilter {
+        // Размеры элемента, участвующие в оценке фильтра.
         const turbulence::FilterLengths& shape;
+        // Исходные координаты узлов.
         const Coordinate* positions;
+        // Связность ячейки в координатном представлении.
         VolumeCellView cell;
+        // Характерная длина по объёму.
         double vol_length;
         // Возвращает координаты вершины относительно опорной точки элемента.
         AERO_HOST_DEVICE Coordinate relative(unsigned i) const {
@@ -286,19 +330,26 @@ struct Operator {
                 eddy_nu,skip_ddes_filter ? nullptr : sa.ddes,les,c_des,fixed_ddes_length};
     }
 #endif
+    // Размеры узловых, элементных и рабочих таблиц оператора.
     MeshIndex node_count, cell_count, row_count, vertex_count, neighbour_count;
-    const Cell* cells;
-    const GradientSlice* gradient_slices; // На GPU сумма в узле продолжается со следующей группы элементов.
+    // Представление геометрии ячеек.
+    CellTable cells;
+    CompactTable<GradientSlice,GradientSlice32> gradient_slices; // Сумма в узле продолжается со следующей группы элементов.
     const GradientTile* host_gradient_tiles; // Описание запусков Kokkos читает только CPU.
+    // Число плиток вычисления градиентов.
     MeshIndex gradient_tile_count;
     const AffineHex* affine; // Сокращённый оператор по элементам, когда полная таблица не помещается на GPU.
     VolumeCoordinates tetra;    // При дефиците памяти напряжения восстанавливаются по координатам на карте.
     GradientStencil stencil; // Геометрические данные принадлежат тому же исполнителю, что и поле.
-    const MeshIndex *offsets, *incidence;
+    // Границы списков инцидентности и соответствующие индексы.
+    IndexArray<MeshIndex> offsets,incidence;
+    // Узловое поле газа в представлении вязкого оператора.
     Gas* gas;
     Gradient* gradient_cache; // Производные в порядке элементов или вхождений в собственные строки.
     bool element_order;      // Все вершины каждого элемента размещаются подряд.
+    // Средние транспортные коэффициенты по элементам.
     Material* material;
+    // Рабочие строки невязки и оценки CFL.
     Row* rows;
 
 #ifdef AERO_HAS_TURBULENCE

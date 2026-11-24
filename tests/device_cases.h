@@ -16,14 +16,20 @@ AERO_DEVICE_ENTRY const char* test_flux(void* stream, const BcTestCase* cases, s
 AERO_DEVICE_ENTRY const char* inspect(void* stream, aero::CvView v, double* result);
 // Входные состояния, размерность, нормаль и режим проверки потокового ядра.
 struct Case {
+    // Тестируемый режим потока и пространственная размерность.
     unsigned mode, dimension;
+    // Основные и вспомогательные состояния с двух сторон, направление и показатель адиабаты.
     double left[5], right[5], aux_left[5], aux_right[5], direction[3], gamma;
 };
 // Результат и статус GPU-потока с контрольными значениями вокруг буфера.
 struct Output {
+    // Контрольное значение перед выходным массивом.
     double before;
+    // Вычисленный поток для сверки с CPU.
     aero::EulerFluxResult result;
+    // Контрольное значение после выходного массива.
     double after;
+    // Код завершения тестируемого ядра.
     int status;
 };
 // Входим через ту же функцию, которую будет вызывать сборщик матрицы на GPU.

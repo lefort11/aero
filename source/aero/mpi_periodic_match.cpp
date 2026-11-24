@@ -6,14 +6,18 @@ namespace periodic_mpi {
 namespace {
 // Узел периодической грани и относящийся к нему вектор площади.
 struct Corner {
+    // Номер вершины сопоставляемой грани.
     Id node;
+    // Её вклад в вектор площади.
     Coordinate area;
 };
 using Face = std::vector<Corner>;
 using Ids = std::vector<Id>;
 // Собственные узлы и грани одного периодического участка.
 struct Patch {
+    // Узлы патча во владении процесса.
     std::set<Id> owned;
+    // Грани для поиска соответствий.
     std::vector<Face> faces;
 };
 using Links = std::set<std::pair<Ref, Ref>>;
@@ -51,6 +55,7 @@ std::map<std::string, Patch> collect(const MeshPartition& part, CvView cv,
 
 // Ограничивающий параллелепипед для отсева кандидатов периодического сопоставления.
 struct Box {
+    // Покоординатные нижняя и верхняя границы области поиска.
     Coordinate lo, hi;
     // Инициализирует пустые границы для последующего расширения точками.
     Box() {

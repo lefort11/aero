@@ -61,6 +61,7 @@ public:
             throw std::runtime_error("rank " + std::to_string(failed) + ": " + message);
         }
     }
+    // Ранг процесса и размер группы работников.
     int rank = 0, size = 1;
 };
 // Разбирает положительное целое значение параметра командной строки.

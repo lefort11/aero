@@ -8,7 +8,7 @@ namespace multigrid {
 // уравнения SA. Узлу нужны только текущая обычная поправка и последнее изменение.
 class ScalarSmoother {
 public:
-    // Возвращает коэффициент следующей итерации скалярного сглаживания.
+    // Обновляет current и previous для следующей итерации скалярного сглаживания.
     void next(double initial_norm,double current_norm,unsigned ordinary_iterations) {
         if (!iteration_) {
             // Для x <- x − D⁻¹F с наблюдаемым множителем затухания q
@@ -37,6 +37,7 @@ public:
     double current = 0.; // Коэффициент при новой поправке −D⁻¹F.
     double previous = 0.; // Коэффициент при предыдущем изменении рабочей вязкости.
 private:
+    // Номер итерации при выборе параметров сглаживания.
     unsigned iteration_ = 0;
     double center_ = 0., radius_ = 0.; // Середина и полуразмах оценки спектра.
     double reference_ = 0.;            // Норма полной невязки до начала полиномиальных итераций.

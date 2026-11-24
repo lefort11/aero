@@ -21,7 +21,9 @@ Id width(Table<Id>& offsets, Id i) {
 }
 // Тип и исходный номер сущности вместе с её адресом в архиве.
 struct Location {
+    // Тип и номер исходной сущности.
     Id kind, id;
+    // Положение сущности в разбиении.
     Address address;
     // Сравнивает ключи сущностей для упорядочения и поиска.
     bool operator<(const Location& v) const { return kind == v.kind ? id < v.id : kind < v.kind; }

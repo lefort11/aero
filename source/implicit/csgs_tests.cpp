@@ -7,12 +7,43 @@
 #include "../parallel/device_api.h"
 #endif
 
+// Перестановка внутри цвета сокращает заполнители, сохраняя все зависимости
+// и 32-полосное чтение коэффициентов. Степени чередуются в исходной нумерации.
+void test_csgs_padding() {
+    using namespace aero;
+    using namespace implicit;
+    const MeshIndex centers=256;
+    std::vector<MeshIndex> rows(1,0),columns,owner;
+    MeshIndex next=centers;
+    for (MeshIndex row=0;row<centers;++row) {
+        columns.push_back(row);
+        for (MeshIndex k=0;k<1+row%8;++k) { columns.push_back(next++); owner.push_back(row); }
+        rows.push_back(columns.size());
+    }
+    for (MeshIndex i=0;i<owner.size();++i) {
+        columns.push_back(centers+i); columns.push_back(owner[i]); rows.push_back(columns.size());
+    }
+    const CsgsOrder packed(next,rows,columns,true,1);
+    auto original=packed;
+    std::iota(original.sequence.begin(),original.sequence.end(),MeshIndex(0));
+    original.position=original.sequence;
+    CsgsLayout before,after;
+    before.build(original,rows,columns,true); after.build(packed,rows,columns,true);
+    aero_test::require(after.lanes==32 && before.lanes==32 && after.source.size()<before.source.size(),
+                       "CSGS reduces padding without losing coalesced layout");
+    for (MeshIndex row=0;row<next;++row)
+        for (auto p=rows[row]+1;p<rows[row+1];++p)
+            aero_test::require((original.position[columns[p]]<original.position[row])==
+                              (packed.position[columns[p]]<packed.position[row]),"CSGS preserves dependency direction");
+}
+
 // Три строки с D=2I и двумя связями -I. Жадная раскраска даёт цвета {0,2}, {1}.
 // Одну дополнительную связь последней строки выводим на другой процесс.
 // В прямом проходе её значение нулевое, в обратном с соседнего ранга приходит 4.
 void test_csgs(int device) {
     using namespace aero;
     using namespace implicit;
+    test_csgs_padding();
     const std::vector<MeshIndex> rows{0, 2, 5, 8}, columns{0, 1, 1, 0, 2, 2, 1, 3};
     const CsgsOrder order(4, rows, columns, true, 1);
     aero_test::require(order.sequence == std::vector<MeshIndex>({0, 2, 1}) &&

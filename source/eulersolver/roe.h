@@ -11,7 +11,7 @@ struct RoeFlux {
     template <unsigned fixed_dimension = 0>
     KOKKOS_FORCEINLINE_FUNCTION static EulerStatus combine(const euler_detail::FaceStates& face,
                                                 const euler_detail::InterfaceGas& gas, const double* fl,
-                                                const double* fr, double speed, EulerFluxResult* result) {
+                                                const double* fr, double speed, EulerFluxResult* result, double entropy_fix=0.) {
         const unsigned dimension = fixed_dimension ? fixed_dimension : face.dimension;
         euler_detail::RoeAverage average;
         const auto status = euler_detail::average_roe_state(dimension, gas.left, gas.right, gas.normal,
@@ -37,8 +37,8 @@ struct RoeFlux {
         output.components = count;
         const unsigned plus = count - 1;
         const double transport = euler_detail::absolute(average.normal_speed);
-        const double left_speed = euler_detail::absolute(average.normal_speed - average.sound_speed);
-        const double right_speed = euler_detail::absolute(average.normal_speed + average.sound_speed);
+        const double left_speed = euler_detail::acoustic_modulus(average.normal_speed - average.sound_speed,entropy_fix*average.sound_speed);
+        const double right_speed = euler_detail::acoustic_modulus(average.normal_speed + average.sound_speed,entropy_fix*average.sound_speed);
         // u·n лежит между u·n−c и u·n+c. Для CFL достаточно сравнить модули этих двух
         // звуковых скоростей с оценкой по левому и правому состояниям.
         output.max_wave_speed = left_speed > speed ? left_speed : speed;

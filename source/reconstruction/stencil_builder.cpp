@@ -155,11 +155,17 @@ NodeList faces_inside_layer(MeshView mesh, const NodeList& layer, const NodeInci
 
 // Первый слой — все вершины общих ячеек. Второй — их соседи за вычетом центра и первого слоя.
 class StraightLayers {
+    // Сетка поиска прямых слоёв.
     MeshView mesh_;
+    // Требуются дальние точки для пятого порядка.
     bool fifth_;
+    // Ячейки, инцидентные каждому узлу.
     const NodeIncidence& cells_;
+    // Грани, инцидентные каждому узлу.
     NodeIncidence node_faces_;
+    // Списки соседей и ближних и дальних слоёв.
     FaceLists neighbours_, near_, far_;
+    // Флаги однократной подготовки списков при параллельном доступе.
     std::vector<std::once_flag> pending_, pending_neighbours_;
 
     // Строит списки соседей узлов для расширения шаблонов.

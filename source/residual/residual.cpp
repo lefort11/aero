@@ -2,7 +2,9 @@
 #include "boundary_flux_failure.h"
 #include "../bc/profile.h"
 #include "packed_weno.h"
+#include "split_flux.h"
 #include "../parallel/parallel_for.h"
+#include "../parallel/upload_compact.h"
 #include "../parallel/wall_timer.h"
 #include <cmath>
 #include <limits>
@@ -33,7 +35,7 @@ void validate(ResidualOptions o) {
     if (!(o.mp6_hybrid >= 0 && o.mp6_hybrid <= 1))
         throw std::invalid_argument("residual: mp6_hybrid must be in [0, 1]");
     if (o.variables != ResidualVariables::Conservative && o.variables != ResidualVariables::Characteristic &&
-        o.variables != ResidualVariables::Flux)
+        o.variables != ResidualVariables::Flux && o.variables != ResidualVariables::CharacteristicFlux)
         throw std::invalid_argument("residual: invalid reconstruction variables");
     if (o.solver != ResidualSolver::Roe && o.solver != ResidualSolver::LocalLF)
         throw std::invalid_argument("residual: invalid solver");
@@ -186,6 +188,8 @@ void residual_detail::cpu_face_fluxes(const FaceBatch& batch, const MeshIndex* g
     const auto& geometry = batch.geometry;
     if (geometry.options.background.active()) {
         compute_cpu_faces<cpu_linear_flux>(batch, global_nodes);
+    } else if (uses_split_flux(geometry)) {
+        compute_cpu_faces<split_face>(batch,global_nodes);
     } else if (batch.nodal_lf()) {
         const auto launch = for_dimension(batch.geometry.dim, compute_cpu_faces<cpu_nodal_lf<1>>,
                                                        compute_cpu_faces<cpu_nodal_lf<2>>,
@@ -204,6 +208,8 @@ ResidualOptions residual_options(const std::string& variables, const std::string
         o.variables = ResidualVariables::Conservative;
     else if (variables == "characteristic")
         o.variables = ResidualVariables::Characteristic;
+    else if (variables == "characteristic_flux")
+        o.variables = ResidualVariables::CharacteristicFlux;
     else if (variables == "flux")
         o.variables = ResidualVariables::Flux;
     else
@@ -227,6 +233,7 @@ struct SpatialResidual::Impl {
     ReconstructionScheme scheme;         // Якобиан первого порядка требует той же схемы у невязки.
     ReconstructionContext context;       // Владеет шаблоном и его копией на устройстве.
     std::vector<Surface> surfaces;       // Сначала внутренние рёбра, затем физические площадки.
+    // Узловые данные профилей физических границ.
     std::vector<ProfileState> profiles;
     BoundaryPatches patches;             // Метки и правила физических границ.
     std::vector<Index> offsets;          // Начало и конец списка для каждого узла.
@@ -237,7 +244,9 @@ struct SpatialResidual::Impl {
     void assemble(const double* u, const double* u0, double* r, double* edge, double* boundary, void* stream,
                   double* flux_seconds);
 #ifdef AERO_WITH_KOKKOS_GPU
+    // Владелец выделенных на GPU массивов невязки.
     gpu::DeviceArrays storage;
+    // Потоки площадок на активном GPU.
     EulerFluxResult* device_flux = nullptr;
     Index* device_error = nullptr; // Первый узел или поверхность с ошибкой расчёта.
 #endif
@@ -321,9 +330,9 @@ struct SpatialResidual::Impl {
         gpu::DeviceScope scope(device);
         gpu::checked(scope.status);
         storage.device = device;
-        g.surfaces = storage.allocate(surfaces.size(), surfaces.data());
-        g.offsets = storage.allocate(offsets.size(), offsets.data());
-        g.incidence = storage.allocate(incidence.size(), incidence.data());
+        g.surfaces = upload_records<Surface32>(storage,surfaces.size(),surfaces.data());
+        g.offsets = upload_indices(storage,offsets.size(),offsets.data());
+        g.incidence = upload_records<OrientedFace32>(storage,incidence.size(),incidence.data());
         g.patches = upload_boundary_patches(storage, g.patches);
         g.stencil = context.device_view();
         device_flux = storage.allocate<EulerFluxResult>(surfaces.size());

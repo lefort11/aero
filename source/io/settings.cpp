@@ -29,6 +29,7 @@ std::string resolve(const std::string& directory, const std::string& path) {
 
 // Текст параметра и место его определения для сообщений об ошибках.
 struct Entry {
+    // Текст параметра и место определения для сообщения об ошибке.
     std::string value, where;
 };
 
@@ -107,7 +108,9 @@ public:
     }
 
 private:
+    // Путь к разбираемому файлу параметров.
     std::string path_;
+    // Прочитанные параметры, индексированные по имени.
     std::map<std::string, Entry> entries_;
 };
 
@@ -328,9 +331,13 @@ RunSettings read_run_settings(const RunDirectories& directories) {
         throw std::invalid_argument("scheme.txt: mp6_hybrid must be in [0, 1]");
     scheme_settings.finish(&run.input_warnings);
     run.reconstruction_variables =
-        choice(main.take("reconstruction_variables"), {"characteristic", "flux"});
+        choice(main.take("reconstruction_variables"), {"characteristic", "flux", "characteristic_flux"});
+    if (run.reconstruction_variables == "characteristic_flux" && run.reconstruction != "ebr5" && !uses_slope_rows(scheme.family))
+        throw std::invalid_argument("characteristic_flux requires ebr5, weno3, weno5, mp5 or MPWENO5");
     const bool linear = main.contains("Equations") &&
         choice(lowercase(main.take("Equations")), {"euler","linear"}) == "linear";
+    if (linear && run.reconstruction_variables == "characteristic_flux")
+        throw std::invalid_argument("characteristic_flux requires Equations=Euler");
     if (linear) {
         Entries base(directories, "linear");
         run.background.rho = number(base.take("rho0"), false);
@@ -418,6 +425,11 @@ RunSettings read_run_settings(const RunDirectories& directories) {
         controls.max_iterations = settings.count<unsigned>("newton_max_iter");
         if (!controls.max_iterations) throw std::invalid_argument("implicit.txt: newton_max_iter must be positive");
         settings.finish(&run.input_warnings);
+    }
+    if (main.contains("entropy_fix")) {
+        const auto entry = lowercase(main.take("entropy_fix"));
+        run.entropy_fix = entry.value == "on" ? .1 : entry.value == "off" ? 0. : number(entry,true);
+        if (run.entropy_fix > 1.) throw std::invalid_argument("main.txt: entropy_fix must be off, on or in [0,1]");
     }
     run.upw_coeff = main.contains("upw_coeff") ? number(main.take("upw_coeff"), true) : 1;
     if (run.upw_coeff > 1)

@@ -30,11 +30,15 @@ public:
 private:
     // Группа процессов, измеряющих одни и те же фазы расчёта.
     const Processes& world_;
+    // Флаги хронометража, устройства и подробного учёта BDF.
     bool enabled_, cuda_, profile_bdf_ = false;
     // Номер уже принятого шага в момент запуска замера, в том числе после восстановления.
     std::uint64_t first_;
+    // Начало интервала измерения.
     WallTimer::Clock::time_point start_;
+    // Число вызовов каждой измеряемой операции.
     std::array<std::uint64_t, Count> calls_{};
+    // Накопленное время операций в секундах.
     std::array<double, Count> seconds_{};
 };
 }

@@ -9,16 +9,20 @@ _HEADER = struct.Struct("<8s15Q")
 
 # Именованные поля заголовка текущей версии архива разбиения сетки.
 class MdecHeader(NamedTuple):
+    # Флаги формата и пространственная размерность исходной сетки.
     flags: int
     dimension: int
+    # Число исходных сущностей каждого вида и число именованных патчей.
     nodes: int
     faces: int
     cells: int
     boundary_faces: int
     patches: int
+    # Размер дерева разбиения и индекс его корневой записи.
     leaves: int
     branches: int
     root: int
+    # Байтовые смещения имён патчей, индекса листьев, дерева и содержимого листьев.
     names: int
     index: int
     tree: int

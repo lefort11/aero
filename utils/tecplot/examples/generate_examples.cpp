@@ -21,8 +21,11 @@ void require(bool ok, const char* message) {
 
 // Собирает пример сетки с общими гранями и учётом их вхождений в ячейки.
 struct Builder {
+    // Владеет данными тестовой геометрии.
     MeshData data;
+    // Поиск существующих граней по вершинам.
     std::map<Polygon, MeshIndex> faces;
+    // Кратность использования граней ячейками.
     std::vector<unsigned> incidence;
     // Добавляет ячейку примера и переиспользует общие грани.
     void cell(const std::vector<Polygon>& shell) {
@@ -133,7 +136,9 @@ Mesh line_mesh() {
 }
 // Плоская тестовая сетка для генерации примеров Tecplot.
 struct Plane {
+    // Координаты вершин плоской сетки.
     std::vector<double> x, y;
+    // Многоугольники плоской сетки.
     std::vector<Polygon> polygons;
     // Создаёт регулярную плоскую сетку для примеров экспорта.
     Plane() {

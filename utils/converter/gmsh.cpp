@@ -13,8 +13,11 @@ typedef std::uint64_t Tag;
 const Tag max_items = 100000000; // Ограничение объявленных размеров до выделения памяти.
 // Читает числа Gmsh с учётом текстового режима, разрядности и порядка байтов.
 struct Reader {
+    // Поток исходных данных Gmsh.
     std::istream& in;
+    // Признаки двоичного формата и перестановки байтов.
     bool binary, swap;
+    // Размер целого поля двоичного формата.
     int width;
     // Начинает чтение Gmsh с исходными параметрами до разбора заголовка.
     explicit Reader(std::istream& s) : in(s), binary(false), swap(false), width(8) {}
@@ -94,14 +97,20 @@ struct Reader {
 };
 // Тип элемента, геометрическая сущность, физическая метка и номера его вершин.
 struct Record {
+    // Тип элемента и номер геометрической сущности.
     int kind, entity;
+    // Размерность геометрической сущности.
     unsigned dim;
+    // Метка физической группы Gmsh.
     Tag physical;
+    // Идентификаторы вершин элемента.
     detail::Nodes nodes;
 };
 // Для разбора используем собственную локаль потока и возвращаем исходную при выходе.
 struct Locale {
+    // Поток, чья локаль временно меняется.
     std::istream& s;
+    // Сохранённая локаль для восстановления.
     std::locale old;
     // Временно задаёт потоку независимую от ОС локаль разбора чисел.
     explicit Locale(std::istream& x) : s(x), old(x.getloc()) { s.imbue(std::locale::classic()); }
@@ -114,10 +123,14 @@ class GmshFile {
     Reader r;            // Источник токенов или двоичных величин в порядке байтов файла.
     bool legacy = false; // В 2.2 метки сопоставлены элементам, в 4.1 — геометрическим сущностям.
     std::map<Tag, MeshIndex> node_ids; // Метка Gmsh → позиция в массивах координат.
+    // Координаты прочитанных узлов.
     std::vector<double> x, y, z;
     std::vector<Record> records; // Элементы с исходными тегами до разрешения ссылок.
+    // Физические группы каждой геометрической сущности.
     std::map<std::pair<unsigned, int>, std::vector<Tag>> entities;
+    // Имена физических групп по размерности и метке.
     std::map<std::pair<unsigned, Tag>, std::string> names;
+    // Признаки уже прочитанных разделов Gmsh.
     bool nodes_seen = false, elements_seen = false, entities_seen = false, names_seen = false;
     unsigned dim = 0; // Максимальная размерность прочитанных элементов.
 

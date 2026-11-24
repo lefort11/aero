@@ -69,6 +69,18 @@ void check_transfer() {
     for (unsigned i = 0; i < 6; ++i) transfer(i);
     const double expected[] = {11.,8.,11.,19.,19.,19.};
     for (unsigned i = 0; i < 6; ++i) require(coarse[i] == expected[i],"Galerkin coarse operator");
+    // Прилипание исключает массу закреплённого узла только из компонент импульса.
+    double inverse_mass[4]{}, smoother[12]{};
+    transfer.inverse_mass=inverse_mass; transfer.smoother=smoother;
+    transfer.operation=multigrid::Transfer::RestrictResidual;
+    for (unsigned i=0;i<6;++i) transfer(i);
+    const double masses[]={1./26.,1./14.,1./51.,1./51.};
+    for (unsigned i=0;i<4;++i) require(inverse_mass[i]==masses[i],"scalar and wall momentum aggregate masses");
+    const double ones[]={1.,1.,1.,1.,1.,1.};
+    multigrid::VectorUpdate scale{multigrid::VectorUpdate::ScaleResidual,coarse,ones,inverse_mass,0.,3};
+    for (unsigned i=0;i<6;++i) scale(i);
+    require(coarse[0]==masses[0] && coarse[1]==masses[1] && coarse[2]==masses[0] &&
+            coarse[3]==masses[2] && coarse[4]==masses[3] && coarse[5]==masses[2],"aggregate mass component mapping");
 }
 }
 
@@ -103,6 +115,17 @@ void test_steady_multigrid(int device) {
     aero_test::TestField state(device,12), rhs(device,12), product(device,12), volumes(device,4);
     state.set(uniform); volumes.set({1.,1.,1.,1.});
     implicit::Partition partition;
+    aero_test::TestField scratch(device,72);
+    partition.coarse_graph=std::make_shared<multigrid::Aggregates>(host,4,nullptr);
+    if (device>=0) {
+        partition.krylov_scratch.borrow(scratch.data(),72*sizeof(double),12);
+        partition.coarse_product_persistent=true;
+        const auto separate=multigrid::CoarseStep::storage_bytes(*partition.coarse_graph,4,3,{});
+        const auto shared=multigrid::CoarseStep::storage_bytes(*partition.coarse_graph,4,3,partition.krylov_scratch);
+        require(shared<separate,"multigrid reuses Krylov storage");
+        const auto shared_product=multigrid::CoarseStep::storage_bytes(*partition.coarse_graph,4,3,partition.krylov_scratch,true);
+        require(shared-shared_product==12*sizeof(double),"multigrid reuses caller product for persistent smoother");
+    }
     implicit::BdfLinearSystem matrix(host,active,device,partition);
     matrix.assemble(state.data(),nullptr,volumes.data(),.1);
     multigrid::CoarseStep coarse(host,active,4,device,partition);
@@ -110,7 +133,13 @@ void test_steady_multigrid(int device) {
     // Проверяет одну попытку грубосеточной коррекции и критерий её принятия.
     const auto attempt = [&](double trial_norm) {
         return coarse.correct(matrix,state.data(),volumes.data(),.1,rhs.data(),product.data(),1.,
-                              [&] { ++trials; return trial_norm; },[&] { ++restores; });
+                              [&] {
+                                  ++trials;
+                                  // Пересчёт потоков уничтожает заимствованные направления.
+                                  // Они уже не нужны для повторной пробы с меньшим множителем.
+                                  if (device>=0) scratch.set(std::vector<double>(72,12345.));
+                                  return trial_norm;
+                              },[&] { ++restores; });
     };
     rhs.set(std::vector<double>(12,0.));
     require(attempt(0.) == 0. && trials == 0 && state.read() == uniform,"zero coarse forcing");

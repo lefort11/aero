@@ -350,7 +350,9 @@ private:
         }
         return false;
     }
+    // Признаки встречи с границей, выхода и обрезания луча.
     bool boundary_face_ = false, boundary_exit_ = false, clipped_ = false;
+    // Расстояние вдоль луча до ближайшей границы.
     double boundary_distance_ = std::numeric_limits<double>::infinity();
     Coordinate origin_;            // Координаты начала луча.
     Coordinate direction_;         // Единичный вектор продолжения ребра.

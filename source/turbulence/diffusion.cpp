@@ -302,7 +302,7 @@ void Storage::prepare_diffusion(const viscosity::Operator& aes,View& view,bool h
         });
         std::vector<DiffusionTerm>().swap(diffusion_terms);
     }
-    view.diffusion.short_blocks = aes.cell_count && std::all_of(aes.cells,aes.cells+aes.cell_count,
+    view.diffusion.short_blocks = aes.cell_count && std::all_of(aes.cells.wide,aes.cells.wide+aes.cell_count,
                                         [](const viscosity::Cell& c){ return c.count<=4; });
     element_mean.resize(element_count);
     molecular_mean.resize(element_count);

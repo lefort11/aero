@@ -74,6 +74,7 @@ public:
             throw std::runtime_error(error);
 #endif
     }
+    // Сообщения, индексируемые по процессу обмена.
     using Messages = std::vector<std::string>;
     // Пересылает по одному сообщению каждому процессу. В ответе индекс означает номер отправителя.
     Messages exchange(const Messages& outgoing) const;
@@ -109,9 +110,12 @@ class DoubleExchange {
 public:
     // Адрес и число элементов одного буфера обмена double.
     struct Buffer {
+        // Начало области передаваемых чисел.
         double* data = nullptr;
+        // Число значений в сообщении.
         std::size_t count = 0;
     };
+    // Буферы отправки и приёма по соседним процессам.
     std::vector<Buffer> send, receive;
     // Выделяет таблицы отправки и приёма по числу процессов.
     explicit DoubleExchange(int ranks) : send(ranks), receive(ranks) {
@@ -124,6 +128,7 @@ public:
 
 private:
 #ifdef AERO_WITH_MPI
+    // Незавершённые неблокирующие операции обмена MPI.
     std::vector<MPI_Request> requests_;
 #endif
 };

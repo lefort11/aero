@@ -9,6 +9,7 @@ namespace viscosity {
 // Узел столбца может входить в несколько элементов и встречаться в одном элементе
 // несколькими периодическими копиями. Адреса блоков определяются один раз при старте.
 struct ColumnElement {
+    // Номер ячейки, дающей вклад в столбец.
     MeshIndex cell;
     unsigned source;    // Вершина элемента, консервативное состояние которой варьируем.
     MeshIndex block[8]; // Позиция (строка вершины, столбец источника) в CSR или missing.
@@ -22,7 +23,9 @@ constexpr MeshIndex omitted_pair = missing_block-1;
 // Сначала дифференцируем переход к примитивным переменным, затем оба коэффициента
 // элемента: среднюю вязкость и среднее произведение вязкости на скорость.
 struct GasDerivative {
+    // Производные примитивных переменных по консервативной компоненте.
     Difference primitive;
+    // Производные транспортных коэффициентов.
     Material transport;
     // Вычисляет производные примитивных и транспортных величин по компоненте состояния.
     AERO_HOST_DEVICE GasDerivative(unsigned dim, const Law& law, const Gas& gas, unsigned variable)
@@ -45,7 +48,9 @@ struct GasDerivative {
 // Диагональ стоит первой, остальные столбцы отсортированы. Одинаковый поиск
 // используется при подготовке тензора пары и при записи коэффициентов в матрицу.
 struct ColumnGraph {
+    // Границы списков столбцов по строкам.
     const MeshIndex* offsets;
+    // Номера столбцов в выбранной разрядности.
     implicit::IndexList columns;
     // Находит требуемого соседа в строке разреженной матрицы.
     AERO_HOST_DEVICE MeshIndex find_neighbour(MeshIndex row,MeshIndex column) const {
@@ -68,13 +73,16 @@ struct ColumnGraph {
 
 // Собирает производные вязкого оператора по столбцам газового состояния.
 struct Jacobian {
+    // Вязкий оператор в точке линеаризации.
     Operator aes;
     const MeshIndex* offsets;       // Все вхождения каждой неизвестной в элементы.
     const MeshIndex* row_offsets;    // При размещении всей сетки номера узлов равны номерам строк CSR.
     implicit::IndexList column_nodes; // В компактном режиме находим блок по двум узлам в готовом графе.
+    // Элементы, участвующие в заполнении столбцов.
     const ColumnElement* elements;
     Gradient* gradients;            // Геометрическая часть напряжений и теплопереноса по вершинам элемента.
     double* values;                 // Та же CSR-матрица, в которую добавляется конвективный вклад.
+    // Количество обрабатываемых значений матрицы.
     MeshIndex value_count;
     implicit::BlockLayout layout;   // Общая с конвекцией адресация коэффициентов Якобиана.
     MeshIndex single_count;         // Длина отдельной области для соседних блоков в mixed-сборке.
@@ -172,7 +180,7 @@ struct Jacobian {
     // Добавляет производные вязких вкладов в выбранный столбец матрицы.
     AERO_HOST_DEVICE void assemble_column(MeshIndex node, unsigned variable) const {
         // Весь столбец сразу. На одной карте список смежных элементов уже есть в AES.
-        const MeshIndex* starts = column_nodes ? aes.offsets : offsets;
+        const IndexArray<MeshIndex> starts = column_nodes ? aes.offsets : IndexArray<MeshIndex>(offsets);
         const GradientSlice slice{node,starts[node],starts[node+1]};
         if (aes.dim == 3) add_column<3>(slice,variable,0);
         else if (aes.dim == 2) add_column<2>(slice,variable,0);

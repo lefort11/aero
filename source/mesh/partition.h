@@ -16,7 +16,9 @@ struct LeafLayout {
 // Локальная нумерация следует исходным номерам. Для каждого собственного узла храним все примыкающие ячейки.
 // Публикуем только рёбра, у которых процесс владеет концом с меньшим номером.
 struct MeshPartition {
+    // Локальная сетка подобласти с ореолом.
     Mesh mesh;
+    // Контрольная сумма для сопоставления с исходной сеткой.
     std::string mesh_sha256;
     std::array<MeshIndex, 3> global_counts{}; // Число узлов, граней и ячеек всей сетки.
     // Таблицы перехода от местного номера к исходному для каждого типа элемента.
@@ -37,6 +39,7 @@ public:
     PartitionInput(const std::string& path, const Processes& world, const LeafLayout& layout);
     // Читает собственные узлы и все ячейки, необходимые для их контрольных объёмов.
     MeshPartition core(const Processes& world);
+    // Пары глобального номера узла и ранга владельца.
     using NodeOwners = std::vector<std::pair<MeshIndex, int>>;
     // Расширяет входные данные геометрией, необходимой шаблону реконструкции.
     void prepare_stencil(const std::set<MeshIndex>& periodic_nodes, bool fifth, NodeOwners* near_vertices);
@@ -52,10 +55,13 @@ public:
 private:
     // Источник записей листьев и индексов соседства на время подготовки раздела.
     mdec::Archive archive_;
+    // Распределение листьев архива по процессам.
     LeafLayout layout_;
+    // Позиция текущей подобласти в раскладке.
     int slot_;
     // Уже прочитанные записи по паре «лист, смещение». Соседние ячейки могут ссылаться на одну запись.
     mdec::Records records_;
+    // Адреса собственных узлов и ячеек в архиве.
     mdec::Addresses owned_, cells_;
     // Возвращает строку граней указанной ячейки.
     mdec::Addresses cell_faces(const mdec::Addresses& cells);

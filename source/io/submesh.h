@@ -10,9 +10,13 @@ namespace aero {
 struct SlicePoint { MeshIndex first, second; double weight; };
 // Геометрия подсетки и её связь с узлами исходной сетки для интерполяции.
 struct Submesh {
+    // Отпечаток исходной сетки для проверки совместимости.
     std::string parent_hash;
+    // Количество узлов в исходной сетке.
     MeshIndex parent_nodes = 0;
+    // Узлы среза и данные интерполяции.
     std::vector<SlicePoint> points;
+    // Геометрия и топология самого среза.
     Mesh mesh;
 
     // Сохраняет подсетку, отпечаток родителя и точки интерполяции.

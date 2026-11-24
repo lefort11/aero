@@ -57,6 +57,7 @@ inline bool turbulent(const std::string &key) {
 // Один узел на границе двух принятых шагов. Храним взвешенное по времени среднее,
 // предыдущее мгновенное значение для интегрирования по следующему шагу.
 struct Moments {
+    // Средние, последний отсчёт и длительность накопления.
     double mean[6], last[6], duration;
     // В прежнем recovery слово 12 содержало разность давлений. Оставляем место в файле.
     static constexpr unsigned words = 14;
@@ -100,10 +101,15 @@ AERO_HOST_DEVICE inline bool primary_from_state(unsigned dim, const double* u, d
 
 // Ядро накопления временных моментов физических величин в узлах.
 struct Sample {
+    // Число компонент скорости при накоплении статистики.
     unsigned dim;
+    // Показатель адиабаты и длительность интервала усреднения.
     double gamma, dt;
+    // Фон для восстановления физических величин из пульсаций.
     LinearBackground background;
+    // Обновляемая узловая статистика.
     Moments *values;
+    // Консервативное поле текущего отсчёта.
     const double *state;
     // Добавляет взвешенный по времени вклад состояния одного узла в его моменты.
     AERO_HOST_DEVICE void operator()(size_t i) const {
@@ -133,14 +139,17 @@ struct Sample {
 // Представление дополнительных полей SA, временных моментов и производной давления.
 struct Fields {
     const double *sa = nullptr; // Пары nu_tilde и nut по расчётным узлам.
+    // Узловая история для вывода усреднённых величин.
     const Moments *moments = nullptr;
     const double *pressure_rate = nullptr; // Мгновенная производная давления в неподвижном узле.
+    // Данные вращения для вычисляемой диагностики.
     const double *rotation = nullptr;
     const double *schlieren = nullptr; // Модуль пространственного градиента плотности.
 };
 // Теорема Гаусса: вклад в ротор равен векторному произведению площади
 // площадки на разность между скоростью на площадке и скоростью в узле.
 struct Curl {
+    // Компоненты ротора скорости.
     double value[3];
     // Дополняет набор вывода доступными диагностическими величинами.
     AERO_HOST_DEVICE void add(const double *area, const double *jump, double factor) {

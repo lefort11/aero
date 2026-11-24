@@ -10,6 +10,7 @@ struct MeshData;
 struct CaseBoundaries {
     // Номер элемента совпадает с MeshData::boundary_patch. Оба участка периодического шва имеют тип Periodic.
     BoundaryPatches patches; // Метки и отдельный массив условий free.
+    // Пары патчей для отождествления периодических узлов.
     std::vector<PeriodicPair> periodic_pairs;
 };
 // Связывает граничные секции постановки с участками загруженной сетки.

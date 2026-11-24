@@ -8,7 +8,9 @@ namespace viscosity {
 // Определитель сохраняет ориентацию тетраэдра. Его модуль нужен для интеграла,
 // а нормали — для производных четырёх базисных функций в этом же порядке вершин.
 struct TetrahedronGeometry {
+    // Нормали граней локального тетраэдра.
     Coordinate normal[4];
+    // Ориентированный определитель отображения тетраэдра.
     double determinant;
     // Вычисляет геометрию тетраэдра по указанным вершинам.
     template<class Points>
@@ -53,25 +55,30 @@ struct VolumePattern {
 // Геометрические номера вершин и индекс шаблона объёмного элемента.
 struct VolumeCellNodes {
     std::uint32_t vertex[8]; // Номера геометрических узлов, до периодической склейки.
+    // Номер схемы тетраэдрального разбиения.
     std::uint32_t pattern;
 };
 // Обычно геометрический узел и неизвестная имеют один номер. При периодическом
 // отождествлении это может нарушаться: тогда координаты читаются по исходной сетке.
 struct VolumeVertices {
-    const MeshIndex* shared;
+    // Общая таблица индексов вершин.
+    IndexArray<MeshIndex> shared;
+    // Отдельная компактная таблица вершин.
     const std::uint32_t* separate;
     // Возвращает элемент по индексу; допустимость индекса обеспечивает вызывающий код.
     AERO_HOST_DEVICE MeshIndex operator[](unsigned i) const { return shared ? shared[i] : separate[i]; }
 };
 // Вершины одного элемента и индекс его объёмного шаблона.
 struct VolumeCellView {
+    // Номера вершин активной ячейки.
     VolumeVertices vertex;
+    // Индекс её схемы разбиения.
     std::uint32_t pattern;
 };
 // Выбирает общую или отдельную таблицу геометрических вершин элементов.
 struct VolumeCellTable {
     const VolumeCellNodes* separate; // Геометрическая связность, если номера отличаются.
-    const Cell* shared;              // Вершины уже есть в таблице вязкого оператора.
+    CellTable shared;              // Вершины уже есть в таблице вязкого оператора.
     const std::uint32_t* patterns;   // Для единственного разбиения индекс всегда равен нулю.
     // Проверяет наличие подключённой таблицы геометрических вершин.
     AERO_HOST_DEVICE explicit operator bool() const { return separate || shared; }
@@ -85,6 +92,7 @@ struct VolumeCellTable {
 struct VolumeCoordinates {
     const Coordinate* position;       // Исходные координаты всех точек в базисе уравнений.
     VolumeCellTable cells;            // Локальные номера вершин и тип их нумерации.
+    // Общие схемы разбиения элементов.
     const VolumePattern* patterns;
     const MeanGradient* mean;         // Средние производные для фильтра DDES.
     double* volume_factors;           // Постоянный множитель каждого тетраэдра, 24 значения на ячейку.
@@ -94,7 +102,9 @@ struct VolumeCoordinates {
 // Номера геометрических узлов могут отличаться от номеров неизвестных, например,
 // при периодической склейке. Здесь всегда берём координаты исходного элемента.
 struct VolumePoints {
+    // Координаты узлов сетки.
     const Coordinate* position;
+    // Индексы вершин, доступных по локальному номеру.
     VolumeVertices vertex;
     // Подключает геометрические координаты к локальной нумерации элемента.
     AERO_HOST_DEVICE VolumePoints(const Coordinate* points,const VolumeCellView* cell)
@@ -127,8 +137,11 @@ AERO_HOST_DEVICE inline PairStress integrate_pair(const VolumePattern& pattern,u
 }
 // Вычисляет парные геометрические множители по нормалям объёмных симплексов.
 struct PairNormals {
+    // Позиции вершин для вычисления метрик пары.
     VolumePoints points;
+    // Топология тетраэдров элемента.
     const VolumePattern* pattern;
+    // Множители нормалей для вкладов пар.
     const double* factors;
     // Возвращает нормали двух вершин симплекса и соответствующий объёмный множитель.
     AERO_HOST_DEVICE double operator()(unsigned t,unsigned i,unsigned j,Coordinate& left,Coordinate& right) const {
@@ -139,7 +152,9 @@ struct PairNormals {
 };
 // Рабочая плитка парных тензоров напряжений для группы элементов.
 struct CoordinatePairTile {
+    // Выходные коэффициенты напряжений по парам.
     PairStress* pairs;
+    // Номер первой ячейки в плитке.
     MeshIndex first_cell;
     // Верхний треугольник восьми вершин содержит максимум 28 тензоров по 9 чисел.
     // Этой же оценкой пользуются разбиение сетки на CPU и размещение группы на GPU.

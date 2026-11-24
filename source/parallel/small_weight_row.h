@@ -11,6 +11,7 @@ namespace aero {
 // Как в упорядоченном словаре, обход всегда идёт по возрастанию номера узла.
 template<class Index, std::size_t Capacity> class SmallWeightRow {
 public:
+    // Индекс узла и его вес в короткой строке.
     using value_type = std::pair<Index,double>;
     // Инициализирует объект стандартными значениями его полей.
     SmallWeightRow() = default;

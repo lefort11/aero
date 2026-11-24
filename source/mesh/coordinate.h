@@ -5,6 +5,7 @@
 namespace aero {
 // Координаты точки в порядке x, y, z. Три компоненты лежат подряд.
 struct Coordinate {
+    // Три декартовы компоненты точки.
     double values[3];
     // Возвращает элемент по индексу; допустимость индекса обеспечивает вызывающий код.
     AERO_HOST_DEVICE double& operator[](size_t axis) { return values[axis]; }

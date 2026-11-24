@@ -7,17 +7,28 @@ namespace residual_detail {
 // Владелец проверяет невязку своего узла относительно его собственного среднего.
 // Если хотя бы один узел действующей строки отмечен, отмечается и её контрольный объём.
 struct StencilRates {
+    // Шаблоны газа для определения области влияния невязки.
     ReconstructionStencilView stencil;
-    const Surface* faces;
-    const OrientedFace* incidence;
-    const Index* offsets;
+    // Геометрия площадок и номера концов.
+    SurfaceTable faces;
+    // Связь узла с ориентированными площадками.
+    FaceIncidence incidence;
+    // Границы строк инцидентности по узлам.
+    IndexArray<Index> offsets;
+    // Списки собственных и вычисляемых узлов.
     const MeshIndex *owned, *computed;
+    // Количество внутренних рёбер перед граничными площадками.
     Index edge_count;
+    // Параметры ограничения шага по росту невязки.
     LocalRateLimit feedback;
+    // Текущие газовые потоки на площадках.
     const EulerFluxResult* flux;
     double *nodes, *edges; // Пары [газ, SA] в локальной нумерации узлов и рёбер.
+    // Признаки первого порядка газа и высокого порядка переноса SA.
     bool first_order, high_order_sa;
+    // Веса противопоточности и гибридной реконструкции.
     double upwind, hybrid;
+    // Стадия распространения оценки от узлов через рёбра к объёмам.
     enum Pass { NodeGrowth, Edges, Volumes } pass;
     // Ненулевое число процессов включает номера источников для диагностики.
     unsigned ranks, rank;

@@ -7,6 +7,7 @@
 namespace aero {
 // Начальный однородный поток и reference_state на границе используют одну систему углов и одну нормировку.
 struct FreestreamGas {
+    // Показатель адиабаты, число Маха и углы направления потока.
     double gamma, mach, phi, theta;
     // Возвращает примитивную величину набегающего газа по выбранной компоненте.
     std::vector<double> primitive(unsigned d) const {

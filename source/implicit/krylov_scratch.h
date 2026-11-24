@@ -13,6 +13,7 @@ enum { NewtonFieldCount = 3, KrylovFieldCount = 6 };
 struct KrylovScratch {
     double* field[KrylovFieldCount]{}; // Адрес начала каждого целого вектора на GPU.
     unsigned count = 0;               // Сколько векторов поместилось в свободных массивах.
+    bool contiguous = false;          // Все заимствованные поля занимают одну непрерывную область.
 
     // При оценке памяти base пуст. Считаем целые векторы по тем же размерам,
     // что при фактической раскладке, и никогда не разделяем вектор между массивами.
@@ -20,6 +21,7 @@ struct KrylovScratch {
         if (!unknowns) return;
         const auto available = (bytes / sizeof(double)) / unknowns;
         const auto used = std::min<std::size_t>(KrylovFieldCount-count, available);
+        if (used) contiguous=count==0;
         for (std::size_t i=0; i<used; ++i) {
             field[count++] = base ? static_cast<double*>(base) + i*unknowns : nullptr;
         }

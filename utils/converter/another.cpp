@@ -145,7 +145,9 @@ private:
             throw MeshError("another: truncated text array");
         return t;
     }
+    // Входной текстовый файл массива.
     std::ifstream in_;
+    // Поток разбора текущей строки.
     std::istringstream row_;
 };
 // Читает имена и номера граничных участков.

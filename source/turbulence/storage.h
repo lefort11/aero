@@ -13,19 +13,31 @@ std::vector<double> wall_distances(const MeshPartition &, const PeriodicPartitio
                                    const std::vector<PeriodicPair> &, const Processes &, MeshIndex nodes);
 // Владеет полями SA, расстояниями до стенки и упакованными диффузионными связями.
 struct Storage {
+    // Рабочая вязкость, обратные расстояния до стенки и временные поля.
     std::vector<double> w, distance, work;
+    // Нужны дополнительные массивы неявного шага SA.
     bool implicit_work=false;
+    // Узловой кэш молекулярной и турбулентной вязкости.
     std::vector<View::Material> nodal_material;
+    // Диапазоны диффузионных связей и конвективных граней.
     std::vector<RowRange> diffusion_rows, face_rows;
+    // Полные геометрические записи конвекции.
     std::vector<FaceTerm> face_terms;
+    // Упакованные грани с осевой нормалью.
     std::vector<AxisFace> axis_faces;
+    // Отдельные столбцы ориентаций и номеров соседей.
     std::vector<std::uint32_t> face_orientations, face_neighbours;
+    // Меры площадок столбцовой раскладки.
     std::vector<double> face_areas;
+    // Входящие коэффициенты конвекции для неявных итераций.
     std::vector<double> incoming;
+    // Узлы цепочек сглаживания.
     std::vector<LineVertex> line_vertices;
+    // Диапазоны независимых участков цепочек.
     std::vector<RowRange> line_segments;
     // Строит короткие цепочки узлов для сглаживания уравнения SA.
     void prepare_lines(const viscosity::Operator& aes,double scale,const std::vector<MeshIndex>& owned);
+    // Шаг чтения элементов строки конвекции.
     unsigned face_stride = 1;
     MeshIndex gas_face_entries=0; // Длина исходного списка: по одному вхождению грани на узел.
 
@@ -127,13 +139,21 @@ struct Storage {
     // На повторяющихся ячейках строки часто совпадают до сдвига номеров. Сравниваем
     // все коэффициенты точно. На неструктурированной сетке остаётся обычная раскладка.
     bool share_diffusion_rows();
+    // Опорные индексы для локальной нумерации диффузионных связей.
     std::vector<MeshIndex> diffusion_anchors;
+    // Диффузионные члены в общем представлении.
     std::vector<DiffusionTerm> diffusion_terms;
+    // Диффузионные члены в локальной нумерации.
     std::vector<LocalDiffusionTerm> local_terms;
+    // Таблица геометрических весов пар.
     std::vector<double> pair_weights;
+    // Номер общей формы по элементу.
     std::vector<MeshIndex> shape_index;
+    // Временные вклады диффузии по вершинам.
     std::vector<ScalarContribution> vertex_contributions;
+    // Строки диффузии для восьмиузловых ячеек.
     std::vector<DiffusionCell> cell_rows;
+    // Компактные тройки диффузионных связей.
     std::vector<DiffusionTriple> triples;
     // Проверка выполняется один раз на сетку. Остальные топологии и большие
     // локальные номера по-прежнему используют полный 64-битный список пар.
@@ -143,7 +163,9 @@ struct Storage {
     bool prepare_element_pairs(const viscosity::Operator& aes,double scale);
     // Упаковывает плотные диффузионные строки для регулярного доступа.
     bool pack_dense_rows(MeshIndex possible);
+    // Средние по элементам коэффициенты рабочей и молекулярной вязкости.
     std::vector<double> element_mean, molecular_mean;
+    // Число элементов, по которым рассчитываются средние.
     MeshIndex element_count = 0;
     // Нумерация соседей и интегралы AES постоянны. На стадии нужны только номера
     // двух узлов и средний коэффициент переноса элемента. Матрицу напряжений газа не читаем.

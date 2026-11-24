@@ -107,13 +107,17 @@ public:
     }
 
 private:
+    // Родительские индексы для объединения множеств.
     std::vector<std::size_t> parent_;
 };
 
 // Вхождение ребра в грань с направлением обхода.
 struct EdgeUse {
+    // Ребро, используемое гранью.
     Edge edge;
+    // Номер использующей ребро грани.
     std::size_t face;
+    // Ориентация ребра при обходе этой грани.
     int direction;
     // Сравнивает ключи сущностей для упорядочения и поиска.
     bool operator<(const EdgeUse& other) const { return edge < other.edge; }
@@ -401,8 +405,11 @@ public:
 private:
     // Записывает служебный текстовый разделитель формата сетки.
     void literal(const char* text) { output_.write(text, static_cast<std::streamsize>(std::strlen(text))); }
+    // Поток назначения сетки.
     std::ostream& output_;
+    // Выбор текстовой сериализации.
     bool text_;
+    // Промежуточный поток форматирования чисел.
     std::ostringstream numeric_;
 };
 

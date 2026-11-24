@@ -9,9 +9,13 @@ namespace turbulence {
 // На CPU коэффициенты одного элемента лежат подряд. На GPU соседние исполнители
 // читают один и тот же коэффициент своих элементов из соседних адресов.
 struct HexFilterData {
+    // Позиции метрик фильтра в упакованных столбцах.
     enum { Volume, VolumeLength, GradientSum, OtherDiameter, Basis, Diagonals=Basis+7*3, Coefficients=Diagonals+4*3 };
+    // Короткие номера узлов гексаэдров.
     const std::uint32_t* nodes;
+    // Предвычисленные метрики фильтра.
     const double* coefficients;
+    // Шаг по полосам параллельно обрабатываемых ячеек.
     unsigned lanes;
 
     // Вычисляет начало данных элемента в чередующейся раскладке GPU.
@@ -25,11 +29,17 @@ struct HexFilterData {
 template<class Shape>
 // Представление упакованной геометрии гексаэдра для фильтра LES/DDES.
 struct PackedHexFilter {
+    // Адрес столбца коэффициентов активного элемента.
     const double* column;
+    // Расстояние между коэффициентами одной ячейки.
     unsigned stride;
+    // Общие для нескольких элементов описания формы.
     const Shape* shapes;
+    // Индексы форм по элементам.
     const MeshIndex* shape_ids;
+    // Номер текущей ячейки.
     MeshIndex element;
+    // Размер фильтра, полученный из объёма.
     double vol_length;
 
     // Читает коэффициент фильтра с учётом шага упакованного хранения.

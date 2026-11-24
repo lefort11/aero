@@ -11,14 +11,18 @@
 #endif
 
 namespace aero {
+namespace multigrid { struct Aggregates; }
 namespace residual_detail { struct Geometry; }
 namespace implicit {
 struct GpuMatrixPlan;
 // Связь численного метода с разбиением сетки. Сам решатель не зависит от MPI:
 // в обычном расчёте списки пусты, номера узлов и строк совпадают.
 struct Partition {
+    std::shared_ptr<const multigrid::Aggregates> coarse_graph; // Подготовленный при оценке памяти граф агрегатов.
     std::shared_ptr<GpuMatrixPlan> gpu_matrix_plan; // Граф и раскраска из проверки размещения на карте.
     KrylovScratch krylov_scratch; // Пуст для CPU и для раздельных рабочих массивов GPU.
+    double* step_start = nullptr; // Совместимая копия U_n для отката BDF1 на одной карте.
+    bool coarse_product_persistent = false; // Пробы multigrid не перезаписывают поле correction Ньютона.
     bool shared_csgs = false; // Для GPU с выбранным CSGS собираем матрицу сразу в порядке проходов.
     const SteadyNodeSteps* steady_steps = nullptr; // Владелец меняет режим между принятыми шагами.
 #ifdef AERO_HAS_VISCOSITY
@@ -43,9 +47,13 @@ struct Partition {
 };
 // Топология для построения CSR и адреса этой же сетки на исполнителе ранга.
 struct LinearGrid {
+    // Геометрия CPU для построения структуры матрицы.
     const residual_detail::Geometry& host;
+    // Геометрия по адресам активного исполнителя.
     const residual_detail::Geometry& active;
+    // Номер GPU или признак исполнения на CPU.
     int device;
+    // Данные владения строками и обмена для распределённой матрицы.
     Partition partition;
 };
 }

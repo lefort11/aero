@@ -63,6 +63,7 @@ void make_archive(const Options& o, const std::string& scratch, int workers) {
 using Key = std::pair<Id, Id>;
 // Адрес и исходная сущность контрольной ссылки архива.
 struct Ref {
+    // Адрес архивной записи и идентификатор сущности.
     Key address, entity;
 };
 // Читает контрольную ссылку и сохраняет её для проверки связности архива.

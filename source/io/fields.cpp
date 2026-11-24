@@ -72,6 +72,7 @@ void check_format(FieldFormat format) {
 
 // Читает текстовый или двоичный файл полей с контролем формата и объёма данных.
 class Reader {
+    // Кодек обращается к состоянию потока полей при декодировании.
     friend struct io::NativeFileCodec;
 public:
     // Подключает входной поток и инициализирует ограничения чтения данных.
@@ -308,11 +309,17 @@ private:
             fail("Unexpected end of field input");
         return result;
     }
+    // Владеет буфером декомпрессии.
     std::unique_ptr<io::LzmaInputBuffer> compressed_;
+    // Владеет потоком над декодированными данными.
     std::unique_ptr<std::istream> decoded_;
+    // Активный источник байтов снимка.
     std::istream* input_;
+    // Ограничения, заданные вызывающим кодом.
     const FieldReadLimits& limits_;
+    // Бюджет чтения и доступный остаток.
     U64 budget_, available_;
+    // Выбран текстовый формат снимка.
     bool text_;
 };
 
@@ -436,8 +443,11 @@ public:
     }
 
 private:
+    // Поток назначения снимка.
     std::ostream& output_;
+    // Выбор текстового кодирования.
     bool text_;
+    // Буфер форматирования числовых записей.
     std::ostringstream numeric_;
 };
 // Записывает содержимое снимка без внешнего сжатого контейнера.

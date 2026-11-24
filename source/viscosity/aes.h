@@ -3,6 +3,7 @@
 #include "settings.h"
 #include "../aero/mpi_periodic.h"
 #include "../residual/residual.h"
+#include "../parallel/upload_compact.h"
 #include <functional>
 #ifdef AERO_HAS_TURBULENCE
 #include "../turbulence/storage.h"
@@ -14,6 +15,7 @@ namespace viscosity {
 // задаёт общий оператор солвера. Геометрические коэффициенты строятся только при старте.
 class Aes {
 public:
+    // Находит локальный индекс по номеру и идентификатору владельца.
     using Locate = std::function<MeshIndex(MeshIndex,int)>;
     // Строит геометрию и рабочие связи AES для выбранной подобласти и базиса импульса.
     void prepare(const MeshPartition&, const PeriodicPartition*, const ResidualFrame&, const Processes&,
@@ -31,6 +33,7 @@ public:
         op_.fixed_ddes_length=settings.ddes && !settings.les.directional();
         op_.les_pr_ratio=prandtl/settings.prandtl;
     }
+    // Владеет рабочими полями переноса SA и геометрией диффузии.
     turbulence::Storage turbulence_field;
     // Готовит граничные и внутренние площадки конвективного переноса SA.
     template<class Grid> void prepare_sa_faces(const Grid& grid,bool host) {
@@ -102,7 +105,7 @@ public:
                                             const FlowScratch* scratch=nullptr) const {
         Operator g = op_;
         g.node_count = state_nodes;
-        g.cells = storage.upload(cells_);
+        g.cells = upload_records<Cell32>(storage,cells_.size(),cells_.data());
         // При подсчёте памяти известен размер таблицы. Заполняем её на CPU
         // только после выбора размещения, если она действительно нужна карте.
         g.affine=compact_geometry_ && !coordinate_geometry_ ?
@@ -127,8 +130,8 @@ public:
         }
         g.stencil.pairs=compact_geometry_ ? nullptr : storage.upload(metrics_);
         g.stencil.pair_heat=storage.upload(pair_heat_);
-        g.offsets = storage.upload(offsets_);
-        g.incidence = storage.upload(incidence_);
+        g.offsets = upload_indices(storage,offsets_.size(),offsets_.data());
+        g.incidence = upload_indices(storage,incidence_.size(),incidence_.data());
         g.gas = scratch ? scratch->gas : storage.template allocate<Gas>(state_nodes);
         g.material = storage.template allocate<Material>(g.cell_count);
         g.rows = scratch ? scratch->rows : storage.template allocate<Row>(g.row_count);
@@ -177,7 +180,7 @@ public:
 #endif
         if (!gradient_tiles_.empty()) {
             // Одна рабочая область для всех групп. Первый диапазон имеет максимальную длину.
-            g.gradient_slices=storage.upload(gradient_slices_);
+            g.gradient_slices=upload_records<GradientSlice32>(storage,gradient_slices_.size(),gradient_slices_.data());
             g.host_gradient_tiles=gradient_tiles_.data();
             g.gradient_tile_count=gradient_tiles_.size();
             g.gradient_cache=storage.template allocate<Gradient>(8*gradient_tiles_.front().cells);
@@ -198,25 +201,37 @@ private:
         MeanGradient mean;      // Интегралы базисных функций штатной схемы AES.
         std::uint64_t adjacency; // Восемь битовых масок рёбер локальных вершин.
     };
+    // Сохраняет исходные данные для выбора аффинного представления.
     bool keep_affine_input_=false;
+    // Исходная геометрия кандидатов на аффинную упаковку.
     std::vector<AffineInput> affine_input_;
+    // Метрики аффинных гексаэдров.
     std::vector<AffineHex> affine_;
     bool compact_geometry_=false; // Выбирает раскладку до выделения таблицы на CPU.
     // Коэффициенты тепла нужны газу и SA при обоих способах хранения геометрии.
     void prepare_compact_geometry();
+    // Используется координатная геометрия и выполнено ли условие однородной гексаэдральной сетки.
     bool coordinate_geometry_=false, coordinate_all_hex_=false;
     bool implicit_coordinates_=false; // При BDF рабочее место приоритетно отдаём якобиану и предобуславливателю.
+    // Координатные ядра используют общую таблицу вершин.
     bool shared_coordinate_nodes_=false;
     // Не предполагаем определённого типа ячеек, порядка узлов или отсутствия
     // периодичности. На каждой ячейке сравниваем столько номеров, сколько у неё вершин.
     void share_coordinate_nodes(); // Проверяем реальные номера всех вершин до загрузки на GPU.
+    // Номера схем разбиения элементов на тетраэдры.
     std::vector<std::uint32_t> tetra_pattern_ids_;
+    // Узловые координаты для тетраэдрального разбиения.
     std::vector<Coordinate> tetra_position_;
+    // Номера вершин ячеек для координатной геометрии.
     std::vector<VolumeCellNodes> tetra_cells_;
+    // Повторно используемые схемы тетраэдрального разбиения.
     std::vector<VolumePattern> tetra_patterns_;
+    // Средние градиенты элементов координатной схемы.
     std::vector<MeanGradient> tetra_means_;
     std::vector<double> pair_heat_; // Исходные коэффициенты для скалярной диффузии SA и производной теплового потока.
+    // Плитки для промежуточного вычисления градиентов.
     std::vector<GradientTile> gradient_tiles_;
+    // Участки плиток для накопления узловых вкладов.
     std::vector<GradientSlice> gradient_slices_;
     // Градиенты газа нужны, пока суммируются вклады в узлы. Обрабатываем одну группу
     // элементов и затем отдаём ту же рабочую память следующей группе. При склейке MPI
@@ -224,8 +239,10 @@ private:
     void prepare_gradient_tiles(MeshIndex capacity=65536);
     // Сохраняет исходную аффинную геометрию для последующего фильтра LES/DDES.
     void remember_affine_input(MeshIndex cell,const Element&,const MeanGradient&);
+    // Представление геометрии и полей, передаваемое вычислительным ядрам.
     Operator op_{};
     bool store_iteration_gradients_=false; // Для BDF с переносом SA можно повторно использовать неизменное поле газа.
+    // Сохранённые элементные градиенты.
     std::vector<Gradient> gradient_cache_;
 #ifdef AERO_HAS_TURBULENCE
     // Готовит геометрию гексаэдрального фильтра LES/DDES.
@@ -233,32 +250,48 @@ private:
     // На произвольной сетке ориентацию каждого тетраэдра определяем по фактическим
     // координатам. Только после этого можно разделить одну формулу между ячейками.
     bool prepare_mean_areas(); // Выбираем общие целочисленные формы вместо таблицы градиентов.
+    // Формулы средних площадей по типам ячеек.
     std::vector<MeanAreaForm> mean_area_forms_;
+    // Члены хранимых формул средних площадей.
     std::vector<MeanAreaTerm> mean_area_terms_;
+    // Индексы формул для отдельных элементов.
     std::vector<std::uint32_t> mean_area_ids_;
     // Формирует связи элементов с узлами для осреднения материальных коэффициентов.
     void prepare_material_vertices();
     unsigned host_vertices_=0; // Общее число вершин в элементе, ноль для смешанной сетки.
+    // Управляют кэшем материала и использованием вязкости SA.
     bool cache_material_=false, material_from_sa_=false;
+    // Номера вершин при кэшировании узловых коэффициентов.
     std::vector<std::uint32_t> material_vertices_;
+    // Упакованная связность гексаэдров для фильтра.
     std::vector<std::uint32_t> hex_nodes_;
+    // Метрики фильтра гексаэдров.
     std::vector<double> hex_coefficients_;
+    // Признак вычисления фильтра на GPU.
     bool gpu_filter_=false;
     std::vector<std::uint32_t> box_nodes_; // Для каждой геометрической вершины — номер неизвестной.
     std::vector<turbulence::FilterCell> filters_; // Общая геометрия элементов одинаковой формы.
     std::vector<turbulence::FilterExtent> filter_extents_; // Запасные данные для упакованного фильтра GPU.
     std::vector<turbulence::FilterLengths> coordinate_filters_; // Размеры и пары узлов для фильтра по координатам AES.
+    // Соответствие элементов записям фильтра.
     std::vector<MeshIndex> filter_indices_;
     std::vector<double> les_volumes_; // Суммарный вес элементов вокруг каждого узла.
+    // Элементные данные модели LES.
     std::vector<turbulence::LesSample> samples_;
+    // Узловая вихревая вязкость и элементные нормы градиентов.
     std::vector<double> eddy_nu_, cell_gradient_norm_;
+    // Узловые параметры масштаба DDES.
     std::vector<turbulence::DdesPoint> ddes_nodes_;
 #endif
+    // Метрики и связность ячеек на CPU.
     std::vector<Cell> cells_;
     std::vector<PairMetric> metrics_; // Различающиеся геометрические коэффициенты.
     std::vector<MeshIndex> offsets_, incidence_; // Строка узла содержит номера элементов и местные номера вершин.
+    // Узловые примитивные величины для вязкого оператора.
     std::vector<Gas> gas_;
+    // Средние транспортные коэффициенты ячеек.
     std::vector<Material> material_;
+    // Узловые строки вязкой невязки.
     std::vector<Row> rows_;
 };
 }

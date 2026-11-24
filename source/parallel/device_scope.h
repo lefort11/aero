@@ -10,6 +10,7 @@ class DeviceScope {
     int previous_ = -1;
 
 public:
+    // Результат установки текущего GPU.
     aero::gpu::Status status = aero::gpu::Status::Success;
     // Временно выбирает устройство, сохраняя предыдущее для восстановления.
     explicit DeviceScope(int device) noexcept {

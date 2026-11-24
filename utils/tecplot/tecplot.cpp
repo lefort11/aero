@@ -72,21 +72,32 @@ int workers(const Options& options) {
 }
 // Скалярная переменная Tecplot, её источник, диапазон и число значений.
 struct Variable {
+    // Выводимое имя переменной.
     std::string name;
+    // Исходное поле для переменной.
     const Field* field;
+    // Номер компоненты исходного поля.
     std::size_t component;
+    // Адрес массива числовых значений.
     const double* values;
+    // Число значений переменной.
     std::size_t count;
+    // Диапазон значений для заголовка Tecplot.
     double minimum, maximum;
 };
 // Топология, нумерация и источники значений одной зоны Tecplot.
 struct Zone {
+    // Имя выходной зоны.
     std::string name;
+    // Тип сущности сетки, к которой относятся данные.
     FieldLocation source;
+    // Код типа зоны и числа узлов, ячеек и граней.
     I32 type, nodes, cells, faces;
     // Пустой node_ids означает обычную нумерацию. Иначе номер узла зоны переводится в номер узла сетки по таблице.
     std::vector<MeshIndex> node_ids;
+    // Смещения связности и номера ячеек по сторонам граней.
     std::vector<I32> offsets, connectivity, left, right;
+    // Диапазоны значений по переменным.
     std::vector<std::pair<double, double>> ranges;
     // Инициализирует пустую ячеечную зону до определения её топологии.
     Zone() : source(FieldLocation::Cell), type(0), nodes(0), cells(0), faces(0) {}
@@ -113,9 +124,13 @@ struct Zone {
 };
 // Владеет переменными и зонами экспорта, сохраняющими ссылки на исходные поля.
 struct Plan {
+    // Число потоков подготовки файла.
     int threads;
+    // Контрольная сумма исходной сетки для метаданных.
     std::string mesh_sha256;
+    // Переменные в порядке выходного файла.
     std::vector<Variable> variables;
+    // Зоны подготовленного файла.
     std::vector<Zone> zones;
     // Копирование запрещено: указатели переменных ссылаются на данные исходной сетки и снимка.
     Plan(const Plan&) = delete;
@@ -163,6 +178,7 @@ private:
 
     // Признаки необходимости отдельных зон рёбер и граней.
     struct RequestedZones {
+        // Запрошены зоны для рёбер и граней.
         bool edges = false, faces = false;
     };
     // Поле с несколькими компонентами даёт по скалярной переменной на компоненту.
@@ -426,8 +442,11 @@ private:
         for (unsigned i = 0; i < count; ++i)
             buffer_[used_++] = static_cast<char>((value >> (8 * i)) & 255);
     }
+    // Поток записи двоичного PLT.
     std::ostream& output_;
+    // Промежуточный буфер байтов.
     std::vector<char> buffer_;
+    // Заполненная часть буфера.
     std::size_t used_;
 };
 // Описание зоны задаёт тип сетки, расположение переменных и размеры связности.

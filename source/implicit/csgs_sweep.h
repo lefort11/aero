@@ -13,8 +13,11 @@ using CsgsRow32 = CsgsRowOf<std::uint32_t>;
 // Схема переноса блоков CSR в упакованные строки CSGS.
 struct CsgsPacking {
     const MeshIndex* source; // Адрес исходного блока CSR для каждой заполненной позиции.
+    // Память коэффициентов после переупорядочения.
     double* values;
+    // Число элементов упакованной раскладки.
     MeshIndex count;
+    // Ширина блока газа и шаг по полосам упаковки.
     unsigned width, lanes;
     BlockLayout input;        // Раскладка матрицы до перестановки коэффициентов.
     LinearCoefficient* neighbour_values; // Точность внедиагональных блоков задаётся при сборке.
@@ -42,13 +45,20 @@ struct CsgsPacking {
 };
 // Представление диагонали и соседних блоков для проходов CSGS.
 struct CsgsSweep {
+    // Диагональные блоки предобусловливателя.
     JacobiBlocks diagonal;
+    // Границы элементов строк в упакованном представлении.
     const CsgsRow* rows;
     const CsgsRow32* short_rows; // Вмещающие весь граф 32-разрядные смещения на GPU.
+    // Порядок обхода строк и номера соседей.
     IndexList sequence, neighbours;
+    // Внедиагональные блоки, правая часть и промежуточное поле с ореолом.
     const double *blocks, *rhs, *forward_with_halo;
+    // Результат прохода и промежуточная правая часть.
     double *output, *middle_rhs;
+    // Выбор обратного прохода и обработки внешних связей.
     bool backward, external;
+    // Шаг чтения элементов одной полосы.
     unsigned lanes;
     const LinearCoefficient* neighbour_values; // Адрес отдельно размещённых соседних блоков.
 

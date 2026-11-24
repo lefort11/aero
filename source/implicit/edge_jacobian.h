@@ -46,6 +46,7 @@ AERO_HOST_DEVICE inline double velocity_column(unsigned col, unsigned axis, cons
 // Изменяем одну консервативную переменную. Производные давления и нормальной
 // скорости нужны и центральному потоку, и диссипации, поэтому считаем их один раз.
 struct PhysicalColumn {
+    // Номер возмущаемой компоненты и индекс энергии.
     unsigned col, energy;
     double dp, dmn, rho_dun; // d(p), d(m·n), rho*d(u·n) для данного столбца.
 

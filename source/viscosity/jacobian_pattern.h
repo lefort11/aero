@@ -18,7 +18,9 @@ inline void append_columns(const Operator& aes, MeshIndex node, std::vector<Mesh
 
 // Связи неизвестных с элементами AES для сборки вязкого якобиана.
 struct JacobianPattern {
+    // Границы списков элементов для сборки столбцов.
     std::vector<MeshIndex> offsets;
+    // Элементные вклады в структуру столбцов.
     std::vector<ColumnElement> elements;
 
     // Преобразуем геометрическую нумерацию в адреса готовой матрицы, общей для

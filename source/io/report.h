@@ -16,11 +16,14 @@ std::string local_date_time(std::time_t timestamp);
 class ExplicitIntegrator;
 // Минимум, максимум и объёмный интеграл физической величины.
 struct FlowRange {
+    // Экстремумы по обработанным узлам.
     double low = std::numeric_limits<double>::max(), high = std::numeric_limits<double>::lowest();
+    // Накопленный интеграл по контрольным объёмам.
     long double integral = 0;
 };
 // Сводные диапазоны полей и масштабированная норма их изменения.
 struct FlowSummary {
+    // Статистика по компонентам выводимого поля.
     FlowRange field[6];
     // Сумма квадратов хранится в единицах rate_scale² с весами объёмов.
     long double rate_scale = 0, scaled_squares = 0, volume = 0;
@@ -31,21 +34,30 @@ struct FlowSummary {
 };
 // Сведения о принятом шаге. Нулевой предел Ньютона означает явную схему.
 struct ReportDetails {
+    // Названия схемы, стабилизации и критерия остановки.
     std::string scheme, stabilization, steady_criterion;
     double max_local_step = 0.; // Ненулевой при локальном установлении; dt отчёта хранит минимум.
     // Наибольшее на сетке отношение шагов соседей до и после согласования.
     bool local_rate_control = false;
     double step_spread_limit = 0.; // Общий предел dt_max/dt_min, включая заданный вручную.
+    // Число ограничений по невязке и пределу, номер диагностического узла.
     std::uint64_t rate_limited = 0, rate_capped = 0, rate_probe = ~std::uint64_t(0);
     double probe[4] = {}; // Шаг, невязки газа и SA, разрешённая доля местного CFL.
     std::uint64_t growth_nodes[2] = {~std::uint64_t(0),~std::uint64_t(0)}; // Один узел с ростом газа и один с ростом SA в шаблоне наблюдения.
+    // Отношение соседних шагов до и после обработки и заданный предел.
     double edge_ratio_before = 0., edge_ratio_after = 0., edge_ratio_limit = 0.;
+    // Признак линеаризованной модели.
     bool linear = false;
     std::vector<unsigned> correction_iterations; // В порядке поправок текущего шага.
+    // Лимит итераций линейного решателя.
     unsigned solver_max_iter = 0;
+    // Использованное и предельное число итераций.
     unsigned iterations = 0, max_iterations = 0;
+    // Отношение текущей пространственной невязки к начальной.
     double relative_steady_residual = 0.;
+    // Достигнутые нормы и соответствующие допуски Ньютона и steady.
     double newton_residual = 0., newton_tol = 0., steady_residual = 0., steady_tol = 0.;
+    // Счётчики отказов и понижений порядка.
     std::uint64_t failed = 0, first_order = 0;
 };
 // Печатает диапазоны величин и норму изменения поля.
@@ -88,7 +100,9 @@ private:
     // Период отчётов и номер шага, для которого сохранена энергия перед обновлением.
     std::uint64_t every_, captured_step_;
     LinearBackground background_; // Задаёт смысл текущего поля и его последней компоненты.
+    // Показатель адиабаты для термодинамических величин отчёта.
     double gamma_;
+    // Размерность при разборе компонент поля.
     unsigned dimension_;
     // Объёмы постоянны; энергию запоминаем перед шагом, для которого запрошен отчёт.
     std::vector<double> volumes_, previous_energy_;

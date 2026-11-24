@@ -2,20 +2,30 @@
 #include "sigma.h"
 #include "ddes.h"
 #include "../mesh/mesh_index.h"
+#include "../mesh/compact_table.h"
 
 namespace aero {
 namespace turbulence {
 // Собирает узловую величину из вкладов элементов. У Sigma результат идёт
 // в газовый поток, у DDES — прямо в источник переноса рабочей вязкости.
 struct NodalFilter {
-    const MeshIndex *offsets, *incidence;
+    // Границы строк узлов и номера инцидентных ячеек.
+    IndexArray<MeshIndex> offsets,incidence;
+    // Объёмы элементов LES и нормы градиентов по ячейкам.
     const double *les_volumes, *cell_gradient_norm;
+    // Элементные данные для узловой оценки фильтра.
     const LesSample* samples;
+    // Маска узлов стенки с прилипанием.
     const unsigned char* no_slip;
+    // Выходная узловая турбулентная кинематическая вязкость.
     double* eddy_nu;
+    // Узловые параметры длины DDES.
     DdesPoint* points;
+    // Выбранная модель и масштаб фильтра LES.
     LesSettings les;
+    // Коэффициент перехода от сеточного масштаба к длине DES.
     double c_des;
+    // Длину можно определить без обновления по направлению потока.
     bool fixed_ddes_length;
     // Носитель узловой величины — все элементы, примыкающие к узлу. Перед
     // сборкой потоков владелец передаёт полученную ν_t соседним процессам.

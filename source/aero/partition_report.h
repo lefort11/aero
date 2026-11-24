@@ -7,11 +7,14 @@ namespace aero {
 class Processes;
 // Число отправленных и полученных байтов обмена.
 struct ExchangeBytes {
+    // Число переданных и полученных байтов.
     std::uint64_t sent, received;
 };
 // Размеры подобласти и объёмы обмена полями и потоками.
 struct PartitionWork {
+    // Счётчики листьев разбиения, собственных и внешних узлов и рёбер.
     std::uint64_t leaves, owned, halo, edges;
+    // Трафик обмена консервативными полями и потоками.
     ExchangeBytes states, fluxes;
 };
 
@@ -19,7 +22,9 @@ struct PartitionWork {
 std::uint64_t process_peak_kib();
 // Лидер группы, ранг на узле и память для планирования подобластей.
 struct NodeResources {
+    // Идентификатор ведущего процесса узла и локальный ранг.
     int leader, local_rank;
+    // Показатели использования памяти узла, в КиБ.
     std::uint64_t resident_kib,
         available_kib; // Значения процесса-лидера. UINT64_MAX означает отсутствие измерения.
 };

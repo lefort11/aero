@@ -42,6 +42,7 @@ template <class F> void rejects(F call, const std::string& fragment) {
 
 // Временная постановка для проверки чтения и валидации настроек.
 struct CaseFiles {
+    // Каталог входов тестовой постановки.
     std::string dir;
     // Создаёт временный каталог и исходные файлы тестовой постановки.
     CaseFiles() {

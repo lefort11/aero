@@ -1,6 +1,7 @@
 #pragma once
 #include "../timestep/node_step.h"
 #include "../mesh/mesh_index.h"
+#include "../mesh/compact_table.h"
 #include "../eulersolver/euler.h"
 
 namespace aero {
@@ -8,23 +9,26 @@ namespace multigrid {
 // Эти операции компилируются для обоих исполнителей. Одна задача обрабатывает
 // одну компоненту агрегата. Записи разных задач не пересекаются.
 struct Transfer {
+    // Выбор переноса, построения пробного поля или проверки состояния.
     enum Operation { RestrictResidual, RestrictProduct, Prolong, SmoothingRhs, SaveField, TrialField,
                      HistoryDirection, HistoryTrial, CheckGas };
-    const MeshIndex* offsets; // Диапазон собственных строк агрегата.
-    const MeshIndex* members; // Строки в компактной нумерации Ньютона.
+    IndexArray<MeshIndex> offsets; // Диапазон собственных строк агрегата.
+    IndexArray<MeshIndex> members; // Строки в компактной нумерации Ньютона.
     const MeshIndex* owned;   // Перевод строки в узел массива состояния, если работает MPI.
     const unsigned char* wall; // Маска прилипания. У закреплённого импульса поправка равна нулю.
     unsigned width;           // Плотность, компоненты импульса и энергия переносятся единым блоком.
+    // Объёмы мелких контрольных объёмов для исключения временной диагонали.
     const double* volumes;
     NodeSteps steps;          // Те же узловые псевдошаги, что при последней сборке матрицы.
     double dt;                // Глобальный шаг или общий множитель локальных шагов.
 
+    // Действие над одной компонентой агрегата.
     Operation operation;
     double* coarse;           // Одна компонента поправки или суммы невязок на агрегат.
     double* fine;             // Компактный вектор исходной сетки.
     double* product;          // Образ поправки под действием матрицы Ньютона.
     double* state;            // Полное состояние, включая узлы обмена.
-    double* inverse_mass;     // Диагональное масштабирование грубой правой части для поиска направления.
+    double* inverse_mass;     // Два обратных массовых коэффициента на агрегат, для скаляров и для незакреплённого импульса.
     double* smoother;         // Исходная невязка, затем поправка сглаживателя на мелкой сетке.
     const double* start;      // Поле до обычного мелкосеточного шага в нумерации собственных строк.
     double fraction;          // Множитель агрегатной поправки или изменения газа за обычный псевдошаг.
@@ -90,7 +94,9 @@ struct Transfer {
             }
             }
         }
-        if (operation == RestrictResidual) inverse_mass[i] = mass > 0. ? 1./mass : 0.;
+        // Плотность и энергия имеют одну массу, все компоненты импульса — другую.
+        // Суммы остаются прежними; одинаковые записи остальных компонент не сохраняем.
+        if (operation == RestrictResidual && k<2) inverse_mass[2*aggregate+k] = mass > 0. ? 1./mass : 0.;
         if (operation == RestrictResidual || operation == RestrictProduct) coarse[i] = sum;
         if (operation == CheckGas) coarse[i] = sum;
     }
@@ -98,17 +104,26 @@ struct Transfer {
 
 // Общие действия над короткими векторами грубого уровня.
 struct VectorUpdate {
+    // Доступные поэлементные преобразования грубого вектора.
     enum Operation { Clear, ScaleResidual, Add };
+    // Операция текущего запуска ядра.
     Operation operation;
     double* target;          // Вектор, который обновляем.
     const double* source;    // Направление поиска или невязка.
     const double* diagonal;  // Обратная масса агрегата для предварительного масштабирования.
     double factor;           // Коэффициент при добавляемом направлении.
+    unsigned width;          // Компоненты газа разделяют две массы каждого агрегата.
     // Обновляет одну компоненту рабочего вектора грубосеточной коррекции.
     AERO_HOST_DEVICE void operator()(MeshIndex i) const {
         switch (operation) {
         case Clear: target[i] = 0.; break;
-        case ScaleResidual: target[i] = source[i]*diagonal[i]; break;
+        case ScaleResidual: {
+            const auto aggregate=i/width;
+            const auto component=i%width;
+            const auto momentum=component>0 && component+1<width;
+            target[i] = source[i]*diagonal[2*aggregate+unsigned(momentum)];
+            break;
+        }
         case Add: target[i] += factor*source[i]; break;
         }
     }

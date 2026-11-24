@@ -5,6 +5,7 @@ namespace meshdec {
 namespace {
 // Пара номера строки и значения для внешней сортировки halo-связей.
 struct Pair {
+    // Номер строки и добавляемое значение.
     Id row, value;
     // Сравнивает ключи сущностей для упорядочения и поиска.
     bool operator<(const Pair& b) const { return row == b.row ? value < b.value : row < b.row; }
@@ -53,6 +54,7 @@ void mark_boundary(const std::string& dir, Id count) {
 }
 // Выдаём вершины по одной, чтобы даже большой многоугольник или многогранник помещался в бюджет внешней сортировки.
 struct CellNodes {
+    // Таблицы обхода от ячейки к граням и далее к узлам.
     Table<Id> cf, cf_start, fn, fn_start;
     // Открывает дисковые таблицы связей ячеек, граней и узлов.
     explicit CellNodes(const std::string& dir)

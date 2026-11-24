@@ -283,6 +283,7 @@ public:
     }
     // Удаляет временные файлы и каталоги, созданные объектом.
     ~TempFile() { std::remove(path.c_str()); }
+    // Путь к временному файлу сетки.
     std::string path;
 
 private:

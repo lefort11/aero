@@ -1,6 +1,7 @@
 #pragma once
 #include "device_execution.h"
 #include "mpweno5_edges.h"
+#include "../residual/split_flux.h"
 
 namespace aero {
 namespace device_work {
@@ -83,17 +84,17 @@ void remaining_group(const Execution& exec, FaceBatch batch, const FaceBatch* st
 }
 
 // Выбираем обход один раз на весь пакет. Внутри площадки остаются только формулы выбранного решателя.
-template <bool roe_2d, bool nodal_only = false, unsigned linear_width = 0, unsigned lf_dim = 0, bool ebr_flux = false>
+template <bool roe_2d, bool nodal_only = false, unsigned linear_width = 0, unsigned lf_dim = 0, bool ebr_flux = false,
+          unsigned pure_weno = 0>
 void other_faces(const Execution& exec, FaceBatch batch, Index* bad) {
-    // У первого порядка, EBR и двумерного Роу есть специализированные ядра.
-    // Для произвольных нелинейных шаблонов идём по общему списку площадок.
-    // Один вызов compute_face выбирает поток по ребру или граничное условие.
-    if ((nodal_only || linear_width || roe_2d) && !batch.indices && batch.count == batch.geometry.faces) {
+    // Целая сетка позволяет отделить граничные условия от внутреннего потока
+    // для всех схем, включая нелинейные трёхмерные реконструкции.
+    if (!batch.indices && batch.count == batch.geometry.faces) {
         // В однопроцессном расчёте рёбра и внешние площадки уже лежат двумя непрерывными группами.
         // У каждого обхода свои регистры. Граничная характеристика не занимает регистры потока на ребре.
         const Index edges = batch.geometry.edges;
         for_indices(exec, "Aero: interior edges", edges, KOKKOS_LAMBDA(Index face) {
-            if (!batch.compute_edge<roe_2d, nodal_only, linear_width, false, ebr_flux>(face,lf_dim))
+            if (!batch.compute_edge<roe_2d, nodal_only, linear_width, false, ebr_flux,pure_weno>(face,lf_dim))
                 Kokkos::atomic_fetch_min(bad, face);
         });
         for_indices(exec, "Aero: boundary faces", batch.count - edges, KOKKOS_LAMBDA(Index i) {
@@ -106,7 +107,7 @@ void other_faces(const Execution& exec, FaceBatch batch, Index* bad) {
     // После разделения сетки MPI и у неполных шаблонов нужные номера берём из списка.
     for_indices(exec, "Aero: remaining fluxes", batch.count, KOKKOS_LAMBDA(Index k) {
         const Index face = batch.face(k);
-        if (!batch.compute_face<roe_2d, nodal_only, linear_width, ebr_flux>(face,lf_dim))
+        if (!batch.compute_face<roe_2d, nodal_only, linear_width, ebr_flux,pure_weno>(face,lf_dim))
             Kokkos::atomic_fetch_min(bad, face);
     });
 }
@@ -201,6 +202,15 @@ void compute_unpacked_fluxes(const Execution& exec, FaceBatch batch, Index* bad)
     else if (!batch.geometry.stencil.has_owners())
         // В 1D и 3D поток Роу первого порядка также использует только концы ребра.
         other_faces<false, true>(exec, batch, bad);
+    // В общем 3D-ядре иначе остаются все ветви MP и их массивы на каждом потоке.
+    // Узловые стороны и понижение порядка по-прежнему обрабатываются теми же формулами.
+    else if (batch.geometry.stencil.weno_order && !batch.geometry.stencil.mp5.enabled &&
+             !batch.geometry.stencil.mp5.weno && batch.geometry.dim==3) {
+        if (batch.geometry.stencil.short_slope_rows)
+            other_faces<false,false,0,0,false,3>(exec,batch,bad);
+        else
+            other_faces<false,false,0,0,false,1>(exec,batch,bad);
+    }
     // У EBR3 и EBR5 различны только заранее рассчитанные веса. В 2D в узле четыре компоненты.
     else if (batch.roe_2d() && !batch.geometry.stencil.weno_order)
         ebr_faces<true, 4>(exec, batch, bad);

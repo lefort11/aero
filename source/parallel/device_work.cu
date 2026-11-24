@@ -607,6 +607,56 @@ const char* aero_device_normals(const Geometry& geometry) {
         });
     });
 }
+// Именованный тип даёт одному и тому же ядру одинаковый символ на хосте и на CUDA.
+template<unsigned W>
+struct SplitFluxFaces {
+    const FaceBatch* batch;
+    const MeshIndex* indices;
+    Index* bad;
+    KOKKOS_INLINE_FUNCTION void operator()(Index k) const {
+        const Index face=FaceBatch::face(indices,k);
+        if (batch->is_boundary(face)) {
+            if (!batch->compute_boundary(face)) Kokkos::atomic_fetch_min(bad,face);
+        } else if (residual_detail::characteristic_flux<W>(batch->geometry,face,batch->state,batch->flux[face])) {
+            batch->save_speed(face);
+        } else Kokkos::atomic_fetch_min(bad,face);
+    }
+};
+// Размерность и вид шаблона выбираются до запуска. Укороченные стороны и
+// маски восстановления читаются по конкретной грани из той же геометрии.
+template<unsigned W,bool linear>
+struct StencilSplitFaces {
+    const FaceBatch* faces;
+    const MeshIndex* indices;
+    Index* bad;
+    KOKKOS_INLINE_FUNCTION void operator()(Index k) const {
+        const FaceBatch& batch=*faces;
+        const Index f=FaceBatch::face(indices,k);
+        if (batch.is_boundary(f)) {
+            if (!linear && !batch.compute_boundary(f)) Kokkos::atomic_fetch_min(bad,f);
+            return;
+        }
+        const auto& g=batch.geometry;
+        const auto& st=g.stencil;
+        const bool full=!linear && st.weno_order[2*f]==5 && st.weno_order[2*f+1]==5 &&
+                        !g.surfaces[f].use_nodal_traces;
+        const bool ok=full ? residual_detail::characteristic_flux<W,false,true>(g,f,batch.state,batch.flux[f]) :
+                             residual_detail::characteristic_flux<W,linear>(g,f,batch.state,batch.flux[f]);
+        if (ok) batch.save_speed(f);
+        else Kokkos::atomic_fetch_min(bad,f);
+    }
+};
+// В отдельном ядре граничные условия не увеличивают расход регистров внутренних рёбер.
+struct SplitBoundaryFaces {
+    const FaceBatch* faces;
+    const MeshIndex* indices;
+    MeshIndex first;
+    Index* bad;
+    KOKKOS_INLINE_FUNCTION void operator()(MeshIndex k) const {
+        const Index f=FaceBatch::face(indices,first+k);
+        if (faces->is_boundary(f) && !faces->compute_boundary(f)) Kokkos::atomic_fetch_min(bad,f);
+    }
+};
 // Вычисляет численные потоки выбранного набора площадок на GPU.
 const char* aero_device_faces(const FaceBatch& input, Index* bad, void* stream, const FaceBatch* device_faces) {
     return on_device(stream, [&](const Execution& exec) {
@@ -624,7 +674,37 @@ const char* aero_device_faces(const FaceBatch& input, Index* bad, void* stream, 
             });
         }
         const auto variables = batch.geometry.options.variables;
-        if (packed.tiles && variables == ResidualVariables::Characteristic)
+        if (residual_detail::uses_split_flux(batch.geometry)) {
+            if (!device_faces) {
+                for_indices(exec,"Aero: split flux",batch.count,KOKKOS_LAMBDA(Index k) {
+                    const Index face=batch.face(k);
+                    if (!residual_detail::split_face(batch,face)) Kokkos::atomic_fetch_min(bad,face);
+                });
+            } else if (!batch.geometry.stencil.weno_order) {
+                // На цельной сетке диапазоны не пересекаются. На разделе MPI
+                // фильтруем выданный список по типу площадки внутри каждого ядра.
+                const Index edges=batch.geometry.edges;
+                const MeshIndex* indices=batch.indices;
+                const Index inner=indices ? batch.count : std::min(batch.count,edges);
+                const Index first=indices ? 0 : inner;
+                for_indices(exec,"Aero: EBR5 boundary flux",batch.count-first,
+                            SplitBoundaryFaces{device_faces,indices,first,bad});
+                if (batch.geometry.dim==2) for_indices(exec,"Aero: EBR5 split flux",inner,StencilSplitFaces<4,true>{device_faces,batch.indices,bad});
+                else if (batch.geometry.dim==3) for_indices(exec,"Aero: EBR5 split flux",inner,StencilSplitFaces<5,true>{device_faces,batch.indices,bad});
+                else for_indices(exec,"Aero: EBR5 split flux",inner,StencilSplitFaces<3,true>{device_faces,batch.indices,bad});
+            } else if (batch.geometry.stencil.shared_edge_slopes && batch.geometry.stencil.central_from_edges &&
+                       !batch.geometry.options.mp6_hybrid &&
+                       (batch.geometry.stencil.mp5.weno || batch.geometry.options.solver!=ResidualSolver::Roe)) {
+                if (batch.geometry.dim==2) for_indices(exec,"Aero: full MP split flux",batch.count,StencilSplitFaces<4,false>{device_faces,batch.indices,bad});
+                else if (batch.geometry.dim==3) for_indices(exec,"Aero: full MP split flux",batch.count,StencilSplitFaces<5,false>{device_faces,batch.indices,bad});
+                else for_indices(exec,"Aero: full MP split flux",batch.count,StencilSplitFaces<3,false>{device_faces,batch.indices,bad});
+            } else if (batch.geometry.dim==2)
+                for_indices(exec,"Aero: 2D split flux",batch.count,SplitFluxFaces<4>{device_faces,batch.indices,bad});
+            else if (batch.geometry.dim==3)
+                for_indices(exec,"Aero: 3D split flux",batch.count,SplitFluxFaces<5>{device_faces,batch.indices,bad});
+            else
+                for_indices(exec,"Aero: 1D split flux",batch.count,SplitFluxFaces<3>{device_faces,batch.indices,bad});
+        } else if (packed.tiles && variables == ResidualVariables::Characteristic)
             face_kernels::compute_packed_fluxes(exec, batch, bad, device_faces);
         else if (packed.tiles && device_faces) {
             if (variables == ResidualVariables::Flux) face_kernels::cartesian_fluxes<true>(exec,batch,bad,device_faces);

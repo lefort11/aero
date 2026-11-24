@@ -21,10 +21,12 @@ using Count = std::uint64_t;
 const Count missing = (std::numeric_limits<Count>::max)();
 // Текущая и пиковая резидентная память процесса.
 struct ResidentMemory {
+    // Пиковый и текущий резидентный объём процесса.
     Count peak = missing, current = missing;
 };
 // Полная и доступная оперативная память вычислительного узла.
 struct HostMemory {
+    // Общая и доступная физическая память узла.
     Count total = missing, available = missing;
 };
 
@@ -80,9 +82,12 @@ std::string kib(Count value) {
 using Samples = std::array<Count, 3>;
 // Группа процессов одного узла и суммарные измерения памяти.
 struct NodeMemory {
+    // Ведущий ранг, число процессов и номер процесса на узле.
     int leader, size = 1, local_rank = 0;
+    // Суммарные показатели памяти процессов узла.
     Samples sums;
 #ifdef AERO_WITH_MPI
+    // Имя вычислительного узла MPI.
     char host[MPI_MAX_PROCESSOR_NAME + 1]{};
 #else
     char host[10] = "localhost";

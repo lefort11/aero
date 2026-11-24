@@ -7,10 +7,13 @@ namespace aero {
 // Обновление выполняет тот же поток CPU/GPU, который выбирает шаг этого узла.
 struct LocalRateLimit {
     enum Slot { GasMean, SaMean, CflFraction, Width }; // Три соседних double принадлежат одному узлу.
+    // Интервал проверки ограничения по истории.
     static constexpr unsigned interval = 32;
+    // Накопленные узловые данные предыдущей проверки.
     double* history;
     const double* gas_rate; // max_k |R_ik| / V_i в компактном порядке собственных строк.
     const double* sa_rate;  // |d(nu_tilde)/dt| берётся по номеру узла в полном поле.
+    // Максимальные скорости изменения газа и SA и предыдущий минимум шага.
     double gas_max, sa_max, previous_minimum;
     bool review; // История обновляется каждый принятый шаг, потолок — раз за interval шагов.
 

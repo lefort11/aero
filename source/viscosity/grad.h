@@ -1,6 +1,7 @@
 #pragma once
 #include "../mesh/coordinate.h"
 #include "../mesh/mesh_index.h"
+#include "../mesh/compact_table.h"
 #include "../eulersolver/euler.h"
 #include "../parallel/fixed_matrix.h"
 #include <array>
@@ -12,7 +13,9 @@ namespace viscosity {
 // Для геометрии нужны исходные точки, даже когда периодические вершины разделяют одну
 // неизвестную. В MPI пересылаем описание элемента владельцам всех его расчётных узлов.
 struct Element {
+    // Индекс элемента и номера его вершин.
     MeshIndex id, nodes[8];
+    // Ранги владельцев вершин.
     int owners[8];
     unsigned count, neighbours[8]; // Битовая маска исходных рёбер для каждой вершины.
     Coordinate position[8];       // Координаты в базисе уравнений, с масштабом сетки.
@@ -37,7 +40,9 @@ inline bool for_hex_tetrahedra(const Element& element, Visit visit) {
 // Коэффициенты пары постоянны на неподвижной сетке. При обходе в обратном
 // направлении матрица напряжений транспонируется, а коэффициент тепла тот же.
 struct PairMetric {
+    // Геометрические коэффициенты тензора вязких напряжений.
     FixedMatrix<double,3,3> stress;
+    // Геометрический коэффициент теплопереноса.
     double heat;
     // Из интегралов P_mn = ∫ ∂mNi ∂nNj получаем производную вязкого напряжения.
     // Здесь одна формула для постоянной таблицы CPU и вычисления по координатам.
@@ -47,8 +52,10 @@ struct PairMetric {
 };
 // Вершины элемента, веса усреднения и геометрические коэффициенты диффузии.
 struct Cell {
+    // Число активных вершин ячейки.
     unsigned count;
     double inverse_count; // Вес вершины при усреднении коэффициентов переноса.
+    // Номера вершин в локальном порядке.
     MeshIndex node[8];
     double diffusion[8]; // Сумма геометрических коэффициентов CFL для каждой вершины.
     MeshIndex first_pair, first_vertex; // Начало таблиц пар и вершин данного элемента.
@@ -62,9 +69,69 @@ struct Cell {
         return first_pair + pair_offset(count,a,b);
     }
 };
+// Поля записи доступны без копирования массивов в локальную память GPU.
+struct CellView {
+    // Число доступных узлов представления.
+    unsigned count;
+    // Обратное число вершин для усреднения.
+    double inverse_count;
+    // Представление номеров вершин в выбранной разрядности.
+    IndexArray<MeshIndex> node;
+    // Геометрические коэффициенты диффузии.
+    const double* diffusion;
+    // Смещения первых пары и вершины в рабочих массивах.
+    MeshIndex first_pair,first_vertex;
+    // Пустое представление используется только неактивными потоками последней группы.
+    AERO_HOST_DEVICE CellView() : count(0),inverse_count(0.),node(),diffusion(nullptr),first_pair(0),first_vertex(0) {}
+    // Подключает массивы исходной 64-битной записи без копирования.
+    AERO_HOST_DEVICE CellView(const Cell& c) : count(c.count),inverse_count(c.inverse_count),node(c.node),
+        diffusion(c.diffusion),first_pair(c.first_pair),first_vertex(c.first_vertex) {}
+    // Сохраняет прежнее треугольное расположение коэффициентов пар.
+    AERO_HOST_DEVICE MeshIndex pair_index(unsigned i,unsigned j) const {
+        return first_pair+Cell::pair_offset(count,i<j ? i : j,i<j ? j : i);
+    }
+};
+// Упаковываются только целые номера; коэффициенты и веса усреднения остаются double.
+struct Cell32 {
+    // Обратное число вершин и геометрические коэффициенты двойной точности.
+    double inverse_count,diffusion[8];
+    // Короткие номера вершин, их количество и смещения.
+    std::uint32_t node[8],count,first_pair,first_vertex;
+    // Представление ячейки для чтения из обоих форматов.
+    using View=CellView;
+    // Учитывает адреса таблиц пар и вершин, которые могут быть больше числа ячеек.
+    static bool fits(const Cell& c) {
+        if (c.first_pair>UINT32_MAX || c.first_vertex>UINT32_MAX) return false;
+        for (unsigned i=0;i<c.count;++i) if (c.node[i]>UINT32_MAX) return false;
+        return true;
+    }
+    // Неиспользуемые позиции остаются нулевыми и никогда не читаются оператором.
+    static Cell32 pack(const Cell& c) {
+        Cell32 result{};
+        result.count=c.count; result.inverse_count=c.inverse_count;
+        result.first_pair=static_cast<std::uint32_t>(c.first_pair);
+        result.first_vertex=static_cast<std::uint32_t>(c.first_vertex);
+        for (unsigned i=0;i<c.count;++i) {
+            result.node[i]=static_cast<std::uint32_t>(c.node[i]); result.diffusion[i]=c.diffusion[i];
+        }
+        return result;
+    }
+    // Возвращает представление исходного формата на CPU и больших сетках GPU.
+    AERO_HOST_DEVICE static CellView view(const Cell& c) { return CellView(c); }
+    // Адреса узлов и коэффициентов указывают непосредственно в постоянную таблицу.
+    AERO_HOST_DEVICE static CellView view(const Cell32& c) {
+        CellView result;
+        result.count=c.count; result.inverse_count=c.inverse_count;
+        result.node=IndexArray<MeshIndex>(c.node); result.diffusion=c.diffusion;
+        result.first_pair=c.first_pair; result.first_vertex=c.first_vertex;
+        return result;
+    }
+};
+using CellTable=CompactTable<Cell,Cell32>;
 // Вклад геометрии одной пары до умножения на коэффициенты переноса.
 // Эти же линейные формулы применяются к разности полей и к её производной.
 struct Gradient {
+    // Компоненты вязкого напряжения и член теплопереноса.
     double stress[3], heat;
 
 };
@@ -98,19 +165,19 @@ struct GradientStencil {
     const PairMetric* pairs; // Для элемента его верхний треугольник лежит подряд в памяти.
     const double* pair_heat; // На тесном GPU диффузия SA читает только скаляр теплопереноса.
     // Вычисляет тепловой вклад парного геометрического оператора.
-    AERO_HOST_DEVICE double heat(const Cell& cell,unsigned i,unsigned j) const {
+    AERO_HOST_DEVICE double heat(const CellView& cell,unsigned i,unsigned j) const {
         const auto index=cell.pair_index(i,j);
         return pair_heat ? pair_heat[index] : pairs[index].heat;
     }
     // Возвращает геометрический тензор взаимодействия пары вершин.
-    AERO_HOST_DEVICE const PairMetric& metric(const Cell& cell, unsigned i, unsigned j) const {
+    AERO_HOST_DEVICE const PairMetric& metric(const CellView& cell, unsigned i, unsigned j) const {
         return pairs[cell.pair_index(i,j)];
     }
     // Оператор AES использует все остальные вершины элемента, включая
     // диагонально противоположные. Сначала суммируем геометрические вклады, затем
     // один раз умножаем на средние mu и mu*u, общие для этих пар.
     template<unsigned d, class GasState>
-    AERO_HOST_DEVICE Gradient vertex_gradient(const Cell& cell, unsigned i, const GasState* gas) const {
+    AERO_HOST_DEVICE Gradient vertex_gradient(const CellView& cell, unsigned i, const GasState* gas) const {
         Gradient gradient{};
         const auto& here = gas[cell.node[i]];
         // Пары записаны верхним треугольником. До диагонали берём столбец i
@@ -128,7 +195,7 @@ struct GradientStencil {
     }
     // Вычисляет градиенты величин по геометрическим коэффициентам элемента.
     template<unsigned d, class GasState>
-    AERO_HOST_DEVICE void cell_gradients(const Cell& cell, const GasState* gas, Gradient* output) const {
+    AERO_HOST_DEVICE void cell_gradients(const CellView& cell, const GasState* gas, Gradient* output) const {
         for (unsigned i = 0; i < cell.count; ++i)
             output[cell.first_vertex+i] = vertex_gradient<d>(cell, i, gas);
     }
@@ -138,6 +205,7 @@ struct GradientStencil {
 // базисных функций и сохраняет коэффициенты всех пар элемента одним массивом.
 struct MeanGradient {
     Coordinate basis[8]; // Средние по объёму производные базисных функций.
+    // Объём элемента для нормировки среднего градиента.
     double volume;
 };
 // Подготавливает геометрические коэффициенты вязких градиентов.
@@ -149,6 +217,7 @@ public:
 private:
     // Общие градиенты и парные коэффициенты элементов одной геометрической формы.
     struct Shape {
+        // Метрики среднего градиента данной формы.
         MeanGradient mean;
         MeshIndex first_pair; // Начало коэффициентов для этой формы элемента.
         std::array<double,8> diffusion; // Геометрическая часть вязкого ограничения CFL по вершинам.

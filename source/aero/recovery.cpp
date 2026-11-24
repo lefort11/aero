@@ -233,6 +233,7 @@ std::string archive_hash(const std::string& path, const Processes& world) {
 // ОС освобождает блокировку записи при завершении владельца, в том числе аварийном.
 struct Recovery::Lock {
 #ifdef _WIN32
+    // Дескриптор Windows для удержания блокировки.
     HANDLE handle;
     // Получает исключительную блокировку файла, предотвращая одновременную запись восстановления.
     explicit Lock(const std::string& path) {
@@ -243,6 +244,7 @@ struct Recovery::Lock {
     // Снимает блокировку и закрывает системный дескриптор.
     ~Lock() { CloseHandle(handle); }
 #else
+    // Дескриптор файла, на котором удерживается блокировка.
     int fd;
     // Получает исключительную блокировку файла, предотвращая одновременную запись восстановления.
     explicit Lock(const std::string& path) {

@@ -11,6 +11,7 @@
 #include <cstring>
 #include <iostream>
 #include <numeric>
+#include <memory>
 
 namespace {
 using namespace aero;
@@ -64,16 +65,23 @@ void check_jacobian(viscosity::Aes&,const Mesh&,const std::vector<double>&,int,b
 // Получаем те же указатели на постоянную геометрию, которые при обычной загрузке
 // указывают на GPU. Проверка только читает их и не запрашивает рабочей памяти.
 struct GeometryProbe {
+    std::vector<std::shared_ptr<void>> geometry; // Owns packed records until comparisons finish.
     // Копирует исходные тестовые данные с CPU на GPU.
     template<class T> T* upload(const std::vector<T>& values) { return const_cast<T*>(values.data()); }
     // Выделяет рабочий массив GPU для проверки численного ядра.
-    template<class T> T* allocate(std::size_t,const T* = nullptr) { return nullptr; }
+    template<class T> T* allocate(std::size_t n,const T* source = nullptr) {
+        if (!n || !source) return nullptr; // No working fields are needed for geometry inspection.
+        T* copy=new T[n];
+        geometry.emplace_back(copy,[](void* p) { delete[] static_cast<T*>(p); });
+        std::copy_n(source,n,copy);
+        return copy;
+    }
 };
 // Сравнивает парные коэффициенты координатной геометрии с эталоном.
 void check_coordinate_pairs(const viscosity::Aes& aes,MeshIndex nodes,bool shared) {
     GeometryProbe probe;
     auto geometry=aes.upload(probe,nodes).tetra;
-    aero_test::require((geometry.cells.shared!=nullptr)==shared,"coordinate and solution node numbering");
+    aero_test::require(bool(geometry.cells.shared)==shared,"coordinate and solution node numbering");
     geometry.cached_cells=0;
     const auto& cpu=aes.view();
     const viscosity::CoordinatePairTile direct{};

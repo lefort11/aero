@@ -21,6 +21,7 @@ namespace aero {
 // На время решения СЛАУ все три массива свободны. Непрерывное размещение
 // позволяет отдать BiCGSTAB также остатки между целыми векторами.
 struct FluxWorkspace {
+    // Размер потоков, конец газового участка и полный размер общей рабочей области.
     MeshIndex flux_bytes, gas_end, bytes;
     // Вычисляет смещения участков общего буфера потоков, газа и вязких строк.
     FluxWorkspace(MeshIndex faces, MeshIndex gas_nodes, MeshIndex rows)
@@ -51,6 +52,7 @@ class PartitionGpu {
     struct Storage {
         // Базовый адрес одной области GPU. До резервирования указатель пуст и вычисляется только размер.
         unsigned char* base = nullptr;
+        // Занятая и зарезервированная части хранилища.
         std::size_t used = 0, capacity = 0;
         std::size_t array_count = 0; // Число непустых массивов в общей области GPU.
         // Освобождает принадлежащие объекту ресурсы при завершении его времени жизни.
@@ -84,15 +86,20 @@ class PartitionGpu {
         template <class T> T* upload(const std::vector<T>& host) {
             return allocate(host.size(), host.data());
         }
+    // Владеет выделениями текущего GPU-раздела.
     } storage_;
     CompactSlopes compact_slopes_; // Живёт на CPU между подсчётом памяти и однократной загрузкой.
+    MeshIndex reconstruction_bytes_=0, cache_bytes_=0; // Части той же раскладки для отчёта о памяти.
     std::vector<MeshIndex> boundary_nodes_; // По площадке находим исходное значение для граничного условия.
     // Переносит на GPU начальные значения для граничных условий.
     void upload_boundary_initial(const std::vector<double>& initial);
 #ifdef AERO_HAS_VISCOSITY
+    // Исходная геометрия вязкого оператора.
     const viscosity::Aes* aes_ = nullptr;
+    // Представление вязкого оператора с адресами GPU.
     viscosity::Operator viscous_grid_{};
 #endif
+    // Адреса сетки и полей, передаваемые ядрам.
     partition_detail::Grid grid_{};
     // Та же геометрия и адреса полей нужны Kokkos на каждой стадии. Запись живёт в storage_.
     residual_detail::FaceBatch* device_faces_ = nullptr;
@@ -117,6 +124,8 @@ class PartitionGpu {
 public:
     // Инициализирует объект стандартными значениями его полей.
     PartitionGpu() = default;
+    // Начальное поле неявного шага может использовать готовую копию для отката.
+    double* step_start_buffer() const { return accepted_state_; }
 #ifdef AERO_HAS_VISCOSITY
     // Сообщает об актуальности кэшированных газовых параметров.
     const EulerState* current_gas() const { return gas_current_ ? grid_.geometry.packed.gas : nullptr; }
@@ -139,7 +148,7 @@ public:
                 const std::vector<MeshIndex>& computed, const std::vector<MeshIndex>& owned,
                 const double* volumes, std::size_t state_nodes, bool compact_buffer, bool whole_mesh);
     // Пробует зарезервировать рассчитанный объём и передаёт фактическую потребность планировщику.
-    bool reserve(GpuMemoryFit& fit, MeshIndex implicit_bytes = 0);
+    bool reserve(GpuMemoryFit& fit, MeshIndex implicit_bytes = 0, MeshIndex coarse_bytes = 0);
     // Копирует на карту принятое поле и исходное состояние, необходимое граничным условиям.
     void upload_state(const std::vector<double>& state, const std::vector<double>& initial);
     // Поля в памяти карты. Потоки вычисляются обычным оператором на этих же адресах.
@@ -181,7 +190,9 @@ public:
 
     // Индексы и рабочие буферы обмена с соседним процессом.
     struct Peer {
+        // Индексы упаковки отправляемых и размещения полученных записей.
         MeshIndex *out = nullptr, *in = nullptr;
+        // Промежуточное поле обмена с этим соседом.
         double* buffer = nullptr;
     };
     // Загружает индексы отправки и приёма и готовит буферы одного соседа.

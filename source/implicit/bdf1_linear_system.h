@@ -19,6 +19,7 @@ struct LinearTolerance {
 };
 // Статус сходимости, число итераций и итоговая норма линейной невязки.
 struct LinearResult {
+    // Причина завершения линейной итерации.
     LinearStatus status;
     unsigned iterations;          // Ноль, если начальное приближение уже удовлетворяет допуску.
     double residual_norm;         // Фактическая норма ||b−A*x||∞ для возвращённого x.
@@ -58,11 +59,13 @@ public:
     // При исчерпании итераций или вырождении возвращает достигнутую поправку и её невязку.
     LinearResult solve(const double* b, double* x, const LinearTolerance& tolerance = LinearTolerance());
 private:
+    // Интегратор имеет доступ к внутренней сборке системы шага.
     friend class BdfStep;
     // Ньютон уже измерил глобальную норму этой правой части. Передаём её в
     // BiCGSTAB, чтобы не делать вторую редукцию того же вектора на GPU и в MPI.
     LinearResult solve_with_rhs_norm(const double* b, double* x, const LinearTolerance& tolerance, double rhs_norm);
     struct Storage;
+    // Владеет матрицей и рабочими данными линейного решателя.
     std::unique_ptr<Storage> storage_;
 };
 using Bdf1LinearSystem = BdfLinearSystem;

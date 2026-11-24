@@ -24,7 +24,9 @@ double magnitude(CvVector s) {
 }
 // Концы ребра и ориентированный вектор его контрольной площадки.
 struct Edge {
+    // Идентификаторы концов тестового ребра.
     std::uint64_t a, b;
+    // Его ориентированный вектор площади.
     CvVector area;
 };
 }
@@ -32,8 +34,11 @@ struct Edge {
 struct CflTimestep::Impl {
     // Границы строк таблицы «узел → площадки», а entries хранит номера и площади этих площадок.
     std::vector<std::size_t> offsets;
+    // Инцидентные площадки по строкам узлов.
     std::vector<Entry> entries;
+    // Узловые объёмы для вычисления шага.
     std::vector<double> volumes;
+    // Размеры наборов внутренних и граничных площадок.
     std::size_t edge_count = 0, boundary_count = 0;
     // В режиме CUDA владеет копией таблицы и рабочими буферами поиска минимума на карте.
     void* gpu = nullptr;

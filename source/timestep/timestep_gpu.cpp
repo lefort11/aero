@@ -19,10 +19,15 @@ template <class T> void copy(T*& dst, const T* src, std::size_t count) {
 }
 // Владеет устройством и массивами геометрии для оценки CFL на GPU.
 struct Storage {
+    // GPU размещения данных расчёта CFL.
     int device;
+    // Количество узлов в расчёте шага.
     std::size_t nodes;
+    // Смещения строк площадок на GPU.
     std::size_t* offsets = nullptr;
+    // Инцидентные площадки на GPU.
     Entry* entries = nullptr;
+    // Объёмы узловых ячеек на GPU.
     double* volumes = nullptr;
     // Перед уничтожением вызывающий код активирует устройство, которому принадлежит память.
     ~Storage() {

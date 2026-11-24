@@ -4,7 +4,7 @@ IMPLICIT_OBJECT := $(BUILD)/block_jacobi_$(EBR_TAG).o
 SPATIAL_OBJECT := $(BUILD)/spatial_jacobian_$(EBR_TAG).o
 BICGSTAB_OBJECT := $(BUILD)/bicgstab_$(EBR_TAG).o
 NEWTON_OBJECT := $(BUILD)/bdf1_step_$(EBR_TAG).o
-BICGSTAB_HEADERS := source/implicit/bdf1_linear_system.h source/implicit/bicgstab_vectors.h
+BICGSTAB_HEADERS := source/implicit/bdf1_linear_system.h source/implicit/bicgstab_vectors.h source/implicit/phase_timing.h
 $(BICGSTAB_OBJECT) $(NEWTON_OBJECT): source/implicit/workspace.h
 $(NEWTON_OBJECT): source/timestep/bdf_weights.h
 SPATIAL_HEADERS := source/implicit/edge_jacobian.h source/implicit/csgs_order.h source/implicit/csgs_sweep.h source/implicit/roe_edge_jacobian.h source/implicit/spatial_jacobian.h source/implicit/spatial_jacobian_detail.h source/implicit/boundary_jacobian.h source/implicit/lf_edge_jacobian.h source/parallel/device_arrays.h $(RES_HDR)
@@ -37,7 +37,9 @@ MULTIGRID_HEADERS := $(wildcard source/multigrid/*.h)
 $(BUILD)/aggregates_$(EBR_TAG).o: source/multigrid/aggregates.cpp $(MULTIGRID_HEADERS) $(SPATIAL_HEADERS) | $(BUILD)
 	$(compiling)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(IMPLICIT_FLAGS) -c $< -o $@
-$(BUILD)/coarse_step_$(EBR_TAG).o: source/multigrid/coarse_step.cpp $(MULTIGRID_HEADERS) $(IMPLICIT_HEADERS) $(BICGSTAB_HEADERS) | $(BUILD)
+# Грубый шаг читает Geometry через aggregates.h. При изменении раскладки геометрии
+# его нужно перекомпилировать вместе с пространственным якобианом.
+$(BUILD)/coarse_step_$(EBR_TAG).o: source/multigrid/coarse_step.cpp $(MULTIGRID_HEADERS) $(IMPLICIT_HEADERS) $(BICGSTAB_HEADERS) $(SPATIAL_HEADERS) source/implicit/implicit.mk | $(BUILD)
 	$(compiling)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(IMPLICIT_FLAGS) -c $< -o $@
 $(NEWTON_OBJECT): $(MULTIGRID_HEADERS)

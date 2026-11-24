@@ -10,11 +10,15 @@ namespace detail {
 // В призме связываем основание с противоположным основанием. У гексаэдра и
 // четырёхугольника направление роста выбирает исходная грань стенки.
 struct PrismLayers {
+    // Сопоставление противоположных граней для продвижения по слоям.
     std::vector<std::vector<MeshIndex>> opposite;
+    // Исходные грани стенки для построения слоёв.
     std::vector<MeshIndex> wall_faces;
     // Находит призматические слои, связанные с выбранными граничными участками.
     PrismLayers(const Mesh&, const std::vector<std::string>& labels);
+    // Список сущностей на текущем фронте обхода.
     using Frontier = std::vector<MeshIndex>;
+    // Согласует фронт на границах подобластей.
     using Sync = std::function<bool(Frontier&)>;
     // Определяет доступную глубину призматических слоёв для опор шаблона.
     std::vector<int> local_depths(MeshView, const Sync& sync = {}) const;
@@ -22,11 +26,14 @@ struct PrismLayers {
 
 // Набор опорных точек криволинейной стороны шаблона.
 struct CurvedPoints {
+    // Ближние и дальние точки по обе стороны ребра.
     RayPoint near[2], far[2];
 };
 // Строит опоры реконструкции вдоль структурированных или призматических линий.
 class CurvedStencil {
+    // Последовательность индексов для поиска шаблона.
     using List = std::vector<MeshIndex>;
+    // Сетка, на которой прослеживаются лучи.
     MeshView mesh_;
     double cosine_; // Косинус предельного отклонения от прямого продолжения ребра.
     RowTable<MeshIndex,2> next_; // Следующее ребро за каждым концом или edge_count.

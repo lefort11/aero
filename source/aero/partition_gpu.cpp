@@ -2,6 +2,7 @@
 #include "partition_gpu.h"
 #include "../residual/boundary_flux_failure.h"
 #include "../reconstruction/device_stencil.h"
+#include "../parallel/upload_compact.h"
 #ifdef AERO_HAS_VISCOSITY
 #include "../parallel/device_work.h"
 #endif
@@ -172,7 +173,8 @@ void PartitionGpu::layout(residual_detail::Geometry g,
                           const std::vector<MeshIndex>& computed, const std::vector<MeshIndex>& owned,
                           const double* volumes, std::size_t state_nodes, bool compact_buffer,
                           bool whole_mesh) {
-    const bool store_face_batch = g.packed.tiles != nullptr;
+    const bool store_face_batch = g.packed.tiles || g.options.variables == ResidualVariables::CharacteristicFlux;
+    const auto cache_start=storage_.used;
 #ifdef AERO_HAS_TURBULENCE
     grid_.filtered_gas=nullptr;
 #endif
@@ -194,6 +196,7 @@ void PartitionGpu::layout(residual_detail::Geometry g,
     }
     g.packed.gas = storage_.allocate<EulerState>(g.packed.state_nodes);
     g.packed.normals = storage_.allocate<residual_detail::FaceNormal>(g.packed.state_nodes ? g.edges : 0);
+    cache_bytes_=storage_.used-cache_start;
     // Граничные условия обращаются к исходному полю лишь на физических площадках.
     // Сохраняем отображение на CPU до замены адреса геометрии адресом устройства.
     const auto boundary_count = g.faces - g.edges;
@@ -202,24 +205,20 @@ void PartitionGpu::layout(residual_detail::Geometry g,
         parallel_for(boundary_count, [&](MeshIndex i) { boundary_nodes_[i] = g.surfaces[g.edges+i].begin; });
     }
     g.initial_on_boundary = true;
-#ifdef AERO_HAS_VISCOSITY
-    if (!storage_.base && aes_ && aes_->uses_implicit_coordinates())
+    // Эти копии определяются геометрией шаблона, а не свободной памятью конкретной карты.
+    if (!storage_.base)
         compact_slopes_.inspect_edges(g.stencil,g.surfaces);
-#endif
-    g.surfaces = storage_.allocate(g.faces, g.surfaces);
-    g.incidence = storage_.allocate(g.offsets[g.nodes], g.incidence);
-    g.offsets = storage_.allocate(g.nodes + 1, g.offsets);
+    g.surfaces = upload_records<residual_detail::Surface32>(storage_,g.faces,g.surfaces.wide);
+    g.incidence = upload_records<residual_detail::OrientedFace32>(storage_,g.offsets[g.nodes],g.incidence.wide);
+    g.offsets = upload_indices(storage_,g.nodes+1,g.offsets.wide);
     g.patches = upload_boundary_patches(storage_, g.patches);
-    if (!storage_.base && g.dim==3) {
-        bool share=false;
-#ifdef AERO_HAS_VISCOSITY
-        share=aes_ && aes_->uses_compact_geometry();
-#endif
-        compact_slopes_.prepare(g.stencil,share);
-    }
+    if (!storage_.base) compact_slopes_.prepare(g.stencil);
     const auto exceptions=compact_slopes_.bind(g.stencil);
     compact_slopes_.use_edge_data(g.stencil,g.surfaces);
-    g.stencil = upload_reconstruction_stencil(storage_,g.stencil,exceptions);
+    const auto reconstruction_start=storage_.used;
+    g.stencil = upload_reconstruction_stencil(storage_,g.stencil,exceptions,
+        g.options.variables==ResidualVariables::CharacteristicFlux);
+    reconstruction_bytes_=storage_.used-reconstruction_start;
     if (storage_.base) compact_slopes_=CompactSlopes{};
 #ifdef AERO_HAS_VISCOSITY
     if (aes_) {
@@ -262,7 +261,10 @@ void PartitionGpu::layout(residual_detail::Geometry g,
         grid_.failed_nodes = storage_.allocate<partition_detail::Index>(owned.size());
     }
     if (compact_buffer)
-        grid_.original = storage_.allocate<double>(owned.size() * (g.dim + 2));
+        // На целой сетке SSPRK и откат сохраняют одно U_n до конца попытки.
+        // При MPI компактные собственные строки и полный буфер отката различаются.
+        grid_.original = whole_mesh && g.options.retry_nonphysical ? accepted_state_ :
+                         storage_.allocate<double>(owned.size() * (g.dim + 2));
     grid_.bad = storage_.allocate<partition_detail::Index>(1);
     // Выделяем запись в том же порядке при оценке памяти и при заполнении. После
     // резервирования поля обновляются на месте, поэтому их адреса сохраняются между стадиями.
@@ -272,10 +274,14 @@ void PartitionGpu::layout(residual_detail::Geometry g,
     }
 }
 // Пробует зарезервировать рассчитанный объём и передаёт фактическую потребность планировщику.
-bool PartitionGpu::reserve(GpuMemoryFit& fit, MeshIndex implicit_bytes) {
+bool PartitionGpu::reserve(GpuMemoryFit& fit, MeshIndex implicit_bytes, MeshIndex coarse_bytes) {
     fit.array_count = storage_.array_count;
     fit.layout_bytes = storage_.used;
-    fit.required = partition_bytes(storage_.used, 1, implicit_bytes);
+    fit.reconstruction_bytes=reconstruction_bytes_;
+    fit.cache_bytes=cache_bytes_;
+    fit.implicit_bytes=implicit_bytes;
+    fit.coarse_bytes=coarse_bytes;
+    fit.required = partition_bytes(partition_bytes(storage_.used, 1, implicit_bytes),1,coarse_bytes);
     if (fit.required > fit.budget)
         return false;
     void* memory = nullptr;
@@ -355,8 +361,19 @@ void PartitionGpu::check_kernel(const char* phase, bool checking_flux) {
 }
 // Обновляет геометрию площадок в памяти GPU.
 void PartitionGpu::update_surfaces(const std::vector<residual_detail::Surface>& surfaces) {
-    if (!surfaces.empty()) check(gpu::copy(const_cast<residual_detail::Surface*>(grid_.geometry.surfaces),
-        surfaces.data(), surfaces.size()*sizeof(surfaces[0]), gpu::Copy::ToDevice));
+    if (surfaces.empty()) return;
+    const auto& target=grid_.geometry.surfaces;
+    if (target.narrow) {
+        std::vector<residual_detail::Surface32> packed(surfaces.size());
+        parallel_for(surfaces.size(),[&](std::size_t i) {
+            if (!residual_detail::Surface32::fits(surfaces[i]))
+                throw std::logic_error("Updated surface exceeds compact index range");
+            packed[i]=residual_detail::Surface32::pack(surfaces[i]);
+        });
+        check(gpu::copy(const_cast<residual_detail::Surface32*>(target.narrow),packed.data(),
+                       packed.size()*sizeof(packed[0]),gpu::Copy::ToDevice));
+    } else check(gpu::copy(const_cast<residual_detail::Surface*>(target.wide),
+                          surfaces.data(),surfaces.size()*sizeof(surfaces[0]),gpu::Copy::ToDevice));
 }
 // Собирает представление данных для обработки площадок на GPU.
 residual_detail::FaceBatch PartitionGpu::face_batch() const {

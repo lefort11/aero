@@ -10,14 +10,20 @@ namespace aero {
 namespace cfl_detail {
 // Номер площадки и её площадь в списке связей узла.
 struct Entry {
+    // Номер площадки, ограничивающей данный объём.
     size_t face;
+    // Мера площадки, используемая в оценке CFL.
     double area;
 };
 // Невладеющая CSR-геометрия площадок и объёмов для оценки шага CFL.
 struct Grid {
+    // Количество узловых контрольных объёмов.
     size_t nodes;
+    // Начала строк списка площадок.
     const size_t* offsets;
+    // Площадки строк в порядке обхода.
     const Entry* entries;
+    // Меры контрольных объёмов.
     const double* volumes;
 };
 // Возвращает нейтральное ограничение шага для начала минимизации.
@@ -54,14 +60,15 @@ AERO_HOST_DEVICE inline CflStep from_sum(double sum, double volume, double cfl, 
 }
 // Скорость волн на площадке и модуль её площади.
 struct FaceSpeed {
+    // Скорость волны и мера соответствующей площадки.
     double speed, area;
 };
 // Суммирует по всем площадкам узла произведения скорости на площадь. Ориентация потока для CFL роли не играет.
 template <class Offset, class ReadFace>
-AERO_HOST_DEVICE inline CflStep local(const Offset* offsets, double volume, double cfl, size_t node,
+AERO_HOST_DEVICE inline CflStep local(Offset offsets, double volume, double cfl, size_t node,
                                       ReadFace read_face, double sum = 0.) {
     if (!(sum >= 0. && sum <= max_finite_double)) return {-1, node};
-    for (Offset j = offsets[node]; j < offsets[node + 1]; ++j) {
+    for (auto j = offsets[node]; j < offsets[node + 1]; ++j) {
         const FaceSpeed face = read_face(j);
         if (!(face.speed >= 0 && face.speed <= max_finite_double))
             return {-1, node};
@@ -71,7 +78,9 @@ AERO_HOST_DEVICE inline CflStep local(const Offset* offsets, double volume, doub
 }
 // Читает скорость волн и площадь по записи связи узла с площадкой.
 struct GridSpeeds {
+    // Список площадок, по которому читаются скорости.
     const Entry* entries;
+    // Текущие волновые скорости газа.
     WaveSpeeds speeds;
     // Читает скорость волны внутренней или внешней площадки узла.
     AERO_HOST_DEVICE FaceSpeed operator()(size_t j) const {
@@ -88,6 +97,7 @@ AERO_HOST_DEVICE inline CflStep local(Grid grid, WaveSpeeds speeds, double cfl, 
 // Пара (dt, узел) остаётся целой при объединении результатов потоков.
 // Тот же minimum выбирает узел при равенстве шагов и отдаёт приоритет ошибкам.
 template <class ReadNode> struct MinimumStep {
+    // Тип результата редукции минимального шага с номером узла.
     using value_type = CflStep;
     ReadNode read_node; // Возвращает ограничение CFL для одного узла текущей стадии.
     // Начинает редукцию с отсутствия ограничения на шаг.

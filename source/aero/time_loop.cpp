@@ -16,13 +16,19 @@ namespace {
 // Между двумя прогнозами измеряем реальное время, включая повторные попытки
 // и вывод файлов. При продолжении расчёта первое окно начинается с recovery.
 class CompletionForecast {
+    // Монотонные часы измерения длительности шага.
     using Clock = WallTimer::Clock;
+    // Момент взятия отсчёта для прогноза.
     Clock::time_point sample_;
+    // Расчётное время для отсчёта.
     double time_;
     std::unique_ptr<SteadyResidualTrend> steady_trend_; // Выделяется только на ведущем процессе при включённом прогнозе steady.
+    // Момент последнего принятого шага по часам исполнения.
     Clock::time_point last_accepted_;
     double step_cost_ = 0.; // Секунды на принятый шаг с учётом повторов и вывода.
+    // Число доступных измерений стоимости шага.
     unsigned cost_samples_ = 0;
+    // Признаки фазы первого порядка и перезапуска оценки стоимости.
     bool was_startup_ = false, restart_cost_ = false;
 
     // Переводит оставшееся время в календарный срок с проверкой переполнения.
@@ -188,7 +194,7 @@ void integrate_time(const RunSettings& run, const Processes& world, OutputSchedu
         const double cfl_dt = operations.cfl_step(first_order_start, timing);
         // При продолжении сравниваем загруженное поле с исходным полем всего расчёта.
         if (check_initial) {
-            const double norm = operations.steady_residual(false);
+            const double norm = operations.steady_residual(false,first_order_start,timing);
             if (reference < 0.) reference = norm;
             criterion = steady_measure(norm);
             check_initial = false;
@@ -203,19 +209,24 @@ void integrate_time(const RunSettings& run, const Processes& world, OutputSchedu
         if (!operations.advance(step, timing)) continue; // Время и расписание вывода остаются прежними.
         number = step.number;
         time = step.end;
+        const bool next_first_order_start=run.first_order_start(time,number);
+        const bool startup_finished=first_order_start && !next_first_order_start;
         bool converged = false, exhausted = false;
         if (steady) {
             // Внутренняя сходимость Ньютона относится к одному псевдошагу.
             // Для стационара отдельно проверяем полный отток из каждого объёма.
-            criterion = steady_measure(operations.steady_residual(true));
+            // Даже при остановке ровно на t_fo/steps_fo проверяем выбранную
+            // реконструкцию на принятом поле. История её LTS пока не получает
+            // наблюдение о работе последнего шага первого порядка.
+            criterion = steady_measure(operations.steady_residual(!startup_finished,next_first_order_start,timing));
             // Выход на стационар проверяем по невязке выбранной схемы.
-            converged = !first_order_start && criterion <= run.steady_tol;
+            converged = !next_first_order_start && criterion <= run.steady_tol;
             exhausted = number >= run.steady_max_steps;
         }
         // Отчёт относится к только что выполненному шагу. Затем выбираем CFL следующего шага
         // и применяем ручные команды. В контрольную точку попадёт уже готовое к продолжению состояние.
         if (step.reporting) operations.report(step, criterion);
-        if (operations.accepted) operations.accepted(first_order_start && !run.first_order_start(time, number));
+        if (operations.accepted) operations.accepted(startup_finished);
         bool settings_changed = false;
         if (run.control_every && (number == first_step + 1 || number % run.control_every == 0) && operations.control)
             stopped = operations.control(number,settings_changed);

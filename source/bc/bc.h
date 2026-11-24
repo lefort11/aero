@@ -52,6 +52,7 @@ struct FreeBoundaryRules {
 // В сетке у метки хранится одно число. Только у free это индекс в массиве FreeBoundaryRules.
 // Отрицательные значения обозначают варианты стенки и периодическую метку.
 class BoundaryConfig {
+    // Отрицательные коды специальных граничных условий.
     enum : long long { Wall = -1, Periodic = -2, SlipWall = -3 };
     long long index_; // Номер комплекта free или код физической границы.
     // Создаёт компактное обозначение типа граничного условия.
@@ -85,8 +86,10 @@ enum ProfileColumn : unsigned { Radius=1, ProfileRho=2, Axial=4, Radial=8, Profi
 // Газовое состояние, рабочая вязкость и маска величин граничного профиля.
 struct ProfileState {
     EulerState gas; // Нулевая плотность означает обычную площадку без профиля.
+    // Рабочая вязкость SA в точке профиля.
     double nutilde;
     unsigned columns; // Маска столбцов исходной таблицы; нуль допустим для заранее готового полного состояния.
+    // Способ дополнения полей, отсутствующих в профиле.
     ProfileFallback fallback;
     double direction[3]; // Направление единственной заданной компоненты скорости в осях расчёта.
     // Проверяет наличие табличного профиля на площадке.
@@ -104,8 +107,10 @@ struct ProfileState {
 struct BoundaryPatchView {
     const BoundaryConfig* by_patch;             // Одна короткая запись на метку сетки.
     const FreeBoundaryRules* free_rules;        // Комплекты только для открытых меток.
+    // Размеры таблиц патчей и свободных состояний.
     unsigned long long patch_count, free_count;
     const ProfileState* profiles; // По одной записи на физическую площадку.
+    // Число доступных профилей границы.
     unsigned long long profile_count;
     // Возвращает профиль, связанный с граничным участком.
     AERO_HOST_DEVICE const ProfileState* profile(unsigned long long piece) const {
@@ -448,13 +453,18 @@ boundary_flux(unsigned d, BoundaryConfig patch, const FreeBoundaryRules* free_ru
 namespace aero {
 // Владеет настройками расчёта на CPU. Порядок by_patch соответствует меткам исходной сетки.
 struct ProfileRow {
+    // Радиус и примитивные величины в строке радиального профиля.
     double radius, density, axial, radial, pressure, nutilde;
 };
 // Ось, центр и табличные значения пространственного граничного профиля.
 struct BoundaryProfile {
+    // Начало и ось для вычисления радиальной координаты.
     Coordinate center{}, axis{{1,0,0}};
+    // Маска величин, заданных столбцами профиля.
     unsigned columns = AllColumns;
+    // Источник остальных величин на границе.
     ProfileFallback fallback = ProfileFallback::Full;
+    // Таблица интерполяции по радиусу.
     std::vector<ProfileRow> rows;
 };
 // Владеет правилами и профилями граничных участков сетки.
@@ -485,6 +495,7 @@ BoundaryPatchView upload_boundary_patches(DeviceStorage& storage, BoundaryPatchV
 }
 // Имена сопряжённых участков и сдвиг между ними.
 struct PeriodicPair {
+    // Имена двух сопоставленных периодических патчей.
     std::string patch, pair;
     Coordinate translation; // Сдвиг от patch к pair в исходных единицах координат сетки.
 };
@@ -492,6 +503,7 @@ struct PeriodicPair {
 struct BoundaryTemperature {
     FreestreamGas gas; // T/T_amb = gamma*M_inf^2*p/rho.
     double background_rho, background_p; // Для пересчёта пульсации температуры в режиме Linear.
+    // Скорость стационарного фона для линеаризованной модели.
     double background_velocity[3];
     // Восстанавливает плотность по параметрам граничного газа.
     double density(double pressure, double temperature, bool linear) const;

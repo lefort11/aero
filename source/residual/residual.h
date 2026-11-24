@@ -10,7 +10,7 @@
 namespace aero {
 namespace implicit { class SpatialJacobian; }
 namespace residual_detail { struct Geometry; }
-enum class ResidualVariables { Conservative, Characteristic, Flux };
+enum class ResidualVariables { Conservative, Characteristic, Flux, CharacteristicFlux };
 enum class ResidualSolver { Roe, LocalLF };
 // Параметры потоков, реконструкции, вязкости и фонового состояния.
 struct ResidualOptions {
@@ -19,12 +19,17 @@ struct ResidualOptions {
     const unsigned char* wall = nullptr; // У неподвижной стенки компоненты импульса закреплены.
 #endif
     LinearBackground background; // Параметры линейных уравнений, общие для всех граней.
+    // Переменные для реконструкции на площадке.
     ResidualVariables variables;
+    // Численный поток для задачи Римана.
     ResidualSolver solver;
+    double entropy_fix = 0.; // Ноль сохраняет исходные модули собственных значений Роу.
     double upw_coeff = 1; // Вес EBR в реконструкции и множитель диссипации LF/Roe. Оценка CFL полная.
+    // Показатель адиабаты газа.
     double gamma;
     bool retry_nonphysical = false; // Активный откат сам собирает номера всех отказавших узлов.
     double mp6_hybrid = 0; // Доля ограниченной центральной поправки на полном MP-шаблоне.
+    // Допустимые отношения величин на грани к узловым значениям.
     double trace_ratio_min, trace_ratio_max;
     // Задаёт способ реконструкции, поток, параметры газа и пределы допустимости.
     ResidualOptions(ResidualVariables v = ResidualVariables::Conservative,
@@ -45,6 +50,7 @@ ResidualOptions residual_options(const std::string& variables, const std::string
 // Импульс и нормаль выражены в одном ортонормированном базисе. Для вложенной 1D/2D-сетки
 // касательные оси задаются в мировых координатах.
 struct ResidualFrame {
+    // Оси локального базиса площадки.
     CvVector axis[3];
     // Инициализирует декартов базис компонент импульса.
     ResidualFrame() : axis{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}} {}
@@ -85,6 +91,7 @@ public:
                       double* flux_seconds = nullptr);
 
 private:
+    // Якобиан использует геометрию и потоки того же оператора.
     friend class implicit::SpatialJacobian;
     // Для якобиана используем уже спроецированные площади и ту же таблицу границ.
     int jacobian_geometry(residual_detail::Geometry& host, residual_detail::Geometry& active) const;

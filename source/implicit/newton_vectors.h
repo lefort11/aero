@@ -8,19 +8,25 @@ namespace aero {
 namespace implicit {
 // Поля текущего шага. Один вызов обрабатывает все компоненты одного узла.
 struct NewtonUpdate {
+    // Операции над узловыми полями на этапах решения уравнения Ньютона.
     enum Operation { InitialRhs, FormRhs, AddCorrection, PredictCorrection, RestoreStart, Predict, RelaxPrediction, UndoPrediction, SpatialRate };
+    // Связность для сборки узловой невязки.
     residual_detail::Geometry grid;
     const EulerFluxResult* flux; // Потоки в тех же ориентациях, что при явном обновлении.
+    // Объёмы узлов, масштабирующие временной вклад.
     const double* volumes;
+    // Поле, сохранённое начало шага, правая часть и поправка Ньютона.
     double *state, *start, *rhs, *correction;
     const double* previous;  // U_(n-1), хранится в компактной нумерации собственных узлов.
     double dt; // Шаг, на котором решается уравнение баланса.
     double leading, history_weight; // Коэффициенты разностей (U-U_n) и (U_n-U_(n-1)).
+    // Выбранное преобразование узловых векторов.
     Operation operation;
     const MeshIndex* owned; // Номера узлов в полном поле для компактных строк решателя.
 
     double relaxation; // Доля пробной поправки при ослаблении вязкого предиктора.
 
+    // Узловые псевдошаги текущей сборки.
     NodeSteps local_steps;
     // Собираем баланс узла и сразу определяем наибольшую по модулю компоненту.
     // spatial[k] содержит сумму исходящих потоков через все грани контрольного объёма.

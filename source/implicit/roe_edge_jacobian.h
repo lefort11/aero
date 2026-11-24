@@ -9,17 +9,24 @@ namespace roe_jacobian_detail {
 // Производная модуля в точке излома выбирается симметрично.
 AERO_HOST_DEVICE inline int sign(double x) { return (x > 0.) - (x < 0.); }
 
+// В звуковой окрестности ширина регуляризации меняется вместе со скоростью звука.
+AERO_HOST_DEVICE inline double modulus_derivative(double lambda,double width,double dl,double dwidth) {
+    if (::fabs(lambda)>=width) return sign(lambda)*dl;
+    const double q=lambda/width;
+    return q*dl+.5*(1.-q*q)*dwidth;
+}
+
 // Дифференцируем |A_Роу|*(U_R-U_L) по одной стороне. Шаг конечной разности
 // здесь не нужен. При замороженной матрице остаётся только |A_Роу|*d(скачка).
 AERO_HOST_DEVICE inline bool differentiate_side(const euler_detail::FaceStates& face, const EulerState& side,
                                                 const euler_detail::RoeAverage& mean, const double* n,
                                                 const double* jump, const double* wave, double weight,
-                                                double jump_sign, double area, bool frozen, double* block) {
+                                                double jump_sign, double area, bool frozen, double* block,double entropy_fix) {
     const unsigned d = face.dimension, energy = d + 1, width = d + 2;
     const double c = mean.sound_speed, un = mean.normal_speed, ic = 1. / c;
     const double side_un = euler_detail::dot(d, side.velocity, n);
     const double transport = ::fabs(un);
-    const double acoustic[2] = {::fabs(un - c) - transport, ::fabs(un + c) - transport};
+    const double acoustic[2] = {euler_detail::acoustic_modulus(un - c,entropy_fix*c) - transport, euler_detail::acoustic_modulus(un + c,entropy_fix*c) - transport};
     const double kinetic = .5 * euler_detail::dot(d, side.velocity, side.velocity);
     for (unsigned col = 0; col < width; ++col) {
         const edge_detail::PhysicalColumn column(col, d, face.gamma, side, n, side_un, kinetic);
@@ -59,8 +66,8 @@ AERO_HOST_DEVICE inline bool differentiate_side(const euler_detail::FaceStates& 
             const double diff = -ic * (dun * jump[0] + dc * (wave[energy] - wave[0]));
             strength[0] += .5 * (sum - diff);
             strength[energy] += .5 * (sum + diff);
-            dminus = sign(un - c) * (dun - dc) - dt;
-            dplus = sign(un + c) * (dun + dc) - dt;
+            dminus = modulus_derivative(un - c,entropy_fix*c,dun - dc,entropy_fix*dc) - dt;
+            dplus = modulus_derivative(un + c,entropy_fix*c,dun + dc,entropy_fix*dc) - dt;
         }
         for (unsigned row = 0; row < width; ++row) {
             double minus, plus;
@@ -84,7 +91,7 @@ AERO_HOST_DEVICE inline bool differentiate_side(const euler_detail::FaceStates& 
 // Оба блока относятся к одному ориентированному потоку через ребро.
 // Сборщик распределит их между двумя строками матрицы с противоположными знаками.
 AERO_HOST_DEVICE inline bool roe_edge_jacobian(const euler_detail::FaceStates& face, double area,
-                                               EdgeFluxJacobian& result, bool frozen = false) {
+                                               EdgeFluxJacobian& result, bool frozen = false,double entropy_fix=0.) {
     euler_detail::InterfaceGas gas;
     if (!edge_detail::read_states(face, area, gas)) return false;
     euler_detail::RoeAverage mean;
@@ -103,7 +110,7 @@ AERO_HOST_DEVICE inline bool roe_edge_jacobian(const euler_detail::FaceStates& f
         double* block = k ? blocks.right : blocks.left;
         const double weight = side.density_root / (gas.left.density_root + gas.right.density_root);
         if (!roe_jacobian_detail::differentiate_side(face, side, mean, gas.normal, jump, wave, weight,
-                                                     k ? 1. : -1., area, frozen, block))
+                                                     k ? 1. : -1., area, frozen, block,entropy_fix))
             return false;
     }
     result = blocks;

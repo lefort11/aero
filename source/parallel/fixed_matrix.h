@@ -7,6 +7,7 @@ namespace aero {
 template<class T, unsigned Rows, unsigned Columns>
 // Матрица фиксированного размера с непрерывным построчным хранением.
 struct FixedMatrix {
+    // Непрерывное построчное хранение коэффициентов.
     T values[Rows * Columns];
     // Возвращает начало строки в непрерывном массиве коэффициентов.
     AERO_HOST_DEVICE T* row(unsigned i) { return values + i * Columns; }
@@ -23,6 +24,7 @@ struct FixedMatrix {
 template<class T, unsigned Layers, unsigned Rows, unsigned Columns>
 // Тензор фиксированного размера с непрерывным хранением компонент.
 struct FixedTensor {
+    // Непрерывное хранение слоёв, строк и столбцов.
     T values[Layers * Rows * Columns];
     // Возвращает компоненту по многомерным индексам с построчным вычислением смещения.
     AERO_HOST_DEVICE T& operator()(unsigned k, unsigned i, unsigned j) {

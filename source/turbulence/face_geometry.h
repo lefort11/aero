@@ -22,9 +22,12 @@ AERO_HOST_DEVICE inline FaceTerm make_face_term(const residual_detail::Surface &
 // На тесной карте читаем геометрию газа на месте. Смещения задают исходный
 // порядок граней в строке, поэтому порядок суммирования в уравнении SA сохраняется.
 struct GasFaces {
-    const residual_detail::Surface *faces;
-    const residual_detail::OrientedFace *incidence;
-    const residual_detail::Index *offsets;
+    // Общая с газовым оператором таблица площадок.
+    residual_detail::SurfaceTable faces;
+    // Ориентированная инцидентность узлов и площадок газа.
+    residual_detail::FaceIncidence incidence;
+    // Смещения узловых строк в таблице инцидентности.
+    IndexArray<residual_detail::Index> offsets;
     // Возвращает диапазон площадок данного узла в CSR-таблице.
     AERO_HOST_DEVICE RowRange row(MeshIndex node) const { return {offsets[node], offsets[node + 1]}; }
     // Формирует ориентированный вклад площадки в конвективный оператор SA.

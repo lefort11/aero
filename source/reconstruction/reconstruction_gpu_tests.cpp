@@ -9,11 +9,17 @@ namespace {
 using aero::ReconstructionIndex;
 // Дескриптор GPU-шаблона и его рабочего состояния.
 struct State {
+    // Адреса таблиц активного шаблона устройства.
     aero::ReconstructionStencilView view;
+    // Устройство размещения буферов.
     int device;
+    // Буфер входных узловых значений.
     double* values;
+    // Результаты для левой стороны.
     double* left;
+    // Результаты для правой стороны.
     double* right;
+    // Ёмкости входного и выходных буферов.
     size_t value_capacity, result_capacity;
 };
 

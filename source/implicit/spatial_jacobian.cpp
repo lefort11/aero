@@ -54,6 +54,7 @@ void read_indices(const IndexList& list, std::vector<MeshIndex>& result) {
 // Привязка вхождения ребра в строку к столбцу соседнего узла вычисляется
 // один раз. При обновлении коэффициентов поиск по номерам узлов уже не нужен.
 struct BlockPattern {
+    // Границы блочных строк, номера столбцов и соответствия соседей.
     std::vector<MeshIndex> rows, columns, neighbour;
     // Строит блочный граф матрицы по собственным узлам, площадкам и обменным связям.
     void build(const residual_detail::Geometry& g, MeshIndex count, const Partition& part) {
@@ -197,20 +198,27 @@ MeshIndex gpu_matrix_bytes(const GpuMatrixPlan& plan) { return plan.bytes; }
 struct SpatialJacobian::Storage {
     std::shared_ptr<const SpatialResidual::Impl> geometry_owner; // Владелец адресов в blocks.grid.
     SpatialBlocks blocks{};    // Указатели на калькуляционные массивы выбранного исполнителя.
+    // Устройство, на котором размещены блоки матрицы.
     int device = -1;
     bool ready = false;        // Некорректная площадка запрещает пользоваться частично обновлённой матрицей.
     Partition partition;      // Обмен данными и глобальные нормы данной подобласти.
     std::unique_ptr<CsgsOrder> order;  // Разбиение по цветам или потокам, только для CSGS.
     std::unique_ptr<CsgsOrder> reserved_order; // Готовая раскраска, ещё не загруженная при первой поправке.
+    // Порядок строк для цветных проходов.
     CsgsLayout layout;
+    // Представление упакованных коэффициентов.
     CsgsPacking packing{};
     std::vector<double> sweep_values; // Коэффициенты предобусловливателя для CPU.
     CsgsSweep sweep{};                // Постоянные адреса для проходов.
     std::vector<double> forward_host; // Промежуточный результат прямого прохода.
+    // Промежуточный вектор прямого прохода.
     double* forward = nullptr;
 #ifdef AERO_HAS_VISCOSITY
+    // Вязкая часть линеаризованного оператора.
     viscosity::Jacobian viscous{};
+    // Постоянная структура вязких связей матрицы.
     viscosity::JacobianPattern viscous_pattern;
+    // Рабочие градиенты вязкого якобиана.
     std::vector<viscosity::Gradient> gradients;
 #endif
     BlockPattern pattern;     // Номера строк, соседей и блоков на CPU.

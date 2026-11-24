@@ -20,6 +20,7 @@ inline const char* scale_name(Scale scale) {
 }
 // Настройки масштаба фильтра и параметров LES/DDES.
 struct LesSettings {
+    // Закон определения подсеточной длины.
     Scale scale = Scale::Off;
     // Для трёх направленных масштабов размер фильтра зависит от текущей скорости.
     AERO_HOST_DEVICE bool directional() const {
@@ -148,11 +149,16 @@ AERO_HOST_DEVICE inline bool try_transverse_filter(const Geometry& cell, const C
 // Для масштаба фильтра нужны только размер и координаты элемента. В упакованной
 // таблице LES производные уже записаны по отдельности, рядом для соседних элементов.
 struct FilterLengths {
+    // Объём, его характерная длина и экстремальные длины рёбер.
     double volume, vol_length, min_edge, max_edge;
     double gradient_sum; // Максимальная сумма модулей производных по одному направлению.
+    // Квадрат длины для остальных кандидатов диаметра.
     double remaining_length2;
+    // Упакованные пары вершин для длиннейших диагоналей.
     unsigned char longest_pairs[4];
+    // Количество сохранённых диагоналей.
     unsigned diagonals;
+    // Признаки прямоугольной формы и ограниченной оценки диаметра.
     bool rectangular_box, bounded_diameter;
     // Пара хранится как 8*i+j. Координаты могут лежать в таблице формы или в общей сетке.
     template<class Points>
@@ -216,6 +222,7 @@ struct FilterLengths {
 };
 // Вершины элемента и его геометрические протяжённости для фильтра.
 struct FilterExtent : FilterLengths {
+    // Координаты вершин элемента для оценки протяжённости.
     Coordinate position[8];
     // Возвращает координаты локальной вершины фильтра.
     AERO_HOST_DEVICE const Coordinate& point(unsigned i) const { return position[i]; }
