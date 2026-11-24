@@ -198,6 +198,18 @@ KOKKOS_FORCEINLINE_FUNCTION bool finish_linear_split(const Geometry& g,const Sur
     return limit_split_flux<W>(g,ul,ur,fl,fr,speed,out.flux) && integrate_flux(W,s.measure,out);
 }
 
+// Возвращает восстановленные волны в консервативные компоненты и ограничивает полный поток.
+template<unsigned W>
+AERO_HOST_DEVICE inline bool finish_characteristic_split(const Geometry& g,const Surface& s,const EulerRoeBasis& basis,
+        const double* ul,const double* ur,const double* fl,const double* fr,double speed,
+        const double* waves,EulerFluxResult& out) {
+    if (euler_detail::expand_characteristic<W>(W,basis,waves,out.flux)!=EulerStatus::Success) return false;
+    for (unsigned k=0;k<W;++k) out.flux[k]+=.5*(fl[k]+fr[k]);
+    out.components=W;
+    out.max_wave_speed=speed;
+    return limit_split_flux<W>(g,ul,ur,fl,fr,speed,out.flux) && integrate_flux(W,s.measure,out);
+}
+
 // Расщеплённые потоки обеих сторон строятся в одном базисе Роу.
 // Полученное значение уже включает диссипацию, повторная задача Римана не нужна.
 template<unsigned W,bool linear_only=false,bool full_mp=false>
@@ -250,11 +262,7 @@ AERO_HOST_DEVICE inline bool characteristic_flux(const Geometry& g,Index edge,co
             waves[k]=-.5*a*dw[0][k]+.5*nonlinear_increment(5,left,st.epsilon(2*edge),st.mp5)
                                     -.5*nonlinear_increment(5,right,st.epsilon(2*edge+1),st.mp5);
         }
-        if (euler_detail::expand_characteristic<W>(W,basis,waves,out.flux)!=EulerStatus::Success) return false;
-        for (unsigned k=0;k<W;++k) out.flux[k]+=.5*(fl[k]+fr[k]);
-        out.components=W;
-        out.max_wave_speed=speed;
-        return limit_split_flux<W>(g,ul,ur,fl,fr,speed,out.flux) && integrate_flux(W,s.measure,out);
+        return finish_characteristic_split<W>(g,s,basis,ul,ur,fl,fr,speed,waves,out);
     }
     double dw[2][4][W],dg[2][4][W];
     for (unsigned side=0;side<2;++side) {
@@ -309,11 +317,7 @@ AERO_HOST_DEVICE inline bool characteristic_flux(const Geometry& g,Index edge,co
         }
         for (unsigned k=0;k<W;++k) waves[k]+=.5*sign*delta[k];
     }
-    if (euler_detail::expand_characteristic<W>(W,basis,waves,out.flux)!=EulerStatus::Success) return false;
-    for (unsigned k=0;k<W;++k) out.flux[k]+=.5*(fl[k]+fr[k]);
-    out.components=W;
-    out.max_wave_speed=speed;
-    return limit_split_flux<W>(g,ul,ur,fl,fr,speed,out.flux) && integrate_flux(W,s.measure,out);
+    return finish_characteristic_split<W>(g,s,basis,ul,ur,fl,fr,speed,waves,out);
 }
 
 // Общая точка входа для CPU, CUDA и списков площадок MPI.

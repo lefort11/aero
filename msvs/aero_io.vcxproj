@@ -45,5 +45,9 @@
     <None Include="..\source\io\io.mk" />
     <ClInclude Include="..\source\io\native_format.h" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="..\source\io\FIELDS.txt" />
+    <ClInclude Include="..\source\io\submesh.h" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

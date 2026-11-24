@@ -103,17 +103,15 @@ void PartitionOperator::sa_apply(const turbulence::Step &s, Operation op) const 
         return;
     }
 #endif
-    if (op==Operation::LineRelax && s.transport.sa.lines.count) {
-        parallel_for(s.transport.sa.lines.count,[&](MeshIndex k){s.relax_line(k);},64);
-        return;
-    }
-    if (op == Operation::Residual) {
+    s.dispatch(op, [&](MeshIndex count) {
+        parallel_for(count,[&](MeshIndex k){s.relax_line(k);},64);
+    }, [&] {
         if (s.transport.sa.diffusion.vertex_contributions)
             parallel_for(s.transport.cell_count,[&](MeshIndex e){s.transport.diffuse_element(e);});
         host_sa_residual<false>(s);
-        return;
-    }
-    parallel_for(s.transport.count, [&](MeshIndex k) { s.apply(op, k); });
+    }, [&](MeshIndex count) {
+        parallel_for(count, [&](MeshIndex k) { s.apply(op, k); });
+    });
 }
 namespace {
 // Вычисляет максимальную норму выбранной величины SA на CPU.
@@ -144,11 +142,13 @@ double PartitionOperator::sa_max(const turbulence::Step &s, Norm which,bool refr
             return;
         }
 #endif
-        if (!refresh) { value=host_sa_norm<0,false>(s,which); return; }
-        parallel_for(s.transport.cell_count,[&](MeshIndex e){s.transport.refresh_diffusivity<true>(e);});
-        const auto norm = for_dimension(s.transport.dim, host_sa_norm<1,true>,
-                                        host_sa_norm<2,true>, host_sa_norm<3,true>);
-        value = norm(s, which);
+        value=s.evaluate_norm(which,refresh,[&] {
+            parallel_for(s.transport.cell_count,[&](MeshIndex e){s.transport.refresh_diffusivity<true>(e);});
+        }, [&] {
+            const auto norm = for_dimension(s.transport.dim, host_sa_norm<1,true>,
+                                            host_sa_norm<2,true>, host_sa_norm<3,true>);
+            return norm(s,Norm::Bdf);
+        }, [&](Norm mode) { return host_sa_norm<0,false>(s,mode); });
     });
     return world_.reduce_double(value, true);
 }

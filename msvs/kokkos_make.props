@@ -15,7 +15,7 @@
     <WithOpenMP Condition="'$(WithOpenMP)'==''">true</WithOpenMP>
     <StaticLink Condition="'$(StaticLink)'==''">true</StaticLink>
     <AeroBin Condition="'$(AeroBin)'==''">$(MSBuildProjectDirectory)\..\bin</AeroBin>
-    <MakeDriver>powershell.exe -NoProfile -File &quot;$(MSBuildProjectDirectory)\make.ps1&quot; -Goal &quot;$(MakeGoal)&quot; -Config $(Configuration) -Backend $(KokkosBackend) -Arch $(CudaArchitecture) -Mpi $(WithMPI) -OpenMp $(WithOpenMP) -Static $(StaticLink) -Bin &quot;$(AeroBin)&quot;</MakeDriver>
+    <MakeDriver>powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\make.ps1&quot; -Goal &quot;$(MakeGoal)&quot; -Config $(Configuration) -Backend $(KokkosBackend) -Arch $(CudaArchitecture) -Mpi $(WithMPI) -OpenMp $(WithOpenMP) -Static $(StaticLink) -Bin &quot;$(AeroBin)&quot;</MakeDriver>
     <NMakeBuildCommandLine>$(MakeDriver)</NMakeBuildCommandLine>
     <NMakeReBuildCommandLine>$(MakeDriver) -Rebuild</NMakeReBuildCommandLine>
     <NMakeCleanCommandLine>$(MakeDriver) -Clean</NMakeCleanCommandLine>

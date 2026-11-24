@@ -21,5 +21,10 @@
     <ClInclude Include="..\source\residual\residual_detail.h" />
     <ClCompile Include="..\source\residual\residual_gpu.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\source\residual\boundary_flux_failure.h" />
+    <ClInclude Include="..\source\residual\split_flux.h" />
+    <ClInclude Include="..\source\residual\stencil_rates.h" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

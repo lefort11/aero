@@ -2,7 +2,7 @@
 #include "boundary_flux_failure.h"
 #include "../bc/profile.h"
 #include "packed_weno.h"
-#include "split_flux.h"
+#include "flux_dispatch.h"
 #include "../parallel/parallel_for.h"
 #include "../parallel/upload_compact.h"
 #include "../parallel/wall_timer.h"
@@ -121,14 +121,15 @@ namespace {
 // Полная плитка хранит геометрию сразу обеих сторон. Выбираем только формулу
 // реконструкции, а построение базиса и запись потока общие с ядрами GPU.
 template <unsigned order>
-bool cpu_packed_flux(const FaceBatch& batch, Index face, const WenoEdgeTile<order>& tile) {
-    const auto& mp = batch.geometry.stencil.mp5;
-    if (order == 5 && mp.weno)
-        return compute_packed_face<false, true>(batch, face, tile);
-    if (order == 5 && mp.enabled)
-        return compute_packed_face<true>(batch, face, tile);
-    return compute_packed_face<false>(batch, face, tile);
-}
+struct CpuPackedFlux {
+    const FaceBatch& batch;
+    Index face;
+    const WenoEdgeTile<order>& tile;
+    template<bool weno> bool apply_mp() const {
+        return compute_packed_face<!weno,weno>(batch,face,tile);
+    }
+    bool apply_weno() const { return compute_packed_face<false>(batch,face,tile); }
+};
 
 // Вычисляет поток площадки с выбранным типом реконструкции на CPU.
 template <unsigned order> bool cpu_face_with_stencil(const FaceBatch& batch, Index f) {
@@ -137,7 +138,7 @@ template <unsigned order> bool cpu_face_with_stencil(const FaceBatch& batch, Ind
         return batch.compute_face<true,false,4>(f);
     const auto* tile = complete_tile<order>(batch.geometry, f);
     if (tile)
-        return cpu_packed_flux(batch, f, *tile);
+        return dispatch_packed_reconstruction<order>(batch.geometry,CpuPackedFlux<order>{batch,f,*tile});
     // Для границы либо неполной стороны порядок и способ чтения определяются на месте.
     return batch.roe_2d() ? batch.compute_face<true>(f) : batch.compute_face(f);
 }
@@ -181,23 +182,24 @@ void compute_cpu_faces(const FaceBatch& batch, const MeshIndex* global_nodes) {
 // Вычисляет потоки набора внутренних и граничных площадок на CPU.
 void residual_detail::cpu_face_fluxes(const FaceBatch& batch, const MeshIndex* global_nodes) {
     const auto& packed = batch.geometry.packed;
-    if (batch.needs_gas_update())
+    dispatch_face_fluxes(batch, [&] {
         parallel_for(packed.state_nodes, [&](Index i) {
             decode_nodal_gas(batch.geometry.dim, batch.state, batch.geometry.options.gamma, i, packed.gas);
         });
-    const auto& geometry = batch.geometry;
-    if (geometry.options.background.active()) {
+    }, [&] {
         compute_cpu_faces<cpu_linear_flux>(batch, global_nodes);
-    } else if (uses_split_flux(geometry)) {
+    }, [&] {
         compute_cpu_faces<split_face>(batch,global_nodes);
-    } else if (batch.nodal_lf()) {
-        const auto launch = for_dimension(batch.geometry.dim, compute_cpu_faces<cpu_nodal_lf<1>>,
-                                                       compute_cpu_faces<cpu_nodal_lf<2>>,
-                                                       compute_cpu_faces<cpu_nodal_lf<3>>);
-        launch(batch,global_nodes);
-    } else {
-        compute_cpu_faces<cpu_flux_for_face>(batch, global_nodes);
-    }
+    }, [&] {
+        if (batch.nodal_lf()) {
+            const auto launch = for_dimension(batch.geometry.dim, compute_cpu_faces<cpu_nodal_lf<1>>,
+                                                           compute_cpu_faces<cpu_nodal_lf<2>>,
+                                                           compute_cpu_faces<cpu_nodal_lf<3>>);
+            launch(batch,global_nodes);
+        } else {
+            compute_cpu_faces<cpu_flux_for_face>(batch, global_nodes);
+        }
+    });
 }
 
 // Переносит настройки постановки в параметры пространственного оператора.

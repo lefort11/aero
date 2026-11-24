@@ -33,6 +33,12 @@ struct DeviceArrays {
     template <class T> T* upload(const std::vector<T>& values) {
         return allocate(values.size(),values.data());
     }
+    // Ставит загрузку массива в очередь; вызывающий ожидает её перед использованием в другом потоке.
+    template <class T> T* upload_async(const T* values, std::size_t n, Stream stream) {
+        auto* p = allocate<T>(n);
+        if (n) checked(copy_async(p, values, n * sizeof(T), Copy::ToDevice, stream));
+        return p;
+    }
     // Освобождает принадлежащие объекту ресурсы при завершении его времени жизни.
     ~DeviceArrays() {
         if (allocations.empty()) return;

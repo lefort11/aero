@@ -35,8 +35,7 @@ struct AffineHex {
         pair.heat = pair_heat;
         for (unsigned m = 0; m < 3; ++m)
             for (unsigned k = 0; k < 3; ++k) {
-                double value = volume * ((m == k ? trace : 0.) + basis(k, i) * basis(m, j) -
-                                         (2. / 3.) * basis(m, i) * basis(k, j));
+                double value = volume * PairMetric::stress_entry(m,k,trace,basis(m,i)*basis(k,j),basis(k,i)*basis(m,j));
                 const unsigned r0 = i < 4 ? 0 : i - 4, r1 = i < 4 ? 4 : i - 3;
                 const unsigned s0 = j < 4 ? 0 : j - 4, s1 = j < 4 ? 4 : j - 3;
                 for (unsigned r = r0; r < r1; ++r)

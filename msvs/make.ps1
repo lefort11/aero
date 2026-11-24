@@ -25,6 +25,13 @@ $arguments = @("-j$([Environment]::ProcessorCount)", "BUILD_TYPE=$Config", "KOKK
 # GNU Make запускается в MSYS2, поэтому путь выходного каталога переводится в его Unix-форму.
 $unixBin = & (Join-Path $msys 'usr\bin\cygpath.exe') -au $Bin
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+$unixRoot = & (Join-Path $msys 'usr\bin\cygpath.exe') -au $root
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+# Тесты передают путь к EXE в Windows cmd. Внутри репозитория относительный
+# путь одинаков для cmd и MSYS2, тогда как /d/... понимает только MSYS2.
+if ($unixBin.StartsWith("$unixRoot/", [StringComparison]::OrdinalIgnoreCase)) {
+    $unixBin = $unixBin.Substring($unixRoot.Length + 1)
+}
 $arguments += "BIN=$unixBin"
 if ($Rebuild) { $arguments += '-B' }
 $arguments += if ($Clean) { 'clean' } else { $Goal }

@@ -1,26 +1,14 @@
-#include "../parallel/device_check.h"
-#include "../parallel/device_scope.h"
+#include "../parallel/device_arrays.h"
 #include "../parallel/device_work.h"
-#include <stdexcept>
 #include <memory>
 
 namespace aero {
 namespace cfl_detail {
 namespace {
 using aero::gpu::checked;
-// Выделяет GPU-массив указанного типа и количества элементов.
-template <class T> void allocate(T*& dst, std::size_t count) {
-    checked(aero::gpu::allocate(reinterpret_cast<void**>(&dst), count * sizeof(T)));
-}
-// Выделяет GPU-массив и ставит копирование исходных CPU-значений в очередь.
-template <class T> void copy(T*& dst, const T* src, std::size_t count) {
-    allocate(dst, count);
-    checked(aero::gpu::copy_async(dst, src, count * sizeof(T), aero::gpu::Copy::ToDevice, 0));
-}
 // Владеет устройством и массивами геометрии для оценки CFL на GPU.
 struct Storage {
-    // GPU размещения данных расчёта CFL.
-    int device;
+    gpu::DeviceArrays arrays;
     // Количество узлов в расчёте шага.
     std::size_t nodes;
     // Смещения строк площадок на GPU.
@@ -29,12 +17,6 @@ struct Storage {
     Entry* entries = nullptr;
     // Объёмы узловых ячеек на GPU.
     double* volumes = nullptr;
-    // Перед уничтожением вызывающий код активирует устройство, которому принадлежит память.
-    ~Storage() {
-        aero::gpu::release(volumes);
-        aero::gpu::release(entries);
-        aero::gpu::release(offsets);
-    }
 };
 }
 // Копирует геометрию CFL на выбранную карту и возвращает её дескриптор.
@@ -42,25 +24,22 @@ void* upload(Grid grid, int device) {
     gpu::DeviceScope scope(device);
     checked(scope.status);
     std::unique_ptr<Storage> s(new Storage);
-    s->device = device;
+    s->arrays.device = device;
     s->nodes = grid.nodes;
-    copy(s->volumes, grid.volumes, grid.nodes);
-    copy(s->entries, grid.entries, grid.offsets[grid.nodes]);
-    copy(s->offsets, grid.offsets, grid.nodes + 1);
+    s->volumes = s->arrays.upload_async(grid.volumes, grid.nodes, nullptr);
+    s->entries = s->arrays.upload_async(grid.entries, grid.offsets[grid.nodes], nullptr);
+    s->offsets = s->arrays.upload_async(grid.offsets, grid.nodes + 1, nullptr);
     checked(aero::gpu::wait(0));
     return s.release();
 }
 // Выбирает карту-владельца и освобождает массивы геометрии CFL.
 void release(void* ptr) noexcept {
-    Storage* s = static_cast<Storage*>(ptr);
-    gpu::DeviceScope scope(s->device);
-    if (scope.status == aero::gpu::Status::Success)
-        delete s;
+    delete static_cast<Storage*>(ptr);
 }
 // Вычисляет минимальный шаг по узлам с помощью выбранного исполнителя.
 CflStep reduce(void* ptr, WaveSpeeds speeds, double cfl, void* stream_handle) {
     Storage& s = *static_cast<Storage*>(ptr);
-    gpu::DeviceScope scope(s.device);
+    gpu::DeviceScope scope(s.arrays.device);
     checked(scope.status);
     Grid grid = {s.nodes, s.offsets, s.entries, s.volumes};
     CflStep result;

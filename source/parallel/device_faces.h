@@ -1,7 +1,7 @@
 #pragma once
 #include "device_execution.h"
 #include "mpweno5_edges.h"
-#include "../residual/split_flux.h"
+#include "../residual/flux_dispatch.h"
 
 namespace aero {
 namespace device_work {
@@ -62,6 +62,17 @@ void mp_edges(const Execution& exec, FaceBatch batch, Index* bad, const FaceBatc
     else
         full_edges<5, !weno, weno, false>(exec, batch, bad, device_faces);
 }
+
+// Общий выбор реконструкции сохраняет отдельные GPU-ядра с гибридом и без него.
+template<unsigned order>
+struct PackedFluxLaunch {
+    const Execution& exec;
+    const FaceBatch& batch;
+    Index* bad;
+    const FaceBatch* stored;
+    template<bool weno> void apply_mp() const { mp_edges<weno>(exec,batch,bad,stored); }
+    void apply_weno() const { full_edges<order>(exec,batch,bad,stored); }
+};
 
 // При подготовке упаковки рёбра с неполной реконструкцией, узловые рёбра и границы
 // уже собраны по типам. Все потоки одного запуска выполняют одну физическую операцию.
@@ -130,18 +141,30 @@ void cartesian_edges(const Execution& exec, FaceBatch batch, Index* bad, const F
     if (batch.count) other_faces<true>(exec,batch,bad);
 }
 
+// Декартовы ядра также получают статические признаки MP и MPWENO от общего выбора.
+template<bool physical>
+struct CartesianFluxLaunch {
+    const Execution& exec;
+    const FaceBatch& batch;
+    Index* bad;
+    const FaceBatch* stored;
+    template<bool weno> void apply_mp() const {
+        if (batch.geometry.options.mp6_hybrid > 0.)
+            cartesian_edges<physical,5,!weno,weno,true>(exec,batch,bad,stored);
+        else if (batch.geometry.packed.order==3)
+            cartesian_edges<physical,3>(exec,batch,bad,stored);
+        else
+            cartesian_edges<physical,5,!weno,weno>(exec,batch,bad,stored);
+    }
+    void apply_weno() const {
+        if (batch.geometry.packed.order==3) cartesian_edges<physical,3>(exec,batch,bad,stored);
+        else cartesian_edges<physical,5>(exec,batch,bad,stored);
+    }
+};
 // Вычисляет пакет потоков в декартовом базисе компонент импульса.
 template<bool physical>
 void cartesian_fluxes(const Execution& exec, const FaceBatch& batch, Index* bad, const FaceBatch* stored) {
-    const auto& mp = batch.geometry.stencil.mp5;
-    if (mp.weno && batch.geometry.options.mp6_hybrid > 0.)
-        return cartesian_edges<physical,5,false,true,true>(exec,batch,bad,stored);
-    if (mp.enabled && batch.geometry.options.mp6_hybrid > 0.)
-        return cartesian_edges<physical,5,true,false,true>(exec,batch,bad,stored);
-    if (batch.geometry.packed.order == 3) cartesian_edges<physical,3>(exec,batch,bad,stored);
-    else if (batch.geometry.stencil.mp5.weno) cartesian_edges<physical,5,false,true>(exec,batch,bad,stored);
-    else if (batch.geometry.stencil.mp5.enabled) cartesian_edges<physical,5,true>(exec,batch,bad,stored);
-    else cartesian_edges<physical,5>(exec,batch,bad,stored);
+    dispatch_packed_reconstruction<5>(batch.geometry,CartesianFluxLaunch<physical>{exec,batch,bad,stored});
 }
 
 // Полные шаблоны WENO и MP уложены по 32 ребра. Выбираем ядро один раз на пакет.
@@ -151,12 +174,8 @@ void compute_packed_fluxes(const Execution& exec, FaceBatch batch, Index* bad, c
     const bool split_mpweno = device_faces && packed.mp_work && batch.geometry.options.mp6_hybrid == 0.;
     if (split_mpweno)
         process_mpweno_edges(exec, batch, bad, device_faces);
-    else if (packed.order == 5 && batch.geometry.stencil.mp5.weno)
-        mp_edges<true>(exec, batch, bad, device_faces);
-    else if (packed.order == 5 && batch.geometry.stencil.mp5.enabled)
-        mp_edges<false>(exec, batch, bad, device_faces);
     else if (packed.order == 5)
-        full_edges<5>(exec, batch, bad, device_faces);
+        dispatch_packed_reconstruction<5>(batch.geometry,PackedFluxLaunch<5>{exec,batch,bad,device_faces});
     else
         full_edges<3>(exec, batch, bad, device_faces);
 
@@ -180,16 +199,15 @@ void ebr_faces(const Execution& exec, FaceBatch batch, Index* bad) {
         other_faces<roe_2d, false, width>(exec, batch, bad);
 }
 
+// Линейные уравнения используют своё ядро независимо от режима реконструкции.
+void compute_linear_fluxes(const Execution& exec, FaceBatch batch, Index* bad) {
+    for_indices(exec, "Aero: linear Euler fluxes", batch.count, KOKKOS_LAMBDA(Index k) {
+        const auto face = batch.face(k);
+        if (!batch.compute_linear(face)) Kokkos::atomic_fetch_min(bad,face);
+    });
+}
 // Для первого порядка, EBR и сеток без упаковки используем обычный список площадок.
 void compute_unpacked_fluxes(const Execution& exec, FaceBatch batch, Index* bad) {
-    // Первый порядок читает два узла без обращения к строкам шаблона.
-    if (batch.geometry.options.background.active()) {
-        for_indices(exec, "Aero: linear Euler fluxes", batch.count, KOKKOS_LAMBDA(Index k) {
-            const auto face = batch.face(k);
-            if (!batch.compute_linear(face)) Kokkos::atomic_fetch_min(bad,face);
-        });
-        return;
-    }
     // Как и на CPU, LF первого порядка получает состояния прямо из узлов.
     // Постоянная размерность исключает реконструкцию из кода ядра этого запуска.
     if (batch.nodal_lf()) {

@@ -41,5 +41,9 @@
     <ClInclude Include="..\source\multigrid\*.h" />
     <ClInclude Include="..\source\implicit\spatial_jacobian.h" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="..\source\implicit\README.md" />
+    <None Include="..\source\multigrid\README.md" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

@@ -16,7 +16,7 @@ ifeq ($(kokkos_gpu),1)
 TIMESTEP_FLAGS += -DAERO_WITH_KOKKOS_GPU
 TIMESTEP_GPU := $(BUILD)/timestep_kernel.o
 TIMESTEP_TEST_GPU := $(BUILD)/timestep_cuda_tests.o
-$(TIMESTEP_GPU): $(TIMESTEP_DIR)/timestep_gpu.cpp $(TIMESTEP_HEADERS) source/parallel/device_scope.h source/parallel/device_memory.h | $(BUILD)
+$(TIMESTEP_GPU): $(TIMESTEP_DIR)/timestep_gpu.cpp $(TIMESTEP_HEADERS) source/parallel/device_arrays.h source/parallel/device_scope.h source/parallel/device_memory.h | $(BUILD)
 	$(compiling)
 	$(compile_device_host)
 $(TIMESTEP_TEST_GPU): $(TIMESTEP_DIR)/timestep_gpu_tests.cpp $(TIMESTEP_TEST_HEADERS) $(TIMESTEP_HEADERS) | $(BUILD)

@@ -38,6 +38,20 @@ struct EvaluationPlan {
         rows=phase!=Evaluation::BeforeSaIterations;
         reuse_gradients=phase==Evaluation::AfterSaFixedGas;
     }
+    // Порядок фаз общий; исполнители сохраняют свои обходы, плитки и кэширование.
+    template<class Grid, class Gas, class Filter, class Sa, class Material, class Rows>
+    void execute(const Grid& grid, bool update_gas, const Gas& gas, const Filter& evaluate_filter,
+                 const Sa& update_sa, const Material& material, const Rows& assemble_rows) const {
+        if (update_gas) gas();
+#ifdef AERO_HAS_TURBULENCE
+        if (filter && !grid.skip_ddes_filter) evaluate_filter();
+        if (sa_material) update_sa();
+#else
+        (void)grid; (void)evaluate_filter; (void)update_sa;
+#endif
+        if (cell_material) material();
+        if (rows) assemble_rows(reuse_gradients);
+    }
 };
 
 // Узловые скорость, плотность, отношение p/rho и динамическая вязкость.

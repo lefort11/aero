@@ -5,6 +5,7 @@ RES_HDR := $(RES_DIR)/residual.h $(RES_DIR)/residual_detail.h $(RES_DIR)/packed_
 RES_HDR += $(RECONSTRUCTION_HEADERS) source/bc/profile.h
 RES_HDR += $(RES_DIR)/boundary_flux_failure.h
 RES_HDR += $(RES_DIR)/mp6_cartesian.h source/bc/linear_boundary.h source/eulersolver/linear_euler.h
+RES_HDR += $(RES_DIR)/flux_dispatch.h
 RES_LIB := $(BUILD)/libaero_residual_$(EBR_TAG).a
 RES_OBJ := $(BUILD)/residual_$(EBR_TAG).o
 RES_DEPS := $(BC_LIB) $(CV_LIB) $(EBR_LIBRARY) $(EULER_LIBRARY) $(BUILD)/mesh.o $(IO_LIBRARY)

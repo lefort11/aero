@@ -131,5 +131,12 @@
     <None Include="..\utils\clean.mk" />
     <None Include="..\utils\module.mk" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="..\source\parallel\cuda_toolkit.mk" />
+    <None Include="..\source\parallel\README.txt" />
+    <ClInclude Include="..\source\parallel\upload_compact.h" />
+    <None Include="..\source\turbulence\README.md" />
+    <None Include="..\source\viscosity\README.md" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

@@ -23,5 +23,8 @@
     <ClInclude Include="..\source\timestep\bdf_weights.h" />
     <ClInclude Include="..\source\timestep\stabilization.h" />
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\source\timestep\local_rate_limit.h" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

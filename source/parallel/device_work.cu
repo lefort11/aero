@@ -444,15 +444,13 @@ const char* aero_device_sa_convection(const turbulence::SaEdgeConvection& edges,
 const char* aero_device_sa_step(const turbulence::Step& input,turbulence::Operation op) {
     const auto step=input;
     return on_device(nullptr,[&](const Execution& exec){
-        if (op==turbulence::Operation::LineRelax && step.transport.sa.lines.count) {
-            for_indices(exec,"Aero: SA line relaxation",step.transport.sa.lines.count,KOKKOS_LAMBDA(Index k){step.relax_line(k);});
-            return;
-        }
-        if (op==turbulence::Operation::Residual) {
+        step.dispatch(op,[&](Index count) {
+            for_indices(exec,"Aero: SA line relaxation",count,KOKKOS_LAMBDA(Index k){step.relax_line(k);});
+        }, [&] {
             sa_residual<false>(exec,step);
-            return;
-        }
-        for_indices(exec,"Aero: SA transport",step.transport.count,KOKKOS_LAMBDA(Index i){step.apply(op,i);});
+        }, [&](Index count) {
+            for_indices(exec,"Aero: SA transport",count,KOKKOS_LAMBDA(Index i){step.apply(op,i);});
+        });
     });
 }
 // Выполняет редукцию максимальной величины SA на GPU.
@@ -472,15 +470,16 @@ double sa_norm(const Execution& exec,const turbulence::Step& step,turbulence::No
 const char* aero_device_sa_norm(const turbulence::Step& input,turbulence::Norm mode,bool refresh,double* result) {
     const auto step=input;
     return on_device(nullptr,[&](const Execution& exec){
-        if (refresh) {
+        *result=step.evaluate_norm(mode,refresh,[&] {
             for_indices(exec,"Aero: SA element diffusivity",step.transport.cell_count,
                         KOKKOS_LAMBDA(Index e){step.transport.refresh_diffusivity(e);});
+        }, [&] {
             // Сборка строки читает площадки и пары AES. Её запускаем по всем
             // узлам обычным parallel_for, у которого достаточно блоков и на
             // большой сетке. Максимум использует готовые rate и diagonal.
             sa_residual<true>(exec,step);
-        }
-        *result=sa_norm(exec,step,refresh ? turbulence::Norm::Bdf : mode);
+            return sa_norm(exec,step,turbulence::Norm::Bdf);
+        }, [&](turbulence::Norm which) { return sa_norm(exec,step,which); });
     });
 }
 #endif
@@ -550,19 +549,20 @@ const char* aero_device_viscosity(const viscosity::Operator& input, const double
     const auto g = input;
     return on_device(nullptr, [&](const Execution& exec) {
         const viscosity::EvaluationPlan work(phase);
-        if (g.needs_gas(phase))
+        work.execute(g, g.needs_gas(phase), [&] {
             for_indices(exec,"Aero: viscous gas",g.node_count,KOKKOS_LAMBDA(Index i) { g.prepare_gas(i,state,cached); });
+        }, [&] {
 #ifdef AERO_HAS_TURBULENCE
-        if (work.filter && !g.skip_ddes_filter) {
             if (g.c_des==0.) subgrid_on_device<false,3>(exec,g);
             else if (g.dim==3) subgrid_on_device<true,3>(exec,g);
             else if (g.dim == 2) subgrid_on_device<true,2>(exec,g);
             else subgrid_on_device<true,1>(exec,g);
-        }
-        if (work.sa_material)
+#endif
+        }, [&] {
+#ifdef AERO_HAS_TURBULENCE
             for_indices(exec,"Aero: SA eddy viscosity",g.node_count,KOKKOS_LAMBDA(Index i){g.prepare_sa_material(i);});
 #endif
-        if (work.cell_material) {
+        }, [&] {
 #ifdef AERO_HAS_TURBULENCE
             if (g.material_nodes) {
                 if (g.sa.active) cell_material<true>(exec,g);
@@ -571,30 +571,30 @@ const char* aero_device_viscosity(const viscosity::Operator& input, const double
             else
 #endif
                 for_indices(exec,"Aero: viscous material",g.cell_count,KOKKOS_LAMBDA(Index e){g.average_material(e);});
-        }
-        if (!work.rows) return;
-        using Mode=viscosity::Operator::Gradients;
-        if (g.gradient_tile_count) {
-            affine_aes::for_gradient_tiles(exec,g,[&](viscosity::GradientTile tile) {
-                for_indices(exec,"Aero: accumulate AES tile",tile.slices,KOKKOS_LAMBDA(Index k) {
-                    g.assemble_slice(g.gradient_slices[tile.first_slice+k],tile.first_vertex);
+        }, [&](bool reuse_gradients) {
+            using Mode=viscosity::Operator::Gradients;
+            if (g.gradient_tile_count) {
+                affine_aes::for_gradient_tiles(exec,g,[&](viscosity::GradientTile tile) {
+                    for_indices(exec,"Aero: accumulate AES tile",tile.slices,KOKKOS_LAMBDA(Index k) {
+                        g.assemble_slice(g.gradient_slices[tile.first_slice+k],tile.first_vertex);
+                    });
                 });
-            });
-        } else if (g.element_order) {
-            if (!work.reuse_gradients) {
-                if (g.affine || g.tetra.cells) affine_aes::gradients(exec,g,g.gradient_cache,0,g.cell_count,0);
-                else for_indices(exec,"Aero: AES gradients by element",g.vertex_count,KOKKOS_LAMBDA(Index k) { g.prepare_hex_gradient(k); });
-            }
-            if (g.tetra.cells && !g.tetra.all_hex)
-                launch_viscous_rows<Mode::MixedElement>(exec,g);
+            } else if (g.element_order) {
+                if (!reuse_gradients) {
+                    if (g.affine || g.tetra.cells) affine_aes::gradients(exec,g,g.gradient_cache,0,g.cell_count,0);
+                    else for_indices(exec,"Aero: AES gradients by element",g.vertex_count,KOKKOS_LAMBDA(Index k) { g.prepare_hex_gradient(k); });
+                }
+                if (g.tetra.cells && !g.tetra.all_hex)
+                    launch_viscous_rows<Mode::MixedElement>(exec,g);
+                else
+                    launch_viscous_rows<Mode::Element>(exec,g);
+            } else if (!g.gradient_cache)
+                launch_viscous_rows<Mode::Direct>(exec,g);
+            else if (reuse_gradients)
+                launch_viscous_rows<Mode::Reuse>(exec,g);
             else
-                launch_viscous_rows<Mode::Element>(exec,g);
-        } else if (!g.gradient_cache)
-            launch_viscous_rows<Mode::Direct>(exec,g);
-        else if (work.reuse_gradients)
-            launch_viscous_rows<Mode::Reuse>(exec,g);
-        else
-            launch_viscous_rows<Mode::Save>(exec,g);
+                launch_viscous_rows<Mode::Save>(exec,g);
+        });
     });
 }
 #endif
@@ -662,7 +662,7 @@ const char* aero_device_faces(const FaceBatch& input, Index* bad, void* stream, 
     return on_device(stream, [&](const Execution& exec) {
         FaceBatch batch = input;
         const auto& packed = batch.geometry.packed;
-        if (batch.needs_gas_update()) {
+        dispatch_face_fluxes(batch, [&] {
             // Ядру нужны только поля узлов. Передаём адреса и два параметра газа,
             // чтобы nvcc не включал в параметры ядра всю геометрию рёбер.
             const unsigned dimension = batch.geometry.dim;
@@ -672,9 +672,9 @@ const char* aero_device_faces(const FaceBatch& input, Index* bad, void* stream, 
             for_indices(exec, "Aero: nodal gas", packed.state_nodes, KOKKOS_LAMBDA(Index i) {
                 decode_nodal_gas(dimension, state, gamma, i, gas);
             });
-        }
-        const auto variables = batch.geometry.options.variables;
-        if (residual_detail::uses_split_flux(batch.geometry)) {
+        }, [&] {
+            face_kernels::compute_linear_fluxes(exec,batch,bad);
+        }, [&] {
             if (!device_faces) {
                 for_indices(exec,"Aero: split flux",batch.count,KOKKOS_LAMBDA(Index k) {
                     const Index face=batch.face(k);
@@ -704,13 +704,16 @@ const char* aero_device_faces(const FaceBatch& input, Index* bad, void* stream, 
                 for_indices(exec,"Aero: 3D split flux",batch.count,SplitFluxFaces<5>{device_faces,batch.indices,bad});
             else
                 for_indices(exec,"Aero: 1D split flux",batch.count,SplitFluxFaces<3>{device_faces,batch.indices,bad});
-        } else if (packed.tiles && variables == ResidualVariables::Characteristic)
-            face_kernels::compute_packed_fluxes(exec, batch, bad, device_faces);
-        else if (packed.tiles && device_faces) {
-            if (variables == ResidualVariables::Flux) face_kernels::cartesian_fluxes<true>(exec,batch,bad,device_faces);
-            else face_kernels::cartesian_fluxes<false>(exec,batch,bad,device_faces);
-        } else
-            face_kernels::compute_unpacked_fluxes(exec, batch, bad);
+        }, [&] {
+            const auto variables = batch.geometry.options.variables;
+            if (packed.tiles && variables == ResidualVariables::Characteristic)
+                face_kernels::compute_packed_fluxes(exec, batch, bad, device_faces);
+            else if (packed.tiles && device_faces) {
+                if (variables == ResidualVariables::Flux) face_kernels::cartesian_fluxes<true>(exec,batch,bad,device_faces);
+                else face_kernels::cartesian_fluxes<false>(exec,batch,bad,device_faces);
+            } else
+                face_kernels::compute_unpacked_fluxes(exec, batch, bad);
+        });
     });
 }
 // Собирает узловую невязку из ориентированных потоков площадок на GPU.

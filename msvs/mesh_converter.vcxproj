@@ -24,5 +24,9 @@
     <None Include="..\utils\converter\converter.mk" />
     <None Include="..\utils\converter\linux_dependencies.mk" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="..\utils\converter\build_dependencies.ps1" />
+    <None Include="..\utils\converter\README.txt" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

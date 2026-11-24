@@ -680,37 +680,38 @@ void average_host_material(const Operator& op) {
 // В остальных случаях пересчитываем её по текущему полю, включая узлы соседей.
 void Aes::evaluate(const double* state, const EulerState* cached, bool gas_is_current, Evaluation phase) {
     const EvaluationPlan work(phase);
-    if (!gas_is_current && op_.needs_gas(phase))
+    work.execute(op_, !gas_is_current && op_.needs_gas(phase), [&] {
         parallel_for(op_.node_count,[&](MeshIndex node) { op_.prepare_gas(node,state,cached); });
+    }, [&] {
 #ifdef AERO_HAS_TURBULENCE
-    if (work.filter && !op_.skip_ddes_filter) {
         if (op_.c_des==0.) host_subgrid<false,3>(op_);
         else if (op_.dim==3) host_subgrid<true,3>(op_);
         else host_subgrid<true,0>(op_);
-    }
-    if (work.sa_material)
+#endif
+    }, [&] {
+#ifdef AERO_HAS_TURBULENCE
         parallel_for(op_.node_count,[&](MeshIndex n) { op_.prepare_sa_material(n); });
 #endif
-    if (work.cell_material) {
+    }, [&] {
 #ifdef AERO_HAS_TURBULENCE
         if (host_vertices_==8 && op_.dim==3) average_host_material<3,8>(op_);
         else if (host_vertices_==4 && op_.dim==2) average_host_material<2,4>(op_);
         else
 #endif
             parallel_for(op_.cell_count,[&](MeshIndex e){op_.average_material(e);});
-    }
-    if (!work.rows) return;
-    using Mode=Operator::Gradients;
-    if (op_.element_order) {
-        if (!work.reuse_gradients)
-            parallel_for(op_.vertex_count,[&](MeshIndex k) { op_.prepare_hex_gradient(k); });
-        parallel_for(op_.row_count,[&](MeshIndex n) { op_.assemble_row<3,Mode::Element>(n); });
-    } else if (!op_.gradient_cache)
-        parallel_for(op_.row_count,[&](MeshIndex node) { op_.assemble(node); });
-    else if (work.reuse_gradients)
-        parallel_for(op_.row_count,[&](MeshIndex node) { op_.assemble<Mode::Reuse>(node); });
-    else
-        parallel_for(op_.row_count,[&](MeshIndex node) { op_.assemble<Mode::Save>(node); });
+    }, [&](bool reuse_gradients) {
+        using Mode=Operator::Gradients;
+        if (op_.element_order) {
+            if (!reuse_gradients)
+                parallel_for(op_.vertex_count,[&](MeshIndex k) { op_.prepare_hex_gradient(k); });
+            parallel_for(op_.row_count,[&](MeshIndex n) { op_.assemble_row<3,Mode::Element>(n); });
+        } else if (!op_.gradient_cache)
+            parallel_for(op_.row_count,[&](MeshIndex node) { op_.assemble(node); });
+        else if (reuse_gradients)
+            parallel_for(op_.row_count,[&](MeshIndex node) { op_.assemble<Mode::Reuse>(node); });
+        else
+            parallel_for(op_.row_count,[&](MeshIndex node) { op_.assemble<Mode::Save>(node); });
+    });
 }
 }
 }

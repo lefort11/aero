@@ -89,7 +89,7 @@ AffineHex make_affine_hex(const Element &e, const Cell &c, const MeanGradient &m
                 for (unsigned d = 0; d < 3; ++d) {
                     if (r == s && m > d)
                         continue;
-                    const double average = (m == d ? trace : 0.) + a[d] * b[m] - (2. / 3.) * a[m] * b[d];
+                    const double average = PairMetric::stress_entry(m,d,trace,a[m]*b[d],a[d]*b[m]);
                     g.stress[AffineHex::upper_index(3 * r + m, 3 * s + d, 12)] =
                         pair.stress(m, d) - mean.volume * average;
                 }

@@ -326,6 +326,21 @@ struct Step {
 #ifdef AERO_HAS_MULTIGRID
     double polynomial_current, polynomial_previous; // Нулевой первый коэффициент означает обычный сглаживатель.
 #endif
+    // Выбирает обход на хосте до запуска CPU-команды или GPU-ядра.
+    template<class Lines, class Residual, class Nodes>
+    void dispatch(Operation op, const Lines& lines, const Residual& residual, const Nodes& nodes) const {
+        if (op==Operation::LineRelax && transport.sa.lines.count) lines(transport.sa.lines.count);
+        else if (op==Operation::Residual) residual();
+        else nodes(transport.count);
+    }
+    // CPU может совместить обновление строк с нормой, GPU — выполнить отдельные ядра.
+    template<class Diffusivity, class UpdatedNorm, class CurrentNorm>
+    double evaluate_norm(Norm mode, bool refresh, const Diffusivity& diffusivity,
+                         const UpdatedNorm& updated, const CurrentNorm& current) const {
+        if (!refresh) return current(mode);
+        diffusivity();
+        return updated();
+    }
     // Погрешность дискретного уравнения на новом слое BDF в единицах рабочей вязкости.
     AERO_HOST_DEVICE double defect(MeshIndex i) const {
         const auto &s = transport.sa;

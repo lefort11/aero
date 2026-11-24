@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003" DefaultTargets="Build">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{F1C988D6-A713-54E7-894E-DF08E92EEA54}</ProjectGuid>
+    <Keyword>MakeFileProj</Keyword>
+    <MakeGoal>mesh_slice</MakeGoal>
+    <ProgramName>mesh_slice</ProgramName>
+  </PropertyGroup>
+  <Import Project="kokkos_make.props" />
+  <ItemGroup>
+    <ClCompile Include="..\utils\submesh\main.cpp" />
+    <ClInclude Include="..\source\io\submesh.h" />
+    <None Include="..\utils\submesh\submesh.mk" />
+    <None Include="..\utils\submesh\README.md" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>
