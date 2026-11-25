@@ -25,7 +25,7 @@ $(info Build type  : $(BUILD_TYPE))
 $(info Kokkos      : $(KOKKOS_BACKEND))
 $(info Linear solve: $(if $(filter 1,$(MIXED_LINEAR)),mixed float/double,double) (MIXED_LINEAR=$(MIXED_LINEAR)))
 ifeq ($(kokkos_gpu),1)
-$(info GPU         : $(KOKKOS_GPU_CXX)  sm_$(CUDA_ARCH)  CUDA_HOME=$(CUDA_HOME))
+$(info GPU         : $(KOKKOS_GPU_CXX)  $(if $(filter hip,$(KOKKOS_BACKEND)),$(HIP_ARCH),sm_$(CUDA_ARCH)  CUDA_HOME=$(CUDA_HOME)))
 endif
 $(info Options     : MPI=$(WITH_MPI)  OpenMP=$(WITH_OPENMP)  CGNS=$(WITH_CGNS)  STATIC_LINK=$(STATIC_LINK))
 $(info Build dir   : $(BUILD))

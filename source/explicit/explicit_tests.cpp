@@ -201,8 +201,8 @@ int main(int argc, char** argv) {
         if (count >= 2)
             nested_devices();
 #endif
-        if (argc == 2 && std::string(argv[1]) == "--require-cuda")
-            require(count > 0, "CUDA device required");
+        if (argc == 2 && aero_test::require_gpu_argument(argv[1]))
+            require(count > 0, "GPU device required");
         for (int i = 0; i < count; ++i) {
             exercise(aero::ExplicitBackend::Cuda, i);
             std::cout << "CUDA explicit tests passed on GPU " << i << ".\n";

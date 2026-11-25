@@ -18,7 +18,7 @@ void validate_run_mode(const RunSettings& run, const Processes& world, bool arch
     }
 #ifndef AERO_WITH_KOKKOS_GPU
     if (world.size > 1 && !run.directories.geometry_only && run.use_cuda) {
-        throw std::invalid_argument("Distributed CUDA calculation requires a build with MPI and CUDA");
+        throw std::invalid_argument("Distributed GPU calculation requires a build with MPI and a GPU backend");
     }
 #endif
 }

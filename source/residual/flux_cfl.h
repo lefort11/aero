@@ -232,10 +232,12 @@ struct NeighbourStepSweep {
         if (limited > result.maximum) result.maximum = limited;
     }
 };
+// Результат редукции находится на CPU. Номер узла при ошибке переводим по таблице раздела.
+double flux_cfl_result(CflStep limit, const MeshIndex* global_ids);
 // Находит минимальный шаг по скоростям потоков на CPU.
 double cpu_flux_cfl(const FluxCfl&, double courant, const MeshIndex* global_ids = nullptr);
 // Находит минимальный шаг по скоростям потоков на GPU.
-double gpu_flux_cfl(const FluxCfl&, double courant, void* stream);
+double gpu_flux_cfl(const FluxCfl&, double courant, void* stream, const MeshIndex* global_ids = nullptr);
 }
 }
 #endif

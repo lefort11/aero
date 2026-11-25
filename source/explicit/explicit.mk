@@ -43,8 +43,9 @@ explicit-test: $(BIN)/$(notdir $(EXPLICIT_TEST))
 explicit-debug-test: $(BIN)/$(notdir $(EXPLICIT_DEBUG))
 	$(running_test)
 	./$(EXPLICIT_DEBUG)
-explicit-cuda-test:
-	$(MAKE) KOKKOS_BACKEND=cuda $(BIN)/explicit_tests_cuda1_omp$(WITH_OPENMP)$(EXE)
+.PHONY: explicit-hip-test
+explicit-cuda-test explicit-hip-test:
+	$(MAKE) KOKKOS_BACKEND=$(if $(filter %-hip-test,$@),hip,cuda) $(BIN)/explicit_tests_cuda1_omp$(WITH_OPENMP)$(EXE)
 	$(running_test)
-	./$(BIN)/explicit_tests_cuda1_omp$(WITH_OPENMP)$(EXE) --require-cuda
+	./$(BIN)/explicit_tests_cuda1_omp$(WITH_OPENMP)$(EXE) --require-gpu
 $(EXPLICIT_TEST) $(EXPLICIT_DEBUG): tests/test_checks.h

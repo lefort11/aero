@@ -1,3 +1,4 @@
+#include "../parallel/backend.h"
 #include "../parallel/device_check.h"
 #include "partition_gpu.h"
 #include "../residual/boundary_flux_failure.h"
@@ -18,8 +19,8 @@ namespace aero {
 namespace edge_tile = residual_detail::edge_tile;
 namespace {
 // Преобразует ошибку GPU в исключение с контекстом MPI-подобласти.
-void cuda_check(aero::gpu::Status status) {
-    gpu::checked(status, "MPI CUDA: ");
+void gpu_check(aero::gpu::Status status) {
+    gpu::checked(status, "MPI GPU: ");
 }
 }
 // Замеряем рабочее ядро потока на одинаковых гранях с узловыми состояниями на всех GPU.
@@ -55,14 +56,14 @@ double PartitionGpu::measure_flux_rate(ResidualOptions options, std::size_t coun
     // Запускает измеряемое вычислительное ядро на выбранном GPU.
     const auto launch = [&] { residual_detail::gpu_face_fluxes(batch, sample.grid_.bad, nullptr); };
     launch();
-    cuda_check(aero::gpu::wait(nullptr));
+    gpu_check(aero::gpu::wait(nullptr));
     std::array<double, 5> seconds;
     constexpr unsigned repeats = 8;
     for (double& elapsed : seconds) {
         const auto start = std::chrono::steady_clock::now();
         for (unsigned i = 0; i < repeats; ++i)
             launch();
-        cuda_check(aero::gpu::wait(nullptr));
+        gpu_check(aero::gpu::wait(nullptr));
         elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     }
     sample.check_kernel("calibration");
@@ -111,17 +112,17 @@ void select_partition_gpu(const Processes& world, const std::vector<int>& device
     std::string physical, description;
     world.local([&] {
         int count = 0;
-        cuda_check(aero::gpu::count(&count));
+        gpu_check(aero::gpu::count(&count));
         // Планировщик может выдать каждому процессу отдельную карту с одним и тем же локальным номером 0.
         const int slot = count == 1 && devices.size() == 1 ? 0 : node.local_rank;
         if (static_cast<std::size_t>(slot) >= devices.size())
             throw std::invalid_argument("cuda.txt: need one GPU per node-local MPI rank");
         const int device = devices[slot];
         if (device >= count)
-            throw std::invalid_argument("Unavailable CUDA device " + std::to_string(device));
-        cuda_check(aero::gpu::select(device));
+            throw std::invalid_argument(std::string("Unavailable ") + gpu_backend_label + " device " + std::to_string(device));
+        gpu_check(aero::gpu::select(device));
         char bus[32]{};
-        cuda_check(aero::gpu::bus_id(bus, sizeof(bus), device));
+        gpu_check(aero::gpu::bus_id(bus, sizeof(bus), device));
         physical = std::to_string(node.leader) + "/" + bus;
         description = "rank " + std::to_string(world.rank) + " local_rank " +
                       std::to_string(node.local_rank) + " device " + std::to_string(device) + " node/PCI " +
@@ -137,12 +138,12 @@ void select_partition_gpu(const Processes& world, const std::vector<int>& device
             if (!assigned.insert(key).second)
                 throw std::invalid_argument("MPI ranks on one node selected the same GPU: " + key);
         for (const auto& line : lines)
-            std::cout << "MPI CUDA placement: " << line << '\n';
+            std::cout << "MPI " << gpu_backend_label << " placement: " << line << '\n';
     });
 }
 // Проверяет статус операции GPU и преобразует ошибку в исключение.
 void PartitionGpu::check(aero::gpu::Status status) {
-    cuda_check(status);
+    gpu_check(status);
 }
 // Ожидает завершения операций GPU перед чтением результатов на CPU.
 void PartitionGpu::synchronize() {
@@ -151,9 +152,12 @@ void PartitionGpu::synchronize() {
 // Измеряет доступную память GPU и применяет ограничения пользователя.
 void query_gpu_memory(GpuMemoryFit& fit, const std::vector<double>& limits, const Processes& world) {
     std::size_t available = 0, total = 0;
-    cuda_check(aero::gpu::memory_info(&available, &total));
+    gpu_check(aero::gpu::memory_info(&available, &total));
     fit.free_bytes = available;
     fit.budget = available - available / 20;
+    // После точного подсчёта CSR и рабочих массивов оставляем запас для драйвера.
+    constexpr std::size_t compact_headroom = 128u * 1024u * 1024u;
+    fit.compact_budget = available - std::min(available / 20, compact_headroom);
     if (!limits.empty()) {
         if (limits.size() != 1 && limits.size() != static_cast<std::size_t>(world.size))
             throw std::invalid_argument("mpi_gpu_memory_mib: expected one value or one limit per MPI rank");
@@ -161,6 +165,8 @@ void query_gpu_memory(GpuMemoryFit& fit, const std::vector<double>& limits, cons
             static_cast<long double>(limits[limits.size() == 1 ? 0 : world.rank]) * 1048576;
         if (bytes < fit.budget)
             fit.budget = static_cast<MeshIndex>(bytes);
+        if (bytes < fit.compact_budget)
+            fit.compact_budget = static_cast<MeshIndex>(bytes);
     }
 }
 // Освобождает принадлежащие объекту ресурсы при завершении его времени жизни.
@@ -356,7 +362,7 @@ void PartitionGpu::check_kernel(const char* phase, bool checking_flux) {
         else check(aero::gpu::fill_async(grid_.bad, 0xff, sizeof(*grid_.bad), nullptr));
         if (checking_flux && bad >= grid_.geometry.edges && bad < grid_.geometry.faces)
             throw BoundaryFluxFailure(bad);
-        throw std::domain_error(std::string("MPI CUDA ") + phase + " at local index " + std::to_string(bad));
+        throw std::domain_error(std::string("MPI GPU ") + phase + " at local index " + std::to_string(bad));
     }
 }
 // Обновляет геометрию площадок в памяти GPU.
@@ -402,25 +408,18 @@ void PartitionGpu::update_face_batch() {
     }
 }
 // Вычисляет потоки площадок с учётом режима первого порядка.
-void PartitionGpu::fluxes(bool first_order_start,bool defer_viscous_rows) {
-    (void)defer_viscous_rows;
-    auto batch = face_batch();
-    if (first_order_start) batch.use_first_order();
+void PartitionGpu::fluxes(const residual_detail::FaceBatch& batch, bool first_order_start) {
     residual_detail::gpu_face_fluxes(batch, grid_.bad, nullptr, first_order_start ? nullptr : device_faces_);
-#ifdef AERO_HAS_VISCOSITY
-    if (aes_) {
-        auto phase = defer_viscous_rows ? viscosity::Evaluation::BeforeSaIterations : viscosity::Evaluation::Full;
-#ifdef AERO_HAS_TURBULENCE
-        // На цельной сетке явное обновление уже вычислило свойства газа и, при наличии SA,
-        // турбулентную вязкость. После отката, загрузки или обмена собираем их заново.
-        if (!defer_viscous_rows && stage_material_current()) phase = viscosity::Evaluation::CurrentMaterial;
-#endif
-        const auto error = device_work::aero_device_viscosity(viscous_grid_,grid_.state,grid_.geometry.packed.gas,phase);
-        if (error) throw std::runtime_error(error);
-    }
-#endif
-    check_kernel("flux", true);
 }
+#ifdef AERO_HAS_VISCOSITY
+void PartitionGpu::viscous_fluxes(viscosity::Evaluation phase) {
+#ifdef AERO_HAS_TURBULENCE
+    if (phase == viscosity::Evaluation::Full && stage_material_current())
+        phase = viscosity::Evaluation::CurrentMaterial;
+#endif
+    device_work::check(device_work::aero_device_viscosity(viscous_grid_,grid_.state,grid_.geometry.packed.gas,phase));
+}
+#endif
 // Выполняет явную стадию собственных узлов и проверяет допустимость результата.
 void PartitionGpu::update(explicit_detail::Stage stage, double dt, bool save_original) {
     if (grid_.failed_count) reset_failed_count();

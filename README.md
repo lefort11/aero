@@ -99,7 +99,9 @@ aero main:Equations=Linear linear:ux0=-10
 make -j"$(nproc)"
 ```
 
-Для сборки солвера только под CPU используйте `make aero KOKKOS_BACKEND=cpu`. В Linux по умолчанию выбирается CPU. Сборка с `KOKKOS_BACKEND=cuda` поддерживает CPU и GPU NVIDIA.
+Для сборки солвера только под CPU используйте `make aero KOKKOS_BACKEND=cpu`. В Linux по умолчанию выбирается CPU. Сборка с `KOKKOS_BACKEND=cuda` поддерживает CPU и GPU NVIDIA. Для AMD в Linux выполните `make -j aero BUILD_TYPE=Release KOKKOS_BACKEND=hip HIP_ARCH=gfx90a`. Параметр `HIP_ARCH` задаёт цель компилятора hipcc (gfx900, gfx906, gfx908, gfx90a или gfx942). При нестандартной установке ROCm укажите `HIPCC=/путь/к/hipcc ROCM_PATH=/путь/к/rocm`. Исполняемый файл HIP также может работать на CPU.
+
+Для переносимой постановки задайте `backend=gpu` в `main.txt` и `devices=0` в `gpu.txt`. Тип GPU определяется сборкой, номер устройства выбирается при запуске. Для явного выбора HIP поддерживается `backend=hip` с тем же файлом `gpu.txt`. Существующие постановки с `backend=cuda` читают список карт из `cuda.txt`.
 
 В Ubuntu проверьте `command -v nvcc` и `nvcc --version`, затем запустите `make -j"$(nproc)" aero BUILD_TYPE=Release KOKKOS_BACKEND=cuda`. Make определяет каталог CUDA Toolkit по выбранному `nvcc` и передаёт его CMake при настройке Kokkos. Для пакетной установки с `/usr/bin/nvcc` корнем обычно служит `/usr`. При нескольких версиях Toolkit можно добавить к команде `CUDA_HOME=/путь/к/toolkit` или `CUDAToolkit_ROOT=/путь/к/toolkit`. Строка `GPU` в начале сборки показывает фактический выбор.
 

@@ -52,8 +52,9 @@ debug-test: residual-debug-test
 residual-debug-test: $(BIN)/$(notdir $(RES_DEBUG))
 	$(running_test)
 	"$(RES_DEBUG)"
-residual-cuda-test:
-	$(MAKE) KOKKOS_BACKEND=cuda $(BIN)/residual_tests_cuda1_omp$(WITH_OPENMP)$(EXE)
+.PHONY: residual-hip-test
+residual-cuda-test residual-hip-test:
+	$(MAKE) KOKKOS_BACKEND=$(if $(filter %-hip-test,$@),hip,cuda) $(BIN)/residual_tests_cuda1_omp$(WITH_OPENMP)$(EXE)
 	$(running_test)
-	"$(BIN)/residual_tests_cuda1_omp$(WITH_OPENMP)$(EXE)" --require-cuda
+	"$(BIN)/residual_tests_cuda1_omp$(WITH_OPENMP)$(EXE)" --require-gpu
 $(RES_TEST) $(RES_DEBUG): tests/test_mesh.h tests/test_checks.h source/aero/compact_slopes.h

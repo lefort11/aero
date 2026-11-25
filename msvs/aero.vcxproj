@@ -98,10 +98,13 @@
     <ClInclude Include="..\source\parallel\small_weight_row.h" />
     <ClInclude Include="..\source\parallel\device_check.h" />
     <ClInclude Include="..\source\parallel\device_execution.h" />
-    <None Include="..\source\parallel\device_memory.cu" />
+    <ClCompile Include="..\source\parallel\device_memory.cpp" />
     <ClInclude Include="..\source\parallel\device_memory.h" />
     <ClInclude Include="..\source\parallel\device_scope.h" />
-    <None Include="..\source\parallel\device_work.cu" />
+    <ClCompile Include="..\source\parallel\device_work.cpp" />
+    <ClInclude Include="..\source\parallel\backend.h" />
+    <ClInclude Include="..\source\parallel\device_platform.h" />
+    <ClCompile Include="..\source\parallel\device_runtime.cpp" />
     <ClInclude Include="..\source\parallel\device_work.h" />
     <ClCompile Include="..\source\parallel\processes.cpp" />
     <ClInclude Include="..\source\parallel\processes.h" />

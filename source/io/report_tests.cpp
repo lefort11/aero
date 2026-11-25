@@ -146,13 +146,13 @@ int main(int argc, char** argv) {
         integration(ExplicitBackend::Cpu, 0, ExplicitScheme::Euler);
         integration(ExplicitBackend::Cpu, 0, ExplicitScheme::SSPRK3);
         const int devices = ExplicitIntegrator::cuda_device_count();
-        if (argc > 1 && std::string(argv[1]) == "--require-cuda")
-            require(devices > 0, "CUDA device required");
+        if (argc > 1 && aero_test::require_gpu_argument(argv[1]))
+            require(devices > 0, "GPU device required");
         for (int device = 0; device < devices; ++device) {
             integration(ExplicitBackend::Cuda, device, ExplicitScheme::Euler);
             integration(ExplicitBackend::Cuda, device, ExplicitScheme::SSPRK3);
         }
-        std::cout << "Report tests passed (CPU and " << devices << " CUDA devices).\n";
+        std::cout << "Report tests passed (CPU and " << devices << " GPU devices).\n";
         return 0;
     } catch (const std::exception& e) {
         std::cerr << e.what() << '\n';

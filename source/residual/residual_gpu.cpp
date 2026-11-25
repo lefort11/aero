@@ -2,18 +2,11 @@
 #define AERO_BC_KERNEL_ONLY
 #define AERO_EULERSOLVER_KERNEL_ONLY
 #define AERO_RECONSTRUCTION_KERNEL_ONLY
-#include "../parallel/device_check.h"
 #include "residual_detail.h"
+#include "../parallel/device_memory.h"
 #include "../parallel/device_work.h"
-#include <stdexcept>
-#include <string>
-#include <cstring>
-#include <limits>
 namespace aero {
 using namespace residual_detail;
-namespace {
-using aero::gpu::checked;
-}
 // Готовит единичные нормали площадок на GPU.
 void residual_detail::gpu_prepare_face_normals(const Geometry& g) {
     if (g.edges) {
@@ -35,13 +28,10 @@ void launch_residual(Geometry g, const double* u, const double* u0, EulerFluxRes
     device_work::check(device_work::aero_device_gather(g, flux, r, bad, stream));
 }
 // Находит минимальный шаг по скоростям потоков на GPU.
-double residual_detail::gpu_flux_cfl(const FluxCfl& grid, double courant, void* stream_handle) {
-    if (!grid.count)
-        return std::numeric_limits<double>::infinity();
-    CflStep result;
-    device_work::check(device_work::aero_device_flux_step(grid, courant, &result, stream_handle));
-    if (result.dt < 0)
-        throw std::domain_error("Invalid CFL at local node " + std::to_string(result.node));
-    return result.node == cfl_detail::unconstrained().node ? std::numeric_limits<double>::infinity() : result.dt;
+double residual_detail::gpu_flux_cfl(const FluxCfl& grid, double courant, void* stream_handle, const MeshIndex* global_ids) {
+    CflStep result = cfl_detail::unconstrained();
+    if (grid.count)
+        device_work::check(device_work::aero_device_flux_step(grid, courant, &result, stream_handle));
+    return flux_cfl_result(result, global_ids);
 }
 }

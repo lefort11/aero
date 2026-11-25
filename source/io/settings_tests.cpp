@@ -62,7 +62,7 @@ struct CaseFiles {
     // Удаляет временные файлы и каталоги, созданные объектом.
     ~CaseFiles() {
         for (const char* name :
-             {"main.txt", "bc.txt", "init.txt", "cuda.txt", "gas.txt", "scheme.txt", "implicit.txt", "linear.txt", "turbulence.txt", "test.fields", "output.txt",
+             {"main.txt", "bc.txt", "init.txt", "cuda.txt", "gpu.txt", "gas.txt", "scheme.txt", "implicit.txt", "linear.txt", "turbulence.txt", "test.fields", "output.txt",
               "latest.fields", "p_000001.fields", "p_000002.fields", "p_000003.fields"})
             std::remove((dir + "/" + name).c_str());
 #ifdef _WIN32
@@ -541,7 +541,17 @@ void main_and_cuda(const CaseFiles& files) {
     require(files.load().devices.empty(), "CPU ignores invalid cuda.txt");
     files.write("main.txt", base + "backend=cpu\nother=x");
     require(files.load().input_warnings.size() == 1, "unknown parameter warning");
-    for (const char* extra : { "backend=cpu\ncfl=0.5", "backend=gpu"}) {
+    files.write("main.txt", base + "backend=gpu");
+    rejects([&] { files.load(); }, "gpu.txt");
+    files.write("gpu.txt", "devices=1,0");
+    require(files.load().devices == std::vector<int>({1, 0}), "portable GPU selection");
+    files.write("main.txt", base + "backend=hip");
+#ifdef AERO_WITH_HIP
+    require(files.load().devices == std::vector<int>({1, 0}), "HIP device selection");
+#else
+    rejects([&] { files.load(); }, "requires a HIP build");
+#endif
+    for (const char* extra : { "backend=cpu\ncfl=0.5", "backend=unknown"}) {
         files.write("main.txt", base + extra);
         rejects([&] { files.load(); }, "main.txt");
     }

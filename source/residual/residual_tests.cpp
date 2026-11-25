@@ -17,6 +17,7 @@
 #include <array>
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <sstream>
 #ifdef _OPENMP
@@ -329,6 +330,46 @@ void local_rate_limit_test() {
     near(feedback.limit(1,1,2.,1.,1.,false),1.);
     signals[1] = 0.;
     near(feedback.limit(0,0,2.,.75,1.,false),.9375);
+}
+
+// У пустого раздела шаг не ограничен. Ошибка в первой собственной строке
+// должна указывать на её глобальный узел, в том числе после редукции на карте.
+void partition_cfl_result(int device) {
+    using namespace residual_detail;
+    const MeshIndex ids[] = {21, 87}, owned[] = {1};
+    const Index offsets[] = {0, 0, 0};
+    const double volumes[] = {1., 1.}, rates[] = {0., -1.};
+    Geometry grid{};
+    grid.offsets = offsets;
+    FluxCfl cfl(grid,nullptr,volumes,owned,0,rates);
+#ifdef AERO_WITH_KOKKOS_GPU
+    gpu::DeviceScope scope(device);
+    checked(scope.status);
+    gpu::DeviceArrays arrays;
+    if (device >= 0) {
+        arrays.device = device;
+        cfl.offsets = arrays.allocate(3,offsets);
+        cfl.volumes = arrays.allocate(2,volumes);
+        cfl.owned = arrays.allocate(1,owned);
+        cfl.sa_rate = arrays.allocate(2,rates);
+    }
+#else
+    (void)device;
+#endif
+    const auto reduce = [&] {
+#ifdef AERO_WITH_KOKKOS_GPU
+        if (device >= 0) return gpu_flux_cfl(cfl,1.,nullptr,ids);
+#endif
+        return cpu_flux_cfl(cfl,1.,ids);
+    };
+    require(reduce() == std::numeric_limits<double>::infinity(), "empty partition CFL");
+    cfl.count = 1;
+    try { reduce(); }
+    catch (const std::domain_error& error) {
+        require(std::string(error.what()) == "Invalid CFL at node 87", error.what());
+        return;
+    }
+    throw std::runtime_error("invalid partition CFL accepted");
 }
 
 // Разные объёмы и обратная нумерация владельцев. Проверяем общий шаг газа и SA.
@@ -1248,9 +1289,10 @@ int main(int argc, char** argv) {
         pure_weno_flux();
         oblique_mp_limit();
         const int devices = ReconstructionContext::cuda_device_count();
-        if (argc > 1 && std::string(argv[1]) == "--require-cuda")
-            require(devices > 0, "CUDA device required");
+        if (argc > 1 && aero_test::require_gpu_argument(argv[1]))
+            require(devices > 0, "GPU device required");
         for (int dev = -1; dev < devices; ++dev) {
+            partition_cfl_result(dev);
 #ifndef AERO_RESIDUAL_NO_TIME_TEST
             sod_step(dev);
 #endif

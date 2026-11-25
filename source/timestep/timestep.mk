@@ -46,8 +46,9 @@ timestep-test: $(BIN)/$(notdir $(TIMESTEP_TEST))
 timestep-debug-test: $(BIN)/$(notdir $(TIMESTEP_DEBUG))
 	$(running_test)
 	./$(TIMESTEP_DEBUG)
-timestep-cuda-test:
-	$(MAKE) KOKKOS_BACKEND=cuda $(BIN)/timestep_tests_cuda1_omp$(WITH_OPENMP)$(EXE)
+.PHONY: timestep-hip-test
+timestep-cuda-test timestep-hip-test:
+	$(MAKE) KOKKOS_BACKEND=$(if $(filter %-hip-test,$@),hip,cuda) $(BIN)/timestep_tests_cuda1_omp$(WITH_OPENMP)$(EXE)
 	$(running_test)
-	./$(BIN)/timestep_tests_cuda1_omp$(WITH_OPENMP)$(EXE) --require-cuda
+	./$(BIN)/timestep_tests_cuda1_omp$(WITH_OPENMP)$(EXE) --require-gpu
 $(TIMESTEP_TEST) $(TIMESTEP_DEBUG): tests/test_checks.h

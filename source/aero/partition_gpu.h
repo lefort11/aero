@@ -6,7 +6,7 @@
 #include "mpi_balance.h"
 #include "mpi_stencil.h"
 #include "compact_slopes.h"
-#include "../parallel/device_memory.h"
+#include "../parallel/device_arrays.h"
 #include "../parallel/pinned_buffer.h"
 #include "../parallel/processes.h"
 #include <limits>
@@ -88,6 +88,7 @@ class PartitionGpu {
         }
     // Владеет выделениями текущего GPU-раздела.
     } storage_;
+    gpu::DeviceArrays late_arrays_; // История при включении auto через control.txt.
     CompactSlopes compact_slopes_; // Живёт на CPU между подсчётом памяти и однократной загрузкой.
     MeshIndex reconstruction_bytes_=0, cache_bytes_=0; // Части той же раскладки для отчёта о памяти.
     std::vector<MeshIndex> boundary_nodes_; // По площадке находим исходное значение для граничного условия.
@@ -109,8 +110,6 @@ class PartitionGpu {
     PinnedBuffer<partition_detail::Index> error_index_; // Индекс сбоя, доступный CPU после окончания стадии.
     // Проверяет статус операции GPU и преобразует ошибку в исключение.
     static void check(aero::gpu::Status status);
-    // Собирает представление данных для обработки площадок на GPU.
-    residual_detail::FaceBatch face_batch() const; // Адреса полей и текущие настройки потока.
     // Синхронизирует запись пакетного ядра с текущими параметрами.
     void update_face_batch(); // Обновляет параметры, которые читают упакованные ядра.
     // Обнуляет счётчик отказавших узлов перед проверкой состояния.
@@ -169,8 +168,12 @@ public:
     void set_alpha(double alpha);
     // Обновляет геометрию площадок в памяти GPU.
     void update_surfaces(const std::vector<residual_detail::Surface>& surfaces);
-    // Вычисляет потоки площадок с учётом режима первого порядка.
-    void fluxes(bool first_order_start,bool defer_viscous_rows=false);
+    residual_detail::FaceBatch face_batch() const;
+    void fluxes(const residual_detail::FaceBatch& batch, bool first_order_start);
+#ifdef AERO_HAS_VISCOSITY
+    void viscous_fluxes(viscosity::Evaluation phase);
+#endif
+    void check_fluxes() { check_kernel("flux", true); }
     // Выполняет явную стадию собственных узлов и проверяет допустимость результата.
     void update(explicit_detail::Stage stage, double dt, bool save_original);
     // Собирает только собственные узлы раздела для отчёта или многостадийного шага.
@@ -178,6 +181,10 @@ public:
     // Копирует текущее поле с GPU в CPU-вектор.
     void download(std::vector<double>& state) const;
     // Выделяет участок скалярных узловых величин в общей памяти GPU.
+    double* allocate_rate_history(MeshIndex count) {
+        gpu::checked(gpu::current(&late_arrays_.device));
+        return late_arrays_.allocate<double>(count);
+    }
     double* layout_node_scalars(MeshIndex count, const double* initial = nullptr) {
         return storage_.allocate<double>(count, initial);
     }

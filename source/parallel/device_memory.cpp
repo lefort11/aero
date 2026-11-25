@@ -1,10 +1,11 @@
 // Вся память численных модулей проходит через пространства памяти Kokkos.
-// CUDA 12 обслуживает выбор физической карты и внешних потоков исполнения:
+// Нативный runtime обслуживает выбор физической карты и внешних потоков исполнения:
 // в публичном интерфейсе Kokkos 3.2 отсутствуют PCI-адрес, остаток памяти
 // карты и создание совместимой очереди для вызывающей программы.
 #define AERO_BUILD_DEVICE_WORK
 #include "device_execution.h"
 #include "device_memory.h"
+#include "device_platform.h"
 #include <new>
 #include <cstdio>
 #include <cstdlib>
@@ -15,7 +16,7 @@ namespace {
 using device_work::Execution;
 using Device = Execution::memory_space;
 using Host = Kokkos::HostSpace;
-using Pinned = Kokkos::CudaHostPinnedSpace;
+using Pinned = native::Pinned;
 using Unmanaged = Kokkos::MemoryTraits<Kokkos::Unmanaged>;
 thread_local std::string last_error;
 
@@ -33,18 +34,18 @@ template <class Work> Status run(const Work& work) {
         return Status::Failed;
     }
 }
-// Переводит код ошибки CUDA в статус GPU-интерфейса и сохраняет текст причины.
-Status platform(cudaError_t result) {
-    if (result == cudaSuccess)
+// Переводит код ошибки runtime в статус GPU-интерфейса и сохраняет текст причины.
+Status platform(native::Error result) {
+    if (result == native::success)
         return Status::Success;
-    last_error = cudaGetErrorString(result);
-    cudaGetLastError();
+    last_error = native::error_string(result);
+    native::clear_error();
     switch (result) {
-    case cudaErrorNoDevice: return Status::NoDevice;
-    case cudaErrorInsufficientDriver: return Status::Unavailable;
-    case cudaErrorMemoryAllocation: return Status::OutOfMemory;
-    case cudaErrorInvalidValue: return Status::Invalid;
-    case cudaErrorNotSupported: return Status::Unsupported;
+    case native::no_device: return Status::NoDevice;
+    case native::no_driver: return Status::Unavailable;
+    case native::out_of_memory: return Status::OutOfMemory;
+    case native::invalid: return Status::Invalid;
+    case native::unsupported: return Status::Unsupported;
     default: return Status::Failed;
     }
 }
@@ -73,36 +74,41 @@ void copy_bytes(const Execution& exec, void* dst, const void* src, std::size_t b
 
 // Возвращает текст последней ошибки GPU либо сообщение об успехе.
 const char* message(Status status) { return status == Status::Success ? "Success" : last_error.c_str(); }
-// Запрашивает число доступных физических CUDA-устройств.
-Status count(int* devices) { return platform(cudaGetDeviceCount(devices)); }
+// Запрашивает число доступных физических GPU.
+Status count(int* devices) { return platform(native::device_count(devices)); }
 // Копирует имя выбранной карты в буфер указанной вместимости.
 Status selected_device_name(char* name, std::size_t capacity) {
-    return run([&] {
-        const auto exec = device_work::current_execution(nullptr);
-        std::snprintf(name, capacity, "%s", exec.cuda_device_prop().name);
-    });
+    const auto initialized = run([] { device_work::current_execution(nullptr); });
+    if (initialized != Status::Success) return initialized;
+    int device;
+    auto status = current(&device);
+    if (status != Status::Success) return status;
+    native::Properties properties;
+    status = platform(native::properties(&properties, device));
+    if (status == Status::Success) std::snprintf(name, capacity, "%s", properties.name);
+    return status;
 }
-// Запрашивает номер текущего CUDA-устройства.
-Status current(int* device) { return platform(cudaGetDevice(device)); }
-// Выбирает CUDA-устройство для последующих операций текущего потока.
-Status select(int device) { return platform(cudaSetDevice(device)); }
+// Запрашивает номер текущего устройства.
+Status current(int* device) { return platform(native::get_device(device)); }
+// Выбирает GPU для последующих операций текущего потока.
+Status select(int device) { return platform(native::set_device(device)); }
 // Возвращает PCI-адрес карты для сопоставления физических устройств.
 Status bus_id(char* text, int capacity, int device) {
-    return platform(cudaDeviceGetPCIBusId(text, capacity, device));
+    return platform(native::pci_bus_id(text, capacity, device));
 }
 // Запрашивает свободный и полный объём памяти текущей карты.
 Status memory_info(std::size_t* available, std::size_t* total) {
-    return platform(cudaMemGetInfo(available, total));
+    return platform(native::memory_info(available, total));
 }
-// Создаёт поток CUDA с заданным режимом синхронизации.
+// Создаёт поток устройства с заданным режимом синхронизации.
 Status create_stream(Stream* stream, bool nonblocking) {
-    cudaStream_t queue = nullptr;
-    const auto result = platform(cudaStreamCreateWithFlags(&queue, nonblocking ? cudaStreamNonBlocking : cudaStreamDefault));
+    native::Stream queue = nullptr;
+    const auto result = platform(native::create_stream(&queue, nonblocking ? native::nonblocking : native::blocking));
     *stream = queue;
     return result;
 }
-// Удаляет ранее созданный поток CUDA.
-Status destroy_stream(Stream stream) { return platform(cudaStreamDestroy(static_cast<cudaStream_t>(stream))); }
+// Удаляет ранее созданный поток устройства.
+Status destroy_stream(Stream stream) { return platform(native::destroy_stream(static_cast<native::Stream>(stream))); }
 // Ожидает завершения операций указанного потока.
 Status wait(Stream stream) { return run([&] { device_work::current_execution(stream).fence(); }); }
 // Ожидает завершения всех операций текущего устройства.
@@ -113,7 +119,7 @@ Status allocate(void** out, std::size_t bytes) {
     // которые не входят в строку Placing с постоянными массивами подобласти.
     if (std::getenv("AERO_GPU_MEMORY_TRACE")) {
         std::size_t available=0,total=0;
-        if (cudaMemGetInfo(&available,&total)==cudaSuccess)
+        if (native::memory_info(&available,&total)==native::success)
             std::fprintf(stderr,"GPU allocation: request %zu bytes, free %zu bytes, total %zu bytes\n",bytes,available,total);
     }
     return acquire<Device>(out, bytes);
@@ -125,7 +131,7 @@ Status allocate_pinned(void** out, std::size_t bytes) { return acquire<Pinned>(o
 // Освобождает закреплённый буфер CPU.
 Status release_pinned(void* ptr) { return discard<Pinned>(ptr); }
 // Получает адрес закреплённого буфера, доступный из кода GPU.
-Status mapped_pointer(void** alias, void* host) { return platform(cudaHostGetDevicePointer(alias, host, 0)); }
+Status mapped_pointer(void** alias, void* host) { return platform(native::mapped_pointer(alias, host, 0)); }
 // Ставит копирование байтов в очередь указанного потока.
 Status copy_async(void* dst, const void* src, std::size_t bytes, Copy direction, Stream stream) {
     if (!bytes)

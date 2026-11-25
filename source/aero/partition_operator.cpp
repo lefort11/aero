@@ -487,7 +487,7 @@ void PartitionOperator::layout_gpu(bool compact_buffer) {
     if (need_pressure_rate_) device_pressure_rate_ = gpu_->layout_node_scalars(owned.size());
     if (steady_steps_) {
         steady_steps_->values = gpu_->layout_node_scalars(grid_.nodes);
-        if (rate_control_) rate_history_ = gpu_->layout_node_scalars(LocalRateLimit::Width*owned.size());
+        if (rate_control_ && step_mode_ == LocalStepMode::Auto) rate_history_ = gpu_->layout_node_scalars(LocalRateLimit::Width*owned.size());
     }
     if (neighbour_limit_) {
         neighbour_limit_->scratch = gpu_->layout_node_scalars(grid_.nodes);
@@ -651,6 +651,8 @@ void PartitionOperator::reserve_gpu(bool compact_buffer, GpuMemoryFit& fit, cons
             extra=implicit_storage_bytes(grid_,owned,*settings,aes_->has_gradient_tiles() ? 0 : gradient_bytes,
                                          matrix_plan_.get(),krylov_workspace(grid_,aes_->uses_implicit_coordinates()).count,
                                          shared_step_start_);
+            if (aes_->uses_implicit_coordinates())
+                fit.budget = fit.compact_budget;
         }
         try_layout();
     };
@@ -960,21 +962,32 @@ bool PartitionOperator::assemble_fluxes(const std::vector<double>& u, const std:
     // Вычисляет очередной этап оператора для текущего состояния поля.
     const auto compute = [&] {
         WallTimer timer(timing.counter(SolverTimings::Flux));
-#ifdef AERO_WITH_KOKKOS_GPU
-        if (gpu_) {
-            gpu_->fluxes(first_order_start,defer_viscous_rows);
-            return;
-        }
-#endif
         // Каждый процесс вычисляет назначенные ему поверхности, включая физические площадки своих узлов.
         const Id* faces = world_.size == 1 ? nullptr : compute_.data();
-        residual_detail::FaceBatch batch = {
-            grid_, faces, compute_.size(), u.data(), initial.data(), flux_.data(), nullptr, nullptr, gas_current_};
+        auto batch =
+#ifdef AERO_WITH_KOKKOS_GPU
+            gpu_ ? gpu_->face_batch() :
+#endif
+            residual_detail::FaceBatch{grid_, faces, compute_.size(), u.data(), initial.data(), flux_.data(),
+                                       nullptr, nullptr, gas_current_};
         if (first_order_start) batch.use_first_order();
-        residual_detail::cpu_face_fluxes(batch, ids_.data());
+#ifdef AERO_WITH_KOKKOS_GPU
+        if (gpu_) gpu_->fluxes(batch, first_order_start);
+        else
+#endif
+            residual_detail::cpu_face_fluxes(batch, ids_.data());
 #ifdef AERO_HAS_VISCOSITY
-        if (aes_) aes_->evaluate(u.data(), grid_.packed.gas, gas_current_ && grid_.packed.gas,
-            defer_viscous_rows?viscosity::Evaluation::BeforeSaIterations:viscosity::Evaluation::Full);
+        if (aes_) {
+            const auto phase = defer_viscous_rows ? viscosity::Evaluation::BeforeSaIterations : viscosity::Evaluation::Full;
+#ifdef AERO_WITH_KOKKOS_GPU
+            if (gpu_) gpu_->viscous_fluxes(phase);
+            else
+#endif
+                aes_->evaluate(u.data(), grid_.packed.gas, gas_current_ && grid_.packed.gas, phase);
+        }
+#endif
+#ifdef AERO_WITH_KOKKOS_GPU
+        if (gpu_) gpu_->check_fluxes();
 #endif
     };
     world_.local([&] {
@@ -1099,6 +1112,11 @@ void PartitionOperator::set_steady_steps(LocalStepMode mode, double max_ratio) {
     // После переключения между глобальным и локальным шагами начинаем историю auto заново.
     steady_steps_->max_ratio = max_ratio;
     if (step_mode_ == mode) return; // Изменение одного потолка сохраняет историю auto и принятую попытку.
+#ifdef AERO_WITH_KOKKOS_GPU
+    // При старте с глобальным шагом история невязки понадобится только после включения auto.
+    if (gpu_ && mode == LocalStepMode::Auto && rate_control_ && !rate_history_)
+        rate_history_ = gpu_->allocate_rate_history(LocalRateLimit::Width * owned.size());
+#endif
     accepted_field_ = nullptr;
     previous_cfl_ = retry_dt_ = 0.;
     retries_ = 0;
@@ -1338,7 +1356,7 @@ double PartitionOperator::cfl_step(double cfl) {
     world_.local([&] {
 #ifdef AERO_WITH_KOKKOS_GPU
         if (gpu_) {
-            local = residual_detail::gpu_flux_cfl(cfl_grid(), cfl, nullptr);
+            local = residual_detail::gpu_flux_cfl(cfl_grid(), cfl, nullptr, ids_.data());
             return;
         }
 #endif
@@ -1650,29 +1668,25 @@ void PartitionOperator::update_owned(explicit_detail::Stage stage, std::vector<d
     const Id* nodes = world_.size == 1 ? nullptr : owned.data();
     // На всех узлах одно число уравнений. Выбираем перед стадией тот же вариант
     // сборки строки, что и на GPU: длина суммы потоков известна при компиляции.
+    const viscosity::Operator* transport = nullptr;
 #ifdef AERO_HAS_VISCOSITY
     // На одном процессе обновлены все узлы. Вычисляем вязкость, пока новое состояние
     // ещё в кэше. Для MPI ждём обмена и готовим вязкость сразу для своих и соседних узлов.
-    const auto* transport = !nodes && grid_.packed.gas && aes_ ? &aes_->view() : nullptr;
+    if (!nodes && grid_.packed.gas && aes_) transport = &aes_->view();
 #endif
+    const turbulence::View* sa = nullptr;
 #ifdef AERO_HAS_TURBULENCE
-    const auto* sa=sa_active() ? &aes_->view().sa : nullptr;
+    if (sa_active()) sa = &aes_->view().sa;
 #endif
-    const auto update = width_ == 5 ? partition_detail::update_node<5> :
-                        width_ == 4 ? partition_detail::update_node<4> : partition_detail::update_node<3>;
+    const auto update = width_ == 5 ? partition_detail::advance_owned_node<5> :
+                        width_ == 4 ? partition_detail::advance_owned_node<4> : partition_detail::advance_owned_node<3>;
     parallel_for(
         owned.size(),
         [&](std::size_t k) {
-#ifdef AERO_HAS_TURBULENCE
-            if (sa) sa->advance_explicit(nodes ? nodes[k] : k,stage,dt,save_original);
-#endif
             if (!update(grid_, flux_.data(), volumes_, nodes, state.data(),
-                        start.data(), k, stage, dt, save_original)) {
+                        start.data(), k, stage, dt, save_original, transport, sa)) {
                 throw std::domain_error("Invalid Euler stage state at global node " + std::to_string(ids_[owned[k]]));
             }
-#ifdef AERO_HAS_VISCOSITY
-            if (transport) transport->prepare_gas(k, state.data(), grid_.packed.gas);
-#endif
         },
         256);
     gas_current_ = world_.size == 1;

@@ -17,6 +17,20 @@
 namespace aero {
 namespace implicit {
 namespace {
+#ifdef AERO_HAS_VISCOSITY
+struct HostViscousAssembly {
+    template<class T> using Capture = const T&;
+    template<class Work>
+    void run(const char*, MeshIndex count, const Work& work) const { parallel_for(count, work); }
+    bool assemble_compact(const viscosity::Jacobian&) const { return false; }
+    void columns(const viscosity::Jacobian& matrix) const {
+        const unsigned width = matrix.aes.dim + 2;
+        parallel_for(matrix.aes.node_count,[&](MeshIndex node) {
+            for (unsigned c = 0; c < width; ++c) matrix.assemble_column(node,c);
+        });
+    }
+};
+#endif
 // Проверка размера нужна как при оценке памяти, так и при фактической загрузке.
 bool indices_fit_32(const std::vector<MeshIndex>& source) {
     return source.empty() || *std::max_element(source.begin(),source.end()) <= std::numeric_limits<std::uint32_t>::max();
@@ -645,15 +659,7 @@ void SpatialJacobian::assemble_matrix(const double* u, const double* initial, co
                 device_work::check(device_work::aero_device_viscous_matrix(s.device,v,u));
             } else
 #endif
-            {
-                parallel_for(v.value_count,[&](MeshIndex k) { v.values[k]=0.; });
-                parallel_for(v.single_count,[&](MeshIndex k) { v.layout.neighbours[k]=0.; });
-                parallel_for(v.aes.node_count,[&](MeshIndex n) { v.aes.prepare_gas(n,u,nullptr); });
-                parallel_for(v.aes.cell_count,[&](MeshIndex e) { v.prepare_cell(e); });
-                parallel_for(v.aes.node_count,[&](MeshIndex n) {
-                    for (unsigned c = 0; c < b.grid.components(); ++c) v.assemble_column(n,c);
-                });
-            }
+                viscosity::assemble_jacobian(v,u,HostViscousAssembly{});
         });
 #endif
         if (b.direct_faces) {

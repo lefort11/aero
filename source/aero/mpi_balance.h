@@ -20,6 +20,8 @@ struct GpuMemoryFit {
     MeshIndex reconstruction_bytes = 0, cache_bytes = 0, implicit_bytes = 0, coarse_bytes = 0;
     // План размещения не укладывается в ограничения.
     bool failed = false;
+    // Бюджет последней однопроцессной раскладки с известным графом матрицы.
+    MeshIndex compact_budget = 0;
 };
 // Локальное состояние карты участвует в коллективном подборе следующего разбиения.
 struct GpuPlacement {

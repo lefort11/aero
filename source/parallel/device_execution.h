@@ -7,7 +7,7 @@
 namespace aero {
 namespace device_work {
 using Execution = Kokkos::DefaultExecutionSpace;
-// Возвращает контекст Kokkos для выбранного устройства и потока CUDA.
+// Возвращает контекст Kokkos для выбранного устройства и потока устройства.
 Execution current_execution(void* stream);
 // Исключения библиотеки остаются внутри модуля. На хост уходит только текст ошибки.
 template <class Work>
@@ -25,11 +25,19 @@ const char* on_device(void* stream, Work work, int requested_device = -1) {
     }
 }
 
+// Kokkos 3.2 HIP reductions support the backend's native launch bounds.
+template <unsigned min_blocks = 0>
+using DeviceRange = Kokkos::RangePolicy<Execution, Kokkos::IndexType<MeshIndex>
+#ifdef KOKKOS_ENABLE_CUDA
+    , Kokkos::LaunchBounds<128, min_blocks>
+#endif
+    >;
+
 // Одна итерация соответствует одному индексу. Kokkos выбирает сетку запуска.
 // HintLightWeight помещает аргументы небольшого ядра непосредственно в его параметры.
 template <unsigned min_blocks = 0, class Work>
 void for_indices(const Execution& exec, const char* name, MeshIndex count, Work work) {
-    using Policy = Kokkos::RangePolicy<Execution, Kokkos::IndexType<MeshIndex>, Kokkos::LaunchBounds<128, min_blocks>>;
+    using Policy = DeviceRange<min_blocks>;
     if (count)
         Kokkos::parallel_for(name, Kokkos::Experimental::require(Policy(exec, 0, count),
                              Kokkos::Experimental::WorkItemProperty::HintLightWeight), work);

@@ -154,8 +154,8 @@ void check_device(int device) {
 // Запускает проверки модуля и возвращает ненулевой код при ошибке.
 int main(int argc, char** argv) {
     try {
-        const bool require_gpu = argc == 2 && std::string(argv[1]) == "--require-cuda";
-        require(argc == 1 || require_gpu, "Usage: implicit_tests [--require-cuda]");
+        const bool require_gpu = argc == 2 && aero_test::require_gpu_argument(argv[1]);
+        require(argc == 1 || require_gpu, "Usage: implicit_tests [--require-gpu]");
         expect_error<std::invalid_argument>([] { BlockJacobi bad(1, 4); }, "dimension");
         expect_error<std::length_error>([] { BlockJacobi bad(std::numeric_limits<aero::MeshIndex>::max(), 3); },
                                         "too many nodes");

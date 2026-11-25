@@ -1,0 +1,64 @@
+--- a/src/cgns_header.h
++++ b/src/cgns_header.h
+@@ -1157,7 +1157,7 @@
+ int cgi_write_boco(double parent_id, cgns_boco *boco);
+ int cgi_write_dataset(double parent_id, const char *label,  cgns_dataset *dataset);
+ int cgi_write_bcdata(double bcdata_id, cgns_bcdata *bcdata);
+-int cgi_write_ptset(double id, char_33 name, cgns_ptset *ptset,
++int cgi_write_ptset(double id, char *name, cgns_ptset *ptset,
+             int ndim, void *ptset_ptr);
+ int cgi_write_equations(double parent_id, cgns_equations *equations);
+ int cgi_write_model(double parent_id, cgns_model *model);
+--- a/src/cgns_internals.c
++++ b/src/cgns_internals.c
+@@ -8282,7 +8282,7 @@
+     return CG_OK;
+ }
+ 
+-int cgi_write_ptset(double parent_id, char_33 name, cgns_ptset *ptset,
++int cgi_write_ptset(double parent_id, char *name, cgns_ptset *ptset,
+                     int ndim, void *ptset_ptr)
+ {
+     cgsize_t dim_vals[12];
+--- a/src/cgnslib.c
++++ b/src/cgnslib.c
+@@ -1374,31 +1374,31 @@
+ 
+ 
+     /* check if family_name is actually a family tree path instead */
+-    pch = strchr( family_name, '/' );
+-    if( pch != 0 ) {
++    const char *path = strchr( family_name, '/' );
++    if( path != 0 ) {
+ 
+         /* Check that family tree path is absolute */
+-        if( pch != family_name ) {
++        if( path != family_name ) {
+             cgi_error( "Family tree path must be absolute (including base)");
+             return CG_ERROR;
+         }
+ 
+         /* Check that specified base's name matches beginning of family tree path */
+-        pch = strstr( family_name, base->name );
+-        if( pch != family_name+1 ) {
++        path = strstr( family_name, base->name );
++        if( path != family_name+1 ) {
+             cgi_error( "Incompatible basename (%s) and family tree (%s)", base->name, family_name );
+             return CG_ERROR;
+         }
+ 
+         /* points to base level instead of root in family tree path*/
+-        pch += strlen( base->name );
++        path += strlen( base->name );
+     }
+     else {
+-        pch = (char*) family_name;
++        path = family_name;
+     }
+ 
+     /* Make a copy of family tree path (need non const string for tokenization loop) */
+-    strcpy( family_name_path, pch );
++    strcpy( family_name_path, path );
+ 
+     /* Init tokenization loop:
+      * We work with pointer to variables to simplify switch from cgns_base structure

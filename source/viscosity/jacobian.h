@@ -187,6 +187,36 @@ struct Jacobian {
         else add_column<1>(slice,variable,0);
     }
 };
+
+template<class Grid>
+struct PrepareJacobianGas {
+    Grid grid;
+    const double* state;
+    AERO_HOST_DEVICE void operator()(MeshIndex node) const { grid.prepare_gas(node,state,nullptr); }
+};
+
+template<class Matrix>
+struct PrepareJacobianCell {
+    Matrix matrix;
+    AERO_HOST_DEVICE void operator()(MeshIndex cell) const { matrix.prepare_cell(cell); }
+};
+
+template<class Assembly>
+void assemble_jacobian(const Jacobian& matrix, const double* state, const Assembly& assembly) {
+    double* values = matrix.values;
+    auto* neighbours = matrix.layout.neighbours;
+    assembly.run("Aero: clear viscous matrix", matrix.value_count, KOKKOS_LAMBDA(MeshIndex i) { values[i] = 0.; });
+    if (matrix.single_count)
+        assembly.run("Aero: clear mixed off-diagonal", matrix.single_count, KOKKOS_LAMBDA(MeshIndex i) { neighbours[i] = 0.f; });
+    // На CPU объёмные представления читаются по ссылке. На GPU ядро получает
+    // представление по значению вместе с адресами памяти устройства.
+    using Grid = typename Assembly::template Capture<Operator>;
+    using Matrix = typename Assembly::template Capture<Jacobian>;
+    assembly.run("Aero: viscous Jacobian states", matrix.aes.node_count, PrepareJacobianGas<Grid>{matrix.aes,state});
+    if (assembly.assemble_compact(matrix)) return;
+    assembly.run("Aero: viscous Jacobian gradients", matrix.aes.cell_count, PrepareJacobianCell<Matrix>{matrix});
+    assembly.columns(matrix);
+}
 }
 }
 #endif

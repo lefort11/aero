@@ -33,7 +33,7 @@ struct NewtonUpdate {
     template<unsigned width>
     AERO_HOST_DEVICE double residual_norm(MeshIndex row) const {
         const MeshIndex node = owned ? owned[row] : row;
-        double spatial[width];
+        double spatial[width] = {};
         const bool valid = residual_detail::assemble_node_residual<width>(grid, node, flux, spatial);
         double largest = 0.;
         for (unsigned k = 0; k < width; ++k) {

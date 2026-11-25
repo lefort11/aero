@@ -1,3 +1,4 @@
+#include "../parallel/backend.h"
 #include "startup.h"
 #include "../io/settings_text.h"
 #include <algorithm>
@@ -74,7 +75,7 @@ void show_settings(const RunSettings& r) {
     std::cout << std::setprecision(15) << "Run settings\ninput = " << r.directories.input
               << "\noutput = " << r.directories.output << "\ninteractive = " << r.directories.interactive
               << "\nEquations = " << (r.background.active() ? "Linear" : "Euler")
-              << "\nmesh = " << r.mesh_path << "\nbackend = " << (r.use_cuda ? "cuda" : "cpu")
+              << "\nmesh = " << r.mesh_path << "\nbackend = " << (r.use_cuda ? gpu_backend_name : "cpu")
               << "\nreconstruction = " << r.reconstruction
               << "\nstencil_geometry = " << r.stencil_geometry << "\nstencil_max_angle = " << r.stencil_max_angle
                 << "\nreconstruction_variables = " << r.reconstruction_variables

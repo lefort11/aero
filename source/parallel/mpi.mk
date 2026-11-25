@@ -8,6 +8,8 @@ MPI_CPPFLAGS ?= -I"$(subst \,/,$(MSMPI_INC))."
 MPI_LIBS ?= "$(subst \,/,$(MSMPI_LIB64))msmpi.lib"
 else
 MPI_HOST_CXX = $(MPI_CXX)
+# Aero uses the MPI C API exclusively.
+override CPPFLAGS += -DOMPI_SKIP_MPICXX=1 -DMPICH_SKIP_MPICXX=1
 endif
 else
 MPI_HOST_CXX = $(CXX)

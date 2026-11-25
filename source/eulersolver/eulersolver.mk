@@ -42,10 +42,11 @@ eulersolver-test: $(BIN)/$(notdir $(EULER_TEST))
 eulersolver-debug-test: $(BIN)/$(notdir $(EULER_DEBUG_TEST))
 	$(running_test)
 	"$<"
-eulersolver-cuda-test:
-	$(MAKE) KOKKOS_BACKEND=cuda $(BIN)/eulersolver_tests_cuda1_omp$(WITH_OPENMP)$(EXE)
+.PHONY: eulersolver-hip-test
+eulersolver-cuda-test eulersolver-hip-test:
+	$(MAKE) KOKKOS_BACKEND=$(if $(filter %-hip-test,$@),hip,cuda) $(BIN)/eulersolver_tests_cuda1_omp$(WITH_OPENMP)$(EXE)
 	$(running_test)
-	./$(BIN)/eulersolver_tests_cuda1_omp$(WITH_OPENMP)$(EXE) --require-cuda
+	./$(BIN)/eulersolver_tests_cuda1_omp$(WITH_OPENMP)$(EXE) --require-gpu
 all: $(BIN)/$(notdir $(EULER_TEST))
 test: eulersolver-test
 debug-test: eulersolver-debug-test

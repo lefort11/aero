@@ -14,7 +14,7 @@
     <ClCompile Include="..\source\aero\aero_tests.cpp" />
     <ClCompile Include="..\source\mesh\leaf_balance.cpp" />
     <ClInclude Include="..\source\mesh\leaf_balance.h" />
-    <None Include="..\tests\device_cases.cu" />
+    <ClCompile Include="..\tests\device_cases.cpp" />
     <ClInclude Include="..\tests\device_cases.h" />
     <ClInclude Include="..\tests\device_test_buffer.h" />
     <ClInclude Include="..\tests\test_checks.h" />

@@ -37,8 +37,9 @@ cv-test: $(BIN)/$(notdir $(CV_TEST))
 cv-debug-test: $(BIN)/$(notdir $(CV_DEBUG))
 	$(running_test)
 	"$(CV_DEBUG)"
-cv-cuda-test:
-	$(MAKE) KOKKOS_BACKEND=cuda $(BIN)/cv_tests_cuda1$(EXE)
+.PHONY: cv-hip-test
+cv-cuda-test cv-hip-test:
+	$(MAKE) KOKKOS_BACKEND=$(if $(filter %-hip-test,$@),hip,cuda) $(BIN)/cv_tests_cuda1$(EXE)
 	$(running_test)
-	"$(BIN)/cv_tests_cuda1$(EXE)" --require-cuda
+	"$(BIN)/cv_tests_cuda1$(EXE)" --require-gpu
 $(CV_TEST) $(CV_DEBUG): tests/test_checks.h

@@ -63,7 +63,7 @@ AERO_HOST_DEVICE inline bool linear_boundary_flux(const LinearFace& face, Bounda
     } else {
         const auto* rules = patch.rules(table);
         if (!rules) return false;
-        double q[5];
+        double q[5] = {};
         for (unsigned k = 0; k < d + 2; ++k) q[k] = inside[k];
         // Знак фоновой нормальной скорости и число Маха выбирают режим один раз
         // для данного направления. На сверхзвуковом выходе берём все значения изнутри.

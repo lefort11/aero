@@ -13,6 +13,9 @@ kokkos_source := $(kokkos_unpack)/kokkos-3.2.01
 kokkos_build := $(abspath $(BUILD))/kokkos-build$(if $(filter Windows_NT,$(OS)),-unix)/3.2.01
 kokkos_zip := third_party/kokkos-3.2.01.zip
 kokkos_inputs := $(kokkos_zip) third_party/kokkos-3.2.01-compat.patch
+ifeq ($(KOKKOS_BACKEND),hip)
+kokkos_inputs += third_party/kokkos-3.2.01-hip.patch
+endif
 kokkos_stamp := $(kokkos_source)/.prepared
 $(kokkos_stamp): $(kokkos_inputs)
 	$(call action,Preparing,Kokkos sources)
@@ -26,6 +29,9 @@ else
 	cd "$(kokkos_unpack)" && cmake -E tar xf "$(abspath $(kokkos_zip))"
 endif
 	patch --binary -d "$(kokkos_source)" -p1 --batch < third_party/kokkos-3.2.01-compat.patch
+ifeq ($(KOKKOS_BACKEND),hip)
+	patch --binary -d "$(kokkos_source)" -p1 --batch < third_party/kokkos-3.2.01-hip.patch
+endif
 	touch "$@"
 override CPPFLAGS += -isystem "$(KOKKOS_PREFIX)/include"
 override LDLIBS += "$(kokkos_library)"
@@ -45,6 +51,8 @@ $(kokkos_library): $(kokkos_stamp)
 endif
 
 ifeq ($(kokkos_gpu),1)
+ROCM_PATH ?= $(if $(wildcard /opt/rocm/lib/libamdhip64.so),/opt/rocm)
+HIP_RUNTIME_LINK ?= $(if $(ROCM_PATH),-L"$(ROCM_PATH)/lib") -lamdhip64
 kokkos_gpu_dir := $(abspath $(BUILD))/kokkos-device
 ifeq ($(OS),Windows_NT)
 # Сначала ищем инструменты в среде пользователя. В рабочем дереве также
@@ -69,7 +77,7 @@ $(llvm_ready): $(llvm_packages)
 export PATH := $(PATH):$(llvm_bin)
 endif
 else
-KOKKOS_GPU_CXX ?= $(NVCC)
+KOKKOS_GPU_CXX ?= $(if $(filter hip,$(KOKKOS_BACKEND)),$(HIPCC),$(NVCC))
 endif
 ifeq ($(STATIC_LINK),1)
 # Объекты GPU входят в исполняемый файл. На Windows LLD читает архив CUDA в формате MSVC.
@@ -81,10 +89,10 @@ override LDFLAGS += -fuse-ld=lld
 kokkos_system_crt := $(if $(findstring ucrt,$(shell $(CXX) -print-file-name=libstdc++.a)),ucrtbase,msvcrt)
 kokkos_static_runtime := "$(CUDA_HOME)/lib/x64/cudart_static.lib" -L"$(kokkos_gpu_dir)" -lvcruntime -l$(kokkos_system_crt) -lucrtbase
 else
-kokkos_static_runtime := $(CUDA_RUNTIME_LINK)
+kokkos_static_runtime := $(if $(filter hip,$(KOKKOS_BACKEND)),$(HIP_RUNTIME_LINK),$(CUDA_RUNTIME_LINK))
 endif
 else
-kokkos_module := libaero_kokkos_cuda.so
+kokkos_module := libaero_kokkos_$(KOKKOS_BACKEND).so
 kokkos_gpu_archive := $(kokkos_module)
 endif
 ifeq ($(origin KOKKOS_DEVICE_LIBRARY),undefined)

@@ -6,7 +6,7 @@ clean_roots := build $(wildcard build/mingw-cpu-* build/mingw-cuda-sm*)
 endif
 ifneq ($(OS),Windows_NT)
 ifeq ($(origin BUILD),file)
-clean_roots := build/linux $(wildcard build/linux/cuda-sm*)
+clean_roots := build/linux $(wildcard build/linux/cuda-sm* build/linux/hip-gfx*)
 endif
 endif
 clean_variants := $(foreach root,$(clean_roots),$(root) $(root)/serial $(root)/static $(root)/static/serial)
@@ -31,7 +31,7 @@ clean_runtime := libstdc++-6.dll libgcc_s_seh-1.dll libwinpthread-1.dll libgomp-
 endif
 # Возвращает только существующие файлы из заданного каталога и списка известных шаблонов.
 clean_files = $(wildcard $(addprefix $(1)/,$(2)))
-clean_bin_files := $(call clean_files,$(BIN),$(clean_exes) $(clean_runtime) aero_kokkos_cuda.dll libaero_kokkos_cuda.so)
+clean_bin_files := $(call clean_files,$(BIN),$(clean_exes) $(clean_runtime) aero_kokkos_cuda.dll libaero_kokkos_cuda.so libaero_kokkos_hip.so)
 # Удаляет один известный файл; кавычки сохраняют пробелы, а -- завершает список опций rm.
 remove_file = rm -f -- "$(1)"
 
@@ -45,5 +45,5 @@ endef
 clean:
 	$(call action,Cleaning,generated build files)
 	$(call remove_files,$(clean_bin_files))
-	$(call remove_files,$(foreach dir,$(clean_dirs),$(call clean_files,$(dir),*.o slice/*/*/*.o aero_*_objects/*/*.o libaero*.a libaero_kokkos_cuda.so aero_kokkos_cuda.dll $(clean_exes))))
+	$(call remove_files,$(foreach dir,$(clean_dirs),$(call clean_files,$(dir),*.o slice/*/*/*.o aero_*_objects/*/*.o libaero*.a libaero_kokkos_cuda.so libaero_kokkos_hip.so aero_kokkos_cuda.dll $(clean_exes))))
 	$(if $(clean_generated_dirs),$(RM) -r -- $(clean_generated_dirs))

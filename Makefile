@@ -5,15 +5,23 @@ CXX = g++
 # Обычный make в Windows выпускает тот же GPU+MPI солвер, что и make aero.
 default_solver_build := $(and $(filter Windows_NT,$(OS)),$(filter aero,$(or $(MAKECMDGOALS),aero)))
 KOKKOS_BACKEND ?= $(if $(default_solver_build),cuda,cpu)
-ifeq ($(KOKKOS_BACKEND),cuda)
+ifneq ($(filter $(KOKKOS_BACKEND),cuda hip),)
 kokkos_gpu := 1
 else ifeq ($(KOKKOS_BACKEND),cpu)
 kokkos_gpu := 0
 else
-$(error KOKKOS_BACKEND must be cpu or cuda)
+$(error KOKKOS_BACKEND must be cpu, cuda or hip)
 endif
 ifneq ($(filter-out undefined,$(origin WITH_CUDA) $(origin WITH_KOKKOS)),)
-$(error Choose KOKKOS_BACKEND=cpu or KOKKOS_BACKEND=cuda)
+$(error Choose KOKKOS_BACKEND=cpu, cuda or hip)
+endif
+HIP_ARCH ?= gfx906
+HIPCC ?= hipcc
+ifeq ($(KOKKOS_BACKEND),hip)
+ifeq ($(OS),Windows_NT)
+$(error Use the Linux HIP toolchain for KOKKOS_BACKEND=hip)
+endif
+override CPPFLAGS += -DAERO_WITH_HIP
 endif
 CUDA_ARCH ?= 86
 ifeq ($(OS)/$(kokkos_gpu),Windows_NT/1)
@@ -24,7 +32,7 @@ cuda12_env := $(lastword $(sort $(filter CUDA_PATH_V12_%,$(.VARIABLES))))
 CUDA_HOME ?= $(shell cygpath -u "$(or $($(cuda12_env)),$(CUDA_PATH))")
 endif
 endif
-ifeq ($(kokkos_gpu),1)
+ifeq ($(KOKKOS_BACKEND),cuda)
 ifneq ($(OS),Windows_NT)
 ifneq ($(MAKECMDGOALS),clean)
 include source/parallel/cuda_toolkit.mk
@@ -106,7 +114,7 @@ else
 EXE :=
 BUILD := build/linux
 ifeq ($(kokkos_gpu),1)
-BUILD := $(BUILD)/cuda-sm$(CUDA_ARCH)
+BUILD := $(BUILD)/$(if $(filter hip,$(KOKKOS_BACKEND)),hip-$(HIP_ARCH),cuda-sm$(CUDA_ARCH))
 endif
 override LDLIBS += -pthread
 endif
@@ -223,7 +231,14 @@ mesh-debug-test: $(BIN)/$(notdir $(DEBUG_TEST))
 	./$(DEBUG_TEST)
 
 # Компиляция модуля проверяет доступ к данным через Kokkos на выбранном устройстве.
+.PHONY: hip-check
+hip-check:
+	$(MAKE) KOKKOS_BACKEND=hip device-check
 ifeq ($(kokkos_gpu),1)
+.PHONY: device-check
+device-check: $(KOKKOS_DEVICE_LIBRARY)
+endif
+ifeq ($(KOKKOS_BACKEND),cuda)
 cuda-check: $(KOKKOS_DEVICE_LIBRARY)
 else
 cuda-check:

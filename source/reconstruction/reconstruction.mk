@@ -50,10 +50,11 @@ reconstruction-debug-test: $(BIN)/$(notdir $(EBR_DEBUG_TEST))
 	$(running_test)
 	"$(EBR_DEBUG_TEST)"
 
-reconstruction-cuda-test:
-	$(MAKE) KOKKOS_BACKEND=cuda $(BIN)/reconstruction_tests_cuda1_omp$(WITH_OPENMP)$(EXE)
+.PHONY: reconstruction-hip-test
+reconstruction-cuda-test reconstruction-hip-test:
+	$(MAKE) KOKKOS_BACKEND=$(if $(filter %-hip-test,$@),hip,cuda) $(BIN)/reconstruction_tests_cuda1_omp$(WITH_OPENMP)$(EXE)
 	$(running_test)
-	"$(BIN)/reconstruction_tests_cuda1_omp$(WITH_OPENMP)$(EXE)" --require-cuda
+	"$(BIN)/reconstruction_tests_cuda1_omp$(WITH_OPENMP)$(EXE)" --require-gpu
 all: $(BIN)/$(notdir $(EBR_TEST))
 test: reconstruction-test
 debug-test: reconstruction-debug-test

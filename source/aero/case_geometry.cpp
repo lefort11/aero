@@ -1,3 +1,4 @@
+#include "../parallel/backend.h"
 #include "case_geometry.h"
 #include "startup.h"
 #include "../explicit/explicit.h"
@@ -39,7 +40,7 @@ void select_single_device(RunSettings& run) {
     }
     const int device = run.devices.front();
     if (device >= device_count) {
-        throw std::invalid_argument("Unavailable CUDA device " + std::to_string(device));
+        throw std::invalid_argument(std::string("Unavailable ") + gpu_backend_label + " device " + std::to_string(device));
     }
 #ifdef AERO_WITH_KOKKOS_GPU
     gpu::checked(gpu::select(device));

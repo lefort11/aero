@@ -27,7 +27,7 @@ struct RoeFlux {
                 return EulerStatus::NonFinite;
         }
         // Для диссипации нужны только две звуковые поправки. Полную матрицу на этом пути не храним.
-        double momentum[3];
+        double momentum[3] = {};
         const double inverse_sound = inverse_value(average.sound_speed);
         euler_detail::project_normal_waves(dimension, average.velocity, gas.normal, face.gamma, average.kinetic,
                                            average.sound_speed, inverse_sound, jump, momentum, strength);

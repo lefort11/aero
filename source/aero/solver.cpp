@@ -1,3 +1,4 @@
+#include "../parallel/backend.h"
 #include "solver.h"
 #include "run_control.h"
 #include "exact_error.h"
@@ -186,9 +187,9 @@ public:
     // После принятия шага все ранги уже прочитали один набор команд. Меняем
     // только правило выбора dt: поле и накопленная пространственная матрица остаются пригодными.
     void set_steady_steps(LocalStepMode local, double max_ratio) {
+        world_.local([&] { op_.set_steady_steps(local, max_ratio); });
         run_.local_time_step = local;
         run_.local_time_step_max_ratio = max_ratio;
-        op_.set_steady_steps(local, max_ratio);
         runtime_steady_steps_ = true;
     }
 
@@ -787,9 +788,9 @@ bool prepare_gpu_memory(PartitionOperator& op, const MeshPartition& part, const 
 void report_active_backend(const RunSettings& run, const Processes& world) {
     if (world.size == 1) {
         std::cout << "Active backend = "
-                  << (run.use_cuda ? "CUDA device " + std::to_string(run.devices.front()) : "CPU") << '\n';
+                  << (run.use_cuda ? std::string(gpu_backend_label) + " device " + std::to_string(run.devices.front()) : "CPU") << '\n';
     } else if (!world.rank) {
-        std::cout << "Active backend = " << (run.use_cuda ? "CUDA" : "CPU")
+        std::cout << "Active backend = " << (run.use_cuda ? gpu_backend_label : "CPU")
                   << " (MPI), processes = " << world.size << '\n';
     }
 #ifdef AERO_WITH_KOKKOS_GPU
@@ -800,7 +801,7 @@ void report_active_backend(const RunSettings& run, const Processes& world) {
             char name[256] = {};
             gpu::checked(gpu::current(&device));
             gpu::checked(gpu::selected_device_name(name, sizeof(name)));
-            description = "CUDA device" + std::to_string(device) + ": " + name;
+            description = std::string(gpu_backend_label) + " device" + std::to_string(device) + ": " + name;
             if (world.size > 1) description += " (MPI rank " + std::to_string(world.rank) + ")";
         });
         if (world.size == 1) {

@@ -199,8 +199,8 @@ def prepare_variant(work, folder, main, mesh, variant, options):
     run = dict(main, **dict(zip(SCHEME_KEYS, variant)))
     run["mesh"] = f'"{mesh.as_posix()}"'
     run["backend"] = options.backend
-    if options.backend == "cuda":
-        (work / "cuda.txt").write_text(f"devices = {options.device}\n", encoding="ascii")
+    if options.backend != "cpu":
+        (work / ("gpu.txt" if options.backend == "hip" else "cuda.txt")).write_text(f"devices = {options.device}\n", encoding="ascii")
     (work / "main.txt").write_text("".join(f"{k} = {v}\n" for k, v in run.items()))
 
 
@@ -245,7 +245,7 @@ def run_case(name, variants, options, solver, exporter, progress, total):
     tolerances = load_tolerances(folder / "tolerances.json", exact)
     outdir = options.output / name
     outdir.mkdir(parents=True, exist_ok=True)
-    active = f"CUDA device {options.device}" if options.backend == "cuda" else "CPU"
+    active = f"{options.backend.upper()} device {options.device}" if options.backend != "cpu" else "CPU"
     failures = 0
     for variant in variants:
         label = "_".join(variant)
@@ -283,27 +283,27 @@ def main():
     )
     parser.add_argument("--tol", type=float, help="absolute maximum nodal error for every field")
     parser.add_argument(
-        "--backend", choices=("cpu", "cuda"), default="cpu", help="solver backend (default: cpu)"
+        "--backend", choices=("cpu", "cuda", "hip"), default="cpu", help="solver backend (default: cpu)"
     )
-    parser.add_argument("--device", type=int, help="CUDA device index (default: 0)")
+    parser.add_argument("--device", type=int, help="GPU device index (default: 0)")
     parser.add_argument(
         "--output",
         type=Path,
         default=QA / "output",
-        help="results root (default: qa/output); CUDA runs go in its cuda subdirectory",
+        help="results root (default: qa/output); GPU runs go in their backend subdirectory",
     )
     parser.add_argument("--aero", help="path to the solver executable")
     parser.add_argument("--fields-to-tecplot", help="path to the Tecplot exporter")
     options = parser.parse_args()
     if options.tol is not None and (not math.isfinite(options.tol) or options.tol < 0):
         parser.error("--tol must be finite and non-negative")
-    if options.device is not None and (options.device < 0 or options.backend != "cuda"):
-        parser.error("--device requires --backend cuda and a non-negative index")
+    if options.device is not None and (options.device < 0 or options.backend == "cpu"):
+        parser.error("--device requires a GPU backend and a non-negative index")
     options.output = options.output.resolve()
-    if options.backend == "cuda":
+    if options.backend != "cpu":
         if options.device is None:
             options.device = 0
-        options.output = options.output / "cuda"
+        options.output = options.output / options.backend
     solver = binary("aero", options.aero)
     exporter = binary("fields_to_tecplot", options.fields_to_tecplot)
     print(

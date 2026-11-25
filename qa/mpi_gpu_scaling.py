@@ -62,10 +62,10 @@ def benchmark(work, aero, meshdec, launcher, devices):
             if not header or int(header[1]) != len(cards) or header[2] != header[3]:
                 raise AssertionError(log)
             if mode == "single":
-                if f"Active backend = CUDA device {cards[0]}" not in log:
+                if not re.search(rf"Active backend = (?:CUDA|HIP) device {cards[0]}\b", log):
                     raise AssertionError(log)
             else:
-                assigned = re.findall(r"MPI CUDA placement: rank \d+ local_rank \d+ device (\d+)", log)
+                assigned = re.findall(r"MPI (?:CUDA|HIP) placement: rank \d+ local_rank \d+ device (\d+)", log)
                 if assigned != cards or ("MPI GPU calibration: rank" in log) != (mode == "auto"):
                     raise AssertionError(log)
             table = log.split("max_s_per_step\n")[1].split("Completed")[0]

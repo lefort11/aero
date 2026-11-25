@@ -1,3 +1,4 @@
+#include "../parallel/backend.h"
 #include "partition_kernels.h"
 #include "steady_forecast.h"
 #include "../../tests/test_checks.h"
@@ -235,7 +236,7 @@ std::string run_case(const std::string& program, const std::string& device, bool
     const auto trace = read(log);
     if (expect_fallback)
         require(trace.find("CUDA unavailable; running on CPU.") != std::string::npos, "missing CPU fallback");
-    std::string expected = device.empty() || expect_fallback ? "CPU" : "CUDA device " + device;
+    std::string expected = device.empty() || expect_fallback ? "CPU" : std::string(aero::gpu_backend_label) + " device " + device;
     for (const auto& key : std::vector<std::string>{"Reading mesh... done", "Active backend = " + expected, "Boundary label",
                                                     "Preparing flux surfaces... done",
                                                     "STEP 1  |", "Final time = 0.008"})

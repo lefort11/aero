@@ -170,8 +170,8 @@ int main(int argc, char** argv) {
         cases(-1);
         std::cout << "CPU CFL tests passed.\n";
         const int devices = ExplicitIntegrator::cuda_device_count();
-        if (argc == 2 && std::string(argv[1]) == "--require-cuda")
-            require(devices > 0, "CUDA device required");
+        if (argc == 2 && aero_test::require_gpu_argument(argv[1]))
+            require(devices > 0, "GPU device required");
         for (int dev = 0; dev < devices; ++dev) {
             cases(dev);
             std::cout << "CFL tests passed on GPU " << dev << ".\n";

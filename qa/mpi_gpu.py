@@ -112,12 +112,12 @@ def verify(case, aero, meshdec, launcher, devices, fixture, scheme, recon, empty
     log = launch(aero, case, out, launcher, 2)
     check_gpu_weights(log, case / "grid.mdec", devices)
     placement = re.findall(
-        r"MPI CUDA placement: rank (\d+) local_rank (\d+) device (\d+) node/PCI (\S+)", log
+        r"MPI (?:CUDA|HIP) placement: rank (\d+) local_rank (\d+) device (\d+) node/PCI (\S+)", log
     )
     if (
         [int(row[2]) for row in placement] != list(map(int, devices.split(",")))
         or len({row[3] for row in placement}) != 2
-        or "Active backend = CUDA (MPI)" not in log
+        or not re.search(r"Active backend = (?:CUDA|HIP) \(MPI\)", log)
     ):
         raise AssertionError(log)
     original = memory_rows(log)[-2:]
@@ -186,7 +186,7 @@ def verify(case, aero, meshdec, launcher, devices, fixture, scheme, recon, empty
         configure(mesh="grid.mesh", recovery_every_steps=2)
         serial_log = launch(aero, case, serial_gpu, launcher, 1, "--recover")
         if (
-            f"Active backend = CUDA device {device}" not in serial_log
+            not re.search(rf"Active backend = (?:CUDA|HIP) device {device}\b", serial_log)
             or "Recovered step" not in serial_log
         ):
             raise AssertionError(serial_log)

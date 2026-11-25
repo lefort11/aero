@@ -1712,9 +1712,9 @@ void register_lifetime_and_errors() {
 // Запускает проверки модуля и возвращает ненулевой код при ошибке.
 int main(int argc, char** argv) {
     using namespace aero;
-    const bool require_cuda = argc == 2 && std::string(argv[1]) == "--require-cuda";
+    const bool require_cuda = argc == 2 && aero_test::require_gpu_argument(argv[1]);
     if (argc > 2 || (argc == 2 && !require_cuda)) {
-        std::cerr << "Usage: reconstruction_tests [--require-cuda]\n";
+        std::cerr << "Usage: reconstruction_tests [--require-gpu]\n";
         return 2;
     }
     register_curved_stencils();
@@ -1896,11 +1896,11 @@ int main(int argc, char** argv) {
             throw ReconstructionError("GPU verification requested but no CUDA device is available");
         for (int device = 0; device < devices; ++device) {
 #ifdef AERO_WITH_KOKKOS_GPU
-            add("CUDA " + std::to_string(device) + " one side, explicit owner and guarded output",
+            add("GPU " + std::to_string(device) + " one side, explicit owner and guarded output",
                 [device] { single_side_device_test(device); });
-            add("CUDA " + std::to_string(device) + " MP5 full and shortened stencils",
+            add("GPU " + std::to_string(device) + " MP5 full and shortened stencils",
                 [device] { device_test(device, ReconstructionScheme::Mp5); });
-            add("CUDA " + std::to_string(device) + " MPWENO5 full and shortened stencils, correction on/off",
+            add("GPU " + std::to_string(device) + " MPWENO5 full and shortened stencils, correction on/off",
                 [device] {
                     for (bool correction : {false, true})
                         device_test(device, ReconstructionScheme::MPWENO5, correction);
@@ -1909,7 +1909,7 @@ int main(int argc, char** argv) {
             for (ReconstructionScheme scheme : std::vector<ReconstructionScheme>{
                      ReconstructionScheme::Weno3, ReconstructionScheme::Weno5}) {
                 const std::string name = scheme == ReconstructionScheme::Weno3 ? "WENO3" : "WENO5";
-                add("CUDA " + std::to_string(device) + " " + name +
+                add("GPU " + std::to_string(device) + " " + name +
                         " dimensions, nonlinear fields and buffer reuse",
                     [device, scheme] {
                         ReconstructionOptions o;
@@ -1956,11 +1956,11 @@ int main(int argc, char** argv) {
                         require(empty.reconstruct({}, 1).left_increment2.empty(), "Empty WENO CUDA output");
                     });
 #ifdef AERO_WITH_KOKKOS_GPU
-                add("CUDA " + std::to_string(device) + " " + name + " device arrays and stream",
+                add("GPU " + std::to_string(device) + " " + name + " device arrays and stream",
                     [device, scheme] { device_test(device, scheme); });
 #endif
             }
-            add("CUDA " + std::to_string(device) + " EBR5 1D/2D/3D and reusable buffers", [device] {
+            add("GPU " + std::to_string(device) + " EBR5 1D/2D/3D and reusable buffers", [device] {
                 ReconstructionOptions o;
                 o.scheme = ReconstructionScheme::Ebr5;
                 for (const Mesh& m :
@@ -1983,7 +1983,7 @@ int main(int argc, char** argv) {
                                         device);
                 require(empty.reconstruct({}, 1).left_increment2.empty(), "Empty EBR5 GPU output");
             });
-            add("CUDA " + std::to_string(device) + " zero increments and constant-offset invariance",
+            add("GPU " + std::to_string(device) + " zero increments and constant-offset invariance",
                 [device] {
                     const ReconstructionStencil s = prepare_reconstruction(line({0, 1, 2, 3}));
                     TestReconstructor gpu(s, ReconstructionBackend::Cuda, device);
@@ -1999,7 +1999,7 @@ int main(int argc, char** argv) {
                                             ReconstructionBackend::Cuda, device);
                     zeros(first.reconstruct(shifted, 1));
                 });
-            add("CUDA " + std::to_string(device) + " FirstOrder endpoints and buffer reuse", [device] {
+            add("GPU " + std::to_string(device) + " FirstOrder endpoints and buffer reuse", [device] {
                 ReconstructionOptions o;
                 o.scheme = ReconstructionScheme::FirstOrder;
                 for (const Mesh& m : std::vector<Mesh>{line({0, 0.2, 1, 4}), plane(true), plane(false),
@@ -2014,7 +2014,7 @@ int main(int argc, char** argv) {
                                         device);
                 require(empty.reconstruct({}, 1).left_increment2.empty(), "Empty FirstOrder GPU output");
             });
-            add("CUDA " + std::to_string(device) + " 1D/2D/3D and buffer reuse", [device] {
+            add("GPU " + std::to_string(device) + " 1D/2D/3D and buffer reuse", [device] {
                 for (const Mesh& mesh : std::vector<Mesh>{line({0, 1, 3, 6}), plane(true), plane(false),
                                                           volume(true), volume(false), prism(true)}) {
                     const ReconstructionStencil s = prepare_reconstruction(mesh);
@@ -2031,11 +2031,11 @@ int main(int argc, char** argv) {
                 require(empty.reconstruct({}, 1).left_increment2.empty(), "Empty GPU output");
             });
 #ifdef AERO_WITH_KOKKOS_GPU
-            add("CUDA " + std::to_string(device) + " device arrays and nondefault stream",
+            add("GPU " + std::to_string(device) + " device arrays and nondefault stream",
                 [device] { device_test(device); });
-            add("CUDA " + std::to_string(device) + " FirstOrder device arrays and stream",
+            add("GPU " + std::to_string(device) + " FirstOrder device arrays and stream",
                 [device] { device_test(device, ReconstructionScheme::FirstOrder); });
-            add("CUDA " + std::to_string(device) + " EBR5 device arrays and stream",
+            add("GPU " + std::to_string(device) + " EBR5 device arrays and stream",
                 [device] { device_test(device, ReconstructionScheme::Ebr5); });
 #endif
         }
@@ -2050,7 +2050,7 @@ int main(int argc, char** argv) {
                 return 1;
             }
         }
-        std::cout << passed << " reconstruction tests passed; CUDA devices tested: " << devices << '\n';
+        std::cout << passed << " reconstruction tests passed; GPU devices tested: " << devices << '\n';
         if (!devices)
             std::cout << "CUDA runtime tests skipped (CPU checks completed).\n";
     } catch (const std::exception& error) {

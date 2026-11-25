@@ -15,14 +15,16 @@
 
 namespace aero {
 using namespace residual_detail;
-// Находит минимальный шаг по скоростям потоков на CPU.
-double residual_detail::cpu_flux_cfl(const FluxCfl& grid, double courant, const MeshIndex* global_ids) {
-    const auto limit = cfl_detail::host_min(grid.count, [&](size_t k) { return grid.local(k, courant); });
+double residual_detail::flux_cfl_result(CflStep limit, const MeshIndex* global_ids) {
     if (limit.dt < 0)
         throw std::domain_error("Invalid CFL at node " +
                                 std::to_string(global_ids ? global_ids[limit.node] : limit.node));
     return limit.node == cfl_detail::unconstrained().node ? std::numeric_limits<double>::infinity()
                                                           : limit.dt;
+}
+// Находит минимальный шаг по скоростям потоков на CPU.
+double residual_detail::cpu_flux_cfl(const FluxCfl& grid, double courant, const MeshIndex* global_ids) {
+    return flux_cfl_result(cfl_detail::host_min(grid.count, [&](size_t k) { return grid.local(k, courant); }), global_ids);
 }
 namespace {
 // Проверяет размеры, параметры газа и допустимость конфигурации пространственного оператора.
@@ -189,7 +191,9 @@ void residual_detail::cpu_face_fluxes(const FaceBatch& batch, const MeshIndex* g
     }, [&] {
         compute_cpu_faces<cpu_linear_flux>(batch, global_nodes);
     }, [&] {
-        compute_cpu_faces<split_face>(batch,global_nodes);
+        const auto launch = for_dimension(batch.geometry.dim, compute_cpu_faces<split_face<3>>,
+                                          compute_cpu_faces<split_face<4>>, compute_cpu_faces<split_face<5>>);
+        launch(batch,global_nodes);
     }, [&] {
         if (batch.nodal_lf()) {
             const auto launch = for_dimension(batch.geometry.dim, compute_cpu_faces<cpu_nodal_lf<1>>,

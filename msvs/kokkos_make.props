@@ -10,6 +10,8 @@
   <PropertyGroup>
     <KokkosBackend Condition="'$(KokkosBackend)'==''">$(KOKKOS_BACKEND)</KokkosBackend>
     <KokkosBackend Condition="'$(KokkosBackend)'==''">cuda</KokkosBackend>
+    <NMakePreprocessorDefinitions Condition="'$(KokkosBackend)'=='cuda'">AERO_WITH_KOKKOS_GPU;$(NMakePreprocessorDefinitions)</NMakePreprocessorDefinitions>
+    <CudaArchitecture Condition="'$(CudaArchitecture)'=='' and '$(CUDA_ARCH)'!=''">$(CUDA_ARCH)</CudaArchitecture>
     <CudaArchitecture Condition="'$(CudaArchitecture)'==''">86</CudaArchitecture>
     <WithMPI Condition="'$(WithMPI)'==''">true</WithMPI>
     <WithOpenMP Condition="'$(WithOpenMP)'==''">true</WithOpenMP>

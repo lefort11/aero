@@ -1,0 +1,35 @@
+--- a/cmake/kokkos_arch.cmake
++++ b/cmake/kokkos_arch.cmake
+@@ -63,6 +63,9 @@
+ KOKKOS_ARCH_OPTION(ZEN2            HOST "AMD Zen2 architecture")
+ KOKKOS_ARCH_OPTION(VEGA900         GPU  "AMD GPU MI25 GFX900")
+ KOKKOS_ARCH_OPTION(VEGA906         GPU  "AMD GPU MI50/MI60 GFX906")
++KOKKOS_ARCH_OPTION(CDNA1 GPU "AMD GPU gfx908")
++KOKKOS_ARCH_OPTION(CDNA2 GPU "AMD GPU gfx90a")
++KOKKOS_ARCH_OPTION(CDNA3 GPU "AMD GPU gfx942")
+ KOKKOS_ARCH_OPTION(INTEL_GEN       GPU  "Intel GPUs Gen9+")
+ 
+ 
+@@ -392,6 +395,9 @@
+ #to the corresponding flag name if ON
+ CHECK_AMDGPU_ARCH(VEGA900 gfx900) # Radeon Instinct MI25
+ CHECK_AMDGPU_ARCH(VEGA906 gfx906) # Radeon Instinct MI50 and MI60
++CHECK_AMDGPU_ARCH(CDNA1 gfx908)
++CHECK_AMDGPU_ARCH(CDNA2 gfx90a)
++CHECK_AMDGPU_ARCH(CDNA3 gfx942)
+ 
+ IF(KOKKOS_ENABLE_HIP AND NOT AMDGPU_ARCH_ALREADY_SPECIFIED)
+   MESSAGE(SEND_ERROR "HIP enabled but no AMD GPU architecture currently enabled. "
+--- a/core/src/HIP/Kokkos_HIP_Space.cpp
++++ b/core/src/HIP/Kokkos_HIP_Space.cpp
+@@ -693,7 +693,9 @@
+     : m_space_instance(new Impl::HIPInternal), m_counter(new int(1)) {
+   Impl::HIPInternal::singleton().verify_is_initialized(
+       "HIP instance constructor");
+-  m_space_instance->initialize(Impl::HIPInternal::singleton().m_hipDev, stream);
++  int device;
++  HIP_SAFE_CALL(hipGetDevice(&device));
++  m_space_instance->initialize(device, stream);
+ }
+ 
+ KOKKOS_FUNCTION HIP::HIP(HIP&& other) noexcept {

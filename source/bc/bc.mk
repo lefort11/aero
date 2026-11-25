@@ -44,10 +44,11 @@ bc-test: $(BIN)/$(notdir $(BC_TEST))
 bc-debug-test: $(BIN)/$(notdir $(BC_DEBUG))
 	$(running_test)
 	./$(BC_DEBUG)
-bc-cuda-test:
-	$(MAKE) KOKKOS_BACKEND=cuda $(BIN)/bc_tests_cuda1$(EXE)
+.PHONY: bc-hip-test
+bc-cuda-test bc-hip-test:
+	$(MAKE) KOKKOS_BACKEND=$(if $(filter %-hip-test,$@),hip,cuda) $(BIN)/bc_tests_cuda1$(EXE)
 	$(running_test)
-	./$(BIN)/bc_tests_cuda1$(EXE) --require-cuda
+	./$(BIN)/bc_tests_cuda1$(EXE) --require-gpu
 $(BC_DEBUG): source/io/settings_text.h
 $(BC_TEST) $(BC_DEBUG): tests/test_checks.h
 $(BC_TEST) $(BC_DEBUG): source/implicit/boundary_jacobian.h source/implicit/edge_jacobian.h

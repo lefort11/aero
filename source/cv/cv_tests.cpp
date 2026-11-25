@@ -248,7 +248,7 @@ void reject(MeshData data, const std::string& where) {
 // Запускает проверки модуля и возвращает ненулевой код при ошибке.
 int main(int argc, char** argv) {
     try {
-        const bool required = argc == 2 && std::string(argv[1]) == "--require-cuda";
+        const bool required = argc == 2 && aero_test::require_gpu_argument(argv[1]);
         verify(line_mesh(), 6, {.125, 1, 2.875, 2});
         const MedianDual line{Mesh(line_mesh())};
         const double widths[] = {.25, .25, 1.75, 4.};

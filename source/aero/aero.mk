@@ -5,7 +5,7 @@ AERO_SOURCES += source/aero/mpi_periodic.cpp source/aero/mpi_periodic_match.cpp
 AERO_SOURCES += source/aero/partition_state.cpp source/aero/partition_output.cpp source/aero/partition_operator.cpp
 AERO_SOURCES += source/aero/mpi_stencil.cpp source/aero/partition_report.cpp source/aero/mpi_balance.cpp source/mesh/leaf_balance.cpp
 AERO_SOURCES += source/aero/geometry.cpp source/aero/case_geometry.cpp source/mesh/mdec.cpp source/mesh/partition.cpp source/parallel/processes.cpp
-AERO_HEADERS := source/aero/run_control.h source/aero/exact_error.h source/io/expression.h $(MESH_SOURCE)/archive_format.h $(NUMBER_CODEC) source/aero/solver_timings.h source/aero/startup.h source/io/settings.h source/io/settings_text.h source/io/settings_boundary.h source/io/report.h $(OUTPUT_HEADERS) $(INITIAL_HEADERS) $(RES_HDR) $(TIMESTEP_HEADERS) $(EXPLICIT_HEADERS)
+AERO_HEADERS := source/parallel/backend.h source/aero/run_control.h source/aero/exact_error.h source/io/expression.h $(MESH_SOURCE)/archive_format.h $(NUMBER_CODEC) source/aero/solver_timings.h source/aero/startup.h source/io/settings.h source/io/settings_text.h source/io/settings_boundary.h source/io/report.h $(OUTPUT_HEADERS) $(INITIAL_HEADERS) $(RES_HDR) $(TIMESTEP_HEADERS) $(EXPLICIT_HEADERS)
 AERO_LIBS := $(IMPLICIT_LIBRARY) $(RES_LIB) $(INITIAL_LIB) $(TIMESTEP_LIBRARY) $(EXPLICIT_LIBRARY) $(IO_LIBRARY) $(RES_DEPS)
 AERO_SOURCES += $(wildcard source/viscosity/aes.cpp source/viscosity/grad.cpp source/viscosity/affine_hex.cpp) $(if $(wildcard source/viscosity/transport.h),$(wildcard source/turbulence/*.cpp))
 AERO_HEADERS += source/io/flow_values.h
@@ -80,7 +80,7 @@ mpi-gpu-test: aero meshdec
 	"$(PYTHON)" qa/mpi_timing.py --devices=0,1 --aero "$(BIN)/aero$(EXE)" --meshdec "$(BIN)/meshdec$(EXE)" --mpiexec "$(MPIEXEC)"
 else
 mpi-gpu-test:
-	$(MAKE) KOKKOS_BACKEND=cuda WITH_MPI=1 $@
+	$(MAKE) KOKKOS_BACKEND=$(if $(filter hip,$(KOKKOS_BACKEND)),hip,cuda) WITH_MPI=1 $@
 endif
 MPI_RECONSTRUCTION_TESTS := mpi-ebr3-test mpi-ebr5-test mpi-weno3-test mpi-weno5-test mpi-mp5-test mpi-mpweno5-test
 .PHONY: mpi-timing-test mpi-fields-test mpi-recovery-test mpi-geometry-test mpi-balance-test mpi-euler-test mpi-ssprk3-test mpi-bdf1-test mpi-bdf2-test mpi-linear-test mpi-periodic-test $(MPI_RECONSTRUCTION_TESTS)
@@ -109,7 +109,7 @@ else
 mpi-timing-test mpi-fields-test mpi-recovery-test mpi-geometry-test mpi-balance-test mpi-euler-test mpi-ssprk3-test mpi-bdf1-test mpi-bdf2-test mpi-linear-test mpi-periodic-test $(MPI_RECONSTRUCTION_TESTS):
 	$(MAKE) WITH_MPI=1 $@
 endif
-$(AERO_TEST): tests/test_checks.h source/aero/steady_forecast.h
+$(AERO_TEST): source/parallel/backend.h tests/test_checks.h source/aero/steady_forecast.h
 $(AERO_OBJECT_DIR)/aero/time_loop.o: source/aero/steady_forecast.h
 .PHONY: completion-forecast-test curved-stencil-test
 completion-forecast-test: aero

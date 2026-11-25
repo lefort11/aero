@@ -7,6 +7,7 @@
 
 namespace aero {
 namespace viscosity { struct Operator; }
+namespace turbulence { struct View; }
 namespace partition_detail {
 using residual_detail::Index;
 // Указатели этого представления действительны на устройстве, выбранном данным MPI-процессом.
@@ -112,6 +113,28 @@ AERO_HOST_DEVICE inline bool update_node(const residual_detail::Geometry& geomet
         if (euler_state(geometry.dim, state + node * width, geometry.options.gamma, &gas) != EulerStatus::Success)
             return false;
     }
+    return true;
+}
+
+// При совмещении с подготовкой материала GPU обрабатывает всю сетку в прямой нумерации.
+template<unsigned width, bool fused_sa = false>
+KOKKOS_FORCEINLINE_FUNCTION bool advance_owned_node(const residual_detail::Geometry& geometry,
+        const EulerFluxResult* flux, const double* volumes, const MeshIndex* owned, double* state,
+        double* original, Index k, explicit_detail::Stage stage, double dt, bool save,
+        const viscosity::Operator* material, const turbulence::View* sa) {
+#ifdef AERO_HAS_TURBULENCE
+    if (fused_sa) sa = material ? &material->sa : nullptr;
+    if (sa && (!fused_sa || sa->active))
+        sa->advance_explicit(fused_sa || !owned ? k : owned[k],stage,dt,save);
+#else
+    (void)sa;
+#endif
+    if (!update_node<width>(geometry,flux,volumes,owned,state,original,k,stage,dt,save)) return false;
+#ifdef AERO_HAS_VISCOSITY
+    if (material) material->prepare_gas(k,state,geometry.packed.gas);
+#else
+    (void)material;
+#endif
     return true;
 }
 // Вид передаваемой записи. Обычное поле имеет width последовательных чисел.

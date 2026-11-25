@@ -242,9 +242,9 @@ void gpu_case(int device, unsigned mode, unsigned d, const Values& left, const V
 
 // Запускает проверки модуля и возвращает ненулевой код при ошибке.
 int main(int argc, char** argv) {
-    const bool require_cuda = argc == 2 && std::string(argv[1]) == "--require-cuda";
+    const bool require_cuda = argc == 2 && aero_test::require_gpu_argument(argv[1]);
     if (argc > 2 || (argc == 2 && !require_cuda)) {
-        std::cerr << "Usage: eulersolver_tests [--require-cuda]\n";
+        std::cerr << "Usage: eulersolver_tests [--require-gpu]\n";
         return 2;
     }
     add("linear Euler agrees with directional derivative of nonlinear LF and Roe", [] {
@@ -604,7 +604,7 @@ int main(int argc, char** argv) {
         char error[512] = {};
         require(!euler_test_device_count(&devices, error, sizeof(error)), error);
         for (int device = 0; device < devices; ++device) {
-            add("CUDA " + std::to_string(device) + " all dimensions and input forms", [device] {
+            add("GPU " + std::to_string(device) + " all dimensions and input forms", [device] {
                 for (unsigned d = 1; d <= 3; ++d)
                     for (double gamma : Values{1.4, 1.67}) {
                         std::vector<Values> directions = {direction(d)};
@@ -643,7 +643,7 @@ int main(int argc, char** argv) {
                         }
                     }
             });
-            add("CUDA " + std::to_string(device) + " rejects invalid states without writing output",
+            add("GPU " + std::to_string(device) + " rejects invalid states without writing output",
                 [device] {
                     const Values good = {1, 0, 2.5}, n = {1};
                     gpu_case(device, 0, 1, Values{0, 0, 1}, good, {}, {}, n, 1.4, EulerStatus::InvalidDensity,
@@ -663,7 +663,7 @@ int main(int argc, char** argv) {
                 });
         }
 #endif
-        require(!require_cuda || devices > 0, "GPU verification requested but no CUDA device available");
+        require(!require_cuda || devices > 0, "GPU verification requested but no GPU device available");
         unsigned passed = 0;
         for (const auto& test : tests) {
             try {
@@ -675,7 +675,7 @@ int main(int argc, char** argv) {
                 return 1;
             }
         }
-        std::cout << passed << " eulersolver tests passed; CUDA devices tested: " << devices << '\n';
+        std::cout << passed << " eulersolver tests passed; GPU devices tested: " << devices << '\n';
         if (!devices)
             std::cout << "CUDA runtime tests skipped; CPU remains available.\n";
     } catch (const std::exception& e) {

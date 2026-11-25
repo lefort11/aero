@@ -456,7 +456,11 @@ RunSettings read_run_settings(const RunDirectories& directories) {
         stable.validate(run.cfl, "cfl.txt");
         control.finish(&run.input_warnings);
     }
-    run.use_cuda = choice(main.take("backend"), {"cpu", "cuda"}) == "cuda";
+    const auto backend = choice(main.take("backend"), {"cpu", "cuda", "hip", "gpu"});
+#ifndef AERO_WITH_HIP
+    if (backend == "hip") throw std::invalid_argument("backend=hip requires a HIP build");
+#endif
+    run.use_cuda = backend != "cpu";
     run.euler_solver = choice(main.take("euler_solver"), {"roe", "lf"});
     run.steps_fo = main.optional_count<std::uint64_t>("steps_fo");
     run.t_fo = main.contains("t_fo") ? number(main.take("t_fo"), true) : 0.;
@@ -544,7 +548,7 @@ RunSettings read_run_settings(const RunDirectories& directories) {
             throw std::invalid_argument("linear.txt: invalid background sound speed");
     }
     if (run.use_cuda) {
-        Entries cuda(directories, "cuda");
+        Entries cuda(directories, backend == "gpu" || backend == "hip" ? "gpu" : "cuda");
         run.devices = device_list(cuda.take("devices"));
         cuda.finish(&run.input_warnings);
     }

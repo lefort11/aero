@@ -19,8 +19,9 @@ io-report-test: $(BIN)/$(notdir $(REPORT_TEST))
 io-report-debug-test: $(BIN)/$(notdir $(REPORT_DEBUG))
 	$(running_test)
 	"$<"
-io-report-cuda-test:
-	$(MAKE) KOKKOS_BACKEND=cuda $(BIN)/io_report_tests_cuda1_omp$(WITH_OPENMP)$(EXE)
+.PHONY: io-report-hip-test
+io-report-cuda-test io-report-hip-test:
+	$(MAKE) KOKKOS_BACKEND=$(if $(filter %-hip-test,$@),hip,cuda) $(BIN)/io_report_tests_cuda1_omp$(WITH_OPENMP)$(EXE)
 	$(running_test)
-	./$(BIN)/io_report_tests_cuda1_omp$(WITH_OPENMP)$(EXE) --require-cuda
+	./$(BIN)/io_report_tests_cuda1_omp$(WITH_OPENMP)$(EXE) --require-gpu
 $(REPORT_TEST) $(REPORT_DEBUG): tests/test_checks.h

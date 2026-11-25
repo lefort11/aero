@@ -1,5 +1,4 @@
-// На NVIDIA Kokkos выполняет эти обходы в выбранном потоке устройства.
-// Заголовки солвера содержат те же формулы, которые вызываются при обходе на CPU.
+// Kokkos launches the same numerical operators on CUDA and HIP.
 #define AERO_BUILD_DEVICE_WORK
 #include <Kokkos_Core.hpp>
 #include "device_work.h"
@@ -17,92 +16,12 @@
 #include "../viscosity/jacobian.h"
 #include "device_affine_aes.h"
 #endif
-#include <map>
-#include <memory>
-#include <mutex>
-#include <stdexcept>
-#include <string>
-
-#if defined(_WIN32) && defined(AERO_STATIC_DEVICE_WORK) && !defined(__CUDA_ARCH__)
-// cudart_static собрана MSVC с проверкой стека. При запуске через MinGW выполняем
-// инициализацию её cookie до конструкторов CUDA, как это делает штатный CRT MSVC.
-extern "C" void __cdecl __security_init_cookie();
-namespace {
-// Подготавливает CUDA Runtime до создания контекстов Kokkos.
-int __cdecl initialize_cuda_crt() { __security_init_cookie(); return 0; }
-__attribute__((used, section(".CRT$XIB"))) int (__cdecl* const cuda_crt_initializer)() = initialize_cuda_crt;
-}
-#endif
 
 namespace aero {
 namespace device_work {
 namespace {
 using namespace residual_detail;
-using Range = Kokkos::RangePolicy<Execution, Kokkos::IndexType<Index>, Kokkos::LaunchBounds<128>>;
-
-// Запускаем Kokkos после выбора карты для данного MPI-процесса.
-// Стандартный поток используется на каждой стадии, поэтому сохраняем исполнителя между вызовами.
-class DeviceRuntime {
-    int primary_; // Карта первого обращения. Ей принадлежит стандартный исполнитель Kokkos.
-    std::map<int, Execution> defaults_; // Остальные карты для библиотечных вызовов из одного процесса.
-    std::mutex defaults_mutex_; // Защищает создание исполнителя при обращениях из разных потоков CPU.
-public:
-    // Инициализирует Kokkos и контексты выполнения на заданной карте.
-    explicit DeviceRuntime(int device) : primary_(device) {
-        Kokkos::InitArguments args;
-        args.device_id = device;
-        args.disable_warnings = true;
-        Kokkos::initialize(args);
-    }
-    // Освобождает принадлежащие объекту ресурсы при завершении его времени жизни.
-    ~DeviceRuntime() {
-        int original = primary_;
-        cudaGetDevice(&original);
-        while (!defaults_.empty()) {
-            auto pos = defaults_.begin();
-            cudaSetDevice(pos->first);
-            defaults_.erase(pos);
-        }
-        cudaSetDevice(primary_);
-        Kokkos::finalize();
-        cudaSetDevice(original);
-    }
-    // Возвращает контекст исполнения для требуемого устройства или потока.
-    Execution execution(int device, cudaStream_t stream) {
-        // Чужой поток может быть уничтожен сразу после возврата из библиотечного вызова.
-        if (stream)
-            return Execution(stream);
-        if (device == primary_)
-            return Execution();
-        std::lock_guard<std::mutex> guard(defaults_mutex_);
-        auto pos = defaults_.find(device);
-        if (pos == defaults_.end())
-            pos = defaults_.emplace(device, Execution(cudaStreamLegacy)).first;
-        return pos->second;
-    }
-};
-
-// Возвращает единственный объект управления средой GPU в текущем модуле.
-std::unique_ptr<DeviceRuntime>& runtime_holder() {
-    static std::unique_ptr<DeviceRuntime> holder;
-    return holder;
-}
-// Выбирает устройство и соответствующий контекст выполнения ядра.
-Execution select_execution(int device, cudaStream_t stream) {
-    auto& runtime = runtime_holder();
-    static std::once_flag initialized;
-    std::call_once(initialized, [&] {
-        runtime.reset(new DeviceRuntime(device));
-        // Копирование полей может быть единственной операцией на GPU. В этом
-        // случае host-обёртки вычислительных ядер вообще не вызываются. Регистрируем
-        // завершение после инициализации внутренних объектов Kokkos, пока они ещё живы.
-        if (std::atexit(aero_device_shutdown)) {
-            runtime.reset();
-            throw std::runtime_error("Unable to register Kokkos finalizer");
-        }
-    });
-    return runtime->execution(device, stream);
-}
+using Range = DeviceRange<>;
 
 // На CPU и GPU одна редукция сравнивает пары (шаг, узел), включая случай равных шагов.
 template <class Read>
@@ -123,20 +42,15 @@ template <unsigned width>
 void update_nodes(const Execution& exec, partition_detail::Grid g, explicit_detail::Stage stage,
                   double dt, bool save) {
     for_indices(exec, "Aero: owned nodes", g.owned_count, KOKKOS_LAMBDA(Index k) {
+        const viscosity::Operator* material = nullptr;
 #ifdef AERO_HAS_TURBULENCE
-        if (g.filtered_gas && g.filtered_gas->sa.active)
-            g.filtered_gas->sa.advance_explicit(k,stage,dt,save);
+        material = g.filtered_gas;
 #endif
-        if (!partition_detail::update_node<width>(g.geometry, g.flux, g.volumes, g.owned, g.state,
-                                                  g.original, k, stage, dt, save)) {
+        if (!partition_detail::advance_owned_node<width,true>(g.geometry, g.flux, g.volumes, g.owned, g.state,
+                                                              g.original, k, stage, dt, save, material, nullptr)) {
             Kokkos::atomic_fetch_min(g.bad, Index(g.owned ? g.owned[k] : k));
             return;
         }
-#ifdef AERO_HAS_TURBULENCE
-        // update_node уже записал примитивные переменные нового слоя. Из них
-        // сразу готовим вязкость, пока давление и скорости находятся в кэше карты.
-        if (g.filtered_gas) g.filtered_gas->prepare_gas(k,g.state,g.geometry.packed.gas);
-#endif
         if (g.failed_count) {
             const Index node = g.owned ? g.owned[k] : k;
             // На цельной сетке update_node уже получил давление и пометил недопустимый газ.
@@ -146,19 +60,6 @@ void update_nodes(const Execution& exec, partition_detail::Grid g, explicit_deta
         }
     });
 }
-}
-
-// Возвращает контекст Kokkos для выбранного устройства и потока CUDA.
-Execution current_execution(void* stream) {
-    int device;
-    const auto status = cudaGetDevice(&device);
-    if (status != cudaSuccess)
-        throw std::runtime_error(cudaGetErrorString(status));
-    return select_execution(device, static_cast<cudaStream_t>(stream));
-}
-// Завершает среду выполнения вычислительных ядер GPU.
-void aero_device_shutdown() {
-    runtime_holder().reset();
 }
 // Выделяет память диагональных блоков предобусловливателя на GPU.
 const char* aero_device_jacobi_allocate(int device, implicit::JacobiBlocks& blocks) {
@@ -233,45 +134,53 @@ const char* aero_device_csgs_color(int device, const implicit::CsgsSweep& sweep,
 }
 #ifdef AERO_HAS_VISCOSITY
 // Собирает вязкие производные в блоки пространственной матрицы на GPU.
-const char* aero_device_viscous_matrix(int device, const viscosity::Jacobian& matrix, const double* state) {
-    const auto v = matrix;
-    const auto aes = v.aes;
-    const unsigned width = aes.dim+2;
-    return on_device(nullptr, [&](const Execution& exec) {
-        for_indices(exec,"Aero: clear viscous matrix",v.value_count,KOKKOS_LAMBDA(Index k) { v.values[k] = 0.; });
-        if (v.single_count) for_indices(exec,"Aero: clear mixed off-diagonal",v.single_count,
-                                        KOKKOS_LAMBDA(Index k) { v.layout.neighbours[k] = 0.f; });
-        for_indices(exec,"Aero: viscous Jacobian states",aes.node_count,KOKKOS_LAMBDA(Index n) { aes.prepare_gas(n,state,nullptr); });
-        if (aes.affine || aes.tetra.cells) {
-            for_indices(exec,"Aero: Jacobian cell material",aes.cell_count,KOKKOS_LAMBDA(Index e) { aes.average_material(e); });
-            if (v.column_nodes && aes.gradient_tile_count) {
-                // Разные потоки GPU заполняют разные компоненты столбца. Внутри
-                // столбца обходим группы по номеру элемента, как при полной сборке.
-                affine_aes::for_tiles(aes,[&](viscosity::GradientTile tile) {
-                    const auto pairs=coordinate_aes::jacobian_pair_storage(aes,tile);
-                    if (pairs.pairs) {
-                        // В этой же группе площадки тетраэдров идут на напряжения и на производные.
-                        coordinate_aes::apply(exec,aes,aes.gradient_cache,tile.first_cell,tile.cells,tile.first_vertex,
-                                              coordinate_aes::JacobianPairs{pairs,v.column_graph()});
-                    } else {
-                        // При иной геометрии или недостатке свободных строк add_column
-                        // по-прежнему получает коэффициенты из представления самой сетки.
-                        affine_aes::gradients(exec,aes,aes.gradient_cache,tile.first_cell,tile.cells,tile.first_vertex);
-                    }
-                    for_indices(exec,"Aero: viscous Jacobian column slices",tile.slices*width,KOKKOS_LAMBDA(Index k) {
-                        const auto slice=aes.gradient_slices[tile.first_slice+k/width];
-                        v.add_column<3>(slice,static_cast<unsigned>(k%width),tile.first_vertex,pairs);
-                    });
-                });
-                return;
-            }
-            affine_aes::gradients(exec,aes,v.gradients,0,aes.cell_count,0);
-        } else {
-            for_indices(exec,"Aero: viscous Jacobian gradients",aes.cell_count,KOKKOS_LAMBDA(Index e) { v.prepare_cell(e); });
-        }
-        for_indices(exec,"Aero: viscous Jacobian columns",aes.node_count*width,KOKKOS_LAMBDA(Index k) {
+struct DeviceViscousAssembly {
+    template<class T> using Capture = T;
+    const Execution& exec;
+    template<class Work>
+    void run(const char* name, Index count, const Work& work) const { for_indices(exec,name,count,work); }
+
+    void columns(const viscosity::Jacobian& v) const {
+        const unsigned width = v.aes.dim + 2;
+        for_indices(exec,"Aero: viscous Jacobian columns",v.aes.node_count*width,KOKKOS_LAMBDA(Index k) {
             v.assemble_column(k/width,static_cast<unsigned>(k%width));
         });
+    }
+    bool assemble_compact(const viscosity::Jacobian& v) const {
+        const auto& aes = v.aes;
+        if (!aes.affine && !aes.tetra.cells) return false;
+        const unsigned width = aes.dim + 2;
+        for_indices(exec,"Aero: Jacobian cell material",aes.cell_count,KOKKOS_LAMBDA(Index e) { aes.average_material(e); });
+        if (v.column_nodes && aes.gradient_tile_count) {
+            // Разные потоки GPU заполняют разные компоненты столбца. Внутри
+            // столбца обходим группы по номеру элемента, как при полной сборке.
+            affine_aes::for_tiles(aes,[&](viscosity::GradientTile tile) {
+                const auto pairs=coordinate_aes::jacobian_pair_storage(aes,tile);
+                if (pairs.pairs) {
+                    // В этой же группе площадки тетраэдров идут на напряжения и на производные.
+                    coordinate_aes::apply(exec,aes,aes.gradient_cache,tile.first_cell,tile.cells,tile.first_vertex,
+                                          coordinate_aes::JacobianPairs{pairs,v.column_graph()});
+                } else {
+                    // При иной геометрии или недостатке свободных строк add_column
+                    // по-прежнему получает коэффициенты из представления самой сетки.
+                    affine_aes::gradients(exec,aes,aes.gradient_cache,tile.first_cell,tile.cells,tile.first_vertex);
+                }
+                for_indices(exec,"Aero: viscous Jacobian column slices",tile.slices*width,KOKKOS_LAMBDA(Index k) {
+                    const auto slice=aes.gradient_slices[tile.first_slice+k/width];
+                    v.add_column<3>(slice,static_cast<unsigned>(k%width),tile.first_vertex,pairs);
+                });
+            });
+            return true;
+        }
+        affine_aes::gradients(exec,aes,v.gradients,0,aes.cell_count,0);
+        columns(v);
+        return true;
+    }
+};
+
+const char* aero_device_viscous_matrix(int device, const viscosity::Jacobian& matrix, const double* state) {
+    return on_device(nullptr, [&](const Execution& exec) {
+        viscosity::assemble_jacobian(matrix,state,DeviceViscousAssembly{exec});
     }, device);
 }
 #endif
@@ -457,7 +366,7 @@ const char* aero_device_sa_step(const turbulence::Step& input,turbulence::Operat
 double sa_norm(const Execution& exec,const turbulence::Step& step,turbulence::Norm mode) {
     double norm=0.;
     if (step.transport.count) {
-        using Range=Kokkos::RangePolicy<Execution,Kokkos::IndexType<Index>,Kokkos::LaunchBounds<128>>;
+        using Range=DeviceRange<>;
         Kokkos::parallel_reduce("Aero: SA maximum",Range(exec,0,step.transport.count),
             KOKKOS_LAMBDA(Index i,double& best) {
                 const double v=step.magnitude(mode,i);
@@ -607,21 +516,13 @@ const char* aero_device_normals(const Geometry& geometry) {
         });
     });
 }
-// Именованный тип даёт одному и тому же ядру одинаковый символ на хосте и на CUDA.
-template<unsigned W>
-struct SplitFluxFaces {
-    const FaceBatch* batch;
-    const MeshIndex* indices;
+// Все исполнители GPU записывают номер первого отказа в один счётчик.
+struct SplitFluxFailure {
     Index* bad;
-    KOKKOS_INLINE_FUNCTION void operator()(Index k) const {
-        const Index face=FaceBatch::face(indices,k);
-        if (batch->is_boundary(face)) {
-            if (!batch->compute_boundary(face)) Kokkos::atomic_fetch_min(bad,face);
-        } else if (residual_detail::characteristic_flux<W>(batch->geometry,face,batch->state,batch->flux[face])) {
-            batch->save_speed(face);
-        } else Kokkos::atomic_fetch_min(bad,face);
-    }
+    KOKKOS_INLINE_FUNCTION void operator()(Index face) const { Kokkos::atomic_fetch_min(bad,face); }
 };
+template<unsigned W> using DeviceSplitFaces = residual_detail::SplitFluxFaces<W,SplitFluxFailure>;
+
 // Размерность и вид шаблона выбираются до запуска. Укороченные стороны и
 // маски восстановления читаются по конкретной грани из той же геометрии.
 template<unsigned W,bool linear>
@@ -678,7 +579,7 @@ const char* aero_device_faces(const FaceBatch& input, Index* bad, void* stream, 
             if (!device_faces) {
                 for_indices(exec,"Aero: split flux",batch.count,KOKKOS_LAMBDA(Index k) {
                     const Index face=batch.face(k);
-                    if (!residual_detail::split_face(batch,face)) Kokkos::atomic_fetch_min(bad,face);
+                    DeviceSplitFaces<0>{&batch,nullptr,{bad}}(face);
                 });
             } else if (!batch.geometry.stencil.weno_order) {
                 // На цельной сетке диапазоны не пересекаются. На разделе MPI
@@ -699,11 +600,11 @@ const char* aero_device_faces(const FaceBatch& input, Index* bad, void* stream, 
                 else if (batch.geometry.dim==3) for_indices(exec,"Aero: full MP split flux",batch.count,StencilSplitFaces<5,false>{device_faces,batch.indices,bad});
                 else for_indices(exec,"Aero: full MP split flux",batch.count,StencilSplitFaces<3,false>{device_faces,batch.indices,bad});
             } else if (batch.geometry.dim==2)
-                for_indices(exec,"Aero: 2D split flux",batch.count,SplitFluxFaces<4>{device_faces,batch.indices,bad});
+                for_indices(exec,"Aero: 2D split flux",batch.count,DeviceSplitFaces<4>{device_faces,batch.indices,{bad}});
             else if (batch.geometry.dim==3)
-                for_indices(exec,"Aero: 3D split flux",batch.count,SplitFluxFaces<5>{device_faces,batch.indices,bad});
+                for_indices(exec,"Aero: 3D split flux",batch.count,DeviceSplitFaces<5>{device_faces,batch.indices,{bad}});
             else
-                for_indices(exec,"Aero: 1D split flux",batch.count,SplitFluxFaces<3>{device_faces,batch.indices,bad});
+                for_indices(exec,"Aero: 1D split flux",batch.count,DeviceSplitFaces<3>{device_faces,batch.indices,{bad}});
         }, [&] {
             const auto variables = batch.geometry.options.variables;
             if (packed.tiles && variables == ResidualVariables::Characteristic)
