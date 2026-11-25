@@ -448,7 +448,7 @@ def verify(
         limited = case / "newton-limit"
         ranks = ranks_to_test[-1]
         log = run([launcher, "-n", ranks, aero, f"--input={case}", f"--output={limited}",
-                   "implicit:newton_max_iter=1", "implicit:newton_tol=1e-14", *overrides])
+                   "implicit:newton_max_iter=1", "implicit:newton_without_predictor=on", "implicit:newton_tol=1e-14", *overrides])
         residuals = re.findall(r"(?m)^Newton\s+1/1 iterations\s+relative residual = (\S+)\s+\[ITERATION LIMIT\]$", log)
         times = sorted(stamp(path)[1] for path in limited.rglob("timed_*.fields"))
         if not any(float(value) > 1.e-14 for value in residuals) or times != [final / 2] * ranks + [final] * ranks:

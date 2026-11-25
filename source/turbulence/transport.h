@@ -306,9 +306,11 @@ enum class Operation {
     CommitHistory,
     Relax,
     RestorePlain,
-    LineRelax
+    LineRelax,
+    PredictRate // Начальное приближение steady по пространственным скоростям на принятых слоях.
 };
-enum class Norm { Rate, Bdf };
+// При первом контроле BDF можно за тот же обход сохранить начало пробного шага.
+enum class Norm { Rate, Bdf, SaveStartBdf };
 // Поле и временные коэффициенты одной явной или неявной стадии переноса SA.
 struct Step {
     // Пространственный оператор рабочего поля.
@@ -323,6 +325,7 @@ struct Step {
     bool save_stage_start;
     bool extrapolate; // Разрешает ускорение двух последовательных скалярных поправок BDF.
     bool keep_gas; // Давление, плотность и скорость фиксированы между итерациями скалярного уравнения.
+    double prediction_ratio = 0.; // Отношение текущего минимального псевдошага к предыдущему.
 #ifdef AERO_HAS_MULTIGRID
     double polynomial_current, polynomial_previous; // Нулевой первый коэффициент означает обычный сглаживатель.
 #endif
@@ -415,6 +418,16 @@ struct Step {
         case Operation::SaveStart:
             s.old[i] = s.w[i];
             break;
+        case Operation::PredictRate: {
+            // В steady буфер предыдущего слоя BDF2 свободен. Начальная скорость
+            // берётся до изменения газа, новый баланс SA проверяется после пробы.
+            const double rate = s.rate[i];
+            const double predicted = prediction_ratio ? rate + prediction_ratio * (rate-s.previous[i]) : rate;
+            const double next = s.old[i] + local_steps.at(i,dt) * predicted;
+            s.previous[i] = rate;
+            s.w[i] = s.zero_working_viscosity(i) ? 0. : (::fabs(next)<=max_finite_double ? ::fmax(0.,next) : s.old[i]);
+            break;
+        }
         case Operation::RestoreStart:
             s.w[i] = s.old[i];
             break;
@@ -457,6 +470,10 @@ struct Step {
     AERO_HOST_DEVICE double magnitude(Norm norm, MeshIndex k) const {
         const auto i = transport.node(k);
         const auto &s = transport.sa;
+        if (norm == Norm::SaveStartBdf) {
+            s.old[i] = s.w[i];
+            norm = Norm::Bdf;
+        }
         if (norm==Norm::Bdf && s.zero_working_viscosity(i)) return ::fabs(s.w[i]);
         double value = norm == Norm::Bdf ? defect(i) : s.rate[i];
         // При нулевом значении рабочей вязкости допускается только неотрицательное обновление.

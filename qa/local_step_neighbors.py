@@ -146,6 +146,37 @@ def reported_limits(log):
     return limits
 
 
+def check_cfl_after_limit(case, args, label="cpu", mpi=False, gpu=False):
+    """При K=1 проверяет физический шаг, пробу узла и историю после смены CFL."""
+    command = ([args.mpiexec, "-n", "2"] if mpi else []) + [
+        args.aero, f"--input={case}", "implicit:local_time_step=auto",
+        "implicit:steady_max_steps=4", "implicit:steady_tol=1e-14",
+        "implicit:local_time_step_probe_node=7", "main:control_every=1",
+        "main:mesh=grid.mdec" if mpi else "main:mesh=grid.mesh",
+        "main:backend=cuda" if gpu else "main:backend=cpu"]
+    for mode in ("work", "cfl"):
+        out = case / f"scale-{mode}-{label}"
+        out.mkdir()
+        (out / "control.txt").write_text("cfl=0.25\n")
+        log = run([*command, f"--output={out}", "main:cfl=100",
+                   f"implicit:local_time_step_residual_limit={mode}"], success=False)
+        assert "pseudo-step limit reached before convergence" in log, log
+        rows = list(report_rows(log, r"^dt_min = (\S+)\s+dt_max = (\S+)\s+CFL = (\S+)"))
+        assert [float(cfl) for _, _, _, cfl in rows] == [100., .25, .25, .25], log
+        assert set(reported_limits(log).values()) == {1.}, log
+        steps = [float(lo) for _, lo, _, _ in rows]
+        assert steps == [float(hi) for _, _, hi, _ in rows]
+        assert steps == [float(dt) for _, dt in report_rows(log, r"^LTS probe +node = 7 +dt = (\S+)")]
+        assert math.isclose(steps[0], 100 / (2048 * math.sqrt(1.4)), rel_tol=2.e-6), steps
+        _, fields = binary_snapshot(out / "final.fields")
+        if mode == "work":
+            reference_steps, reference_fields = steps, fields
+        else:
+            assert all(math.isclose(a, b, rel_tol=2.e-6) for a, b in zip(steps, reference_steps)), steps
+            assert max_difference(reference_fields, fields) < 2.e-10
+    print(f"PASS LTS cfl at CFL 100 and after switching to 0.25 ({label})")
+
+
 def spread_record(directory, step):
     """Читает строку регулятора из контрольной точки указанного принятого шага."""
     for path in directory.glob("recovery-?.bin"):
@@ -274,6 +305,7 @@ def main():
     with mpi_workspace("lts-neighbors-") as work:
         case = Path(work)
         prepare(case)
+        check_cfl_after_limit(case, args)
         check_recovery_and_probe(case / "regressions", args)
         original = solve(case, args, "default")
         expected = solve(case, args, "limited", limit=2)
@@ -292,6 +324,7 @@ def main():
             (case / "cuda.txt").write_text(f"devices={args.device}\n")
         for label, use_mpi, use_gpu in (("MPI", args.mpi, False), ("GPU", False, args.gpu)):
             if use_mpi or use_gpu:
+                check_cfl_after_limit(case, args, label, use_mpi, use_gpu)
                 fields = solve(case, args, label, limit=2, mpi=use_mpi, gpu=use_gpu)
                 delta = max_difference(expected, fields)
                 if delta > 2.e-11:
@@ -306,7 +339,7 @@ def main():
                     raise AssertionError(f"{label}: расхождение при двух ограничениях {combined_delta:g}")
                 print(f"PASS LTS neighbor ratio {label}, maximum field difference {delta:.3g}, combined {combined_delta:.3g}, residual limit {feedback_delta:.3g}")
         check_stencil(case, args)
-        for mode in ("stencil", "work"):
+        for mode in ("stencil", "work", "cfl"):
             check_spread_restart(case / ("startup-restart-" + mode), args, mode)
         print("PASS LTS neighbor ratio on a graded line")
 

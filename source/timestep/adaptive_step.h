@@ -1,4 +1,5 @@
 #pragma once
+#include "local_step_mode.h"
 #include "../parallel/modules.h"
 #include "../eulersolver/linear_euler.h"
 #ifdef AERO_HAS_TURBULENCE
@@ -8,11 +9,14 @@
 namespace aero {
 // Выбирает множитель следующего шага по реально принятому изменению в этом узле.
 struct AdaptiveStepChange {
-    // Выбирает множитель роста шага по относительным изменениям газа и рабочей вязкости SA.
-    static AERO_HOST_DEVICE double growth(double gas, double sa, double ceiling) {
-        // Ориентиры на один псевдошаг: 1% для газа и 5% для рабочей вязкости SA.
-        const double error = ::fmax(gas / .01, sa / .05);
-        return ::fmin(ceiling, ::fmax(.5, 1. / ::sqrt(::fmax(error, 1.e-30))));
+    AdaptiveStepSettings targets; // Одни пороги для всех узлов и исполнителей.
+    // Одинаковые газовые пороги требуют только одного деления на узел.
+    AERO_HOST_DEVICE double growth(double rho, double pressure, double velocity, double working_sa) const {
+        const double gas = targets.density == targets.pressure && targets.density == targets.velocity
+            ? ::fmax(rho, ::fmax(pressure, velocity)) / targets.density
+            : ::fmax(rho / targets.density, ::fmax(pressure / targets.pressure, velocity / targets.velocity));
+        const double error = ::fmax(gas, working_sa / targets.sa);
+        return ::fmin(ceiling, ::fmax(targets.min_factor, 1. / ::sqrt(::fmax(error, 1.e-30))));
     }
     const double *old_field, *field; // Начало и конец последнего принятого шага.
     // Фон для измерения изменения линеаризованного решения.
@@ -51,7 +55,7 @@ struct AdaptiveStepChange {
         // На стенке nu_tilde равно нулю. Масштаб там задаёт молекулярная вязкость.
         if (sa) sa_change = ::fabs(sa[node]-old_sa[node])/(material[node].nu+::fabs(old_sa[node]));
 #endif
-        return previous_dt*fraction*growth(::fmax(velocity_change,::fmax(rho_change,pressure_change)),sa_change,ceiling);
+        return previous_dt*fraction*growth(rho_change,pressure_change,velocity_change,sa_change);
     }
 };
 

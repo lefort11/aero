@@ -8,6 +8,13 @@
 в единицах обратного времени. При включённом SA учитывается также его шаг.
 Один и тот же расчёт узла в residual/flux_cfl.h обслуживает CPU, GPU и MPI.
 
+При local_time_step = auto узел сравнивает изменение плотности, давления,
+скорости и рабочей вязкости с целями из implicit.txt. Параметры
+local_time_step_density_change, local_time_step_pressure_change,
+local_time_step_velocity_change и local_time_step_sa_change по умолчанию
+равны 0.01, 0.01, 0.01 и 0.05. Множитель адаптации ограничивают
+local_time_step_min_factor (0.5) и local_time_step_max_factor (1.25).
+
 При cfl_method = spectral солвер использует приведённую ниже сумму по площадкам.
 Библиотечный интерфейс CflTimestep принимает скорости на площадках и
 вычисляет по ним один положительный dt для всей неподвижной сетки

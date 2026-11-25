@@ -8,6 +8,7 @@
 #include "partition_operator.h"
 #ifdef AERO_WITH_KOKKOS_GPU
 #include "partition_gpu.h"
+#include "../io/steady_report.h"
 #include "../parallel/device_check.h"
 #endif
 #include "time_loop.h"
@@ -113,6 +114,12 @@ public:
         if (!run.report_every || op_.owned.empty()) {
             return;
         }
+        // На одном процессе все узлы свои и уже упорядочены. Report сохранит
+        // объёмы у себя, поэтому промежуточная копия полного поля не требуется.
+        if (world_.size == 1) {
+            report_.reset(new Report(run.report_every, run.gamma, dimension, op_.owned.size(), volumes, run.background));
+            return;
+        }
         std::vector<double> owned_volumes;
         owned_volumes.reserve(op_.owned.size());
         for (Id node : op_.owned) {
@@ -125,7 +132,11 @@ public:
     // На GPU многостадийная схема хранит промежуточные поля на карте. На CPU нужен рабочий буфер.
     void prepare_storage(bool use_cuda, unsigned width) {
         if ((!use_cuda && stages_.count > 1) || report_) {
-            owned_state_.resize(op_.owned.size() * width);
+            auto values=op_.owned.size()*width;
+#ifdef AERO_WITH_KOKKOS_GPU
+            if (device_steady_report()) values=SteadyReport::partial_size(values);
+#endif
+            owned_state_.resize(values);
         }
     }
 
@@ -493,15 +504,32 @@ private:
     // В MPI обе операции выполняются внутри уже существующей синхронизации стадии.
     void capture_report(const TimeStep& step) {
         if (!step.reporting || !report_) return;
+#ifdef AERO_WITH_KOKKOS_GPU
+        if (device_steady_report()) return; // BDF сохраняет U_n для полной невязки и отката.
+#endif
         op_.copy_owned(fields_.current, owned_state_);
         report_->capture(step.number, owned_state_);
     }
     // Собирает принятое поле собственных узлов для отчётных показателей.
     void finish_report(const TimeStep& step) {
         if (!step.reporting || !report_) return;
+#ifdef AERO_WITH_KOKKOS_GPU
+        if (device_steady_report()) {
+            summary_=op_.steady_report(step.number,*report_,owned_state_);
+            return;
+        }
+#endif
         op_.copy_owned(fields_.current, owned_state_);
         summary_ = report_->measure(step.number, owned_state_);
     }
+#ifdef AERO_WITH_KOKKOS_GPU
+    // U_n и правая часть доступны после однослойного BDF на целой сетке.
+    // Грубосеточная коррекция имеет отдельный порядок владения этими буферами.
+    bool device_steady_report() const {
+        return run_.use_cuda && world_.size==1 && run_.steady() && !run_.background.active() &&
+               !run_.implicit_settings.steady_multigrid && op_.owned.size()==op_.state_nodes() && op_.owned.size()>=1024;
+    }
+#endif
     // Проверяем собственные контрольные объёмы. Одного отказа на любом
     // процессе достаточно для повтора шага на всей распределённой сетке.
     Id first_order_cells() const {
@@ -659,7 +687,7 @@ prepare_partition_operator(const RunSettings& run, const ReconstructionOptions& 
     }
     if (run.local_time_step_probe_node != ~MeshIndex(0)) op->set_rate_probe(run.local_time_step_probe_node);
     if (run.steady()) world.local([&] { op->prepare_steady_steps(run.use_cuda, run.local_time_step, run.local_time_step_max_ratio,
-                                                             run.local_time_step_residual_limit); });
+                                                             run.local_time_step_residual_limit, run.adaptive_step); });
     Id downgraded = 0;
     if (single) done();
     if (needs_stencil) {

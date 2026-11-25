@@ -1,5 +1,9 @@
 #include <iostream>
 #include "partition_operator.h"
+#ifdef AERO_WITH_KOKKOS_GPU
+#include "../io/report.h"
+#include "../io/steady_report.h"
+#endif
 #include "../residual/boundary_flux_failure.h"
 #include "../bc/profile.h"
 #include "../io/settings.h"
@@ -184,13 +188,14 @@ template <unsigned scheme_order>
 PackedEdgeOrder pack_weno_edge(const PartitionStencil& stencil, MeshIndex edge, WenoEdgeTile<scheme_order>& tile,
                                unsigned lane, bool allow_mixed) {
     const unsigned left = stencil.weno_order[2 * edge], right = stencil.weno_order[2 * edge + 1];
-    const auto order = packed_side_order(scheme_order, left, right, allow_mixed);
+    auto order = packed_side_order(scheme_order, left, right, allow_mixed);
     if (!order.ready())
         return {};
     const auto& rows = stencil.slopes;
     // В исходной записи по четыре наклона с каждой стороны. Ближний правый наклон при WENO5
     // доступен как противоположный у левой стороны (2), при WENO3 — как собственный у правой (4 + 1).
     unsigned term = 0, weight = 0;
+    bool paired = true; // На координатной линии IJK каждый наклон задаёт одна пара узлов.
     for (unsigned r = 0; r < tile.rows_per_edge; ++r) {
         const auto row = 8 * edge + residual_detail::edge_slope_offset(r, left);
         const auto first = rows.offsets[row], end = rows.offsets[row + 1];
@@ -201,6 +206,7 @@ PackedEdgeOrder pack_weno_edge(const PartitionStencil& stencil, MeshIndex edge, 
         // узел и нулевые веса. Такую же нулевую разность дописываем, если луч
         // попал точно в вершину и в строке оказалось меньше слагаемых.
         const auto terms = unused ? 0 : end - first;
+        paired = paired && terms == 2;
         if (!unused && (terms == 0 || terms > capacity))
             return {};
         const auto anchor = unused ? rows.offsets[8 * edge] : first;
@@ -211,6 +217,7 @@ PackedEdgeOrder pack_weno_edge(const PartitionStencil& stencil, MeshIndex edge, 
                 tile.weights(weight++, lane) = j < terms ? rows.weights[node] : 0.;
         }
     }
+    if (paired) order.flags |= 8u;
     return order;
 }
 }
@@ -483,6 +490,16 @@ void PartitionOperator::layout_gpu(bool compact_buffer) {
     gpu_->set_viscosity(aes_.get());
 #endif
     gpu_->layout(grid_, compute_, owned, volumes_, state_nodes(), compact_buffer, world_.size == 1);
+    if (gpu_->active_grid().state) {
+        // При расчёте размера поле устройства ещё пусто. Здесь загрузка уже
+        // завершена: все три таблицы реконструкции имеют собственные адреса GPU.
+        grid_.packed.tiles = nullptr;
+        grid_.packed.remaining = nullptr;
+        grid_.packed.count = grid_.packed.sparse_edges = grid_.packed.nodal_edges = grid_.packed.mixed_edges = 0;
+        decltype(weno3_tiles_)().swap(weno3_tiles_);
+        decltype(weno5_tiles_)().swap(weno5_tiles_);
+        decltype(other_faces_)().swap(other_faces_);
+    }
     if (heights_) device_heights_ = gpu_->layout_node_scalars(grid_.nodes, heights_);
     if (need_pressure_rate_) device_pressure_rate_ = gpu_->layout_node_scalars(owned.size());
     if (steady_steps_) {
@@ -692,6 +709,43 @@ void PartitionOperator::copy_backup(std::vector<double>& state, std::vector<doub
     if (restore) state = backup;
     else backup = state;
 }
+
+#ifdef AERO_WITH_KOKKOS_GPU
+// Диапазоны и интегралы собираются в правой части уже принятого шага.
+// На CPU переносим только частичные суммы в штатный буфер отчёта.
+FlowSummary PartitionOperator::steady_report(std::uint64_t number, Report& report, std::vector<double>& host) const {
+    const auto& g=gpu_->active_grid();
+    const MeshIndex strips=SteadyReport::partial_size(owned.size()*width_)/SteadyReport::Columns;
+    double* work=bdf_->report_workspace();
+    const auto* start=bdf_->start_field();
+    const SteadyReport gather{grid_.nodes,strips,grid_.dim,grid_.options.gamma,start,g.state,g.volumes,work};
+    device_work::check(device_work::aero_device_steady_report(gather));
+    gpu::checked(gpu::copy(host.data(),work,strips*SteadyReport::Columns*sizeof(double),gpu::Copy::ToHost));
+    FlowSummary total;
+    for (MeshIndex j=0; j<strips; ++j) {
+        const double scale=host[18*strips+j], squares=host[19*strips+j], volume=host[20*strips+j];
+        bool finite=std::isfinite(scale) && std::isfinite(squares) && std::isfinite(volume);
+        for (unsigned k=0; k<=width_; ++k) {
+            auto& f=total.field[k];
+            f.low=std::min(f.low,host[k*strips+j]);
+            f.high=std::max(f.high,host[(6+k)*strips+j]);
+            const double integral=host[(12+k)*strips+j];
+            finite=finite && std::isfinite(integral);
+            f.integral+=integral;
+        }
+        if (!finite) {
+            host.resize(owned.size()*width_);
+            gpu::checked(gpu::copy(host.data(),start,host.size()*sizeof(double),gpu::Copy::ToHost));
+            report.capture(number,host);
+            gpu_->download_owned(host);
+            return report.measure(number,host);
+        }
+        total.add_squares(scale,squares);
+        total.volume+=volume;
+    }
+    return total;
+}
+#endif
 
 // Собирает номера узлов с недопустимым газодинамическим состоянием.
 void PartitionOperator::failed_nodes(const std::vector<double>& state, std::vector<Id>& failed, bool implicit) {
@@ -941,7 +995,9 @@ void PartitionOperator::halo_host(std::vector<double>& u) {
 
 // Вычисляет потоки на принадлежащих процессу поверхностях и получает остальные от соседей.
 bool PartitionOperator::assemble_fluxes(const std::vector<double>& u, const std::vector<double>& initial,
-                                        SolverTimings& timing, bool trial, bool retry_boundary) {
+                                        SolverTimings& timing, bool trial, bool retry_boundary, bool solve_trial_sa) {
+    (void)solve_trial_sa;
+    if (bdf_) bdf_->invalidate_spatial_balance();
 #ifdef AERO_HAS_TURBULENCE
     if(sa_active()) sa_exchange();
     if (aes_ && aes_->view().computes_les()) {
@@ -953,7 +1009,7 @@ bool PartitionOperator::assemble_fluxes(const std::vector<double>& u, const std:
 #endif
     bool defer_viscous_rows=false;
 #ifdef AERO_HAS_TURBULENCE
-    const bool frozen_sa=sa_dt_>0. && trial;
+    const bool frozen_sa=sa_dt_>0. && trial && !solve_trial_sa;
     defer_viscous_rows=sa_dt_>0. && !frozen_sa;
 #endif
     (void)defer_viscous_rows;
@@ -1129,13 +1185,15 @@ void PartitionOperator::set_steady_steps(LocalStepMode mode, double max_ratio) {
 
 // Настраивает локальные псевдошаги стационарного расчёта.
 void PartitionOperator::prepare_steady_steps(bool gpu, LocalStepMode mode, double max_ratio,
-                                            ResidualLimit residual_limit) {
+                                            ResidualLimit residual_limit, const AdaptiveStepSettings& adaptive_step) {
     // Адрес описания остаётся постоянным для газа, SA и матрицы на всех шагах.
     steady_steps_.reset(new SteadyNodeSteps);
+    adaptive_step_ = adaptive_step;
     // В режиме work достаточно общей пространственной нормы и счётчика СЛАУ.
     // Поля с историей по узлам и межпроцессный обмен шаблонов ему не нужны.
     rate_control_ = residual_limit == ResidualLimit::Node || residual_limit == ResidualLimit::Stencil;
-    if (residual_limit == ResidualLimit::Work || residual_limit == ResidualLimit::Stencil)
+    cfl_after_limit_ = residual_limit == ResidualLimit::Cfl;
+    if (residual_limit == ResidualLimit::Work || residual_limit == ResidualLimit::Stencil || cfl_after_limit_)
         step_spread_.reset(new SteadyStepSpread);
     if (residual_limit == ResidualLimit::Stencil) {
         stencil_rates_.reset(new StencilRateStorage);
@@ -1266,6 +1324,7 @@ double PartitionOperator::prepare_local_steps(double cfl) {
         return retry_dt_;
     }
     const bool adapting = step_mode_ == LocalStepMode::Auto && previous_cfl_ > 0.;
+    const bool scale_after_limit = step_mode_ == LocalStepMode::Auto && cfl_after_limit_;
     residual_detail::StepRange range{max_finite_double, 0., 0, 0};
     world_.local([&] {
         if (owned.empty()) return;
@@ -1276,12 +1335,17 @@ double PartitionOperator::prepare_local_steps(double cfl) {
             change.dim = grid_.dim;
             change.gamma = grid_.options.gamma;
             change.background = grid_.options.background;
-            // После тяжёлого решения временно удерживаем именно принятый dt:
-            // одновременная прибавка CFL не должна увеличить его в обход запрета.
             const bool hold = recovered_step_;
-            const double cfl_change = cfl / previous_cfl_;
-            change.fraction = accepted_fraction_ * (hold ? std::min(cfl_change, 1.) : cfl_change);
-            change.ceiling = hold ? 1. : 1.25;
+            if (scale_after_limit) {
+                // Возвращаем фактически принятый шаг к CFL=1, в том числе после повтора.
+                change.fraction = accepted_fraction_ / previous_cfl_;
+            } else {
+                // После тяжёлого решения удерживаем принятый dt даже при повышении CFL.
+                const double cfl_change = cfl / previous_cfl_;
+                change.fraction = accepted_fraction_ * (hold ? std::min(cfl_change, 1.) : cfl_change);
+            }
+            change.targets = adaptive_step_;
+            change.ceiling = hold ? 1. : adaptive_step_.max_factor;
 #ifdef AERO_HAS_TURBULENCE
             if (sa_active()) {
                 const auto sa = sa_step().transport.sa;
@@ -1301,7 +1365,7 @@ double PartitionOperator::prepare_local_steps(double cfl) {
             if (sa_active()) feedback.sa_rate = sa_step().transport.sa.rate;
 #endif
         }
-        const residual_detail::LocalSteadySteps steps{cfl_grid(), cfl, change, steady_steps_->values,
+        const residual_detail::LocalSteadySteps steps{cfl_grid(), scale_after_limit ? 1. : cfl, change, steady_steps_->values,
                                                     feedback, rate_samples_ == 1};
 #ifdef AERO_WITH_KOKKOS_GPU
         if (gpu_) {
@@ -1345,6 +1409,13 @@ double PartitionOperator::prepare_local_steps(double cfl) {
     }
     if (neighbour_limit_) limit_neighbour_steps();
     current_step_cfl_ = cfl;
+    if (scale_after_limit) {
+        // Интегратор умножает каждый узловой шаг на принятый dt / minimum_step_.
+        const double dt = minimum_step_ * cfl;
+        if (!(dt > 0.) || !std::isfinite(maximum_step_ * cfl))
+            throw std::domain_error("Invalid CFL-scaled local steady time step");
+        return dt;
+    }
     return minimum_step_;
 }
 
@@ -1398,6 +1469,10 @@ implicit::Partition PartitionOperator::linear_partition() {
     // Пробная steady_residual(false) не сохраняет строки в correction.
     // Поэтому multigrid может удерживать там сглаживатель до конца поиска.
     if (gpu_) part.coarse_product_persistent=true;
+    if (gpu_ && world_.size==1) {
+        part.trial_flux=gpu_->active_grid().flux;
+        part.trial_faces=gpu_->stored_faces();
+    }
 #endif
     part.steady_steps = steady_steps_.get();
 #ifdef AERO_HAS_VISCOSITY
@@ -1534,7 +1609,11 @@ double PartitionOperator::steady_residual(std::vector<double>& state, const std:
     const bool sample = accepted && step_mode_ == LocalStepMode::Auto;
     // Диагностике нужны свежие нормы и на переходе порядка, когда историю не пополняем.
     const bool keep_rows = (sample && rate_control_) || ((sample || observe) && probe_row_ != ~MeshIndex(0));
-    const double gas = bdf_->spatial_rate_norm(fields.volumes, fields.flux, keep_rows);
+    bool keep_balance = false;
+#ifdef AERO_HAS_TURBULENCE
+    keep_balance = sample && sa_active() && !aes_->view().c_des;
+#endif
+    const double gas = bdf_->spatial_rate_norm(fields.volumes, fields.flux, keep_rows, keep_balance);
     const double sa = steady_sa_rate();
     if (sample && rate_control_) {
         gas_rate_max_ = gas;
@@ -1606,8 +1685,28 @@ implicit::NewtonResult PartitionOperator::advance_bdf(std::vector<double>& state
         assemble_fluxes(state, initial, timing, false, bool(validate));
     };
     // Применяет и оценивает пробную поправку без окончательного принятия шага.
-    const auto trial = [&] { if (validate) validate(); return assemble_fluxes(state, initial, timing, true); };
+#ifdef AERO_HAS_TURBULENCE
+    const bool auto_rans = !settings.without_predictor && step_mode_ == LocalStepMode::Auto && sa_active() && !settings.second_order &&
+                           !aes_->view().c_des && (previous_cfl_>0. || (current_step_cfl_<=1. && retry_dt_==0.));
+#else
+    const bool auto_rans = false;
+#endif
+    bool first_coupled_trial = false; // На первой совместной пробе вязкие строки нужны только после решения SA.
+    bool temporal_trial = auto_rans; // После возврата к обычному Ньютону снова действует штатный откат CFL.
+    const auto trial = [&] {
+        const bool solve_sa = first_coupled_trial;
+        first_coupled_trial = false;
+        if (validate) {
+            try { validate(); }
+            catch (const RejectedGasState&) {
+                if (temporal_trial) return false; // Недопустимое начальное приближение откатывается внутри Ньютона.
+                throw;
+            }
+        }
+        return assemble_fluxes(state, initial, timing, true, false, solve_sa);
+    };
     std::function<bool()> confirm_prediction;
+    std::function<void(implicit::CoupledStart)> coupled_start;
 #ifdef AERO_HAS_TURBULENCE
     if(sa_active()) {
         sa_prediction_pending_=false;
@@ -1624,12 +1723,33 @@ implicit::NewtonResult PartitionOperator::advance_bdf(std::vector<double>& state
         sa_iterations_=std::max(200u,settings.max_iterations);
         sa_multigrid_=settings.steady_multigrid;
         sa_target_=0.;
-        sa_apply(sa_step(),turbulence::Operation::SaveStart);
-        evaluate_sa(state,timing,true); // Первый остаток Ньютона тоже должен учитывать новый слой SA.
+        // При совместной пробе исходное поле сохраняет первая редукция нормы SA.
+        if (!auto_rans) sa_apply(sa_step(),turbulence::Operation::SaveStart);
+        evaluate_sa(state,timing,true,false,auto_rans);
+        if (auto_rans) {
+            coupled_start = [&](implicit::CoupledStart action) {
+                if (action == implicit::CoupledStart::Predict) {
+                    auto step = sa_step();
+                    if (sa_rate_dt_ > 0. && dt <= 2.*sa_rate_dt_) step.prediction_ratio = dt/sa_rate_dt_;
+                    sa_apply(step,turbulence::Operation::PredictRate);
+                    sa_rate_dt_ = dt;
+                    first_coupled_trial = true;
+                } else if (action == implicit::CoupledStart::Restore) {
+                    temporal_trial = false;
+                    sa_rate_dt_ = 0.;
+                    sa_apply(sa_step(),turbulence::Operation::RestoreStart);
+                    refresh();
+                } else {
+                    sa_rate_dt_ = 0.;
+                    evaluate_sa(state,timing,true);
+                }
+            };
+        } else sa_rate_dt_ = 0.;
     }
 #endif
     const auto result=bdf_->advance(fields.state, fields.initial, fields.volumes, fields.flux, dt_or_fraction,
-                                    settings, refresh, trial, confirm_prediction, timing.bdf_phases());
+                                    settings, refresh, trial, confirm_prediction, timing.bdf_phases(), !validate,
+                                    auto_rans ? dt : 0., coupled_start);
 #ifdef AERO_HAS_TURBULENCE
     if(sa_active()) {
         if(sa_bdf2_) sa_apply(sa_step(),turbulence::Operation::CommitHistory);

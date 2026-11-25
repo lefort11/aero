@@ -52,7 +52,8 @@ def solve(command, case, dest, options):
     log = run([*command, f"--input={case}", f"--output={dest}", *options])
     gpu = "main:backend=cuda" in options
     backend = "CUDA" if gpu else "CPU"
-    if len(command) > 1:
+    # При запуске mpiexec с одним рангом решатель печатает обычную строку CPU/CUDA.
+    if len(command) > 1 and int(command[-2]) > 1:
         backend += f" (MPI), processes = {command[-2]}"
     if "Equations = Linear" not in log or "Completed " not in log or "Active backend = " + backend not in log:
         raise AssertionError(log)

@@ -22,6 +22,8 @@
 
 namespace aero {
 struct RunSettings;
+class Report;
+struct FlowSummary;
 // Все ранги откатывают одну попытку. Каждый помечает только свои отказавшие узлы.
 struct RejectedGasState {
     // Номера недопустимых узлов на текущем ранге.
@@ -106,6 +108,10 @@ public:
     void failed_nodes(const std::vector<double>& state, std::vector<Id>& failed, bool implicit);
     // Собирает значения только собственных узлов в компактный буфер.
     void copy_owned(const std::vector<double>& state, std::vector<double>& compact) const;
+#ifdef AERO_WITH_KOKKOS_GPU
+    // Сводка принятого steady-шага на одной карте с запасным путём расширенной точности.
+    FlowSummary steady_report(std::uint64_t number, Report& report, std::vector<double>& host) const;
+#endif
     // Обновляет копию текущих полей на CPU для записи результатов.
     void download(std::vector<double>& state) const;
     // Обменивает значения узлов после стадии на активном вычислительном устройстве.
@@ -114,13 +120,17 @@ public:
     void halo_host(std::vector<double>& u);
     // Вычисляет потоки на принадлежащих процессу поверхностях и получает остальные от соседей.
     bool assemble_fluxes(const std::vector<double>& u, const std::vector<double>& initial,
-                         SolverTimings& timing, bool trial = false, bool retry_boundary = false);
+                         SolverTimings& timing, bool trial = false, bool retry_boundary = false,
+                         bool solve_trial_sa = false);
     // Находит допустимый шаг по собственным узлам и берёт минимум по всем процессам.
     double cfl_step(double cfl);
     // После отказа повторяем ту же попытку с половиной фактически использованного шага.
     void retry_auto_step(double failed_dt);
     // После отката сокращаем уже согласованные шаги всех узлов в одной пропорции.
     double reduce_auto_attempt(double failed_dt, double factor) {
+#ifdef AERO_HAS_TURBULENCE
+        sa_rate_dt_ = 0.; // Баланс отказавшего шага не входит в следующий прогноз SA.
+#endif
         retry_dt_ = failed_dt * factor;
         if (!(retry_dt_ > 0. && retry_dt_ < failed_dt))
             throw std::runtime_error("Auto LTS: cannot reduce the rejected pseudo-time step further");
@@ -129,6 +139,10 @@ public:
     // Сбрасывает историю адаптации и расписание коррекций после смены схемы.
     void reset_rate_history() {
         rate_samples_ = 0;
+        if (bdf_) bdf_->clear_prediction_history();
+#ifdef AERO_HAS_TURBULENCE
+        sa_rate_dt_ = 0.;
+#endif
         if (step_spread_) step_spread_->reset();
 #ifdef AERO_HAS_MULTIGRID
         coarse_schedule_ = multigrid::CycleSchedule{}; // Новая пространственная схема начинает свой цикл.
@@ -138,7 +152,7 @@ public:
     // Возвращает расписание попыток многосеточной коррекции.
     multigrid::CycleSchedule& coarse_schedule() { return coarse_schedule_; }
 #endif
-    // work и stencil пользуются одним регулятором диапазона. При on/off он не выделяется.
+    // work, cfl и stencil используют общий регулятор диапазона.
     SteadyStepSpread* step_spread() {
         return step_mode_ == LocalStepMode::Auto ? step_spread_.get() : nullptr;
     }
@@ -157,7 +171,8 @@ public:
     // Готовит данные ограничения шагов по опорам реконструкции.
     void prepare_stencil_rates(bool cuda);
     // Настраивает локальные псевдошаги стационарного расчёта.
-    void prepare_steady_steps(bool gpu, LocalStepMode mode, double max_ratio, ResidualLimit residual_limit);
+    void prepare_steady_steps(bool gpu, LocalStepMode mode, double max_ratio, ResidualLimit residual_limit,
+                              const AdaptiveStepSettings& adaptive_step);
     // Готовит второй слой шагов и обмен скалярами на рёбрах между процессами.
     void prepare_neighbour_step_limit(double ratio, bool cuda);
     // Возвращает отношение соседних шагов до сглаживания.
@@ -258,9 +273,10 @@ private:
     // Пересчитывает поправку при каждом изменении газа или рабочей вязкости, затем передаёт её соседу.
     void prepare_sa_convection(const turbulence::Step&) const;
     // Собирает оператор SA с учётом уже подготовленных потоков и строк.
-    void evaluate_sa(const std::vector<double>& state,SolverTimings& timing,bool rates_ready=false,bool rows_ready=false);
+    void evaluate_sa(const std::vector<double>& state,SolverTimings& timing,bool rates_ready=false,bool rows_ready=false,
+                     bool reference_only=false);
     // Решает стадию SA с учётом готовности потоков и диффузионных строк.
-    void solve_sa_stage(const std::vector<double>& state,bool rates_ready,bool rows_ready);
+    void solve_sa_stage(const std::vector<double>& state,bool rates_ready,bool rows_ready,bool reference_only);
     std::unique_ptr<PartitionTransfers> turbulence_exchange_; // Те же владельцы узлов, один скаляр на запись.
     std::unique_ptr<PartitionTransfers> sa_edge_exchange_; // Одна поправка на общее ребро MPI.
     // Использовать газовый шаблон для конвекции SA.
@@ -269,6 +285,7 @@ private:
     double* sa_correction_ = nullptr; // Адрес на активном исполнителе, включая GPU.
     // Текущий и предыдущий шаг SA, целевое значение и допуск итераций.
     double sa_dt_ = 0., sa_previous_dt_ = 0., sa_target_ = 0., sa_tol_ = 0.;
+    double sa_rate_dt_ = 0.; // Интервал между двумя последними балансами SA для пробного поля steady LTS.
     // Число итераций уточнения SA.
     unsigned sa_iterations_ = 0;
     bool sa_lines_ = false; // Один выбор пробной поправки на всех MPI-процессах.
@@ -302,7 +319,7 @@ private:
     LocalStepMode step_mode_ = LocalStepMode::Off;
     const double* accepted_field_ = nullptr; // Поле после принятого шага на активном устройстве.
     double current_step_cfl_ = 0.; // CFL, с которым предложен шаг до ограничения расписанием.
-    // Принятая доля шага, предыдущее число Куранта и шаг повторной попытки.
+    // Принятый множитель узлового массива, CFL принятой попытки и шаг повтора.
     double accepted_fraction_ = 1., previous_cfl_ = 0., retry_dt_ = 0.;
     unsigned retries_ = 0; // Сбрасывается только после успешного шага или переключения режима.
     // Признак загруженного состояния регулятора шага.
@@ -315,6 +332,8 @@ private:
     // Максимальные узловые скорости изменения газа и рабочей вязкости.
     double gas_rate_max_ = 0., sa_rate_max_ = 0.;
     std::unique_ptr<SteadyStepSpread> step_spread_; // Одно состояние на весь процесс, независимо от числа узлов.
+    bool cfl_after_limit_ = false; // В режиме auto + cfl узловой массив хранит шаги при CFL=1.
+    AdaptiveStepSettings adaptive_step_; // Параметры auto действуют также после переключения из control.txt.
     double applied_ratio_ = 0.; // Отношение шагов, разрешённое при выборе принятого шага.
     // Поля пар (газ, SA) нужны только при проверке по шаблону. Строки реконструкции общие с потоком.
     struct StencilRateStorage {
@@ -334,7 +353,7 @@ private:
     // Сохранённые узловые значения для сравнения соседних шагов.
     double* rate_history_ = nullptr;
     std::vector<double> host_rate_history_; // Три double на собственный узел для steady, включая переключение из control.txt.
-    double minimum_step_ = 0., maximum_step_ = 0.; // Диапазон до ограничения расписанием.
+    double minimum_step_ = 0., maximum_step_ = 0.; // Границы в единицах узлового массива.
     bool need_pressure_rate_ = false; // Резервируем рабочую память только при заказе dp_dt.
     std::unique_ptr<PartitionTransfers> pressure_exchange_; // Передаёт dp/dt от владельцев узлов.
     // Включает сбор времени операций подобласти.

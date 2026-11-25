@@ -2,7 +2,7 @@
 REPORT_SRC := $(IO_DIR)/report_tests.cpp
 REPORT_TEST := $(BUILD)/io_report_tests_$(EXPLICIT_TAG)$(EXE)
 REPORT_DEBUG := $(BUILD)/io_report_tests_debug_$(EXPLICIT_TAG)$(EXE)
-REPORT_HEADERS := source/io/flow_values.h source/eulersolver/linear_euler.h $(IO_DIR)/report.h $(EXPLICIT_HEADERS) source/eulersolver/euler.h source/parallel/parallel_for.h
+REPORT_HEADERS := source/io/flow_values.h source/eulersolver/linear_euler.h $(IO_DIR)/report.h $(IO_DIR)/steady_report.h $(EXPLICIT_HEADERS) source/eulersolver/euler.h source/parallel/parallel_for.h
 $(REPORT_TEST): $(REPORT_SRC) $(REPORT_HEADERS) $(IO_LIBRARY) $(EXPLICIT_LIBRARY)
 	$(call action,Compiling and linking,$@)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(EXPLICIT_FLAGS) $< $(IO_LIBRARY) $(EXPLICIT_LIBRARY) $(LDFLAGS) $(LDLIBS) $(EXPLICIT_LIBS) -o $@

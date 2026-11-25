@@ -1,4 +1,5 @@
 #include "bdf1_step.h"
+#include "time_prediction.h"
 #include "../residual/residual_detail.h"
 #include "../eulersolver/lax_friedrichs.h"
 #include "../../tests/test_field.h"
@@ -8,6 +9,60 @@
 #include "../parallel/device_arrays.h"
 #endif
 
+// Узловой полином должен воспроизводить квадратичное поле на неравных шагах,
+// в том числе после перехода через конец кольца компактных строк.
+static void check_time_prediction() {
+    using namespace aero::implicit;
+    double slots[2]{};
+    KrylovScratch space;
+    space.count = 2;
+    space.field[0] = slots;
+    space.field[1] = slots+1;
+    PredictionHistory history(space);
+    *history.append(.5) = .25; // U(-0.5), этот слой будет вытеснен.
+    *history.append(1.) = 0.;  // U(0).
+    *history.append(2.) = 1.;  // U(1).
+    double values[]{-1.,9.};   // Владелец хранит U(3) во втором узле.
+    const aero::MeshIndex owned[]{1};
+    TimePrediction prediction(owned,1,values);
+    history.prepare(.5,2,prediction);
+    prediction(0);
+    aero_test::require(prediction.count==2 && std::abs(values[1]-12.25)<1.e-14 &&
+                       values[0]==-1., "variable-step quadratic prediction and owned row");
+    // Та же история может содержать интегральные балансы. Узел умножает
+    // прогноз скорости на собственный шаг, а свободный слот получает исходный баланс.
+    const double rate = 9., volumes[]{1.,2.};
+    double steps[]{1.,.25};
+    prediction.rate = &rate;
+    prediction.save_rate = history.append(.5); // Перезаписываем самый старый из прочитанных слоёв.
+    prediction.volumes = volumes;
+    prediction.steps = {steps};
+    prediction.dt = 1.5;
+    values[1] = 3.;
+    prediction(0);
+    aero_test::require(std::abs(values[1]-(3.+.25*1.5*12.25/2.))<1.e-14 &&
+                       *prediction.save_rate==9. && values[0]==-1.,"local rate prediction and ring alias");
+    history.prepare(1000.,2,prediction);
+    aero_test::require(!prediction.count,"unstable extrapolation weights");
+    history.clear();
+    history.prepare(.5,2,prediction);
+    aero_test::require(!prediction.count,"stale prediction after Krylov solve");
+
+    // Два узла испытывают разные изменения локального шага. Для второго узла
+    // L(t)=t², текущий момент t=3, предыдущие моменты t=2 и t=0.
+    double local_field[6]{}, balances[]{9.,0.,0.}, previous[]{4.,0.,0.}, oldest[]{0.,0.,0.};
+    double local_intervals[]{1.,2.,0.};
+    TimePrediction local(owned,3,local_field,volumes,{steps},2.);
+    local.count=2;
+    local.fields[0]=previous;
+    local.fields[1]=oldest;
+    local.intervals=local_intervals;
+    local.rate=balances;
+    local(0);
+    aero_test::require(std::abs(local_field[3]-.5*12.25/2.)<1.e-14 &&
+                       local_intervals[0]==.5 && local_intervals[1]==1.,"quadratic rate with nodal time intervals");
+}
+
 // Два периодических объёма разного размера. Давление одинаково, скорость нулевая,
 // а перепад плотности даёт известный поток массы LF на обоих рёбрах.
 void test_bdf1_step(int device) {
@@ -15,6 +70,7 @@ void test_bdf1_step(int device) {
     using namespace implicit;
     using namespace residual_detail;
     using aero_test::require;
+    check_time_prediction();
     const Surface edges[] = {{0,1,0,{1.,0.,0.},1.,true}, {1,0,0,{1.,0.,0.},1.,true}};
     const Index offsets[] = {0,2,4};
     const OrientedFace incidence[] = {OrientedFace::outward(0),OrientedFace::inward(1),
@@ -65,6 +121,29 @@ void test_bdf1_step(int device) {
         refresh();
         return solver.advance(state.data(), nullptr, volumes.data(), active_flux, dt, controls, refresh);
     };
+    // Проверяем сами пробные сборки: счётчик Ньютона содержит только принятые
+    // линейные поправки и потому не показывает, запускался ли предиктор.
+    for (unsigned limit : {1u, 3u}) {
+        for (bool without : {false, true}) {
+            BdfStep checked(host,active,device);
+            auto settings = controls;
+            settings.without_predictor = without;
+            settings.max_iterations = limit;
+            settings.prediction_order = 6;
+            state.set(initial);
+            // Второй шаг использует предыдущий слой BDF2 и проверяет переключатель при наличии истории.
+            for (unsigned n=0; n<2; ++n) {
+                unsigned trials = 0;
+                const auto trial = [&] { ++trials; refresh(); return true; };
+                refresh();
+                const auto result = checked.advance(state.data(),nullptr,volumes.data(),active_flux,.005,settings,refresh,trial);
+                require((trials == 0) == without, "Newton limit must not select the predictor");
+                require(result.iterations <= limit && (!without || result.iterations > 0),
+                        "initial prediction must not consume Newton corrections");
+            }
+        }
+    }
+    state.set(initial);
     // Внешний буфер отката совпадает с U_n только до конца попытки BDF1.
     // При переходе на BDF2 история должна пережить перезапись внешнего буфера.
     {
@@ -108,7 +187,8 @@ void test_bdf1_step(int device) {
         BdfStep retried(host,active,device), direct(host,active,device);
         auto trial_controls = controls;
         trial_controls.second_order = false;
-        trial_controls.max_iterations = 1; // Отключает предиктор: refresh вызывается после поправки.
+        trial_controls.max_iterations = 1;
+        trial_controls.without_predictor = true; // Принудительный отказ относится к поправке Ньютона.
         state.set(initial);
         refresh();
         bool rejected = false;
@@ -276,6 +356,35 @@ void test_bdf1_step(int device) {
             require(std::abs(final_field[k] - full_assembly_field[k]) < 2.e-10, "reused matrix changed the solution");
     }
     controls.jacobian_update_every = 0;
+    // На чередующихся шагах проверяем решение с историей против обычного Ньютона.
+    // Отклоняем первую пробу третьего шага, пока в кольце ещё лежат принятые слои.
+    for (bool second_order : {false,true}) {
+        std::vector<double> reference;
+        for (unsigned order : {0u,6u}) {
+            BdfStep checked(host,active,device);
+            auto settings = controls;
+            settings.second_order = second_order;
+            settings.prediction_order = order;
+            state.set(initial);
+            for (unsigned n=0; n<7; ++n) {
+                refresh();
+                bool reject_first = order && n==2;
+                const auto trial = [&] {
+                    if (reject_first) { reject_first=false; return false; }
+                    refresh();
+                    return true;
+                };
+                const auto result_step = checked.advance(state.data(), nullptr, volumes.data(), active_flux,
+                                                         n%2 ? .003 : .004, settings, refresh, trial);
+                require(!reject_first && result_step.relative_residual<=settings.newton_relative,
+                        "prediction must recover from rejection and satisfy BDF tolerance");
+            }
+            const auto field=state.read();
+            if (!order) reference=field;
+            else for (unsigned k=0; k<field.size(); ++k)
+                require(std::abs(field[k]-reference[k])<2.e-11,"time predictor changed accepted BDF solution");
+        }
+    }
     // Для этой пары объёмов масса постоянна. Плотность x первого узла удовлетворяет
     // dx/dt = sqrt(gamma)*(m-x)/(V0*V1*sqrt(x)), m — средняя плотность.
     // Сравниваем с интегралом этого ОДУ, чтобы ошибка по пространству не скрыла порядок BDF2.

@@ -7,6 +7,9 @@
 #include "../implicit/spatial_jacobian_detail.h"
 #include "../implicit/bicgstab_vectors.h"
 #include "../implicit/newton_vectors.h"
+#include "../implicit/time_prediction.h"
+#include "../implicit/local_gas_prediction.h"
+#include "../io/steady_report.h"
 #ifdef AERO_HAS_MULTIGRID
 #include "../multigrid/transfer.h"
 #endif
@@ -289,6 +292,58 @@ const char* aero_device_newton_update(int device, MeshIndex nodes, const implici
         for_indices(exec, "Aero: BDF Newton", nodes, operation);
     }, device);
 }
+// Строит временное приближение по принятым слоям собственных узлов.
+const char* aero_device_time_prediction(int device, MeshIndex rows, const implicit::TimePrediction& prediction) {
+    const auto operation = prediction;
+    return on_device(nullptr, [&](const Execution& exec) {
+        for_indices(exec, "Aero: time prediction", rows, operation);
+    }, device);
+}
+// Выбираем грани активных узлов в существующем буфере поправки. Для самой
+// реконструкции используем штатное ядро для списка граней с теми же настройками.
+const char* aero_device_local_gas_prediction(int device, MeshIndex rows,const implicit::NewtonUpdate& gas,
+                                             EulerFluxResult* flux,const FaceBatch* stored,const double* initial,double threshold) {
+    return on_device(nullptr,[&](const Execution& exec) {
+        static_assert(sizeof(MeshIndex)==sizeof(double),"prediction scratch uses one index per double");
+        auto* list=reinterpret_cast<MeshIndex*>(gas.correction);
+        const auto surfaces=gas.grid.surfaces;
+        const auto edges=gas.grid.edges;
+        const auto* rhs=gas.rhs;
+        MeshIndex selected=0;
+        Kokkos::parallel_scan("Aero: select prediction faces",DeviceRange<>(exec,0,gas.grid.faces),
+            KOKKOS_LAMBDA(Index face,MeshIndex& count,bool write) {
+                const auto& s=surfaces[face];
+                if (implicit::LocalGasPrediction::active(rhs,s.begin,threshold) ||
+                    (face<edges && implicit::LocalGasPrediction::active(rhs,s.end,threshold))) {
+                    if (write) list[count]=face;
+                    ++count;
+                }
+            },selected);
+        if (!selected || selected>gas.grid.faces/8) return;
+        // Счётчик ошибки читает ядро потоков через Index, который в Linux
+        // может отличаться от MeshIndex при одинаковой ширине в 64 бита.
+        static_assert(sizeof(Index)==sizeof(MeshIndex),"face status must fit one scratch slot");
+        auto* bad=reinterpret_cast<Index*>(gas.correction+gas.grid.faces);
+        const auto* state=gas.state;
+        auto* cached=gas.grid.packed.gas;
+        const double gamma=gas.grid.options.gamma;
+        for_indices(exec,"Aero: prediction gas",rows,KOKKOS_LAMBDA(Index i) {
+            if (!i) *bad=~Index(0);
+            decode_nodal_gas(2,state,gamma,i,cached);
+        });
+        const FaceBatch batch{gas.grid,list,selected,state,initial,flux,nullptr,nullptr,true};
+        // Полные рёбра берём из короткого списка. Неполные шаблоны и физические
+        // границы проходят свои малые штатные ядра с уже выделенной памятью.
+        face_kernels::compute_packed_fluxes(exec,batch,bad,stored);
+        for_indices(exec,"Aero: local prediction",rows,implicit::LocalGasPrediction{gas,threshold,bad});
+    },device);
+}
+// Каждая полоса записывает сводку в свою часть свободной правой части газа.
+const char* aero_device_steady_report(const SteadyReport& report) {
+    return on_device(nullptr,[&](const Execution& exec) {
+        for_indices(exec,"Aero: steady report",report.strips,report);
+    });
+}
 // Обновляет рабочие векторы BiCGSTAB на GPU.
 const char* aero_device_krylov_update(int device, MeshIndex count, const implicit::KrylovUpdate& update) {
     const auto operation = update;
@@ -344,9 +399,21 @@ void sa_residual(const Execution& exec,const turbulence::Step& step) {
     launch(exec, step.transport, save_rotation);
 }
 // Собирает конвективный перенос рабочей вязкости SA на GPU.
-const char* aero_device_sa_convection(const turbulence::SaEdgeConvection& edges,MeshIndex count) {
+const char* aero_device_sa_convection(const turbulence::SaEdgeConvection& edges,MeshIndex count,
+                                      const void* tiles,unsigned order) {
     return on_device(nullptr,[&](const Execution& exec){
-        for_indices(exec,"Aero: reconstructed SA convection",count,edges);
+        if (!tiles || edges.hybrid>0. || edges.stencil.mp5.weno) {
+            for_indices(exec,"Aero: reconstructed SA convection",count,edges);
+        } else if (order==3) {
+            const auto* geometry=static_cast<const WenoEdgeTile<3>*>(tiles);
+            for_indices(exec,"Aero: packed WENO3 SA convection",count,KOKKOS_LAMBDA(Index k){edges.packed<3,false>(k,geometry);});
+        } else {
+            const auto* geometry=static_cast<const WenoEdgeTile<5>*>(tiles);
+            if (edges.stencil.mp5.enabled)
+                for_indices(exec,"Aero: packed MP5 SA convection",count,KOKKOS_LAMBDA(Index k){edges.packed<5,true>(k,geometry);});
+            else
+                for_indices(exec,"Aero: packed WENO5 SA convection",count,KOKKOS_LAMBDA(Index k){edges.packed<5,false>(k,geometry);});
+        }
     });
 }
 // Выполняет выбранную операцию шага SA на GPU.

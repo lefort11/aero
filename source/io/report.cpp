@@ -70,7 +70,6 @@ Report::Report(std::uint64_t every, double gamma, unsigned dimension, std::size_
     }
     if (!std::isfinite(total_volume_))
         throw std::overflow_error("report: total volume overflow");
-    previous_energy_.resize(nodes);
 }
 
 // Проверяет наступление отчётного шага или срока.
@@ -92,6 +91,9 @@ void Report::capture(std::uint64_t step, const std::vector<double>& previous) {
 // Сохраняет значения начала отчётного интервала для измерения изменений.
 void Report::capture_values(std::uint64_t step, const double* u) {
     captured_step_ = 0;
+    // На одной GPU steady берёт энергию из U_n интегратора. Буфер хоста
+    // нужен только тем режимам, которые действительно вызывают capture.
+    if (previous_energy_.empty()) previous_energy_.resize(volumes_.size());
     const unsigned width = dimension_ + 2;
     parallel_for(volumes_.size(), [&](std::size_t i) {
         const auto* q = u+i*width;

@@ -64,6 +64,29 @@ void test_sa_convection() {
     aero_test::require(flux(2.,0)==0., "no SA outflow from an empty donor");
     w[0] = .125;
     aero_test::require(flux(2.,0)==.25, "bound on additional outflow");
+
+    // Упакованный полный шаблон берёт дальний наклон со стороны донора.
+    // Разные значения на двух концах проверяют ориентацию при смене знака потока.
+    using namespace aero::residual_detail;
+    WenoEdgeTile<5> tile{};
+    tile.order[0].flags=9;
+    const unsigned anchors[]{2,1,3,0,4};
+    for (unsigned row=0; row<5; ++row) {
+        const auto first=first_slope_term(row);
+        tile.nodes(first,0)=anchors[row];
+        tile.nodes(first+1,0)=anchors[row]+1;
+        tile.weights(first-row,0)=1.;
+    }
+    const double profile[]{1.,1.2,1.45,1.8,2.4,3.1};
+    face.begin=2; face.end=3; face.use_nodal_traces=0;
+    stencil.mp5.alpha=4.;
+    const SaEdgeConvection packed{stencil,&face,nullptr,&gas,profile,&result,1.,0.};
+    gas.flux[0]=2.;
+    packed.packed<5,true>(0,&tile);
+    aero_test::require(std::abs(result-aero::mp5::increment(.2,.25,.35,.6,4.))<1.e-14,"packed left SA flux");
+    gas.flux[0]=-2.;
+    packed.packed<5,true>(0,&tile);
+    aero_test::require(std::abs(result-aero::mp5::increment(.7,.6,.35,.25,4.))<1.e-14,"packed right SA flux");
 }
 // Несимметричный градиент с сингулярными числами 3, 2, 1; ось вихря совпадает с z.
 void test_sigma() {

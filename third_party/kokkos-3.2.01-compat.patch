@@ -316,3 +316,18 @@
  
    static CudaInternal& singleton();
  
+--- a/core/src/Cuda/Kokkos_CudaSpace.cpp
++++ b/core/src/Cuda/Kokkos_CudaSpace.cpp
+@@ -948,6 +948,12 @@
+   if (to_device && is_managed &&
+       space.cuda_device_prop().concurrentManagedAccess) {
++#if CUDART_VERSION >= 13000
++    // CUDA 13 принимает тип и номер устройства вместе, затем флаги операции.
++    cudaMemLocation location{cudaMemLocationTypeDevice, space.cuda_device()};
++    CUDA_SAFE_CALL(cudaMemPrefetchAsync(ptr, bytes, location, 0, space.cuda_stream()));
++#else
+     CUDA_SAFE_CALL(cudaMemPrefetchAsync(ptr, bytes, space.cuda_device(),
+                                         space.cuda_stream()));
++#endif
+   }
+ }

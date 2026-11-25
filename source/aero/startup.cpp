@@ -128,6 +128,10 @@ void show_settings(const RunSettings& r) {
         std::cout << "local_time_step = " << local_step_name(r.local_time_step) << "\nsteady_criterion = " << (r.steady_absolute ? "absolute" : "relative") << "\nsteady_tol = " << r.steady_tol << "\nsteady_max_steps = " << r.steady_max_steps << '\n';
     if (r.steady()) std::cout << "steady_multigrid = " << (r.implicit_settings.steady_multigrid ? "on" : "off") << '\n';
     if (r.local_time_step == LocalStepMode::Auto) {
+        const auto& a = r.adaptive_step;
+        std::cout << "local_time_step_density_change = " << a.density << "\nlocal_time_step_pressure_change = " << a.pressure
+                  << "\nlocal_time_step_velocity_change = " << a.velocity << "\nlocal_time_step_sa_change = " << a.sa
+                  << "\nlocal_time_step_min_factor = " << a.min_factor << "\nlocal_time_step_max_factor = " << a.max_factor << '\n';
         std::cout << "local_time_step_residual_limit = " << residual_limit_name(r.local_time_step_residual_limit) << '\n';
         if (r.local_time_step_probe_node != ~std::uint64_t(0))
             std::cout << "local_time_step_probe_node = " << r.local_time_step_probe_node << '\n';
@@ -145,6 +149,8 @@ void show_settings(const RunSettings& r) {
                   << "\npreconditioner = " << (r.implicit_settings.csgs ? "CSGS" : "BJ") << "\nsolver_tol = "
                   << r.implicit_settings.linear_relative << "\nsolver_max_iter = " << r.implicit_settings.linear_max_iterations
                   << "\nnewton_tol = " << r.implicit_settings.newton_relative
+                  << "\nnewton_without_predictor = " << (r.implicit_settings.without_predictor ? "on" : "off")
+                  << "\npredictor_history_order = " << r.implicit_settings.prediction_order
                   << "\nsimplified_jacobian = " << (r.implicit_settings.simplified_jacobian ? "on" : "off")
                   << "\ncompact_jacobian = " << (r.implicit_settings.compact_jacobian ? "on" : "off")
                   << "\nsimplified_newton = " << (r.implicit_settings.simplified_newton() ? "on" : "off")

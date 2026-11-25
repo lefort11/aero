@@ -205,7 +205,7 @@ void PartitionOperator::prepare_sa_convection(const turbulence::Step& step) cons
             step.transport.flux,step.transport.sa.w,sa_correction_,geometry->options.upw_coeff,geometry->options.mp6_hybrid};
 #ifdef AERO_WITH_KOKKOS_GPU
         if (gpu_) {
-            device_work::check(device_work::aero_device_sa_convection(edge,count));
+            device_work::check(device_work::aero_device_sa_convection(edge,count,geometry->packed.tiles,geometry->packed.order));
             return;
         }
 #endif
@@ -215,21 +215,22 @@ void PartitionOperator::prepare_sa_convection(const turbulence::Step& step) cons
     if (sa_edge_exchange_) sa_edge_exchange_->transfer(world_,{1,sa_correction_,nullptr},device());
 }
 // При включённых замерах отделяем ядра SA от асинхронной сборки газового потока.
-void PartitionOperator::evaluate_sa(const std::vector<double> &state, SolverTimings &timing, bool rates_ready, bool rows_ready) {
+void PartitionOperator::evaluate_sa(const std::vector<double> &state, SolverTimings &timing, bool rates_ready, bool rows_ready,
+                                    bool reference_only) {
     auto *seconds = timing.counter(SolverTimings::SaTransport);
 #ifdef AERO_WITH_KOKKOS_GPU
     if (gpu_ && seconds)
         PartitionGpu::synchronize();
 #endif
     WallTimer timer(seconds);
-    solve_sa_stage(state, rates_ready, rows_ready);
+    solve_sa_stage(state, rates_ready, rows_ready, reference_only);
 #ifdef AERO_WITH_KOKKOS_GPU
     if (gpu_ && seconds)
         PartitionGpu::synchronize();
 #endif
 }
 // Решает текущую стадию SA с согласованием потоков и диффузии.
-void PartitionOperator::solve_sa_stage(const std::vector<double> &state, bool rates_ready, bool rows_ready) {
+void PartitionOperator::solve_sa_stage(const std::vector<double> &state, bool rates_ready, bool rows_ready, bool reference_only) {
     // Для явной стадии достаточно пространственной невязки. В BDF уточняем рабочую
     // вязкость при фиксированном газе до проверки полной невязки нового слоя.
     auto s = sa_step();
@@ -242,7 +243,7 @@ void PartitionOperator::solve_sa_stage(const std::vector<double> &state, bool ra
     // Вычисляет согласованную норму невязки текущего пробного состояния.
     const auto residual_norm = [&](bool refresh) {
         if (refresh) prepare_sa_convection(s);
-        const double value = sa_max(s, Norm::Bdf, refresh);
+        const double value = sa_max(s, reference_only ? Norm::SaveStartBdf : Norm::Bdf, refresh);
         if (!s.extrapolate && !std::isfinite(value))
             throw std::runtime_error("SA: nonfinite implicit transport residual");
         return value;
@@ -251,6 +252,9 @@ void PartitionOperator::solve_sa_stage(const std::vector<double> &state, bool ra
     if (sa_target_ == 0.)
         sa_target_ =
             std::max(sa_tol_ * norm, 32. * std::numeric_limits<double>::epsilon() * s.transport.sa.ambient);
+    // Для совместной пробы достаточно зафиксировать тот же абсолютный допуск SA.
+    // Правая часть и рабочая вязкость остаются на принятом слое до газовой пробы.
+    if (reference_only) return;
     unsigned count = 0;
     bool use_lines = sa_lines_;
 #ifdef AERO_HAS_MULTIGRID
@@ -298,6 +302,10 @@ void PartitionOperator::solve_sa_stage(const std::vector<double> &state, bool ra
         }
         ++count;
     }
+    // В автоматическом LTS несовместимую с допуском пару полей можно повторить
+    // с меньшим псевдошагом. Обработчик отказа восстанавливает газ и рабочую вязкость.
+    if (norm > sa_target_ && step_mode_ == LocalStepMode::Auto && !s.transport.sa.ddes)
+        throw implicit::LinearSolveFailure("SA transport reached its iteration limit above tolerance");
     // При нуле итераций скалярное поле осталось тем же. Газовая сборка на входе
     // уже использовала эту вязкость и повторять её не требуется.
     // Пробная поправка Ньютона тоже уже содержит полную вязкую невязку

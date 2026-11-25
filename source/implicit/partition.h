@@ -11,13 +11,16 @@
 #endif
 
 namespace aero {
+struct EulerFluxResult;
 namespace multigrid { struct Aggregates; }
-namespace residual_detail { struct Geometry; }
+namespace residual_detail { struct Geometry; struct FaceBatch; }
 namespace implicit {
 struct GpuMatrixPlan;
 // Связь численного метода с разбиением сетки. Сам решатель не зависит от MPI:
 // в обычном расчёте списки пусты, номера узлов и строк совпадают.
 struct Partition {
+    EulerFluxResult* trial_flux = nullptr; // Потоки целой сетки GPU для локальной подстановки перед полной сборкой.
+    const residual_detail::FaceBatch* trial_faces = nullptr; // Постоянная запись штатного пакетного ядра на той же GPU.
     std::shared_ptr<const multigrid::Aggregates> coarse_graph; // Подготовленный при оценке памяти граф агрегатов.
     std::shared_ptr<GpuMatrixPlan> gpu_matrix_plan; // Граф и раскраска из проверки размещения на карте.
     KrylovScratch krylov_scratch; // Пуст для CPU и для раздельных рабочих массивов GPU.

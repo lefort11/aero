@@ -23,7 +23,8 @@ AERO_DEVICE_ENTRY const char* aero_device_sample(const diagnostic::Sample&,Index
 // Выполняет выбранную операцию шага SA на GPU.
 AERO_DEVICE_ENTRY const char* aero_device_sa_step(const turbulence::Step&, turbulence::Operation);
 // Собирает конвективный перенос рабочей вязкости SA на GPU.
-AERO_DEVICE_ENTRY const char* aero_device_sa_convection(const turbulence::SaEdgeConvection&, MeshIndex);
+AERO_DEVICE_ENTRY const char* aero_device_sa_convection(const turbulence::SaEdgeConvection&, MeshIndex,
+                                                        const void* tiles,unsigned order);
 // Вычисляет максимальную норму выбранной величины SA на GPU.
 AERO_DEVICE_ENTRY const char* aero_device_sa_norm(const turbulence::Step&, turbulence::Norm, bool, double*);
 #endif

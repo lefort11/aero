@@ -89,7 +89,9 @@ struct PackedEdgeOrder {
     // Проверяет наличие готовых упакованных данных обработки ребра.
     AERO_HOST_DEVICE bool ready() const { return flags != 0; }
     // Проверяет полноту высокопорядкового шаблона ребра.
-    AERO_HOST_DEVICE bool complete() const { return flags == 1; }
+    AERO_HOST_DEVICE bool complete() const { return (flags & 7u) == 1; }
+    // В каждой строке ровно две опоры, остальные позиции плитки имеют нулевой вес.
+    AERO_HOST_DEVICE bool paired() const { return (flags & 8u) != 0; }
     // Определяет, используется ли укороченный шаблон реконструкции.
     AERO_HOST_DEVICE bool shortened(unsigned side) const { return (flags & (2u << side)) != 0; }
 };

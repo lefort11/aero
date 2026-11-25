@@ -477,6 +477,16 @@ void adaptive_steady_step() {
         require(std::abs(step.next(0,1,2.)-target)<1.e-12,message);
     };
     expect(2.5,"rest allows bounded local growth");
+    // Каждая цель независимо задаёт поправку, если меняется только одно поле.
+    step.targets.density=.02; step.targets.pressure=.03; step.targets.velocity=.04; step.targets.sa=.1;
+    step.targets.min_factor=.2; step.ceiling=1.8;
+    near(step.growth(.08,0.,0.,0.),.5);
+    near(step.growth(0.,.12,0.,0.),.5);
+    near(step.growth(0.,0.,.16,0.),.5);
+    near(step.growth(0.,0.,0.,.4),.5);
+    near(step.growth(2.,0.,0.,0.),.2);
+    expect(3.6,"configured upper factor");
+    step.targets=AdaptiveStepSettings{}; step.ceiling=step.targets.max_factor;
     after[7] = 2.08;
     expect(1.,"pressure change restricts local pseudo-time");
     after[7] = 2.; after[4] = 1.04;

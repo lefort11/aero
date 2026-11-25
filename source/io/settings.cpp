@@ -130,9 +130,9 @@ Entry lowercase(Entry e) {
 // Используем те же имена режимов, которые солвер затем выведет при запуске.
 ResidualLimit read_residual_limit(const Entry& entry) {
     const auto name = lower_value(entry.value);
-    for (auto mode : {ResidualLimit::Off, ResidualLimit::Node, ResidualLimit::Stencil, ResidualLimit::Work})
+    for (auto mode : {ResidualLimit::Off, ResidualLimit::Node, ResidualLimit::Stencil, ResidualLimit::Work, ResidualLimit::Cfl})
         if (name == residual_limit_name(mode)) return mode;
-    throw std::invalid_argument(entry.where + ": expected off, on, stencil or work");
+    throw std::invalid_argument(entry.where + ": expected off, on, stencil, work or cfl");
 }
 
 // Разбирает конечное вещественное значение параметра.
@@ -378,6 +378,11 @@ RunSettings read_run_settings(const RunDirectories& directories) {
         controls.compact_jacobian = settings.contains("compact_jacobian") &&
             choice(lowercase(settings.take("compact_jacobian")), {"on","off"}) == "on";
         controls.jacobian_update_every = settings.optional_count<unsigned>("jacobian_update_every");
+        controls.without_predictor = settings.contains("newton_without_predictor") &&
+            choice(lowercase(settings.take("newton_without_predictor")), {"on","off"}) == "on";
+        controls.prediction_order = settings.optional_count<unsigned>("predictor_history_order");
+        if (controls.prediction_order > implicit::KrylovFieldCount)
+            throw std::invalid_argument("implicit.txt: predictor_history_order must be in [0,6]");
         // В старых файлах переиспользование матрицы уже задавалось интервалом.
         // Явный переключатель имеет приоритет и задаёт тот же режим решателя.
         if (settings.contains("simplified_newton"))
@@ -393,6 +398,19 @@ RunSettings read_run_settings(const RunDirectories& directories) {
             if (run.local_time_step_residual_limit != ResidualLimit::Off && !run.steady())
                 throw std::invalid_argument("local_time_step_residual_limit requires steady");
         }
+        // Отсутствующий ключ сохраняет стандартное значение из AdaptiveStepSettings.
+        const auto read_target = [&](const char* key, double& value) {
+            if (settings.contains(key)) value = number(settings.take(key), false);
+        };
+        auto& adapt = run.adaptive_step;
+        read_target("local_time_step_density_change", adapt.density);
+        read_target("local_time_step_pressure_change", adapt.pressure);
+        read_target("local_time_step_velocity_change", adapt.velocity);
+        read_target("local_time_step_sa_change", adapt.sa);
+        read_target("local_time_step_min_factor", adapt.min_factor);
+        read_target("local_time_step_max_factor", adapt.max_factor);
+        if (adapt.min_factor > 1.) throw std::invalid_argument("implicit.txt: local_time_step_min_factor must be <= 1");
+        if (adapt.max_factor < 1.) throw std::invalid_argument("implicit.txt: local_time_step_max_factor must be >= 1");
         if (settings.contains("local_time_step_probe_node")) {
             run.local_time_step_probe_node = settings.count<std::uint64_t>("local_time_step_probe_node");
             if (!run.steady()) throw std::invalid_argument("local_time_step_probe_node requires steady");

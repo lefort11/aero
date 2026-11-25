@@ -169,6 +169,8 @@ public:
     // Обновляет геометрию площадок в памяти GPU.
     void update_surfaces(const std::vector<residual_detail::Surface>& surfaces);
     residual_detail::FaceBatch face_batch() const;
+    // Постоянные адреса газа и потоков для повторного запуска того же пакетного ядра.
+    const residual_detail::FaceBatch* stored_faces() const { return device_faces_; }
     void fluxes(const residual_detail::FaceBatch& batch, bool first_order_start);
 #ifdef AERO_HAS_VISCOSITY
     void viscous_fluxes(viscosity::Evaluation phase);

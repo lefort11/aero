@@ -19,6 +19,12 @@ struct BdfHistory {
 };
 // Линейный решатель закончил попытку без решения. Газ к моменту перехвата уже восстановлен.
 struct LinearSolveFailure : std::runtime_error { using std::runtime_error::runtime_error; };
+// Действие связанного переноса SA при выборе начального приближения газа.
+enum class CoupledStart {
+    Predict, // Построить пробную рабочую вязкость перед общей сборкой на новом газе.
+    Solve,   // Вычислить исходную невязку с решённым уравнением SA на старом газе.
+    Restore  // Восстановить старую вязкость и заново согласовать оба уравнения.
+};
 #ifdef AERO_HAS_MULTIGRID
 // Исходная невязка и принятый масштаб пробной стационарной коррекции.
 struct SteadyCorrection {
@@ -45,11 +51,18 @@ public:
     // Освобождает принадлежащие объекту ресурсы при завершении его времени жизни.
     ~BdfStep();
     // Максимум |R_i|/V_i по собственным узлам всех процессов и всем уравнениям.
-    double spatial_rate_norm(const double* volumes, const EulerFluxResult* flux, bool save_rows = false);
+    double spatial_rate_norm(const double* volumes, const EulerFluxResult* flux, bool save_rows = false,
+                             bool save_balance = false);
+    // После изменения потоков следующий шаг заново собирает начальную правую часть.
+    void invalidate_spatial_balance();
     // Вычисляет пространственные скорости изменения поля без временного вклада BDF.
     const double* spatial_rates() const; // Временный буфер доступен до следующей поправки Ньютона.
     // Возвращает сохранённое поле начала текущего шага.
     const double* start_field() const; // U_n по собственным строкам последнего шага BDF1.
+    // После принятия шага правая часть свободна до следующего расчёта невязки.
+    double* report_workspace() const;
+    // После смены оператора прошлые пространственные балансы теряют смысл.
+    void clear_prediction_history();
 #ifdef AERO_HAS_MULTIGRID
     // Пробуем уменьшить невязку стационарного уравнения после обычного шага.
     SteadyCorrection correct_steady(double* state, const double* initial, const double* volumes,
@@ -67,7 +80,9 @@ public:
                          const EulerFluxResult* flux, double dt, const NewtonSettings& settings,
                          const std::function<void()>& refresh_fluxes,
                          const std::function<bool()>& try_prediction_fluxes = {},
-                         const std::function<bool()>& confirm_prediction = {}, const PhaseTiming& timing = {});
+                         const std::function<bool()>& confirm_prediction = {}, const PhaseTiming& timing = {},
+                         bool allow_extrapolation = true, double auto_pseudo_dt = 0.,
+                         const std::function<void(CoupledStart)>& coupled_start = {});
     // Необязательный обработчик пробного поля пересчитывает те же потоки.
     // false означает физически недопустимую пробу, которую надо откатить.
 private:

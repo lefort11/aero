@@ -23,7 +23,10 @@ namespace multigrid { struct Transfer; struct VectorUpdate; }
 #ifdef AERO_HAS_VISCOSITY
 namespace viscosity { struct Jacobian; }
 #endif
-namespace implicit { struct CsgsSweep; struct CsgsPacking; struct JacobiBlocks; struct SpatialBlocks; struct KrylovUpdate; struct NewtonUpdate; }
+namespace implicit { struct CsgsSweep; struct CsgsPacking; struct JacobiBlocks; struct SpatialBlocks; struct KrylovUpdate; struct NewtonUpdate; struct TimePrediction; }
+struct SteadyReport;
+struct EulerFluxResult;
+namespace residual_detail { struct FaceBatch; }
 namespace device_work {
 extern "C" {
 // Завершает среду выполнения вычислительных ядер GPU.
@@ -74,6 +77,14 @@ AERO_DEVICE_ENTRY const char* aero_device_krylov_update(int device, MeshIndex co
 AERO_DEVICE_ENTRY const char* aero_device_newton_residual(int device, MeshIndex rows, const implicit::NewtonUpdate&, double* norm);
 // Применяет выбранное обновление полей Ньютона на GPU.
 AERO_DEVICE_ENTRY const char* aero_device_newton_update(int device, MeshIndex nodes, const implicit::NewtonUpdate&);
+// Экстраполирует принятое поле по компактной истории на той же карте.
+AERO_DEVICE_ENTRY const char* aero_device_time_prediction(int device, MeshIndex rows, const implicit::TimePrediction&);
+// Уточняет пробу на отдельных узлах цельной двумерной сетки.
+AERO_DEVICE_ENTRY const char* aero_device_local_gas_prediction(int device, MeshIndex rows, const implicit::NewtonUpdate&,
+                                                               EulerFluxResult* flux,const residual_detail::FaceBatch* stored,
+                                                               const double* initial,double threshold);
+// Вычисляет частичные сводки steady без копирования полей на CPU.
+AERO_DEVICE_ENTRY const char* aero_device_steady_report(const SteadyReport&);
 // Вычисляет скалярные произведения для стабилизации BiCGSTAB на GPU.
 AERO_DEVICE_ENTRY const char* aero_device_krylov_project(int device,MeshIndex count,const double* t,const double* r,double* pair);
 // Совмещает обновление вектора Крылова с вычислением нормы на GPU.

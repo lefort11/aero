@@ -51,9 +51,9 @@ def solve(case, args, name, gpu=False, distributed=False, options=()):
     if "Active backend = " + ("CUDA" if gpu else "CPU") not in log or "Completed " not in log:
         raise AssertionError(log)
     metadata, fields = binary_snapshot(target / "state.fields")
-    if "implicit:newton_max_iter=1" in options:
-        # При одной разрешённой поправке предиктор выключен. Для неоднородного поля
-        # успех каждого шага действительно требует сборки и решения системы Ньютона.
+    if "implicit:newton_max_iter=1" in options and "implicit:newton_without_predictor=on" in options:
+        # В этой проверке отключаем предиктор явно, чтобы неоднородное поле
+        # действительно требовало сборки и решения системы Ньютона.
         relative = [float(s) for s in re.findall(r"Newton .*relative residual = ([\d.eE+-]+)",log)]
         if metadata[3] < 2 or len(relative) != metadata[3] or not all(r <= 1.e-5 for r in relative):
             raise AssertionError(f"{name}: incomplete BDF steps or Newton convergence reports: {relative}")
@@ -141,7 +141,7 @@ def verify(case, args):
     # большим числом итераций; BDF2 проходит также шаги с предыдущим слоем.
     for scheme in ("bdf1","bdf2"):
         options = [f"main:time_scheme={scheme}", "main:cfl=3", "main:report_every=1",
-                   "implicit:newton_max_iter=1", "implicit:newton_tol=1e-5"]
+                   "implicit:newton_max_iter=1", "implicit:newton_without_predictor=on", "implicit:newton_tol=1e-5"]
         if scheme == "bdf2":
             options += ["implicit:preconditioner=CSGS","implicit:jacobian_update_every=3",
                         "implicit:simplified_jacobian=on"]

@@ -117,6 +117,14 @@ def shear(case, args):
             local = opts + ["implicit:local_time_step=on", "main:report_every=1"]
             reference = solve(case, args, "shear-local", options=local)
             compare_backends(case, args, "shear-local", reference, local)
+            # При auto начальный газовый баланс можно взять из предыдущей
+            # проверки steady. Отчёт GPU использует тот же буфер: отчёт на
+            # каждом шаге и расчёт без него должны дать одно и то же поле.
+            auto = opts + ["implicit:local_time_step=auto", "implicit:steady_tol=.99",
+                           "implicit:local_time_step_residual_limit=cfl"]
+            reference = solve(case, args, "shear-auto", options=auto + ["main:report_every=0"])
+            compare_backends(case, args, "shear-auto", reference, auto + ["main:report_every=0"])
+            compare_backends(case, args, "shear-auto-report", reference, auto + ["main:report_every=1"])
             # На вытянутых ячейках сравниваем предиктор CSGS с независимой
             # сборкой Ньютона при том же шаге, допуске и переносе SA.
             csgs = local + ["implicit:preconditioner=CSGS", "implicit:simplified_jacobian=on"]

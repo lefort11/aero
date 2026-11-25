@@ -61,6 +61,8 @@ public:
 private:
     // Интегратор имеет доступ к внутренней сборке системы шага.
     friend class BdfStep;
+    // Отдаёт для межшаговой истории только векторы без совмещения с пространственным оператором.
+    KrylovScratch prediction_storage() const;
     // Ньютон уже измерил глобальную норму этой правой части. Передаём её в
     // BiCGSTAB, чтобы не делать вторую редукцию того же вектора на GPU и в MPI.
     LinearResult solve_with_rhs_norm(const double* b, double* x, const LinearTolerance& tolerance, double rhs_norm);

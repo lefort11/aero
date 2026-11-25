@@ -61,6 +61,7 @@ struct RunSettings {
     bool steady_absolute = false;         // Сравнивать норму напрямую или относительно начального поля.
     double local_time_step_max_ratio = 0.; // Предел dt_i/dt_min в steady. Ноль отключает ограничение.
     double local_time_step_neighbor_ratio = 0.; // Допустимое отношение шагов на двух концах одного ребра.
+    AdaptiveStepSettings adaptive_step; // Целевые изменения полей и множители узлового псевдошага.
     ResidualLimit local_time_step_residual_limit = ResidualLimit::Off; // Выбор местной проверки невязки и общей адаптации по работе BiCGSTAB.
     std::uint64_t local_time_step_probe_node = ~std::uint64_t(0); // Необязательный глобальный номер узла для отчёта.
     LocalStepMode local_time_step = LocalStepMode::Off; // Свой псевдошаг CFL в каждом узле при установлении.

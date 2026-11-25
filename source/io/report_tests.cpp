@@ -1,5 +1,6 @@
 #include "../parallel/fixed_matrix.h"
 #include "report.h"
+#include "steady_report.h"
 #include "../../tests/test_checks.h"
 #include "../explicit/explicit.h"
 #include <algorithm>
@@ -61,6 +62,15 @@ void table_example() {
     const char* names[] = {"rho", "ux", "uy", "p", "E"};
     // Столбцы эталона содержат минимум, максимум и сумму произведений значений на объёмы.
     const FixedMatrix<double,5,3> rows = {{1, 2, 1.75, -1, 2, -0.25, 0, 2, 1.5, 1, 2, 1.75, 4.5, 10, 8.625}};
+    // Те же два объёма в одной полосе ядра отчёта steady. Проверяем также
+    // нормировку суммы квадратов с разными знаками изменения энергии.
+    double partial[SteadyReport::Columns]{};
+    SteadyReport{2,1,2,1.4,previous.data(),current.data(),volumes,partial}(0);
+    for (unsigned k=0; k<5; ++k)
+        for (unsigned column=0; column<3; ++column)
+            require(std::abs(partial[6*column+k]-rows(k,column))<1.e-14,"steady report field");
+    require(std::abs(partial[18]*std::sqrt(partial[19]/partial[20])-std::sqrt(.000325))<1.e-14,
+            "steady report energy change");
     for (unsigned k = 0; k < 5; ++k) {
         std::string name;
         double lo, hi, integral;

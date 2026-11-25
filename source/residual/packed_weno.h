@@ -15,6 +15,8 @@ KOKKOS_FORCEINLINE_FUNCTION bool packed_slope(const WenoEdgeTile<order>& tile, u
     const auto values = [&](Index i, double* buffer) { return read(tile.nodes(first + static_cast<unsigned>(i), lane), buffer); };
     // Возвращает вес опоры в текущей строке реконструкции.
     const auto weight = [&](Index i) { return tile.weights(first - row + static_cast<unsigned>(i) - 1, lane); };
+    if (tile.order[lane].paired())
+        return reconstruction_detail::sum_slope<4>(4, 2, values, weight, result);
     return reconstruction_detail::sum_slope<4>(4, slope_terms(row), values, weight, result);
 }
 
@@ -169,11 +171,62 @@ KOKKOS_FORCEINLINE_FUNCTION void reconstruct_packed_traces(const Geometry& g, In
     }
 }
 
+// На гладком участке обе стороны MP5 могут принять линейный полином по каждой
+// характеристике. Тогда общая для пяти наклонов матрица перехода сокращается.
+// Достаточное условие ниже использует ту же короткую проверку, что и mp5::Candidate.
+template<unsigned order>
+KOKKOS_FORCEINLINE_FUNCTION bool plane_mp5_flux(const Geometry& g, const double* field, Index edge,
+        const WenoEdgeTile<order>& tile, unsigned lane, EulerFluxResult& out) {
+    PlaneEdge plane;
+    if (!plane.prepare(g,field,edge)) return false;
+    const auto read = [&](Index node, double*) { return field+4*node; };
+    FixedMatrix<double,5,4> slopes;
+    packed_slope<CentralSlope>(tile,lane,read,slopes.row(CentralSlope));
+    packed_slope<NearLeftSlope>(tile,lane,read,slopes.row(NearLeftSlope));
+    packed_slope<NearRightSlope>(tile,lane,read,slopes.row(NearRightSlope));
+    packed_slope<FarLeftSlope>(tile,lane,read,slopes.row(FarLeftSlope));
+    packed_slope<FarRightSlope>(tile,lane,read,slopes.row(FarRightSlope));
+    double amplitude=0.;
+    for (unsigned r=0; r<5; ++r) for (unsigned c=0; c<4; ++c) {
+        const double value=::fabs(slopes(r,c));
+        if (!(value<=max_finite_double)) return false;
+        amplitude=::fmax(amplitude,value);
+    }
+    const auto& basis=plane.basis;
+    const double velocity=::fabs(basis.velocity[0])+::fabs(basis.velocity[1]);
+    const double inv_sound=inverse_value(basis.sound_speed);
+    // Оценка нормы проекции следует из формул акустических волн, энтропии и
+    // касательного импульса. Компоненты единичной нормали по модулю не больше 1.
+    const double pressure=(g.options.gamma-1.)*(1.+velocity+basis.kinetic)*inv_sound*inv_sound;
+    const double momentum=2.+velocity;
+    const double bound=amplitude*(1.+pressure+momentum*(1.+inv_sound));
+    EdgeTraces traces;
+    if (bound<=4.e-6) {
+        // Сумма модулей весов полинома равна 4/3, а короткая граница не превосходит
+        // центрального наклона. Произведение в проверке MP5 строго меньше 1e-10.
+        for (unsigned c=0; c<4; ++c) {
+            const double center=slopes(CentralSlope,c), nl=slopes(NearLeftSlope,c), nr=slopes(NearRightSlope,c);
+            traces.left[c]=plane.left[c]+.5*mp5::linear(slopes(FarLeftSlope,c),nl,center,nr);
+            traces.right[c]=plane.right[c]-.5*mp5::linear(slopes(FarRightSlope,c),nr,center,nl);
+        }
+        return finish_edge_flux<true,true>(g,g.surfaces[edge],plane.left,plane.right,plane.gas,traces,nullptr,out);
+    }
+    // В зоне больших наклонов ограничиваем каждую характеристику в обычном
+    // порядке. Уже загруженные строки консервативного поля используются повторно.
+    for (unsigned r=0; r<5; ++r)
+        if (euler_detail::project_characteristic<2>(basis,plane.gas.normal,g.options.gamma,basis.kinetic,
+                slopes.row(r),slopes.row(r),inv_sound)!=EulerStatus::Success) return false;
+    reconstruct_packed_traces<5,true,false,0>(g,edge,slopes,traces);
+    return plane.flux(g,edge,traces,out);
+}
+
 // Вычисляет поток для полного двумерного шаблона. Геометрия ребра была подготовлена до начала интегрирования.
 template <unsigned scheme_order, bool use_mp5, bool use_mpweno, int hybrid_mode = -1>
 KOKKOS_FORCEINLINE_FUNCTION bool packed_edge_flux(const Geometry& g, const double* field, Index edge,
                                              const WenoEdgeTile<scheme_order>& tile, unsigned lane,
                                              EulerFluxResult& out) {
+    if (scheme_order == 5 && use_mp5 && !use_mpweno && hybrid_mode == 0)
+        return plane_mp5_flux(g,field,edge,tile,lane,out);
     PlaneEdge plane;
     FixedMatrix<double,WenoEdgeTile<scheme_order>::rows_per_edge,4> slopes;
     if (!prepare_edge_slopes(g, edge, field, tile, lane, plane, slopes))

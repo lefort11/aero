@@ -135,6 +135,16 @@ BdfLinearSystem::BdfLinearSystem(const residual_detail::Geometry& host, const re
                                    int device, const Partition& part) : storage_(new Storage(host, active, device, part)) {}
 // Возвращает максимальный модуль компоненты вектора по всем процессам.
 double BdfLinearSystem::infinity_norm(const double* values) const { return storage_->norm(values); }
+// Собственные векторы идут после заимствованных в порядке разметки конструктора.
+KrylovScratch BdfLinearSystem::prediction_storage() const {
+    const auto& s=*storage_;
+    const auto& w=s.work;
+    double* vectors[]={w.r,w.shadow,w.p,w.v,w.z,w.t};
+    KrylovScratch free;
+    for (unsigned i=s.matrix.partition().krylov_scratch.count;i<KrylovFieldCount;++i)
+        free.field[free.count++]=vectors[i];
+    return free;
+}
 // Освобождает принадлежащие объекту ресурсы при завершении его времени жизни.
 BdfLinearSystem::~BdfLinearSystem() = default;
 

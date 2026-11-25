@@ -416,6 +416,10 @@ void main_and_cuda(const CaseFiles& files) {
     require(read_run_settings(directories).implicit_settings.linear_max_iterations == 17, "custom BiCGSTAB limit");
     require(!bdf.implicit_settings.simplified_jacobian, "full LF derivative is the default");
     require(!bdf.implicit_settings.compact_jacobian, "full viscous stencil is the default");
+    require(!bdf.implicit_settings.without_predictor, "Newton predictor is enabled by default");
+    directories.overrides["implicit"]["newton_without_predictor"] = "on";
+    require(read_run_settings(directories).implicit_settings.without_predictor, "disable every Newton predictor");
+    directories.overrides["implicit"].erase("newton_without_predictor");
     directories.overrides["implicit"]["compact_jacobian"] = "on";
     require(read_run_settings(directories).implicit_settings.compact_jacobian, "compact viscous stencil");
     directories.overrides["implicit"]["simplified_jacobian"] = "on";
@@ -441,6 +445,9 @@ void main_and_cuda(const CaseFiles& files) {
     require(read_run_settings(directories).local_time_step_max_ratio == 0., "template disables the global step limit");
     files.write("implicit.txt", "# Use defaults for local step limits.\nsolver=BiCGSTAB\njacobian_flux=LF\npreconditioner=BJ\nsolver_tol=1e-8\nnewton_tol=1e-6\nnewton_max_iter=20\n");
     require(read_run_settings(directories).local_time_step_max_ratio == 0., "omitted global step limit");
+    const auto step_defaults = read_run_settings(directories).adaptive_step;
+    require(step_defaults.density==.01 && step_defaults.pressure==.01 && step_defaults.velocity==.01 &&
+            step_defaults.sa==.05 && step_defaults.min_factor==.5 && step_defaults.max_factor==1.25, "omitted auto step targets");
     files.write("implicit.txt", content.str());
     require(read_run_settings(directories).local_time_step_neighbor_ratio == 0., "edge step limit is optional");
     directories.overrides["implicit"]["local_time_step_neighbor_ratio"] = "2.5";
@@ -449,6 +456,13 @@ void main_and_cuda(const CaseFiles& files) {
     directories.overrides["implicit"]["local_time_step"] = "auto";
     require(read_run_settings(directories).local_time_step == LocalStepMode::Auto, "adaptive steady step");
     const auto default_feedback = read_run_settings(directories);
+    auto& options = directories.overrides["implicit"];
+    options["local_time_step_density_change"]="0.02"; options["local_time_step_pressure_change"]="0.03";
+    options["local_time_step_velocity_change"]="0.04"; options["local_time_step_sa_change"]="0.1";
+    options["local_time_step_min_factor"]="0.25"; options["local_time_step_max_factor"]="2";
+    const auto custom = read_run_settings(directories).adaptive_step;
+    require(custom.density==.02 && custom.pressure==.03 && custom.velocity==.04 &&
+            custom.sa==.1 && custom.min_factor==.25 && custom.max_factor==2., "read auto step targets");
     require(default_feedback.local_time_step_residual_limit == ResidualLimit::Off && default_feedback.local_time_step_probe_node == ~std::uint64_t(0),
             "residual limit and probe are optional");
     directories.overrides["implicit"]["local_time_step_residual_limit"] = "on";
@@ -462,6 +476,9 @@ void main_and_cuda(const CaseFiles& files) {
     directories.overrides["implicit"]["local_time_step_residual_limit"] = "WORK";
     require(read_run_settings(directories).local_time_step_residual_limit == ResidualLimit::Work &&
             std::string(residual_limit_name(ResidualLimit::Work)) == "work", "global step range by linear work");
+    directories.overrides["implicit"]["local_time_step_residual_limit"] = "CFL";
+    require(read_run_settings(directories).local_time_step_residual_limit == ResidualLimit::Cfl &&
+            std::string(residual_limit_name(ResidualLimit::Cfl)) == "cfl", "global step range with CFL scaling");
     directories.overrides["implicit"].erase("local_time_step_residual_limit");
     directories.overrides["implicit"].erase("local_time_step_probe_node");
     auto& ratio = directories.overrides["implicit"]["local_time_step_max_ratio"];
@@ -505,8 +522,11 @@ void main_and_cuda(const CaseFiles& files) {
     directories.overrides["implicit"].erase("steady_tol");
     for (const auto& bad : std::vector<std::pair<std::string, std::string>>{
          {"local_time_step","adaptive"}, {"local_time_step_residual_limit","maybe"}, {"local_time_step_probe_node","-1"}, {"local_time_step_max_ratio","0.9"}, {"local_time_step_max_ratio","nan"},
+         {"local_time_step_density_change","0"}, {"local_time_step_pressure_change","nan"},
+         {"local_time_step_velocity_change","-0.1"}, {"local_time_step_sa_change","inf"},
+         {"local_time_step_min_factor","1.1"}, {"local_time_step_max_factor","0.9"},
          {"local_time_step_neighbor_ratio","0.75"}, {"local_time_step_neighbor_ratio","inf"}, {"steady_criterion","unknown"}, {"steady_tol","1"}, {"steady_max_steps","0"},
-         {"jacobian_update_every","-2"}, {"simplified_newton","maybe"}, {"simplified_jacobian","maybe"}, {"compact_jacobian","maybe"}, {"solver","gmres"}, {"jacobian_flux","unknown"}, {"preconditioner","unknown"},
+         {"predictor_history_order","7"}, {"newton_without_predictor","maybe"}, {"jacobian_update_every","-2"}, {"simplified_newton","maybe"}, {"simplified_jacobian","maybe"}, {"compact_jacobian","maybe"}, {"solver","gmres"}, {"jacobian_flux","unknown"}, {"preconditioner","unknown"},
          {"solver_max_iter","0"}, {"solver_max_iter","2.5"}, {"solver_max_iter","-1"}, {"solver_tol","0"}, {"newton_tol","1"}, {"newton_max_iter","0"}, {"newton_max_iter","2.5"}}) {
         directories.overrides["implicit"][bad.first] = bad.second;
         rejects([&] { read_run_settings(directories); }, bad.first);

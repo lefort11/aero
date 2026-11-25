@@ -9,7 +9,7 @@ namespace implicit {
 // Поля текущего шага. Один вызов обрабатывает все компоненты одного узла.
 struct NewtonUpdate {
     // Операции над узловыми полями на этапах решения уравнения Ньютона.
-    enum Operation { InitialRhs, FormRhs, AddCorrection, PredictCorrection, RestoreStart, Predict, RelaxPrediction, UndoPrediction, SpatialRate };
+    enum Operation { InitialRhs, SavedInitialRhs, FormRhs, AddCorrection, PredictCorrection, RestoreStart, Predict, RelaxPrediction, UndoPrediction, SpatialRate, MassNorm };
     // Связность для сборки узловой невязки.
     residual_detail::Geometry grid;
     const EulerFluxResult* flux; // Потоки в тех же ориентациях, что при явном обновлении.
@@ -32,7 +32,18 @@ struct NewtonUpdate {
     // spatial[k] содержит сумму исходящих потоков через все грани контрольного объёма.
     template<unsigned width>
     AERO_HOST_DEVICE double residual_norm(MeshIndex row) const {
+        if (operation == MassNorm) return ::fabs(rhs[row*width]);
         const MeshIndex node = owned ? owned[row] : row;
+        if (operation == SavedInitialRhs) {
+            // В начале BDF1 временной член равен нулю. Подписанный баланс
+            // принятого слоя уже лежит в rhs после проверки критерия steady.
+            double largest = 0.;
+            for (unsigned k = 0; k < width; ++k) {
+                start[row*width+k] = state[node*width+k];
+                accumulate_infinity_norm(rhs[row*width+k], largest);
+            }
+            return largest;
+        }
         double spatial[width] = {};
         const bool valid = residual_detail::assemble_node_residual<width>(grid, node, flux, spatial);
         double largest = 0.;
@@ -73,8 +84,10 @@ struct NewtonUpdate {
             double& current = state[node * width + k];
             switch (operation) {
             case InitialRhs:
+            case SavedInitialRhs:
             case FormRhs:
             case SpatialRate: return; // Эти операции обслуживает residual_norm().
+            case MassNorm: return;    // Читает уже сохранённую компоненту непрерывности.
             case RestoreStart: current = start[i]; break;
             case Predict:
                 // Один шаг последовательных приближений к балансу BDF. Обратная
