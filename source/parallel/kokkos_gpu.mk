@@ -44,7 +44,10 @@ $(gpu_config): $(kokkos_stamp) source/parallel/kokkos_gpu.mk | $(llvm_ready)
 	@test -s "$@" && touch "$@"
 
 gpu_units := $(gpu_core_units) source/parallel/device_work.cpp source/parallel/device_runtime.cpp source/parallel/device_memory.cpp tests/device_cases.cpp
-kokkos_device_objects := $(addprefix $(gpu_objdir)/,$(addsuffix .o,$(basename $(notdir $(gpu_units)))))
+# Для исходников Aero сохраняем расширение в имени объекта и его .d.
+# После переименования .cu в .cpp make не подключит зависимости прежнего исходника.
+gpu_object = $(gpu_objdir)/$(if $(filter $(gpu_core_units),$(1)),$(basename $(notdir $(1))),$(notdir $(1))).o
+kokkos_device_objects := $(foreach unit,$(gpu_units),$(call gpu_object,$(unit)))
 gpu_flags := -std=c++11 -O3 -I"$(gpu_config_dir)" -I"$(gpu_core)" \
              -I"$(kokkos_source)/containers/src" -DAERO_MIXED_LINEAR=$(MIXED_LINEAR)
 ifeq ($(STATIC_LINK),1)
@@ -53,7 +56,7 @@ endif
 
 # У каждого объекта свой исходник и свой список фактически включённых заголовков.
 # Публикуем объект последним: прерванная компиляция не затрёт рабочую копию.
-$(foreach unit,$(gpu_units),$(eval $(gpu_objdir)/$(basename $(notdir $(unit))).o: $(unit)))
+$(foreach unit,$(gpu_units),$(eval $(call gpu_object,$(unit)): $(unit)))
 gpu_unit = $(firstword $(filter $(gpu_units),$^))
 ifeq ($(OS),Windows_NT)
 include source/parallel/kokkos_gpu_mingw.mk
