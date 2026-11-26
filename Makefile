@@ -198,7 +198,7 @@ $(BIN)/%: $(BUILD)/% publish-programs | bin-runtime
 $(BUILD):
 	mkdir -p "$(BUILD)"
 
-$(BUILD)/mesh_tests.o $(DEBUG_TEST): tests/test_checks.h
+$(BUILD)/mesh_tests.o $(DEBUG_TEST): tests/test_checks.h tests/test_suite.h tests/mesh_fixture.h tests/test_files.h
 
 include source/io/io.mk
 

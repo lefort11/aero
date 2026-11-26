@@ -54,7 +54,7 @@ KOKKOS_INLINE_FUNCTION void project(const FaceBatch& batch, Index face, MpEdgeTi
 constexpr unsigned team_size = 256;
 static_assert((team_size & (team_size - 1)) == 0, "Kokkos team_scan requires a power-of-two team size");
 constexpr unsigned warp_size = edge_tile::width;
-using Teams = Kokkos::TeamPolicy<Kokkos::DefaultExecutionSpace, Kokkos::LaunchBounds<team_size>>;
+
 
 // Очередь нелинейных весов MPWENO5 с раздельными массивами компонент для GPU.
 struct WeightQueue {
@@ -91,14 +91,16 @@ struct WeightQueue {
 
 // Второй проход. Четыре последовательные группы по 32 потока разбирают одну
 // плитку: в каждой группе одна волна, у каждого потока своё ребро.
-template <bool correction>
-inline void reconstruct_waves(const Kokkos::DefaultExecutionSpace& exec, MpEdgeTile* tiles, Index faces, double alpha) {
+template <bool correction, class Space>
+inline void reconstruct_waves(const Space& exec, MpEdgeTile* tiles, Index faces, double alpha) {
     const Index tiles_count = edge_tile::count(faces);
     const Index teams_count = (tiles_count * 4 * warp_size + team_size - 1) / team_size;
-    Teams policy(exec, teams_count, team_size, 1);
+    using Teams = Kokkos::TeamPolicy<Space, Kokkos::LaunchBounds<team_size>>;
+    // Порция ограничена batch_limit, поэтому число команд помещается в int политики.
+    Teams policy(exec, static_cast<int>(teams_count), team_size, 1);
     policy.set_scratch_size(0, Kokkos::PerTeam(sizeof(WeightQueue)));
     Kokkos::parallel_for("Aero: MPWENO5 wave pairs", policy,
-        KOKKOS_LAMBDA(const Teams::member_type& team) {
+        KOKKOS_LAMBDA(const typename Teams::member_type& team) {
             auto& queue = *static_cast<WeightQueue*>(team.team_scratch(0).get_shmem(sizeof(WeightQueue)));
             const unsigned rank = team.team_rank(), lane = edge_tile::lane(rank);
             const Index task = team_size * static_cast<Index>(team.league_rank()) + rank;
@@ -159,7 +161,8 @@ inline void reconstruct_waves(const Kokkos::DefaultExecutionSpace& exec, MpEdgeT
 
 // Поправка задана для всего расчёта. Выбираем формулу один раз на пакет рёбер,
 // чтобы каждой стороне не приходилось проверять один и тот же параметр.
-inline void reconstruct(const Kokkos::DefaultExecutionSpace& exec, MpEdgeTile* tiles, Index faces, Mp5Settings settings) {
+template<class Space>
+inline void reconstruct(const Space& exec, MpEdgeTile* tiles, Index faces, Mp5Settings settings) {
     if (settings.correction)
         reconstruct_waves<true>(exec, tiles, faces, settings.alpha);
     else

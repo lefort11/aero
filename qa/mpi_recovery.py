@@ -10,7 +10,7 @@ import zlib
 from mpi_euler import free_patch, check_output, close, launch, stamp
 from mpi_geometry import legacy_archive, run, sparse_line
 from mpi_periodic import report_rows
-from run import nodes, read_snapshot, settings
+from run import nodes, read_snapshot, settings, write_settings
 
 
 def conservative_file(source, target, count, names):
@@ -46,7 +46,7 @@ def verify(case, aero, meshdec, launcher):
 
     def configure(mesh_name, end, interval):
         options.update(mesh=mesh_name, final_time=end, recovery_every_steps=interval)
-        (case / "main.txt").write_text("".join(f"{k} = {v}\n" for k, v in options.items()))
+        write_settings(case / "main.txt", options)
 
     def zone(name, timing, fmt="text", multi=1):
         return (
@@ -275,7 +275,7 @@ def verify_sparse_batches(case, aero, meshdec, launcher):
     # Создаёт файлы и параметры тестовой постановки для выбранного сценария.
     def configure(mesh_name, end, weights):
         options.update(mesh=mesh_name, final_time=end, mpi_rank_weights=weights)
-        (case / "main.txt").write_text("".join(f"{k} = {v}\n" for k, v in options.items()))
+        write_settings(case / "main.txt", options)
 
     run([meshdec, mesh, case / "grid.mdec", "--target-ranks=16"])
     native, mpi = case / "native", case / "mpi"

@@ -1,3 +1,4 @@
+#include "matrix_execution.h"
 #include "block_jacobi.h"
 #include "block_jacobi_detail.h"
 #include "../parallel/parallel_for.h"
@@ -83,20 +84,19 @@ void BlockJacobi::prepare(const double* diagonal, const MeshIndex* row_starts) {
         s.blocks.diagonal = diagonal;
         s.blocks.rows = row_starts;
     }
-    if (s.device == -1) {
-        parallel_for(s.blocks.nodes, [&](std::size_t node) {
-            if (!s.blocks.factor_node(node, diagonal, row_starts))
-                throw bad_diagonal(node);
-        });
-    }
+    if (s.blocks.nodes) {
+        MeshIndex bad;
 #ifdef AERO_WITH_KOKKOS_GPU
-    else if (s.blocks.nodes) {
-        MeshIndex first_bad;
-        device_work::check(device_work::aero_device_jacobi_factor(s.device, s.blocks, diagonal, row_starts, &first_bad));
-        if (first_bad < s.blocks.nodes)
-            throw bad_diagonal(first_bad);
-    }
+        if (s.device >= 0)
+            device_work::check(device_work::aero_device_jacobi_factor(s.device,s.blocks,diagonal,row_starts,&bad));
+        else
 #endif
+        {
+            host_parallel::ensure_runtime();
+            matrix_rows::factor(host_parallel::Execution(),s.blocks,diagonal,row_starts,&bad);
+        }
+        if (bad < s.blocks.nodes) throw bad_diagonal(bad);
+    }
     s.ready = true;
 }
 
@@ -115,9 +115,8 @@ void BlockJacobi::apply(const double* residual, double* correction) const {
     if (!residual || !correction)
         throw std::invalid_argument("Block Jacobi: missing input or output vector");
     if (s.device == -1) {
-        parallel_for(s.blocks.nodes, [&](std::size_t node) {
-            s.blocks.solve_node(node, residual, correction);
-        });
+        host_parallel::ensure_runtime();
+        matrix_rows::solve(host_parallel::Execution(),s.blocks,residual,correction);
     }
 #ifdef AERO_WITH_KOKKOS_GPU
     else {

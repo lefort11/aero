@@ -32,20 +32,12 @@ struct SteadyReport {
             const double v=volume[i];
             weight+=v;
             for (unsigned k=0; k<=width; ++k) {
-                const double value=sampled[k<=dim ? k : k==width ? 5 : 4];
-                low[k]=::fmin(low[k],value);
-                high[k]=::fmax(high[k],value);
-                sum[k]+=v*value;
+                const double value=sampled[diagnostic::report_column(dim,k)];
+                diagnostic::accumulate_column(value,v,low[k],high[k],sum[k]);
             }
             const double delta=::fabs(sampled[5]-start[i*width+width-1]);
-            if (delta>scale) {
-                const double ratio=scale/delta;
-                squares=v+squares*ratio*ratio;
-                scale=delta;
-            } else if (delta>0.) {
-                const double ratio=delta/scale;
-                squares+=v*ratio*ratio;
-            }
+            if (delta > 0.)
+                diagnostic::add_scaled_square(delta, v, scale, squares);
         }
         for (unsigned k=0; k<=width; ++k) {
             partial[k*strips+lane]=low[k];

@@ -30,6 +30,9 @@ struct RejectedGasState {
     std::vector<MeshIndex> local_nodes;
     // Полное число зарегистрированных недопустимых состояний.
     std::size_t total;
+    // Согласует число отказов всех рангов до перехода к обработке неудачного шага.
+    static void check(const Processes& world, std::vector<MeshIndex>& failed);
+
 };
 namespace residual_detail { struct FluxCfl; }
 // Пространственный оператор одной подобласти. Сетка и её владельцы живут дольше оператора.
@@ -105,7 +108,8 @@ public:
     // Сохраняет поле перед попыткой шага или восстанавливает его после отказа.
     void copy_backup(std::vector<double>& state, std::vector<double>& backup, bool restore);
     // Собирает номера узлов с недопустимым газодинамическим состоянием.
-    void failed_nodes(const std::vector<double>& state, std::vector<Id>& failed, bool implicit);
+    // Возвращает true, если за эту проверку подготовлен газ всех узлов для следующего пакета потоков.
+    bool failed_nodes(const std::vector<double>& state, std::vector<Id>& failed, bool implicit);
     // Собирает значения только собственных узлов в компактный буфер.
     void copy_owned(const std::vector<double>& state, std::vector<double>& compact) const;
 #ifdef AERO_WITH_KOKKOS_GPU
@@ -121,7 +125,7 @@ public:
     // Вычисляет потоки на принадлежащих процессу поверхностях и получает остальные от соседей.
     bool assemble_fluxes(const std::vector<double>& u, const std::vector<double>& initial,
                          SolverTimings& timing, bool trial = false, bool retry_boundary = false,
-                         bool solve_trial_sa = false);
+                         bool solve_trial_sa = false, bool validated_gas = false);
     // Находит допустимый шаг по собственным узлам и берёт минимум по всем процессам.
     double cfl_step(double cfl);
     // После отказа повторяем ту же попытку с половиной фактически использованного шага.
@@ -196,7 +200,7 @@ public:
     // Выполняет неявный шаг газа с согласованным обновлением турбулентности.
     implicit::NewtonResult advance_bdf(std::vector<double>& state, const std::vector<double>& initial,
                                         double dt, const implicit::NewtonSettings& settings,
-                                        SolverTimings& timing, const std::function<void()>& validate);
+                                        SolverTimings& timing, const std::function<bool()>& validate);
     // Обновляет собственные узлы на одной стадии интегратора.
     void update_owned(explicit_detail::Stage stage, std::vector<double>& start, double dt,
                       std::vector<double>& state, bool save_original);

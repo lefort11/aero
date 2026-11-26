@@ -1,3 +1,4 @@
+#include "stage_execution.h"
 #include "explicit.h"
 #include "stage_sequence.h"
 #include "../parallel/kokkos_host.h"
@@ -114,17 +115,8 @@ struct ExplicitIntegrator::Impl {
         } else
 #endif
         {
-            const auto count = static_cast<std::ptrdiff_t>(size);
-            if (size >= 4096) {
-                // Каждая компонента обновляется ровно один раз. Любая ошибка отклоняет стадию.
-                host_parallel::ensure_runtime();
-                Kokkos::parallel_reduce("Aero: update stage", host_parallel::Range(0, size),
-                    [&](std::size_t k, int& flags) { flags |= !update.apply(k); }, Kokkos::BOr<int>(bad));
-            } else
-            for (std::ptrdiff_t k = 0; k < count; ++k) {
-                if (!update.apply(static_cast<std::size_t>(k)))
-                    bad = 1;
-            }
+            host_parallel::ensure_runtime();
+            explicit_detail::update_field(host_parallel::Execution(),update,size,&bad);
         }
         if (bad)
             throw std::domain_error("non-finite explicit stage");

@@ -1,7 +1,7 @@
 #include "bdf1_linear_system.h"
 #include "block_jacobi.h"
 #include "spatial_jacobian.h"
-#include "../parallel/parallel_for.h"
+#include "row_execution.h"
 #include "bicgstab_vectors.h"
 #include "workspace.h"
 #include <algorithm>
@@ -44,13 +44,7 @@ struct BdfLinearSystem::Storage {
 
     // Выполняет выбранную поэлементную операцию BiCGSTAB на CPU или GPU.
     void update(const KrylovUpdate& operation) const {
-#ifdef AERO_WITH_KOKKOS_GPU
-        if (device >= 0) {
-            device_work::check(device_work::aero_device_krylov_update(device, count, operation));
-            return;
-        }
-#endif
-        parallel_for(count, operation);
+        apply_rows(device, count, operation);
     }
     // Вычисляет локальное скалярное произведение или максимальную норму на выбранном исполнителе.
     double local_reduction(const double* x, const double* y) const {
@@ -84,17 +78,12 @@ struct BdfLinearSystem::Storage {
         return value;
     }
     // Обновляет векторы BiCGSTAB и одновременно вычисляет глобальную норму невязки.
-    double update_norm(const KrylovUpdate& step) const {
-        const auto& part=matrix.partition();
-        double norm=0.;
-        part.local([&] {
-#ifdef AERO_WITH_KOKKOS_GPU
-            if (device>=0) { device_work::check(device_work::aero_device_krylov_update_norm(device,count,step,&norm)); return; }
-#endif
-            host_parallel::ensure_runtime();
-            norm=krylov_update_norm(host_parallel::Execution(),count,step);
-        });
-        return part.reduce ? part.reduce(norm,true) : norm;
+    double update_norm(const KrylovUpdate& operation) const {
+        // Для CPU тип исполнителя фиксирован, поэтому вызов исходного ядра встраивается.
+        return measure_rows(matrix.partition(), device, count, operation,
+                            [](const host_parallel::Execution& exec, MeshIndex length, const KrylovUpdate& row) {
+                                return krylov_update_norm(exec, length, row);
+                            });
     }
     // Вычисляет коэффициент стабилизации BiCGSTAB из глобальных скалярных произведений.
     double omega_projection() const {

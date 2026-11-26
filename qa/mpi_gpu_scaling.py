@@ -12,7 +12,7 @@ import time
 from mpi_euler import launch
 from mpi_fields import binary_snapshot
 from mpi_geometry import run, sparse_line
-from run import settings
+from run import settings, write_settings
 
 
 def benchmark(work, aero, meshdec, launcher, devices):
@@ -51,7 +51,7 @@ def benchmark(work, aero, meshdec, launcher, devices):
     for repeat in range(3):
         for mode, cards, weights in modes[repeat:] + modes[:repeat]:
             options["mpi_rank_weights"] = weights
-            (case / "main.txt").write_text("".join(f"{k} = {v}\n" for k, v in options.items()))
+            write_settings(case / "main.txt", options)
             (case / "cuda.txt").write_text("devices = " + ",".join(cards) + "\n")
             out = work / f"{mode}-{repeat+1}"
             start = time.perf_counter()

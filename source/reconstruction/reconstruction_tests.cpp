@@ -22,8 +22,7 @@ std::vector<std::pair<std::string, std::function<void()>>> tests;
 using aero_test::require;
 // Проверяет совпадение чисел в пределах заданного допуска.
 void near(double actual, double expected, double tolerance = 2.e-11) {
-    require(std::abs(actual - expected) <= tolerance * (1 + std::abs(expected)),
-            "Expected " + std::to_string(expected) + ", got " + std::to_string(actual));
+    aero_test::require_close(actual, expected, tolerance, false);
 }
 // Проверяет, что некорректный ввод завершается ожидаемой ошибкой.
 template <class F> void rejects(F operation) {
@@ -276,6 +275,62 @@ struct Builder {
         return Mesh(d);
     }
 };
+// Применяет один поворот, перенос и масштаб для сравнения инвариантности схем реконструкции.
+Mesh transform_test_mesh(const Mesh& original, double scale) {
+    MeshData d = original.data();
+    for (std::size_t i = 0; i < d.x.size(); ++i) {
+        const double x = d.x[i], y = d.y[i], z = d.z[i];
+        d.x[i] = scale * (3 + 0.6 * x - 0.8 * y);
+        d.y[i] = scale * (-5 + 0.8 * x + 0.6 * y);
+        d.z[i] = scale * (7 + z);
+    }
+    return Mesh(d);
+}
+
+// Строит вогнутую ячейку с выемкой. Тест выбирает, добавить ли в неё соседнюю ячейку.
+Builder concave_test_polygon() {
+    Builder b;
+    b.d.dimension = 2;
+    b.node(-3, -1);
+    b.node(-2, -1);
+    b.node(-2, 1);
+    b.node(0, 1);
+    b.node(0, 0);
+    b.node(1, 0);
+    b.node(1, 2);
+    b.node(-3, 2);
+    b.polygon({0, 1, 2, 3, 4, 5, 6, 7});
+    return b;
+}
+
+// Находит ориентированное ребро контрольной сетки и сообщает об ошибке в её построении.
+ReconstructionIndex test_edge(const Mesh& mesh, MeshIndex begin, MeshIndex end) {
+    for (ReconstructionIndex e = 0; e < mesh.edge_begin().size(); ++e)
+        if (mesh.edge_begin()[e] == begin && mesh.edge_end()[e] == end) return e;
+    throw std::runtime_error("Missing directed test edge");
+}
+
+// Семь узлов с неравномерным вторым слоем служат общей геометрией для WENO5 и EBR5.
+Mesh virtual_point_test_mesh() {
+    Builder b;
+    b.d.dimension = 2;
+    b.node(0, 0);
+    b.node(1, 0);
+    b.node(-1, -1);
+    b.node(-1, 1);
+    b.node(-3, -1);
+    b.node(-2, 1);
+    b.node(2, 0);
+    b.polygon({0, 3, 2});
+    b.polygon({2, 3, 5});
+    b.polygon({2, 5, 4});
+    b.polygon({0, 1, 3});
+    b.polygon({0, 2, 1});
+    b.polygon({1, 6, 3});
+    b.polygon({1, 2, 6});
+    return b.finish();
+}
+
 // Создаёт одномерную сетку для проверки алгоритма.
 Mesh line(const std::vector<double>& x) {
     MeshData d;
@@ -373,6 +428,12 @@ Mesh prism(bool concave, unsigned layers = 4) {
         b.cell(shell);
     }
     return b.finish();
+}
+
+// Набор одно-, двух- и трёхмерных сеток для одинаковых проверок полных шаблонов.
+std::vector<Mesh> reconstruction_test_meshes() {
+    return {line({0, 0.1, 0.7, 2, 4, 5, 9}), plane(true, 7, 7), plane(false, 7, 7),
+            volume(true, 6), volume(false, 6), prism(true, 6)};
 }
 // Вычисляет аналитические значения поля на узлах тестовой сетки.
 std::vector<double> values(const Mesh& mesh, ReconstructionIndex components, bool affine) {
@@ -792,26 +853,8 @@ void register_weno_formulas() {
         }
     });
     add("WENO5 virtual points use divided differences of second-layer values", [] {
-        Builder b;
-        b.d.dimension = 2;
-        b.node(0, 0);
-        b.node(1, 0);
-        b.node(-1, -1);
-        b.node(-1, 1);
-        b.node(-3, -1);
-        b.node(-2, 1);
-        b.node(2, 0);
-        b.polygon({0, 3, 2});
-        b.polygon({2, 3, 5});
-        b.polygon({2, 5, 4});
-        b.polygon({0, 1, 3});
-        b.polygon({0, 2, 1});
-        b.polygon({1, 6, 3});
-        b.polygon({1, 2, 6});
-        const Mesh m = b.finish();
-        ReconstructionIndex e = 0;
-        while (!(m.edge_begin()[e] == 0 && m.edge_end()[e] == 1))
-            ++e;
+        const Mesh m = virtual_point_test_mesh();
+        const auto e = test_edge(m, 0, 1);
         ReconstructionOptions o;
         o.scheme = ReconstructionScheme::Weno5;
         const ReconstructionStencil s = prepare_reconstruction(m, o);
@@ -848,17 +891,7 @@ void register_weno_formulas() {
         }
     });
     add("WENO layer search selects farthest positive intersection", [] {
-        Builder b;
-        b.d.dimension = 2;
-        b.node(-3, -1);
-        b.node(-2, -1);
-        b.node(-2, 1);
-        b.node(0, 1);
-        b.node(0, 0);
-        b.node(1, 0);
-        b.node(1, 2);
-        b.node(-3, 2);
-        b.polygon({0, 1, 2, 3, 4, 5, 6, 7});
+        Builder b = concave_test_polygon();
         // Заполняем выемку ячейкой: луч идёт через внутреннюю грань на расстоянии 2
         // и достигает допустимой внешней опоры на расстоянии 3.
         b.node(0, -1);
@@ -867,9 +900,7 @@ void register_weno_formulas() {
         ReconstructionOptions o;
         o.scheme = ReconstructionScheme::Weno3;
         const ReconstructionStencil s = prepare_reconstruction(m, o);
-        ReconstructionIndex e = 0;
-        while (!(m.edge_begin()[e] == 4 && m.edge_end()[e] == 5))
-            ++e;
+        const auto e = test_edge(m, 4, 5);
         require(s.data().side_scheme[2 * e] == ReconstructionSideScheme::Weno3,
                 "Missing WENO first-layer hit");
         near(s.data().outer_distance[2 * e], 3); // Пересечения на расстояниях 2 и 3.
@@ -882,16 +913,25 @@ void register_weno_formulas() {
     });
 }
 
+// Проверяет точность одной схемы на одинаковом наборе сеток. Каждая сетка
+// освобождается после своего теста, включая самые крупные трёхмерные сетки.
+void check_affine_meshes(ReconstructionScheme scheme) {
+    affine_test(line({0, 0.1, 0.7, 2, 4, 5, 9}), true, scheme);
+    for (bool simplices : {true, false})
+        affine_test(plane(simplices, 7, 7), true, scheme);
+    for (bool simplices : {true, false})
+        affine_test(volume(simplices, 6), true, scheme);
+    for (bool concave : {false, true})
+        affine_test(prism(concave, 6), true, scheme);
+}
+
 // Общие задачи для третьего и пятого порядков WENO на разных сетках.
 void register_weno_schemes() {
     for (ReconstructionScheme scheme :
          std::vector<ReconstructionScheme>{ReconstructionScheme::Weno3, ReconstructionScheme::Weno5}) {
         const std::string name = scheme == ReconstructionScheme::Weno3 ? "WENO3" : "WENO5";
         add(name + " affine fields on nonuniform 1D, simplices and polytopes", [scheme] {
-            for (const Mesh& m :
-                 std::vector<Mesh>{line({0, 0.1, 0.7, 2, 4, 5, 9}), plane(true, 7, 7), plane(false, 7, 7),
-                                   volume(true, 6), volume(false, 6), prism(false, 6), prism(true, 6)})
-                affine_test(m, true, scheme);
+            check_affine_meshes(scheme);
         });
         add(name + " constants, offset invariance and reversal", [scheme] {
             ReconstructionOptions o;
@@ -1062,29 +1102,11 @@ void register_ebr5() {
         near(s.data().far_distance[5], 9);
     });
     add("EBR5 shares the WENO5 virtual points and optimal linear coefficients", [] {
-        Builder b;
-        b.d.dimension = 2;
-        b.node(0, 0);
-        b.node(1, 0);
-        b.node(-1, -1);
-        b.node(-1, 1);
-        b.node(-3, -1);
-        b.node(-2, 1);
-        b.node(2, 0);
-        b.polygon({0, 3, 2});
-        b.polygon({2, 3, 5});
-        b.polygon({2, 5, 4});
-        b.polygon({0, 1, 3});
-        b.polygon({0, 2, 1});
-        b.polygon({1, 6, 3});
-        b.polygon({1, 2, 6});
-        const Mesh m = b.finish();
+        const Mesh m = virtual_point_test_mesh();
         ReconstructionOptions o;
         o.scheme = ReconstructionScheme::Ebr5;
         const ReconstructionStencil s = prepare_reconstruction(m, o);
-        ReconstructionIndex e = 0;
-        while (!(m.edge_begin()[e] == 0 && m.edge_end()[e] == 1))
-            ++e;
+        const auto e = test_edge(m, 0, 1);
         require(s.data().side_scheme[2 * e] == ReconstructionSideScheme::Ebr5,
                 "Missing virtual-point EBR5 stencil");
         // В обоих пересечениях слева значение равно 8. Дальний наклон равен нулю.
@@ -1101,10 +1123,7 @@ void register_ebr5() {
                 "Expected right-side downgrade only");
     });
     add("EBR5 affine fields in 1D/2D/3D", [] {
-        for (const Mesh& m :
-             std::vector<Mesh>{line({0, 0.1, 0.7, 2, 4, 5, 9}), plane(true, 7, 7), plane(false, 7, 7),
-                               volume(true, 6), volume(false, 6), prism(false, 6), prism(true, 6)})
-            affine_test(m, true, ReconstructionScheme::Ebr5);
+        check_affine_meshes(ReconstructionScheme::Ebr5);
     });
     add("EBR5 downgrade metadata and strict mode", [] {
         const Mesh m = line({0, 1, 2, 3, 4, 5});
@@ -1189,14 +1208,8 @@ void register_ebr5() {
         const auto input = values(m, 3, false);
         const TestResult expected = reconstruct_all_sides(s, input, 3);
         for (double scale : std::vector<double>{1.e-8, 1.e8}) {
-            MeshData d = m.data();
-            for (std::size_t i = 0; i < d.x.size(); ++i) {
-                const double x = d.x[i], y = d.y[i], z = d.z[i];
-                d.x[i] = scale * (3 + 0.6 * x - 0.8 * y);
-                d.y[i] = scale * (-5 + 0.8 * x + 0.6 * y);
-                d.z[i] = scale * (7 + z);
-            }
-            const ReconstructionStencil transformed = prepare_reconstruction(Mesh(d), o);
+            const Mesh transformed_mesh = transform_test_mesh(m, scale);
+            const ReconstructionStencil transformed = prepare_reconstruction(transformed_mesh, o);
             require(transformed.data().side_scheme == s.data().side_scheme,
                     "EBR5 downgrade changed under rigid transform/scale");
             same(expected, reconstruct_all_sides(transformed, input, 3));
@@ -1481,22 +1494,10 @@ void register_ebr3() {
         affine_test(b.finish(), false);
     });
     add("ray cannot jump outside a concave polygon", [] {
-        Builder b;
-        b.d.dimension = 2;
-        b.node(-3, -1);
-        b.node(-2, -1);
-        b.node(-2, 1);
-        b.node(0, 1);
-        b.node(0, 0);
-        b.node(1, 0);
-        b.node(1, 2);
-        b.node(-3, 2);
-        b.polygon({0, 1, 2, 3, 4, 5, 6, 7});
+        Builder b = concave_test_polygon();
         const Mesh m = b.finish();
         const ReconstructionStencil s = prepare_reconstruction(m);
-        ReconstructionIndex e = 0;
-        while (!(m.edge_begin()[e] == 4 && m.edge_end()[e] == 5))
-            ++e;
+        const auto e = test_edge(m, 4, 5);
         require(s.data().complete[2 * e] == 0, "Ray incorrectly jumped across the exterior gap");
     });
     add("all 3D interior-node sides have complete stencils", [] {
@@ -1546,9 +1547,7 @@ void register_ebr3() {
         b.polygon({0, 2, 1});
         const Mesh m = b.finish();
         const ReconstructionStencil s = prepare_reconstruction(m);
-        ReconstructionIndex e = 0;
-        while (!(m.edge_begin()[e] == 0 && m.edge_end()[e] == 1))
-            ++e;
+        const auto e = test_edge(m, 0, 1);
         const TestResult r = reconstruct_all_sides(s, {2, 8, 5, 11}, 1);
         // Интерполированное внешнее значение равно (2/3)·5 + (1/3)·11 = 7 при h = d = 1.
         near(r.left_increment2[e], 7.0 / 3);
@@ -1560,14 +1559,8 @@ void register_ebr3() {
         const auto input = values(original, 3, false);
         const TestResult expected = reconstruct_all_sides(ref, input, 3);
         for (double scale : std::vector<double>{1.e-8, 1.e8}) {
-            MeshData d = original.data();
-            for (std::size_t i = 0; i < d.x.size(); ++i) {
-                const double x = d.x[i], y = d.y[i], z = d.z[i];
-                d.x[i] = scale * (3 + 0.6 * x - 0.8 * y);
-                d.y[i] = scale * (-5 + 0.8 * x + 0.6 * y);
-                d.z[i] = scale * (7 + z);
-            }
-            same(expected, reconstruct_all_sides(prepare_reconstruction(Mesh(d)), input, 3));
+            const Mesh transformed_mesh = transform_test_mesh(original, scale);
+            same(expected, reconstruct_all_sides(prepare_reconstruction(transformed_mesh), input, 3));
         }
     });
     add("barycentric interpolation at a virtual 3D point", [] {
@@ -1581,9 +1574,7 @@ void register_ebr3() {
         b.tetra(0, 1, 2, 3);
         const Mesh m = b.finish();
         const ReconstructionStencil s = prepare_reconstruction(m);
-        ReconstructionIndex e = 0;
-        while (!(m.edge_begin()[e] == 0 && m.edge_end()[e] == 1))
-            ++e;
+        const auto e = test_edge(m, 0, 1);
         near(reconstruct_all_sides(s, {2, 8, 5, 11, 20}, 1).left_increment2[e], 2.0 / 3);
         near(s.data().outer_distance[2 * e], 1);
     });
@@ -1710,6 +1701,17 @@ void register_lifetime_and_errors() {
 }
 
 // Запускает проверки модуля и возвращает ненулевой код при ошибке.
+// Сравнивает CPU и GPU для переменного числа компонент и двух видов поля.
+// Один объект GPU обслуживает последовательные вызовы и переиспользует свои буферы.
+static void compare_gpu_fields(const Mesh& mesh, const ReconstructionStencil& stencil, TestReconstructor& gpu) {
+    for (ReconstructionIndex components : {1u, 7u, 2u}) {
+        for (bool affine : {false, true}) {
+            const auto input = values(mesh, components, affine);
+            same(gpu.reconstruct(input, components), reconstruct_all_sides(stencil, input, components));
+        }
+    }
+}
+
 int main(int argc, char** argv) {
     using namespace aero;
     const bool require_cuda = argc == 2 && aero_test::require_gpu_argument(argv[1]);
@@ -1914,20 +1916,12 @@ int main(int argc, char** argv) {
                     [device, scheme] {
                         ReconstructionOptions o;
                         o.scheme = scheme;
-                        for (const Mesh& m : std::vector<Mesh>{
-                                 line({0, 0.1, 0.7, 2, 4, 5, 9}), plane(true, 7, 7), plane(false, 7, 7),
-                                 volume(true, 6), volume(false, 6), prism(true, 6)}) {
+                        for (const Mesh& m : reconstruction_test_meshes()) {
                             const ReconstructionStencil s = prepare_reconstruction(m, o);
                             require(s.incomplete_sides() < 2 * s.data().edge_count,
                                     "No full GPU WENO stencils");
                             TestReconstructor gpu(s, ReconstructionBackend::Cuda, device);
-                            for (ReconstructionIndex components : std::vector<ReconstructionIndex>{1, 7, 2}) {
-                                const auto q = values(m, components, false);
-                                same(gpu.reconstruct(q, components), reconstruct_all_sides(s, q, components));
-                                const auto affine = values(m, components, true);
-                                same(gpu.reconstruct(affine, components),
-                                     reconstruct_all_sides(s, affine, components));
-                            }
+                            compare_gpu_fields(m, s, gpu);
                             zeros(gpu.reconstruct(
                                 std::vector<double>(static_cast<std::size_t>(m.view().node_count), 1.e200),
                                 1));
@@ -1964,18 +1958,11 @@ int main(int argc, char** argv) {
                 ReconstructionOptions o;
                 o.scheme = ReconstructionScheme::Ebr5;
                 for (const Mesh& m :
-                     std::vector<Mesh>{line({0, 0.1, 0.7, 2, 4, 5, 9}), plane(true, 7, 7), plane(false, 7, 7),
-                                       volume(true, 6), volume(false, 6), prism(true, 6)}) {
+                     reconstruction_test_meshes()) {
                     const ReconstructionStencil s = prepare_reconstruction(m, o);
                     require(s.incomplete_sides() < 2 * s.data().edge_count, "No full GPU EBR5 stencils");
                     TestReconstructor gpu(s, ReconstructionBackend::Cuda, device);
-                    for (ReconstructionIndex components : std::vector<ReconstructionIndex>{1, 7, 2}) {
-                        const auto input = values(m, components, false);
-                        same(gpu.reconstruct(input, components), reconstruct_all_sides(s, input, components));
-                        const auto affine = values(m, components, true);
-                        same(gpu.reconstruct(affine, components),
-                             reconstruct_all_sides(s, affine, components));
-                    }
+                    compare_gpu_fields(m, s, gpu);
                     zeros(gpu.reconstruct(
                         std::vector<double>(static_cast<std::size_t>(m.view().node_count), 1.e100), 1));
                 }

@@ -31,6 +31,16 @@ struct LesSettings {
     double c_sigma = 1.35;     // Константа модели Никуд.
 };
 using VelocityGradient = FixedMatrix<double,3,3>; // Строка i содержит производные компоненты скорости u_i.
+// Квадрат нормы Фробениуса градиента скорости. Порядок суммирования задаётся
+// размерностью газа и одинаков до и после защитного масштабирования DDES.
+AERO_HOST_DEVICE inline double gradient_square(const VelocityGradient& gradient, unsigned dimension) {
+    double sum = 0.;
+    for (unsigned i = 0; i < dimension; ++i)
+        for (unsigned j = 0; j < dimension; ++j)
+            sum += gradient(i,j) * gradient(i,j);
+    return sum;
+}
+
 
 // Повороты Якоби ортогонализуют столбцы градиента, сохраняя сингулярные числа.
 // Длины итоговых столбцов дают их непосредственно, в том числе у почти плоского течения.

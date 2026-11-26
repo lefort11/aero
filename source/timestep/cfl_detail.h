@@ -1,6 +1,7 @@
 #ifndef AERO_CFL_DETAIL_H
 #define AERO_CFL_DETAIL_H
 #include "../parallel/kernel_math.h"
+#include "../parallel/row_loop.h"
 #include "timestep.h"
 #ifndef KOKKOS_ENABLE_CUDA
 #include "../parallel/kokkos_host.h"
@@ -111,19 +112,25 @@ template <class ReadNode> struct MinimumStep {
         best.node = chosen.node;
     }
 };
+// Минимум пары (шаг, узел) использует одинаковое сравнение на обеих платформах.
+// Для маленькой хостовой сетки накопление идёт в той же переменной без запуска команды.
+template<class Space,class Read>
+void minimum_step(const Space& exec, MeshIndex nodes, const Read& read, CflStep& result) {
+    const MinimumStep<Read> operation{read};
+    if (std::is_same<Space,Kokkos::DefaultHostExecutionSpace>::value && nodes<4096) {
+        result=unconstrained();
+        for (MeshIndex i=0; i<nodes; ++i) operation(i,result);
+    } else {
+        Kokkos::parallel_reduce("Aero: CFL",row_loop::Range<Space>(exec,0,nodes),operation,result);
+    }
+}
+
 #ifndef KOKKOS_ENABLE_CUDA
 // Находит минимальный допустимый шаг по узлам на CPU.
 template <class ReadNode> CflStep host_min(size_t nodes, const ReadNode& read_node) {
     CflStep result = unconstrained();
-    // На малой сетке время запуска команды дороже обхода. Правило выбора шага общее.
-    const MinimumStep<ReadNode> reduce{read_node};
-    if (nodes < 4096) {
-        for (size_t node = 0; node < nodes; ++node)
-            reduce(node, result);
-    } else {
-        host_parallel::ensure_runtime();
-        Kokkos::parallel_reduce("Aero: CFL minimum", host_parallel::Range(0, nodes), reduce, result);
-    }
+    host_parallel::ensure_runtime();
+    minimum_step(host_parallel::Execution(),nodes,read_node,result);
     return result;
 }
 #endif

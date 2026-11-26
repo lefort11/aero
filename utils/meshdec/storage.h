@@ -17,14 +17,8 @@ namespace meshdec {
 using Id = std::uint64_t;
 const Id none = std::numeric_limits<Id>::max();
 // Проверяет обязательное условие и сообщает ошибку при его нарушении.
-inline void require(bool condition, const char* message) {
-    if (!condition)
-        throw std::runtime_error(message);
-}
-// Проверяет обязательное условие и сообщает ошибку при его нарушении.
-inline void require(bool condition, const std::string& message) {
-    if (!condition)
-        throw std::runtime_error(message);
+template<class Message> inline void require(bool condition, const Message& message) {
+    if (!condition) throw std::runtime_error(message);
 }
 // Складывает размеры с проверкой переполнения адресного пространства.
 inline Id plus(Id a, Id b) {

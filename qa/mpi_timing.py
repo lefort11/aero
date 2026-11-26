@@ -8,7 +8,7 @@ import shutil
 
 from mpi_euler import launch
 from mpi_geometry import run
-from run import settings
+from run import settings, write_settings
 
 
 def check(log, ranks, start, stages, backend):
@@ -89,7 +89,7 @@ def verify(case, aero, meshdec, launcher, devices):
     # Создаёт файлы и параметры тестовой постановки для выбранного сценария.
     def configure(**changes):
         config.update(changes)
-        (case / "main.txt").write_text("".join(f"{k} = {v}\n" for k, v in config.items()))
+        write_settings(case / "main.txt", config)
 
     configure(time_scheme="euler")
     if devices:

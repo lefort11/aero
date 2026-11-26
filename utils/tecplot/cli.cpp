@@ -1,3 +1,4 @@
+#include "../../source/io/cli_help.h"
 #include "tecplot.h"
 #include "../../source/io/submesh.h"
 #ifdef _WIN32
@@ -70,7 +71,7 @@ int positive(const std::string& value) {
 // Читает пути к сетке и снимку, выбирает параметры OpenMP и запускает запись PLT.
 int run_cli(int argc, const char* const* argv, std::ostream& out, std::ostream& err) {
     try {
-        if (argc == 2 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h")) {
+        if (aero::help_requested(argc, argv)) {
             usage(out);
             return 0;
         }

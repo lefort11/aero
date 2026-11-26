@@ -435,7 +435,7 @@ public:
         try {
             newton_ = op_.advance_bdf(fields_.current, fields_.initial, step.dt,
                                        run_.implicit_settings, timing, run_.stabilization.active() ?
-                                       std::function<void()>([&] { validate_stage(); }) : std::function<void()>());
+                                       std::function<bool()>([&] { return validate_stage(); }) : std::function<bool()>());
             // Критерий Ньютона проверен по потокам принятого поля. До следующего CFL поле сохраняется.
             accepted_fluxes_ = true;
         } catch (const implicit::LinearSolveFailure&) {
@@ -536,11 +536,12 @@ private:
         return (op_.first_order_start || run_.reconstruction == "first_order") ? total_cells_ : master_low_.size();
     }
     // Проверяет состояние после стадии и согласует отказы между процессами.
-    void validate_stage() {
+    bool validate_stage() {
         std::vector<Id> failed;
-        world_.local([&] { op_.failed_nodes(fields_.current, failed, run_.uses_implicit_time()); });
-        const auto total = world_.size == 1 ? failed.size() : world_.sum(failed.size());
-        if (total) throw RejectedGasState{std::move(failed), total};
+        bool validated_gas = false;
+        world_.local([&] { validated_gas = op_.failed_nodes(fields_.current, failed, run_.uses_implicit_time()); });
+        RejectedGasState::check(world_, failed);
+        return validated_gas;
     }
 
     // Состояние узла и граничный поток отклоняют шаг одинаково. К моменту

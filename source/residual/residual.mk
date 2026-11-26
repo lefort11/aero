@@ -27,7 +27,7 @@ $(RES_GPU): $(RES_DIR)/residual_gpu.cpp $(RES_HDR) | $(BUILD)
 endif
 # Ошибки расчёта потока передаются через EulerStatus. Для sqrt в цикле CPU не нужен
 # побочный эффект записи в errno. Проверки плотности, давления и конечности сохраняются.
-$(RES_OBJ): $(RES_DIR)/residual.cpp $(RES_HDR) $(RES_DIR)/residual.mk | $(BUILD)
+$(RES_OBJ): $(RES_DIR)/residual.cpp $(RES_DIR)/face_execution.h source/parallel/device_faces.h source/parallel/mpweno5_edges.h source/parallel/row_loop.h $(RES_HDR) $(RES_DIR)/residual.mk | $(BUILD)
 	$(compiling)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -fno-math-errno $(EBR_FLAGS) -c $< -o $@
 $(RES_LIB): $(RES_OBJ) $(RES_GPU)
@@ -58,3 +58,4 @@ residual-cuda-test residual-hip-test:
 	$(running_test)
 	"$(BIN)/residual_tests_cuda1_omp$(WITH_OPENMP)$(EXE)" --require-gpu
 $(RES_TEST) $(RES_DEBUG): tests/test_mesh.h tests/test_checks.h source/aero/compact_slopes.h
+$(RES_DEBUG): $(RES_DIR)/face_execution.h source/parallel/device_faces.h source/parallel/mpweno5_edges.h source/parallel/row_loop.h

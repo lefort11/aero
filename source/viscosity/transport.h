@@ -38,6 +38,15 @@ struct EvaluationPlan {
         rows=phase!=Evaluation::BeforeSaIterations;
         reuse_gradients=phase==Evaluation::AfterSaFixedGas;
     }
+    // Выбирает один фильтр по модели и размерности до запуска ядра. Исполнители
+    // передают свои специализации, в том числе общую для 1D и 2D на CPU.
+    template<class Sigma, class Ddes3, class Ddes2, class Ddes1>
+    static void select_filter(double c_des, unsigned dim, Sigma sigma, Ddes3 three, Ddes2 two, Ddes1 one) {
+        if (c_des == 0.) sigma();
+        else if (dim == 3) three();
+        else if (dim == 2) two();
+        else one();
+    }
     // Порядок фаз общий; исполнители сохраняют свои обходы, плитки и кэширование.
     template<class Grid, class Gas, class Filter, class Sa, class Material, class Rows>
     void execute(const Grid& grid, bool update_gas, const Gas& gas, const Filter& evaluate_filter,
@@ -322,13 +331,11 @@ struct Operator {
         if (ddes) {
             // DDES использует только норму первого порядка. Для обычных скоростей
             // сам квадрат нормы уже даёт безопасный масштаб для всех дальнейших операций.
-            double sum=0.;
-            for (unsigned i=0;i<dimension;++i) for (unsigned j=0;j<dimension;++j) sum+=grad(i, j)*grad(i, j);
+            double sum=turbulence::gradient_square(grad, dimension);
             double magnitude=1.;
             if (!(sum>1.e-160 && sum<1.e160)) {
                 magnitude=turbulence::normalize_gradient(grad);
-                sum=0.;
-                for (unsigned i=0;i<dimension;++i) for (unsigned j=0;j<dimension;++j) sum+=grad(i, j)*grad(i, j);
+                sum=turbulence::gradient_square(grad, dimension);
             }
             cell_gradient_norm[e]=weight*(magnitude*::sqrt(sum));
             if (fixed_ddes_length) return;

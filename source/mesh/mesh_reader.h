@@ -157,10 +157,9 @@ public:
 
     // Проверяем предел контейнера и общий бюджет до выделения памяти из размеров файла.
     template <class T> void resize(std::vector<T>& values, std::uint64_t count) {
-        if (count > values.max_size())
-            fail("Array is too large for this platform");
-        budget_.consume(count, sizeof(T));
-        values.resize(static_cast<std::size_t>(count));
+        io::NativeFileCodec::resize_array(values, count,
+            [&](std::uint64_t size, std::size_t width) { budget_.consume(size, width); },
+            fail, "Array is too large for this platform");
     }
 
     // В двоичном файле длина задана явно. В тексте имя заключено в кавычки и может содержать пробелы.
@@ -202,13 +201,7 @@ public:
 
     // Проверяет корректное завершение обработки сеточного файла.
     void finish() {
-        block("END");
-        if (text_)
-            skip_space();
-        if (input_->peek() != std::char_traits<char>::eof())
-            fail("Trailing data after the mesh");
-        if (input_->bad())
-            fail("Mesh input failed");
+        io::NativeFileCodec::finish(*this, fail, "Trailing data after the mesh", "Mesh input failed");
     }
 
 private:

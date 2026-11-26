@@ -2,8 +2,17 @@
 #define AERO_IO_UTF8_LABEL_H
 #include <cstdint>
 #include <string>
+#include <cctype>
 
 namespace aero {
+// Приводит байты ключевого слова к нижнему регистру. Передача по значению
+// позволяет переиспользовать буфер временной строки без второго выделения.
+inline std::string lower_keyword(std::string value) {
+    for (char& c : value)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return value;
+}
+
 namespace io {
 // Имена границ, полей и единицы измерения в файлах используют печатный UTF-8.
 // Пустая строка допустима для единиц измерения. Для обязательного имени это проверяет вызывающая сторона.

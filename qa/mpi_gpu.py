@@ -11,7 +11,7 @@ from mdec_header import MdecHeader
 from mpi_euler import check_output, launch, stamp
 from mpi_geometry import run
 from mpi_periodic import report_rows
-from run import nodes, settings
+from run import nodes, settings, write_settings
 
 
 def memory_rows(log):
@@ -96,7 +96,7 @@ def verify(case, aero, meshdec, launcher, devices, fixture, scheme, recon, empty
     # Создаёт файлы и параметры тестовой постановки для выбранного сценария.
     def configure(**changes):
         options.update(changes)
-        (case / "main.txt").write_text("".join(f"{k} = {v}\n" for k, v in options.items()))
+        write_settings(case / "main.txt", options)
 
     configure(mesh="grid.mesh", backend="cpu")
     reference = case / "native"

@@ -1,5 +1,6 @@
+#include "../../tests/test_files.h"
 #include "converter.h"
-#include "../../tests/test_checks.h"
+#include "../../tests/test_suite.h"
 #include "cli.h"
 #include "detail.h"
 #include <algorithm>
@@ -23,21 +24,15 @@
 namespace {
 using namespace aero;
 using namespace aero::converter;
-typedef std::pair<std::string, std::function<void()>> Test;
-std::vector<Test> tests;
+aero_test::TestSuite tests;
 using aero_test::require;
 // Проверяет, что некорректный ввод завершается ожидаемой ошибкой.
 template <class F> void rejects(F f) {
-    try {
-        f();
-    } catch (const MeshError&) {
-        return;
-    }
-    throw std::runtime_error("Expected MeshError");
+    aero_test::expect_error<MeshError>(f, "", "Expected MeshError");
 }
 // Добавляет именованную проверку в список тестов модуля.
 void add(const std::string& s, std::function<void()> f) {
-    tests.push_back(std::make_pair(s, f));
+    aero_test::add_test(tests, s, std::move(f));
 }
 // Создаёт текстовую заготовку Gmsh для проверки конвертера.
 Mesh gmsh(const std::string& s) {
@@ -206,24 +201,12 @@ std::string simple(int kind, const std::vector<double>& x, const std::vector<dou
 }
 // Меняет указанный фрагмент заготовки для проверки повреждённого ввода.
 std::string replace(std::string s, const std::string& before, const std::string& after) {
-    const std::size_t p = s.find(before);
-    require(p != std::string::npos, "Missing test token");
-    s.replace(p, before.size(), after);
-    return s;
+    return aero_test::replace_first(std::move(s), before, after, "Missing test token", false);
 }
-// Владеет временным файлом проверки и удаляет его при выходе из области видимости.
-struct Temp {
-    // Путь к временному файлу.
-    std::string path;
-    // Создаёт уникальное имя временного файла теста.
-    Temp() {
-        static unsigned n = 0;
-        path = "build/converter-test-" +
-               std::to_string(std::chrono::high_resolution_clock::now().time_since_epoch().count()) + "-" +
-               std::to_string(n++) + ".cgns";
-    }
-    // Удаляет временные файлы и каталоги, созданные объектом.
-    ~Temp() { std::remove(path.c_str()); }
+// Выбирает имя и расширение временного файла данного тестового формата.
+struct Temp : aero_test::TestFile {
+    // Время жизни файла ограничено проверкой, которая создала этот объект.
+    Temp() : TestFile("converter-test-", ".cgns", nullptr) {}
 };
 // Временный набор файлов формата NTTE для проверок конвертера.
 struct AnotherFixture {
@@ -845,16 +828,5 @@ void register_tests() {
 // Запускает проверки модуля и возвращает ненулевой код при ошибке.
 int main() {
     register_tests();
-    std::size_t failed = 0;
-    for (const Test& t : tests) {
-        try {
-            t.second();
-            std::cout << "PASS " << t.first << "\n";
-        } catch (const std::exception& e) {
-            ++failed;
-            std::cerr << "FAIL " << t.first << ": " << e.what() << "\n";
-        }
-    }
-    std::cout << tests.size() - failed << "/" << tests.size() << " converter tests passed\n";
-    return failed ? 1 : 0;
+    return aero_test::run_tests(tests, " converter tests passed");
 }

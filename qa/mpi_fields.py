@@ -8,7 +8,7 @@ import struct
 from mpi_euler import check_output, close, launch, stamp
 from mpi_geometry import legacy_archive, run, sparse_line
 from mpi_periodic import report_rows
-from run import nodes, settings
+from run import nodes, settings, write_settings
 
 
 def binary_snapshot(path):
@@ -76,7 +76,7 @@ def verify(case, aero, meshdec, launcher):
 
     def configure(mesh_name, end, recovery=0):
         options.update(mesh=mesh_name, final_time=end, recovery_every_steps=recovery)
-        (case / "main.txt").write_text("".join(f"{k} = {v}\n" for k, v in options.items()))
+        write_settings(case / "main.txt", options)
 
     init = case / "init.txt"
     init.write_text(
@@ -207,7 +207,7 @@ def verify_batches(case, aero, meshdec, launcher):
         options["mesh"] = f"grid.{source}"
         if ranks == 2:
             options["mpi_rank_weights"] = "3,1"
-        (case / "main.txt").write_text("".join(f"{k} = {v}\n" for k, v in options.items()))
+        write_settings(case / "main.txt", options)
         log = launch(aero, case, case / source, launcher, ranks)
         if ranks == 2:
             # Одна периодическая пара склеивает две исходные вершины. В отчёте считаются степени свободы,

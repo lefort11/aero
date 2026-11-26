@@ -175,13 +175,9 @@ std::vector<OutputZone> read_output_zones(const std::string& path, std::vector<s
     }
     std::vector<OutputZone> zones;
     std::set<std::string> keys;
-    std::string line;
+    std::string line, where;
     std::size_t row = 0;
-    while (std::getline(input, line)) {
-        const auto where = path + ":" + std::to_string(++row);
-        line = settings_detail::clean(line, where, row);
-        if (line.empty())
-            continue;
+    while (settings_detail::next_line(input, path, row, line, where)) {
         if (line.front() == '[' && line.back() == ']') {
             zones.emplace_back();
             zones.back().name =

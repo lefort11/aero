@@ -111,6 +111,12 @@ template <class Send, class Receive> void exchange(const Processes& w, Send send
         }
     });
 }
+// Отправляет уже подготовленные ответы владельцам и читает их тем же протоколом
+// с согласованием ошибок между рангами. swap передаёт буферы без копирования байтов.
+template<class Receive>
+void exchange_replies(const Processes& world, Messages& replies, const Receive& receive) {
+    exchange(world, [&](Messages& out) { out.swap(replies); }, receive);
+}
 using Labels = std::map<Key, Ref>;
 // Возвращает периодического представителя или исходную ссылку.
 inline Ref representative(const Labels& labels, Ref ref) {

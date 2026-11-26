@@ -51,13 +51,9 @@ struct EulerRoeBasis {
 namespace euler_detail {
 // Проверяет конечность всех проверяемых компонент.
 AERO_HOST_DEVICE inline bool finite(double x) {
-#ifndef KOKKOS_ACTIVE_EXECUTION_MEMORY_SPACE_HOST
     // У бесконечности и NaN все биты порядка равны единице. Проверка целых битов
     // освобождает блоки FP64 для вычисления самих потоков и сохраняет субнормальные числа.
     return (static_cast<unsigned>(high_word(x)) & 0x7ff00000u) != 0x7ff00000u;
-#else
-    return std::isfinite(x);
-#endif
 }
 // Возвращает абсолютное значение в коде, общем для CPU и GPU.
 AERO_HOST_DEVICE inline double absolute(double x) {

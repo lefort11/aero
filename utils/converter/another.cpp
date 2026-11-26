@@ -1,3 +1,4 @@
+#include "../../source/io/utf8_label.h"
 #include "converter.h"
 #include "detail.h"
 #include <algorithm>
@@ -12,12 +13,6 @@ namespace aero {
 namespace converter {
 namespace {
 typedef std::uint64_t U64;
-// Приводит строку к нижнему регистру для сравнения ключевых слов.
-std::string lower(std::string s) {
-    for (char& c : s)
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return s;
-}
 // Удаляет комментарии и лишние пробелы строки исходного формата.
 std::string clean(std::string s) {
     if (s.compare(0, 3, "\xef\xbb\xbf") == 0)
@@ -44,7 +39,7 @@ std::string directory(std::string path) {
     if (path.empty() || path.find('\0') != std::string::npos)
         throw MeshError("another: invalid input path");
     const std::size_t slash = path.find_last_of("/\\");
-    if (lower(path.substr(slash == std::string::npos ? 0 : slash + 1)) == "mesh.txt")
+    if (aero::lower_keyword(path.substr(slash == std::string::npos ? 0 : slash + 1)) == "mesh.txt")
         return slash == std::string::npos ? "." : path.substr(0, slash + 1);
     return path;
 }
@@ -72,7 +67,7 @@ Header header(const std::string& path) {
             continue;
         if (!(row >> value))
             throw MeshError("another: missing header value: " + key);
-        if (!h.insert(std::make_pair(lower(key), value)).second)
+        if (!h.insert(std::make_pair(aero::lower_keyword(key), value)).second)
             throw MeshError("another: duplicate header key: " + key);
     }
     if (in.bad())
@@ -272,7 +267,7 @@ Mesh read_another(const std::string& input, const Options& options) {
     const std::string dir = directory(input);
     const Header h = header(join(dir, "mesh.txt"));
     // Отказываем по заголовку до выделения памяти и открытия массивов сетки.
-    const std::string format = lower(get(h, "meshformat"));
+    const std::string format = aero::lower_keyword(get(h, "meshformat"));
     if (format != "text" && format != "0")
         throw MeshError("another: only text .msh input is supported (MeshFormat text or 0)");
     const U64 dim = number(get(h, "numcoords"));
@@ -289,13 +284,13 @@ Mesh read_another(const std::string& input, const Options& options) {
             throw MeshError("another: buffer/periodic meshes are not supported; use the ordinary _ntte mesh");
     }
     auto buffer = h.find("bufferzonetype");
-    if ((buffer != h.end() && lower(buffer->second) != "no") || exists(join(dir, "periodic03.msh")) ||
+    if ((buffer != h.end() && aero::lower_keyword(buffer->second) != "no") || exists(join(dir, "periodic03.msh")) ||
         exists(join(dir, "periodic03.msb")))
         throw MeshError("another: buffer/periodic meshes are not supported; use the ordinary _ntte mesh");
     const auto type = h.find("meshtype");
-    const bool hybrid = type != h.end() && lower(type->second) == "hybrid";
-    if (type != h.end() && !hybrid && lower(type->second) != "hex" && lower(type->second) != "hexa" &&
-        lower(type->second) != "quad")
+    const bool hybrid = type != h.end() && aero::lower_keyword(type->second) == "hybrid";
+    if (type != h.end() && !hybrid && aero::lower_keyword(type->second) != "hex" && aero::lower_keyword(type->second) != "hexa" &&
+        aero::lower_keyword(type->second) != "quad")
         throw MeshError("another: unsupported MeshType");
     detail::Builder builder(static_cast<unsigned>(dim), options);
     read_coordinates(builder, dir, dim, nn);

@@ -140,7 +140,7 @@ public:
             g.box_nodes=storage.upload(box_nodes_);
             // Координатный фильтр берёт узлы из основной связности. Плитку номеров
             // оставляем, только если её использует упакованный фильтр или явный перенос SA.
-            const bool need_filter_nodes=!compact_geometry_ || g.vertices_per_cell;
+            const bool need_filter_nodes=!compact_geometry_ || packed_material_;
             g.hex_filter={need_filter_nodes ? storage.upload(hex_nodes_) : nullptr,compact_geometry_ ? nullptr : storage.upload(hex_coefficients_),
                           op_.hex_filter.lanes};
             // Если градиенты уже упакованы, загружаем только геометрию, нужную
@@ -170,7 +170,7 @@ public:
                 g.eddy_nu=storage.template allocate<double>(state_nodes);
             }
         }
-        if (g.vertices_per_cell) {
+        if (packed_material_) {
             // Фильтр и вязкий поток обходят исходные вершины в одном порядке.
             // Уже загруженную таблицу номеров гексаэдра используем для обоих обходов.
             g.material_vertices=hex_nodes_.empty() ? storage.upload(material_vertices_) : g.hex_filter.nodes;
@@ -258,7 +258,7 @@ private:
     std::vector<std::uint32_t> mean_area_ids_;
     // Формирует связи элементов с узлами для осреднения материальных коэффициентов.
     void prepare_material_vertices();
-    unsigned host_vertices_=0; // Общее число вершин в элементе, ноль для смешанной сетки.
+    bool packed_material_ = false; // План GPU предусматривает плитки вершин и кэш узловых коэффициентов.
     // Управляют кэшем материала и использованием вязкости SA.
     bool cache_material_=false, material_from_sa_=false;
     // Номера вершин при кэшировании узловых коэффициентов.

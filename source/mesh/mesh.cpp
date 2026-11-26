@@ -350,11 +350,7 @@ public:
     }
     // Передаёт блок байтов формата сетки с проверкой состояния потока.
     void block(const char* name) {
-        if (text_) {
-            output_.put('\n');
-            literal(name);
-            output_.put('\n');
-        }
+        io::NativeFileCodec::write_block(output_, text_, name, '\n');
     }
     // Читает или записывает беззнаковое 64-битное значение формата сетки.
     void u64(std::uint64_t value) { number_codec::write_word(output_, value, text_); }
@@ -404,7 +400,7 @@ public:
 
 private:
     // Записывает служебный текстовый разделитель формата сетки.
-    void literal(const char* text) { output_.write(text, static_cast<std::streamsize>(std::strlen(text))); }
+    void literal(const char* text) { io::NativeFileCodec::write_literal(output_, text); }
     // Поток назначения сетки.
     std::ostream& output_;
     // Выбор текстовой сериализации.

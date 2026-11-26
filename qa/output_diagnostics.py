@@ -3,7 +3,7 @@ import math
 import re
 from pathlib import Path
 
-from mpi_common import mpi_parser, mpi_workspace
+from mpi_common import backend_parser, mpi_workspace
 from mpi_fields import binary_snapshot
 from mpi_geometry import run
 from viscosity import setup, max_difference
@@ -214,10 +214,7 @@ def check(case, args, linear=False):
 
 
 if __name__=="__main__":
-    parser=mpi_parser(__doc__)
-    parser.add_argument("--mpi",action="store_true")
-    parser.add_argument("--gpu",action="store_true")
-    parser.add_argument("--devices",default="0,1")
+    parser = backend_parser(__doc__, devices="0,1")
     args=parser.parse_args()
     with mpi_workspace("output-diagnostics-") as directory:
         check(Path(directory),args)

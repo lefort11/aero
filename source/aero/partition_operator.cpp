@@ -22,12 +22,19 @@
 #include "../viscosity/jacobian.h"
 #endif
 #endif
-#include "../residual/flux_cfl.h"
+#include "../residual/step_execution.h"
 #include <algorithm>
 #include <cmath>
 #include <limits>
 
 namespace aero {
+// На одном ранге число отказов уже известно. В MPI все участники выполняют
+// одну редукцию, после которой локальный список перемещается в исключение.
+void RejectedGasState::check(const Processes& world, std::vector<MeshIndex>& failed) {
+    const auto total = world.size == 1 ? failed.size() : world.sum(failed.size());
+    if (total) throw RejectedGasState{std::move(failed), total};
+}
+
 namespace edge_tile = residual_detail::edge_tile;
 using Id = MeshIndex;
 using residual_detail::Surface;
@@ -748,14 +755,18 @@ FlowSummary PartitionOperator::steady_report(std::uint64_t number, Report& repor
 #endif
 
 // Собирает номера узлов с недопустимым газодинамическим состоянием.
-void PartitionOperator::failed_nodes(const std::vector<double>& state, std::vector<Id>& failed, bool implicit) {
+bool PartitionOperator::failed_nodes(const std::vector<double>& state, std::vector<Id>& failed, bool implicit) {
 #ifdef AERO_WITH_KOKKOS_GPU
-    if (gpu_) { gpu_->failed_nodes(failed, implicit); return; }
-#else
-    (void)implicit;
+    if (gpu_) {
+        gpu_->failed_nodes(failed, implicit);
+        const auto& g = gpu_->active_grid();
+        return implicit && failed.empty() && partition_detail::validation_cache(g.geometry, !g.owned, g.owned_count);
+    }
 #endif
+    auto* cache = implicit ? partition_detail::validation_cache(grid_, world_.size == 1, owned.size()) : nullptr;
     for (Id node : owned)
-        if (!partition_detail::admissible_node(grid_, state.data(), node)) failed.push_back(node);
+        if (!partition_detail::admissible_node(grid_, state.data(), node, cache)) failed.push_back(node);
+    return failed.empty() && cache;
 }
 
 // Пересобираем матрицу только при ручном изменении потока. Для BDF2 переносим предыдущий слой.
@@ -995,7 +1006,7 @@ void PartitionOperator::halo_host(std::vector<double>& u) {
 
 // Вычисляет потоки на принадлежащих процессу поверхностях и получает остальные от соседей.
 bool PartitionOperator::assemble_fluxes(const std::vector<double>& u, const std::vector<double>& initial,
-                                        SolverTimings& timing, bool trial, bool retry_boundary, bool solve_trial_sa) {
+                                        SolverTimings& timing, bool trial, bool retry_boundary, bool solve_trial_sa, bool validated_gas) {
     (void)solve_trial_sa;
     if (bdf_) bdf_->invalidate_spatial_balance();
 #ifdef AERO_HAS_TURBULENCE
@@ -1026,6 +1037,8 @@ bool PartitionOperator::assemble_fluxes(const std::vector<double>& u, const std:
 #endif
             residual_detail::FaceBatch{grid_, faces, compute_.size(), u.data(), initial.data(), flux_.data(),
                                        nullptr, nullptr, gas_current_};
+        // Флаг относится только к этому вызову после проверки того же пробного поля.
+        batch.gas_current = batch.gas_current || validated_gas;
         if (first_order_start) batch.use_first_order();
 #ifdef AERO_WITH_KOKKOS_GPU
         if (gpu_) gpu_->fluxes(batch, first_order_start);
@@ -1061,8 +1074,7 @@ bool PartitionOperator::assemble_fluxes(const std::vector<double>& u, const std:
     // При пробе предиктора достаточно вернуть false. После поправки Ньютона
     // или на стадии SSPRK3 нужен откат всего шага до обмена потоками между рангами.
     if (retry_boundary && !trial) {
-        const auto total = world_.size == 1 ? failed.size() : world_.sum(failed.size());
-        if (total) throw RejectedGasState{std::move(failed), total};
+        RejectedGasState::check(world_, failed);
     }
 #ifdef AERO_HAS_TURBULENCE
     // Обновляет рабочую вязкость SA вместе с пробным газовым состоянием.
@@ -1275,7 +1287,7 @@ void PartitionOperator::limit_neighbour_steps() {
             }
 #endif
             host_parallel::ensure_runtime();
-            Kokkos::parallel_reduce("Aero: neighbouring local steps", host_parallel::Range(0,owned.size()), sweep, range);
+            residual_detail::sweep_neighbour_steps(host_parallel::Range(0,owned.size()), sweep, range);
         });
         if (first) limit.before = world_.reduce_double(range.ratio, true);
         // Минимальный узловой dt не меняется: каждому соседу разрешён как минимум
@@ -1374,7 +1386,7 @@ double PartitionOperator::prepare_local_steps(double cfl) {
         }
 #endif
         host_parallel::ensure_runtime();
-        Kokkos::parallel_reduce("Aero: local steady steps", host_parallel::Range(0, owned.size()), steps, range);
+        residual_detail::collect_local_steps(host_parallel::Range(0, owned.size()), steps, range);
     });
     rate_limited_ = range.limited;
     rate_capped_ = range.capped;
@@ -1402,7 +1414,7 @@ double PartitionOperator::prepare_local_steps(double cfl) {
                     return;
                 }
 #endif
-                Kokkos::parallel_for("Aero: limit local steady steps", host_parallel::Range(0, owned.size()), limit);
+                residual_detail::cap_local_steps(host_parallel::Range(0, owned.size()), limit);
             });
             maximum_step_ = ceiling; // В report попадает фактически применённый максимум.
         }
@@ -1461,6 +1473,7 @@ const double* PartitionOperator::extend_linear_vector(const double* compact) {
 // Задаёт обмены и редукции распределённой линейной системы.
 implicit::Partition PartitionOperator::linear_partition() {
     implicit::Partition part;
+    if (world_.size==1) part.trial_flux=flux_.data();
 #ifdef AERO_WITH_KOKKOS_GPU
     part.shared_csgs = shared_csgs_;
     part.gpu_matrix_plan = matrix_plan_;
@@ -1673,7 +1686,7 @@ void PartitionOperator::try_steady_multigrid(std::vector<double>& state,const st
 
 // Выполняет неявный шаг газа с согласованным обновлением турбулентности.
 implicit::NewtonResult PartitionOperator::advance_bdf(std::vector<double>& state, const std::vector<double>& initial,
-        double dt, const implicit::NewtonSettings& settings, SolverTimings& timing, const std::function<void()>& validate) {
+        double dt, const implicit::NewtonSettings& settings, SolverTimings& timing, const std::function<bool()>& validate) {
     const auto fields = implicit_fields(state, initial);
     // При попадании в t_fo или срок вывода сокращаем все узловые шаги в одной пропорции.
     // На протяжении Ньютона, включая пробные поправки и обновления SA, шаги уже зафиксированы.
@@ -1681,8 +1694,8 @@ implicit::NewtonResult PartitionOperator::advance_bdf(std::vector<double>& state
     // При каждой поправке используем тот же поток и ту же реконструкцию из main.txt.
     // В матрицу поправки входят производные выбранного потока первого порядка.
     const auto refresh = [&] {
-        if (validate) validate();
-        assemble_fluxes(state, initial, timing, false, bool(validate));
+        const bool validated_gas = validate && validate();
+        assemble_fluxes(state, initial, timing, false, bool(validate), false, validated_gas);
     };
     // Применяет и оценивает пробную поправку без окончательного принятия шага.
 #ifdef AERO_HAS_TURBULENCE
@@ -1696,14 +1709,15 @@ implicit::NewtonResult PartitionOperator::advance_bdf(std::vector<double>& state
     const auto trial = [&] {
         const bool solve_sa = first_coupled_trial;
         first_coupled_trial = false;
+        bool validated_gas = false;
         if (validate) {
-            try { validate(); }
+            try { validated_gas = validate(); }
             catch (const RejectedGasState&) {
                 if (temporal_trial) return false; // Недопустимое начальное приближение откатывается внутри Ньютона.
                 throw;
             }
         }
-        return assemble_fluxes(state, initial, timing, true, false, solve_sa);
+        return assemble_fluxes(state, initial, timing, true, false, solve_sa, validated_gas);
     };
     std::function<bool()> confirm_prediction;
     std::function<void(implicit::CoupledStart)> coupled_start;
@@ -1798,17 +1812,20 @@ void PartitionOperator::update_owned(explicit_detail::Stage stage, std::vector<d
 #ifdef AERO_HAS_TURBULENCE
     if (sa_active()) sa = &aes_->view().sa;
 #endif
-    const auto update = width_ == 5 ? partition_detail::advance_owned_node<5> :
-                        width_ == 4 ? partition_detail::advance_owned_node<4> : partition_detail::advance_owned_node<3>;
-    parallel_for(
-        owned.size(),
-        [&](std::size_t k) {
-            if (!update(grid_, flux_.data(), volumes_, nodes, state.data(),
-                        start.data(), k, stage, dt, save_original, transport, sa)) {
-                throw std::domain_error("Invalid Euler stage state at global node " + std::to_string(ids_[owned[k]]));
-            }
-        },
-        256);
+    partition_detail::Index bad = ~partition_detail::Index(0);
+    partition_detail::Grid g{};
+    g.geometry=grid_;
+    g.flux=flux_.data();
+    g.owned=nodes;
+    g.owned_count=owned.size();
+    g.volumes=volumes_;
+    g.state=state.data();
+    g.original=start.data();
+    g.bad=&bad;
+    host_parallel::ensure_runtime();
+    partition_detail::advance_rows<false>(host_parallel::Execution(),g,stage,dt,save_original,transport,sa);
+    if (bad!=~partition_detail::Index(0))
+        throw std::domain_error("Invalid Euler stage state at global node " + std::to_string(ids_[bad]));
     gas_current_ = world_.size == 1;
 }
 

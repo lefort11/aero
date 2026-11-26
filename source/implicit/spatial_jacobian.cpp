@@ -1,3 +1,4 @@
+#include "matrix_execution.h"
 #include "spatial_jacobian.h"
 #include "block_jacobi.h"
 #include "csgs_sweep.h"
@@ -9,6 +10,7 @@
 #endif
 #ifdef AERO_HAS_VISCOSITY
 #include "../viscosity/jacobian_pattern.h"
+#include "../viscosity/row_execution.h"
 #endif
 #include <algorithm>
 #include <limits>
@@ -17,20 +19,6 @@
 namespace aero {
 namespace implicit {
 namespace {
-#ifdef AERO_HAS_VISCOSITY
-struct HostViscousAssembly {
-    template<class T> using Capture = const T&;
-    template<class Work>
-    void run(const char*, MeshIndex count, const Work& work) const { parallel_for(count, work); }
-    bool assemble_compact(const viscosity::Jacobian&) const { return false; }
-    void columns(const viscosity::Jacobian& matrix) const {
-        const unsigned width = matrix.aes.dim + 2;
-        parallel_for(matrix.aes.node_count,[&](MeshIndex node) {
-            for (unsigned c = 0; c < width; ++c) matrix.assemble_column(node,c);
-        });
-    }
-};
-#endif
 // Проверка размера нужна как при оценке памяти, так и при фактической загрузке.
 bool indices_fit_32(const std::vector<MeshIndex>& source) {
     return source.empty() || *std::max_element(source.begin(),source.end()) <= std::numeric_limits<std::uint32_t>::max();
@@ -154,6 +142,31 @@ std::domain_error assembly_error(MeshIndex bad, const residual_detail::Geometry&
     return std::domain_error("Spatial Jacobian: invalid time coefficient or nonfinite entry at node " +
                              std::to_string(bad-g.faces));
 }
+// Обновляет временную диагональ или собирает полные строки. Вид операции фиксирован
+// при компиляции. Оба пути одинаково переводят отказ строки в номер узла, сохраняя
+// параллельный сбор первого сбоя на GPU и исключения отдельных строк на CPU.
+template<bool time_only>
+void assemble_checked_rows(int device, const SpatialBlocks& blocks, const double* volumes, double dt) {
+    if (!blocks.row_count) return;
+    MeshIndex failed;
+#ifdef AERO_WITH_KOKKOS_GPU
+    if (device >= 0) {
+        device_work::check(time_only
+            ? device_work::aero_device_time_diagonal(device,blocks,volumes,dt,&failed)
+            : device_work::aero_device_spatial_rows(device,blocks,volumes,dt,&failed));
+    } else
+#else
+    (void)device;
+#endif
+    {
+        host_parallel::ensure_runtime();
+        const host_parallel::Execution exec;
+        if (time_only) matrix_rows::time_diagonal(exec,blocks,volumes,dt,&failed);
+        else matrix_rows::assemble(exec,blocks,volumes,dt,&failed);
+    }
+    if (failed < blocks.grid.nodes) throw assembly_error(blocks.grid.faces+failed,blocks.grid);
+}
+
 }
 
 // Граф матрицы, раскраска и оценка размещения коэффициентов на GPU.
@@ -414,7 +427,8 @@ void SpatialJacobian::prepare_csgs() {
             return;
         }
 #endif
-        parallel_for(s.packing.count,[&](MeshIndex p){s.packing.copy(p,b.values);});
+        host_parallel::ensure_runtime();
+        matrix_rows::pack(host_parallel::Execution(),s.packing,b.values);
     };
     if (s.order) { refresh(); return; }
     const BlockPattern* graph = &s.pattern;
@@ -577,7 +591,8 @@ void SpatialJacobian::apply_csgs(const BlockJacobi& diagonal, const double* rhs,
             return;
         }
 #endif
-        parallel_for(s.blocks.row_count,[&](MeshIndex k){sweep.image<1>(k,image);});
+        host_parallel::ensure_runtime();
+        matrix_rows::image(host_parallel::Execution(),sweep,s.blocks.row_count,image);
     });
 }
 
@@ -606,17 +621,7 @@ void SpatialJacobian::update_time_diagonal(const double* volumes, double dt) {
     // При смене режима перестраивается только временная часть диагонали и её разложение.
     b.local_steps = SteadyNodeSteps::active(s.partition.steady_steps);
     if (!b.spatial_diagonal || !volumes) throw std::logic_error("BDF: missing cached diagonal or volumes");
-#ifdef AERO_WITH_KOKKOS_GPU
-    if (s.device >= 0) {
-        MeshIndex bad;
-        device_work::check(device_work::aero_device_time_diagonal(s.device, b, volumes, dt, &bad));
-        if (bad < b.grid.nodes) throw assembly_error(b.grid.faces + bad, b.grid);
-        return;
-    }
-#endif
-    parallel_for(b.row_count, [&](MeshIndex row) {
-        if (!b.update_time_diagonal(row, volumes, dt)) throw assembly_error(b.grid.faces + b.node(row), b.grid);
-    });
+    assemble_checked_rows<true>(s.device, b, volumes, dt);
 }
 
 // Подготавливает разложение диагональных блоков текущей матрицы.
@@ -659,7 +664,11 @@ void SpatialJacobian::assemble_matrix(const double* u, const double* initial, co
                 device_work::check(device_work::aero_device_viscous_matrix(s.device,v,u));
             } else
 #endif
-                viscosity::assemble_jacobian(v,u,HostViscousAssembly{});
+            {
+                host_parallel::ensure_runtime();
+                const host_parallel::Execution exec;
+                viscosity::assemble_jacobian(v,u,viscosity::execution::MatrixAssembly<host_parallel::Execution>{exec});
+            }
         });
 #endif
         if (b.direct_faces) {
@@ -677,24 +686,16 @@ void SpatialJacobian::assemble_matrix(const double* u, const double* initial, co
             return;
         }
 #endif
-        parallel_for(b.face_count, [&](MeshIndex k) {
-            const auto f = b.face(k);
-            if (!b.differentiate(f, u, initial)) throw assembly_error(f, b.grid);
-        });
+        if (b.face_count) {
+            host_parallel::ensure_runtime();
+            MeshIndex bad;
+            matrix_rows::differentiate(host_parallel::Execution(),b,u,initial,&bad);
+            if (bad < b.grid.faces) throw assembly_error(bad,b.grid);
+        }
     });
     if (s.partition.share_blocks) s.partition.share_blocks(b.face_values);
     s.partition.local([&] {
-#ifdef AERO_WITH_KOKKOS_GPU
-        if (s.device >= 0 && b.row_count) {
-            MeshIndex bad;
-            device_work::check(device_work::aero_device_spatial_rows(s.device, b, volumes, dt, &bad));
-            if (bad < b.grid.nodes) throw assembly_error(b.grid.faces + bad, b.grid);
-            return;
-        }
-#endif
-        parallel_for(b.row_count, [&](MeshIndex row) {
-            if (!b.assemble_row(row, volumes, dt)) throw assembly_error(b.grid.faces + b.node(row), b.grid);
-        });
+        assemble_checked_rows<false>(s.device, b, volumes, dt);
     });
     s.ready = true;
 }
@@ -717,7 +718,8 @@ void SpatialJacobian::apply(const double* x, double* y) const {
             return;
         }
 #endif
-        parallel_for(s.blocks.row_count, [&](MeshIndex row) { s.blocks.multiply_row(row, extended, y); });
+        host_parallel::ensure_runtime();
+        matrix_rows::multiply(host_parallel::Execution(),s.blocks,extended,y);
     });
 }
 }

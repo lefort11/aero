@@ -2,6 +2,7 @@
 #define AERO_IO_SETTINGS_TEXT_H
 
 #include "../timestep/local_step_mode.h"
+#include "utf8_label.h"
 #include <cctype>
 #include <fstream>
 #include <cmath>
@@ -9,6 +10,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace aero {
 namespace settings_detail {
@@ -24,8 +26,7 @@ inline double finite_real(const std::string& text, const std::string& where) {
 
 // Приводит значение настройки к нижнему регистру для сравнения ключевых слов.
 inline std::string lower_value(std::string value) {
-    for (char& c : value) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return value;
+    return lower_keyword(std::move(value));
 }
 
 // Для implicit.txt и control.txt разбираем режим и предел шага одинаково.
@@ -66,6 +67,18 @@ inline std::string clean(std::string line, const std::string& where, std::size_t
     if (quoted)
         throw std::invalid_argument(where + ": unclosed quote");
     return trim(line);
+}
+
+// Читает следующую значащую строку, сохраняя физический номер и имя файла в диагностике.
+// Пустые и закомментированные строки учитываются в нумерации всех разделов.
+inline bool next_line(std::istream& input, const std::string& path, std::size_t& row,
+                      std::string& line, std::string& where) {
+    while (std::getline(input, line)) {
+        where = path + ":" + std::to_string(++row);
+        line = clean(std::move(line), where, row);
+        if (!line.empty()) return true;
+    }
+    return false;
 }
 
 // Извлекает и проверяет имя секции или участка из текстовой настройки.

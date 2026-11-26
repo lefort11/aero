@@ -1,4 +1,5 @@
 #define AERO_EULERSOLVER_KERNEL_ONLY
+#include "../parallel/device_check.h"
 #include "lax_friedrichs.h"
 #include "roe.h"
 #include "characteristic.h"
@@ -9,23 +10,10 @@
 namespace {
 // Тест показывает запуск ядра вызывающей стороной для набора независимых пар состояний.
 using namespace aero::device_tests;
-// Сохраняет диагностический текст ошибки GPU-проверки.
-int report(aero::gpu::Status code, char* error, unsigned capacity) {
-    if (code != aero::gpu::Status::Success && error && capacity)
-        snprintf(error, capacity, "CUDA: %s", aero::gpu::message(code));
-    return code == aero::gpu::Status::Success ? 0 : 1;
-}
 }
 // Возвращает число устройств, доступных GPU-проверкам потоков.
 extern "C" int euler_test_device_count(int* count, char* error, unsigned capacity) {
-    *count = 0;
-    aero::gpu::Status code = aero::gpu::count(count);
-    if (code == aero::gpu::Status::NoDevice || code == aero::gpu::Status::Unavailable) {
-
-        *count = 0;
-        return 0;
-    }
-    return report(code, error, capacity);
+    return aero::gpu::available_devices(count, error, capacity);
 }
 // Запускает выбранное потоковое ядро на GPU и возвращает результат проверки.
 extern "C" int euler_test_device_flux(int device, unsigned mode, unsigned dimension, const double* left,
@@ -34,7 +22,7 @@ extern "C" int euler_test_device_flux(int device, unsigned mode, unsigned dimens
                                     int* status, char* error, unsigned capacity) {
     aero::gpu::DeviceScope scope(device);
     if (scope.status != aero::gpu::Status::Success)
-        return report(scope.status, error, capacity);
+        return aero::gpu::report_status(scope.status, error, capacity);
     Case input = {};
     input.mode = mode;
     input.dimension = dimension;
@@ -75,7 +63,7 @@ extern "C" int euler_test_device_flux(int device, unsigned mode, unsigned dimens
     aero::gpu::release(di);
     aero::gpu::release(dout);
     if (code != aero::gpu::Status::Success)
-        return report(code, error, capacity);
+        return aero::gpu::report_status(code, error, capacity);
     if (output.before != 123 || output.after != 456) {
         snprintf(error, capacity, "CUDA wrote beyond one flux result");
         return 1;

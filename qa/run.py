@@ -45,6 +45,11 @@ def settings(path):
     return dict(tuple(s.strip() for s in line.split("=", 1)) for line in pairs if line)
 
 
+def write_settings(path, values):
+    """Записывает параметры QA в исходном порядке, по одной паре ключа и значения на строку."""
+    path.write_text("".join(f"{key} = {value}\n" for key, value in values.items()))
+
+
 def nodes(mesh, dim):
     """Извлекает координаты узлов тестовой сетки в порядке исходных номеров."""
     words = mesh.read_text(encoding="ascii").split()
@@ -201,7 +206,7 @@ def prepare_variant(work, folder, main, mesh, variant, options):
     run["backend"] = options.backend
     if options.backend != "cpu":
         (work / ("gpu.txt" if options.backend == "hip" else "cuda.txt")).write_text(f"devices = {options.device}\n", encoding="ascii")
-    (work / "main.txt").write_text("".join(f"{k} = {v}\n" for k, v in run.items()))
+    write_settings(work / "main.txt", run)
 
 
 def export_comparison(work, snap, fields, exact, mesh, exporter, destination):

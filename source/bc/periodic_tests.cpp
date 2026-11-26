@@ -1,3 +1,4 @@
+#include "../../tests/mesh_fixture.h"
 #include "periodic.h"
 #include "../../tests/test_checks.h"
 #include <cmath>
@@ -26,11 +27,7 @@ PeriodicPair parse(const std::string& spec) {
             "periodic parser");
     return pair;
 }
-// Добавляет грань в топологию тестовой сетки.
-void append(MeshCsr& csr, const std::vector<Id>& list) {
-    csr.indices.insert(csr.indices.end(), list.begin(), list.end());
-    csr.offsets.push_back(csr.indices.size());
-}
+using aero_test::mesh_fixture::append_row;
 // Создаёт одномерную сетку для проверки алгоритма.
 Mesh line(unsigned repeats) {
     MeshData d;
@@ -41,9 +38,9 @@ Mesh line(unsigned repeats) {
         d.x.push_back(i + .125 * (i % 2));
         d.y.push_back(0);
         d.z.push_back(0);
-        append(d.face_nodes, {i});
+        append_row(d.face_nodes, {i});
         if (i < N) {
-            append(d.cell_faces, {i, i + 1});
+            append_row(d.cell_faces, {i, i + 1});
             d.cell_face_orientation.insert(d.cell_face_orientation.end(), {-1, 1});
         }
     }
@@ -123,13 +120,13 @@ Mesh box(unsigned d) {
     }
     std::vector<Id> ids;
     for (Id i = 0; i < faces.size(); ++i) {
-        append(m.face_nodes, faces[i]);
+        append_row(m.face_nodes, faces[i]);
         m.boundary_faces.push_back(i);
         m.boundary_patch.push_back(i);
         m.cell_face_orientation.push_back(1);
         ids.push_back(i);
     }
-    append(m.cell_faces, ids);
+    append_row(m.cell_faces, ids);
     return Mesh(std::move(m));
 }
 }
@@ -145,7 +142,7 @@ void test_periodic(bool require_gpu) {
     split.y.push_back(.5);
     split.z.push_back(0);
     split.face_nodes.indices[3] = 4;
-    append(split.face_nodes, {4, 3});
+    append_row(split.face_nodes, {4, 3});
     split.cell_faces.indices.push_back(4);
     ++split.cell_faces.offsets.back();
     split.cell_face_orientation.push_back(1);

@@ -50,5 +50,5 @@ bc-cuda-test bc-hip-test:
 	$(running_test)
 	./$(BIN)/bc_tests_cuda1$(EXE) --require-gpu
 $(BC_DEBUG): source/io/settings_text.h
-$(BC_TEST) $(BC_DEBUG): tests/test_checks.h
+$(BC_TEST) $(BC_DEBUG): tests/test_checks.h tests/mesh_fixture.h
 $(BC_TEST) $(BC_DEBUG): source/implicit/boundary_jacobian.h source/implicit/edge_jacobian.h

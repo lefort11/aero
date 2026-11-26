@@ -43,13 +43,9 @@ public:
         const bool absent = !input && optional && errno == ENOENT;
         if (!input && !absent)
             throw std::runtime_error("cannot open settings file: " + path);
-        std::string line;
+        std::string line, where;
         std::size_t row = 0;
-        while (std::getline(input, line)) {
-            const std::string where = path + ":" + std::to_string(++row);
-            line = clean(line, where, row);
-            if (line.empty())
-                continue;
+        while (settings_detail::next_line(input, path, row, line, where)) {
             const auto eq = line.find('=');
             if (eq == std::string::npos)
                 throw std::invalid_argument(where + ": expected key = value");

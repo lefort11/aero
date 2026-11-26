@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 
 from local_step_neighbors import prepare
-from mpi_common import ROOT, mpi_parser, mpi_workspace
+from mpi_common import ROOT, backend_parser, mpi_workspace
 from mpi_fields import binary_snapshot
 from mpi_geometry import run, sparse_line
 from viscosity import max_difference
@@ -68,10 +68,7 @@ def check_rans(case, args):
 
 # Разбирает параметры запуска, выполняет набор QA-проверок и возвращает статус результата.
 def main():
-    parser = mpi_parser(__doc__)
-    parser.add_argument("--mpi", action="store_true")
-    parser.add_argument("--gpu", action="store_true")
-    parser.add_argument("--device", type=int, default=0)
+    parser = backend_parser(__doc__, single_device=True)
     args = parser.parse_args()
     with mpi_workspace("steady-amg-") as work:
         case = Path(work)

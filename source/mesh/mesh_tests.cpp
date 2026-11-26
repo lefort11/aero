@@ -1,5 +1,7 @@
+#include "../../tests/test_files.h"
 #include "mesh.h"
-#include "../../tests/test_checks.h"
+#include "../../tests/test_suite.h"
+#include "../../tests/mesh_fixture.h"
 #include "../io/lzma_stream.h"
 
 #include <algorithm>
@@ -28,126 +30,14 @@ std::vector<Test> tests;
 using aero_test::require;
 // Проверяет, что некорректный ввод завершается ожидаемой ошибкой.
 template <class F> void rejects(F operation, const std::string& expected = std::string()) {
-    try {
-        operation();
-    } catch (const MeshError& error) {
-        require(expected.empty() || std::string(error.what()).find(expected) != std::string::npos,
-                "Unexpected error: " + std::string(error.what()));
-        return;
-    }
-    throw std::runtime_error("Expected MeshError");
+    aero_test::expect_error<MeshError>(operation, expected, "Expected MeshError");
 }
 // Добавляет именованную проверку в список тестов модуля.
 void add(const std::string& name, std::function<void()> test) {
-    tests.emplace_back(name, std::move(test));
+    aero_test::add_test(tests, name, std::move(test));
 }
 
-// Добавляет грань в топологию тестовой сетки.
-void append_face(MeshData& d, const std::vector<MeshIndex>& vertices) {
-    d.face_nodes.indices.insert(d.face_nodes.indices.end(), vertices.begin(), vertices.end());
-    d.face_nodes.offsets.push_back(d.face_nodes.indices.size());
-}
-// Помечает все внешние грани тестовой сетки одним участком.
-void mark_all_boundary(MeshData& d) {
-    const std::size_t count = d.face_nodes.offsets.size() - 1;
-    d.boundary_faces.resize(count);
-    std::iota(d.boundary_faces.begin(), d.boundary_faces.end(), MeshIndex(0));
-    d.boundary_patch.assign(count, 0);
-}
-// Создаёт сетку из одной ячейки с заданной оболочкой.
-void make_single_cell(MeshData& d) {
-    const std::size_t count = d.face_nodes.offsets.size() - 1;
-    d.cell_faces.indices.resize(count);
-    std::iota(d.cell_faces.indices.begin(), d.cell_faces.indices.end(), MeshIndex(0));
-    d.cell_faces.offsets = {0, static_cast<MeshIndex>(count)};
-    d.cell_face_orientation.assign(count, 1);
-    mark_all_boundary(d);
-}
-
-// Создаёт тестовую тетраэдральную ячейку.
-MeshData tetrahedron() {
-    MeshData d;
-    d.x = {0, 1, 0, 0};
-    d.y = {0, 0, 1, 0};
-    d.z = {0, 0, 0, 1};
-    d.patch_names = {"wing"};
-    append_face(d, {0, 2, 1});
-    append_face(d, {0, 1, 3});
-    append_face(d, {1, 2, 3});
-    append_face(d, {2, 0, 3});
-    make_single_cell(d);
-    return d;
-}
-
-// Создаёт тестовую сетку со смешанными типами ячеек.
-MeshData mixed() {
-    MeshData d = tetrahedron();
-    d.patch_names.push_back("farfield");
-    d.x.insert(d.x.end(), {3, 4, 4, 3, 3, 4, 4, 3, 6, 7, 6, 6, 7, 6});
-    d.y.insert(d.y.end(), {0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 1});
-    d.z.insert(d.z.end(), {0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1});
-    append_face(d, {4, 7, 6, 5});
-    append_face(d, {8, 9, 10, 11});
-    append_face(d, {4, 5, 9, 8});
-    append_face(d, {5, 6, 10, 9});
-    append_face(d, {6, 7, 11, 10});
-    append_face(d, {7, 4, 8, 11});
-    append_face(d, {12, 14, 13});
-    append_face(d, {15, 16, 17});
-    append_face(d, {12, 13, 16, 15});
-    append_face(d, {13, 14, 17, 16});
-    append_face(d, {14, 12, 15, 17});
-    d.cell_faces.offsets = {0, 4, 10, 15};
-    d.cell_faces.indices = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14};
-    d.cell_face_orientation.assign(15, 1);
-    mark_all_boundary(d);
-    for (std::size_t i = 4; i < 10; ++i)
-        d.boundary_patch[i] = 1;
-    return d;
-}
-
-// Создаёт соседние тетраэдры с общей гранью.
-MeshData adjacent_tetrahedra() {
-    MeshData d = tetrahedron();
-    d.x.push_back(0);
-    d.y.push_back(0);
-    d.z.push_back(-1);
-    append_face(d, {0, 2, 4});
-    append_face(d, {2, 1, 4});
-    append_face(d, {1, 0, 4});
-    d.cell_faces = MeshCsr({0, 4, 8}, {0, 1, 2, 3, 0, 4, 5, 6});
-    d.cell_face_orientation = {1, 1, 1, 1, -1, 1, 1, 1};
-    d.boundary_faces = {1, 2, 3, 4, 5, 6};
-    d.boundary_patch.assign(6, 0);
-    return d;
-}
-
-// Создаёт призматическую сетку для проверки геометрии и связности.
-MeshData polygonal_prism(std::size_t n) {
-    MeshData d;
-    d.patch_names = {"surface"};
-    const double pi = std::acos(-1.0);
-    for (unsigned layer = 0; layer < 2; ++layer)
-        for (std::size_t i = 0; i < n; ++i) {
-            const double angle = 2 * pi * static_cast<double>(i) / static_cast<double>(n);
-            d.x.push_back(std::cos(angle));
-            d.y.push_back(std::sin(angle));
-            d.z.push_back(layer);
-        }
-    std::vector<MeshIndex> bottom, top;
-    for (std::size_t i = 0; i < n; ++i) {
-        bottom.push_back(n - 1 - i);
-        top.push_back(n + i);
-    }
-    append_face(d, bottom);
-    append_face(d, top);
-    for (std::size_t i = 0; i < n; ++i) {
-        const std::size_t j = (i + 1) % n;
-        append_face(d, {i, j, n + j, n + i});
-    }
-    make_single_cell(d);
-    return d;
-}
+using namespace aero_test::mesh_fixture;
 
 // Склеиваем полюса ориентированного икосаэдра. Связность по граням и кратность рёбер сохраняются,
 // но окрестность получившейся вершины распадается на две части.
@@ -179,62 +69,6 @@ MeshData icosahedron() {
     return d;
 }
 
-// Создаёт одномерную сетку для проверки алгоритма.
-MeshData line_mesh() {
-    MeshData d;
-    d.dimension = 1;
-    d.x = {-2, -1.75, 0, 4};
-    d.y.assign(4, 0);
-    d.z.assign(4, 0);
-    for (MeshIndex i = 0; i < 4; ++i)
-        append_face(d, {i});
-    d.cell_faces = MeshCsr({0, 2, 4, 6}, {0, 1, 1, 2, 2, 3});
-    d.cell_face_orientation = {-1, 1, -1, 1, -1, 1};
-    d.boundary_faces = {0, 3};
-    d.boundary_patch = {0, 1};
-    d.patch_names = {"left", "right"};
-    return d;
-}
-
-// Создаёт многоугольную ячейку тестовой сетки.
-MeshData polygon(std::size_t n) {
-    MeshData d;
-    d.dimension = 2;
-    d.patch_names = {"wall"};
-    const double pi = std::acos(-1.0);
-    for (std::size_t i = 0; i < n; ++i) {
-        const double angle = 2 * pi * static_cast<double>(i) / static_cast<double>(n);
-        d.x.push_back(std::cos(angle));
-        d.y.push_back(std::sin(angle));
-        d.z.push_back(0);
-        append_face(d, {i, (i + 1) % n});
-    }
-    make_single_cell(d);
-    return d;
-}
-
-// Создаёт соседние многоугольники с общим ребром.
-MeshData adjacent_polygons() {
-    MeshData d;
-    d.dimension = 2;
-    d.patch_names = {"wall"};
-    d.x = {0, 1, 1, 0, 2};
-    d.y = {0, 0, 1, 1, 0.5};
-    d.z.assign(5, 0);
-    // Четырёхугольник и треугольник имеют общую грань с номером 0.
-    append_face(d, {1, 2});
-    append_face(d, {0, 1});
-    append_face(d, {2, 3});
-    append_face(d, {3, 0});
-    append_face(d, {1, 4});
-    append_face(d, {4, 2});
-    d.cell_faces = MeshCsr({0, 4, 7}, {0, 1, 2, 3, 0, 4, 5});
-    d.cell_face_orientation = {1, 1, 1, 1, -1, 1, 1};
-    d.boundary_faces = {1, 2, 3, 4, 5};
-    d.boundary_patch.assign(5, 0);
-    return d;
-}
-
 // Сравнивает результаты двух реализаций или представлений с заданным допуском.
 bool same(const MeshData& a, const MeshData& b) {
     return a.dimension == b.dimension && a.x == b.x &&
@@ -257,10 +91,7 @@ Mesh decode(const std::string& bytes, const MeshReadLimits& limits = MeshReadLim
 }
 // Меняет указанный фрагмент заготовки для проверки повреждённого ввода.
 std::string replace_once(std::string text, const std::string& before, const std::string& after) {
-    const std::size_t p = text.find(before);
-    require(p != std::string::npos, "Test token not found: " + before);
-    text.replace(p, before.size(), after);
-    return text;
+    return aero_test::replace_first(std::move(text), before, after, "Test token not found: ");
 }
 // Тестовая локаль с десятичной запятой для проверки независимости формата от ОС.
 struct CommaDecimal : std::numpunct<char> {
@@ -268,29 +99,10 @@ struct CommaDecimal : std::numpunct<char> {
     char do_decimal_point() const override { return ','; }
 };
 
-// Владеет временным файлом проверки и удаляет его при выходе из области видимости.
-class TempFile {
-public:
-    // Создаёт уникальное имя временного файла теста.
-    TempFile() {
-        static unsigned count = 0;
-        std::ostringstream name;
-        name << "build/mesh-test-" << std::chrono::high_resolution_clock::now().time_since_epoch().count()
-             << '-' << count++ << ".mesh";
-        path = name.str();
-        std::ifstream existing(path.c_str(), std::ios::binary);
-        require(!existing, "Test file already exists");
-    }
-    // Удаляет временные файлы и каталоги, созданные объектом.
-    ~TempFile() { std::remove(path.c_str()); }
-    // Путь к временному файлу сетки.
-    std::string path;
-
-private:
-    // Запрещает копирование объекта, владеющего ресурсами.
-    TempFile(const TempFile&);
-    // Запрещает присваивание, чтобы ресурсы сохраняли единственного владельца.
-    TempFile& operator=(const TempFile&);
+// Выбирает имя и расширение временного файла данного тестового формата.
+struct TempFile : aero_test::TestFile {
+    // Время жизни файла ограничено проверкой, которая создала этот объект.
+    TempFile() : TestFile("mesh-test-", ".mesh", "Test file already exists") {}
 };
 
 // Чтение и запись сжатых сеток, контрольная сумма и повреждения потока.
@@ -1115,16 +927,5 @@ void register_tests() {
 // Запускает проверки модуля и возвращает ненулевой код при ошибке.
 int main() {
     register_tests();
-    std::size_t failed = 0;
-    for (const Test& test : tests) {
-        try {
-            test.second();
-            std::cout << "PASS " << test.first << '\n';
-        } catch (const std::exception& error) {
-            ++failed;
-            std::cerr << "FAIL " << test.first << ": " << error.what() << '\n';
-        }
-    }
-    std::cout << tests.size() - failed << '/' << tests.size() << " tests passed\n";
-    return failed == 0 ? 0 : 1;
+    return aero_test::run_tests(tests, " tests passed");
 }

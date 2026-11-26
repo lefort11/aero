@@ -1,6 +1,6 @@
 # Общая библиотека ввода и вывода используется солвером и утилитами.
 LZMA_SOURCE := third_party/lzma
-$(BUILD)/report.o $(BUILD)/io_scheduled_output.o: source/io/flow_values.h source/eulersolver/linear_euler.h
+$(BUILD)/report.o $(BUILD)/io_scheduled_output.o: source/io/diagnostic_fields.h source/io/flow_values.h source/eulersolver/linear_euler.h
 NUMBER_CODEC := source/io/number_codec.h
 NATIVE_FORMAT := source/io/native_format.h $(NUMBER_CODEC)
 LABEL_HEADER := source/io/utf8_label.h
@@ -96,4 +96,4 @@ output-debug-test: io-fields-debug-test
 all: $(BIN)/$(notdir $(FIELD_TEST))
 test: io-fields-test
 debug-test: io-fields-debug-test
-$(BUILD)/io_fields_tests.o $(FIELD_DEBUG_TEST): tests/test_checks.h
+$(BUILD)/io_fields_tests.o $(FIELD_DEBUG_TEST): tests/test_checks.h tests/test_suite.h tests/test_files.h tests/mesh_fixture.h

@@ -1,11 +1,11 @@
 #pragma once
-#include "device_execution.h"
+#include "row_loop.h"
 #include "../viscosity/jacobian.h"
 
 namespace aero {
 namespace device_work {
 namespace coordinate_aes {
-using Team=Kokkos::TeamPolicy<Execution>;
+using row_loop::for_indices;
 
 // Каждые 32 потока обрабатывают свой объёмный элемент. Скорости и координаты его
 // вершин читаем один раз. До 24 потоков считают напряжения в тетраэдрах, до восьми
@@ -94,7 +94,7 @@ struct JacobianPairs {
         tile.pairs[index*28+tid]=viscosity::integrate_pair(pattern,tid,w);
     }
 };
-template<bool all_hex,class PairOutput>
+template<bool all_hex,class PairOutput,class Space>
 // Командное ядро градиентов AES и необязательных парных производных по координатной геометрии.
 struct Apply {
     // Число потоков на ячейку и ячеек на группу.
@@ -119,7 +119,7 @@ struct Apply {
                 const double delta=w.u(v[j],m)-w.u(v[0],m);
                 for (unsigned d=0;d<3;++d) gradient(m, d)+=delta*normal[j][d];
             }
-        const double volume_part=(2./3.)*(gradient(0, 0)+gradient(1, 1)+gradient(2, 2));
+        const double volume_part=viscosity::stress_volume_part(gradient(0,0), gradient(1,1), gradient(2,2));
         // Симметричный тензор имеет шесть компонент. Геометрический множитель
         // включаем один раз, чтобы повторно использовать напряжение у трёх вершин.
         const double xy=factor*(gradient(0, 1)+gradient(1, 0));
@@ -142,7 +142,7 @@ struct Apply {
         }
     }
     // Вычисляет градиенты и выбранные парные данные группы элементов командой GPU.
-    KOKKOS_INLINE_FUNCTION void operator()(const Team::member_type& team) const {
+    KOKKOS_INLINE_FUNCTION void operator()(const typename Kokkos::TeamPolicy<Space>::member_type& team) const {
         const unsigned thread=static_cast<unsigned>(team.team_rank());
         const unsigned slot=thread/threads_per_cell, tid=thread%threads_per_cell, i=tid%8;
         const MeshIndex index=static_cast<MeshIndex>(team.league_rank())*cells_per_team+slot;
@@ -194,7 +194,8 @@ struct Apply {
 };
 // Объём тетраэдра не зависит от решения или шага времени. Заполняем таблицу
 // один раз на карте. Формула та же, что и при вычислении внутри стадии SSPRK3.
-inline void prepare_volumes(const Execution& exec,const viscosity::VolumeCoordinates& geometry) {
+template<class Space>
+inline void prepare_volumes(const Space& exec,const viscosity::VolumeCoordinates& geometry) {
     const auto g=geometry;
     for_indices(exec,"Aero: prepare AES tetrahedron volumes",24*g.cached_cells,KOKKOS_LAMBDA(MeshIndex k) {
         const auto& cell=g.cells[k/24];
@@ -206,23 +207,24 @@ inline void prepare_volumes(const Execution& exec,const viscosity::VolumeCoordin
     });
 }
 // Запускает командное вычисление градиентов и выбранного вида парных данных.
-template<class PairOutput>
-inline void apply(const Execution& exec,const viscosity::Operator& grid,viscosity::Gradient* out,
+template<class PairOutput,class Space>
+inline void apply(const Space& exec,const viscosity::Operator& grid,viscosity::Gradient* out,
                       MeshIndex first,MeshIndex count,MeshIndex first_vertex,PairOutput pairs) {
     if (!count) return;
-    using Layout=Apply<false,PairOutput>;
+    using Layout=Apply<false,PairOutput,Space>;
     using Scratch=typename PairOutput::Scratch;
     const auto groups=(count-1)/Layout::cells_per_team+1;
     const unsigned threads=Layout::cells_per_team*Layout::threads_per_cell;
-    const auto team=Team(exec,static_cast<int>(groups),threads)
+    const auto team=Kokkos::TeamPolicy<Space>(exec,static_cast<int>(groups),threads)
         .set_scratch_size(0,Kokkos::PerTeam(Layout::cells_per_team*sizeof(Scratch)));
     if (grid.tetra.all_hex)
-        Kokkos::parallel_for(pairs.label(true),team,Apply<true,PairOutput>{grid,out,first,first_vertex,count,pairs});
+        Kokkos::parallel_for(pairs.label(true),team,Apply<true,PairOutput,Space>{grid,out,first,first_vertex,count,pairs});
     else
-        Kokkos::parallel_for(pairs.label(false),team,Apply<false,PairOutput>{grid,out,first,first_vertex,count,pairs});
+        Kokkos::parallel_for(pairs.label(false),team,Apply<false,PairOutput,Space>{grid,out,first,first_vertex,count,pairs});
 }
 // Запускает координатный оператор только для вычисления градиентов.
-inline void gradients(const Execution& exec,const viscosity::Operator& grid,viscosity::Gradient* out,
+template<class Space>
+inline void gradients(const Space& exec,const viscosity::Operator& grid,viscosity::Gradient* out,
                       MeshIndex first,MeshIndex count,MeshIndex first_vertex) {
     apply(exec,grid,out,first,count,first_vertex,GradientsOnly{});
 }

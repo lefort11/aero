@@ -19,7 +19,7 @@ CONVERTER_CPPFLAGS := -DAERO_WITH_CGNS $(CGNS_CPPFLAGS)
 CONVERTER_LDLIBS := $(CGNS_LDLIBS)
 endif
 CONVERTER_SOURCES := $(CONVERTER_SOURCE)/topology.cpp $(CONVERTER_SOURCE)/gmsh.cpp $(CONVERTER_SOURCE)/cgns.cpp $(CONVERTER_SOURCE)/another.cpp $(CONVERTER_SOURCE)/cli.cpp
-CONVERTER_HEADERS := $(CONVERTER_SOURCE)/converter.h $(CONVERTER_SOURCE)/detail.h $(CONVERTER_SOURCE)/cli.h $(MESH_HEADERS)
+CONVERTER_HEADERS := source/io/utf8_label.h $(CONVERTER_SOURCE)/converter.h $(CONVERTER_SOURCE)/detail.h $(CONVERTER_SOURCE)/cli.h $(MESH_HEADERS)
 CONVERTER_OBJECTS := $(patsubst $(CONVERTER_SOURCE)/%.cpp,$(BUILD)/converter_%_$(WITH_CGNS).o,$(CONVERTER_SOURCES))
 $(BUILD)/converter_cgns_$(WITH_CGNS).o $(BUILD)/converter_converter_tests_$(WITH_CGNS).o: $(CGNS_BUILD_DEPS)
 
@@ -44,4 +44,5 @@ converter-debug-test: $(LZMA_OBJECTS) | $(BUILD) bin-runtime $(CGNS_BUILD_DEPS)
 	$(CXX) $(CPPFLAGS) $(CONVERTER_CPPFLAGS) -std=c++11 -pedantic-errors -O0 -g -Wall -Wextra -Wpedantic -Wconversion -Wshadow -D_GLIBCXX_DEBUG -D_GLIBCXX_ASSERTIONS $(MESH_SOURCE)/mesh.cpp $(CONVERTER_SOURCES) $(CONVERTER_SOURCE)/converter_tests.cpp source/io/lzma_stream.cpp $(LZMA_OBJECTS) $(LDFLAGS) $(CONVERTER_LDLIBS) $(LDLIBS) -o $(BIN)/converter_tests_debug$(EXE)
 	$(running_test)
 	"$(BIN)/converter_tests_debug$(EXE)"
-$(BUILD)/converter_converter_tests_$(WITH_CGNS).o: tests/test_checks.h
+$(BUILD)/converter_converter_tests_$(WITH_CGNS).o: tests/test_checks.h tests/test_files.h tests/test_suite.h
+$(BUILD)/converter_cli_$(WITH_CGNS).o: source/io/cli_help.h

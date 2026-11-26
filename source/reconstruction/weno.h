@@ -8,7 +8,6 @@
 namespace aero {
 // Деление на три с округлением binary64. На GPU заранее известны обе части числа 1/3.
 AERO_HOST_DEVICE inline double weno_third(double x) {
-#ifndef KOKKOS_ACTIVE_EXECUTION_MEMORY_SPACE_HOST
     // Для нормальных x/3 расстояние до середины между соседними double не меньше 1/6 шага.
     // Ошибка младшей части значительно меньше этого расстояния. FMA даёт то же округление,
     // что и деление. Для очень малых x произведение с младшей частью могло бы потерять точность.
@@ -18,7 +17,6 @@ AERO_HOST_DEVICE inline double weno_third(double x) {
         constexpr double low = high / 18014398509481984.0; // (1/3 − high), округлённое к double.
         return ::fma(x, high, x * low);
     }
-#endif
     return x / 3.0;
 }
 
@@ -106,6 +104,10 @@ KOKKOS_FORCEINLINE_FUNCTION void weno_weights(double a, double b, double c, doub
 // Вычисляет приращение WENO третьего порядка по двум наклонам.
 template <bool safe_products>
 KOKKOS_FORCEINLINE_FUNCTION double weno_three(double center, double near, double epsilon) {
+    // В обычном диапазоне веса конечны. Если кандидаты совпали, поправка
+    // (near - center) точно нулевая при любых весах. Сложение сохраняет знак
+    // результата исходной формулы для нулевого наклона.
+    if (safe_products && center == near) return center + 0.;
     double w[3];
     weno_weights<3, safe_products>(epsilon + center * center, epsilon + near * near, 0, w);
     const double inverse = 1 / (w[0] + w[1]);

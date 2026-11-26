@@ -1,7 +1,7 @@
 #include "coarse_step.h"
 #include "../implicit/bdf1_linear_system.h"
 #include "../implicit/bicgstab_vectors.h"
-#include "../parallel/parallel_for.h"
+#include "../implicit/row_execution.h"
 #include "../parallel/upload_compact.h"
 #ifdef AERO_WITH_KOKKOS_GPU
 #include "../parallel/device_api.h"
@@ -104,13 +104,7 @@ void CoarseStep::transfer(Transfer::Operation op,double* coarse) {
     transfer_.operation = op;
     transfer_.coarse = coarse;
     partition_.local([&] {
-#ifdef AERO_WITH_KOKKOS_GPU
-        if (device_ >= 0) {
-            device_work::check(device_work::aero_device_multigrid_transfer(device_,size_,transfer_));
-            return;
-        }
-#endif
-        parallel_for(size_,transfer_);
+        implicit::apply_rows(device_, size_, transfer_);
     });
 }
 
@@ -118,13 +112,7 @@ void CoarseStep::transfer(Transfer::Operation op,double* coarse) {
 void CoarseStep::update(VectorUpdate::Operation op,double* target,const double* source,double factor) {
     const VectorUpdate work{op,target,source,transfer_.inverse_mass,factor,transfer_.width};
     partition_.local([&] {
-#ifdef AERO_WITH_KOKKOS_GPU
-        if (device_ >= 0) {
-            device_work::check(device_work::aero_device_multigrid_update(device_,size_,work));
-            return;
-        }
-#endif
-        parallel_for(size_,work);
+        implicit::apply_rows(device_, size_, work);
     });
 }
 

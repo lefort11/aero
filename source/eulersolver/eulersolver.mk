@@ -16,7 +16,7 @@ CUDA_ARCH ?= 86
 ifeq ($(kokkos_gpu),1)
 EULER_FLAGS += -DAERO_WITH_KOKKOS_GPU
 EULER_CUDA_TEST_OBJECT := $(BUILD)/eulersolver_cuda_tests.o
-$(EULER_CUDA_TEST_OBJECT): $(EULERSOLVER_SOURCE)/eulersolver_gpu_tests.cpp $(EULER_HEADERS) source/parallel/device_scope.h source/parallel/device_memory.h | $(BUILD)
+$(EULER_CUDA_TEST_OBJECT): $(EULERSOLVER_SOURCE)/eulersolver_gpu_tests.cpp $(EULER_HEADERS) source/parallel/device_check.h source/parallel/device_scope.h source/parallel/device_memory.h | $(BUILD)
 	$(compiling)
 	$(compile_device_host)
 endif
@@ -50,4 +50,4 @@ eulersolver-cuda-test eulersolver-hip-test:
 all: $(BIN)/$(notdir $(EULER_TEST))
 test: eulersolver-test
 debug-test: eulersolver-debug-test
-$(EULER_TEST) $(EULER_DEBUG_TEST): tests/test_checks.h
+$(EULER_TEST) $(EULER_DEBUG_TEST): tests/test_checks.h tests/test_suite.h

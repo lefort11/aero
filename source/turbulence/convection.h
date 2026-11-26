@@ -35,11 +35,13 @@ struct SaEdgeConvection {
     AERO_HOST_DEVICE void packed(MeshIndex k,const residual_detail::WenoEdgeTile<order>* tiles) const {
         using namespace residual_detail;
         const auto edge=computed ? computed[k] : k;
+        // При нулевом массовом потоке обе стороны дают нулевую поправку.
+        // В этом случае плитку, флаги реконструкции и значения SA читать не требуется.
+        const double mass = gas_flux[edge].flux[0];
+        if (mass == 0.) { correction[edge] = 0.; return; }
         const auto& tile=tiles[edge_tile::index(edge)];
         const unsigned lane=edge_tile::lane(edge);
         if (!tile.order[lane].complete() || surfaces[edge].use_nodal_traces) { (*this)(k); return; }
-        const double mass=gas_flux[edge].flux[0];
-        if (mass==0.) { correction[edge]=0.; return; }
         const bool right=mass<0.;
         const double center=scalar_slope<CentralSlope>(tile,lane);
         const double left=scalar_slope<NearLeftSlope>(tile,lane), other=scalar_slope<NearRightSlope>(tile,lane);

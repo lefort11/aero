@@ -201,10 +201,8 @@ public:
     }
     // Проверяет размер и бюджет перед выделением массива значений.
     template <class T> void resize(std::vector<T>& array, U64 size) {
-        if (size > array.max_size())
-            fail("Field array is too large");
-        charge(size, sizeof(T));
-        array.resize(static_cast<std::size_t>(size));
+        io::NativeFileCodec::resize_array(array, size,
+            [&](U64 count, std::size_t width) { charge(count, width); }, fail, "Field array is too large");
     }
     // При совпадении формата файла с представлением double читаем непрерывный диапазон одним блоком.
     // bytes учитывает лимит распаковки и обнаруживает усечённый файл также на этом быстром пути.
@@ -251,13 +249,7 @@ public:
     }
     // Завершает обработку файла и проверяет состояние потока.
     void finish() {
-        block("END");
-        if (text_)
-            skip_space();
-        if (peek() != std::char_traits<char>::eof())
-            fail("Trailing data after fields");
-        if (input_->bad())
-            fail("Field input failed");
+        io::NativeFileCodec::finish(*this, fail, "Trailing data after fields", "Field input failed");
     }
 
 private:
@@ -347,14 +339,10 @@ public:
             literal("TEXT\n");
     }
     // Записывает служебный текстовый фрагмент формата.
-    void literal(const char* text) { output_.write(text, static_cast<std::streamsize>(std::strlen(text))); }
+    void literal(const char* text) { io::NativeFileCodec::write_literal(output_, text); }
     // Передаёт блок байтов между представлением файла и потоком с проверкой ошибки.
     void block(const char* label) {
-        if (text_) {
-            output_.put('\n');
-            literal(label);
-            output_.put(' ');
-        }
+        io::NativeFileCodec::write_block(output_, text_, label, ' ');
     }
     // Читает или записывает беззнаковое 64-битное значение в формате файла полей.
     void u64(U64 value) { number_codec::write_word(output_, value, text_); }

@@ -3,7 +3,7 @@ import math
 import shutil
 from pathlib import Path
 
-from mpi_common import mpi_parser, mpi_workspace
+from mpi_common import backend_parser, mpi_workspace
 from mpi_fields import binary_snapshot
 from mpi_geometry import run
 from viscosity import setup, solve, compare_backends, max_difference
@@ -495,10 +495,7 @@ def walls(case,args):
 
 
 if __name__=="__main__":
-    parser=mpi_parser(__doc__)
-    parser.add_argument("--mpi",action="store_true")
-    parser.add_argument("--gpu",action="store_true")
-    parser.add_argument("--devices",default="0")
+    parser = backend_parser(__doc__)
     parser.add_argument("--jet-only", action="store_true", help="Run only the jet startup check")
     args=parser.parse_args()
     with mpi_workspace("turbulence-") as work:

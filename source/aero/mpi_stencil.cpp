@@ -112,9 +112,7 @@ BoundarySupport boundary_support(const PartitionInput::NodeOwners& centers, cons
                 for (Id copy : it->second)
                     put(s, copy);
         });
-    exchange(
-        w, [&](Messages& out) { out.swap(replies); },
-        [&](Reader& r, int) {
+    exchange_replies(w, replies, [&](Reader& r, int) {
             const Id id = r.id();
             if (r.id())
                 result.nodal.insert(id);
@@ -178,9 +176,7 @@ std::vector<Ref> support_states(const MeshPartition& part, const PeriodicPartiti
             put(replies[p], slot);
             put(replies[p], canonical(part, seam, index_of(part.nodes, id)));
         });
-    exchange(
-        w, [&](Messages& out) { out.swap(replies); },
-        [&](Reader& r, int) {
+    exchange_replies(w, replies, [&](Reader& r, int) {
             const Id n = r.id();
             states.at(n) = r.ref();
         });
@@ -287,9 +283,7 @@ std::vector<int> partition_layer_depths(const MeshPartition& part, const MeshPar
             put(replies[p], slot);
             put(replies[p], static_cast<Id>(minimum[n] + 1));
         });
-    exchange(
-        w, [&](Messages& out) { out.swap(replies); },
-        [&](Reader& r, int) {
+    exchange_replies(w, replies, [&](Reader& r, int) {
             const Id slot = r.id();
             depth[slot] = static_cast<int>(r.id()) - 1;
         });

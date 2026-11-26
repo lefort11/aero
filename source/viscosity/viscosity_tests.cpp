@@ -18,6 +18,23 @@ using namespace aero;
 using Vertex = std::array<double,3>;
 using Face = std::vector<MeshIndex>;
 
+#ifdef AERO_WITH_KOKKOS_GPU
+// Запускает проверку на каждом доступном устройстве и восстанавливает предыдущее
+// выбранное устройство после вызова, в том числе при исключении в проверке.
+template<class Check>
+void check_each_device(const Check& check) {
+    int count = 0;
+    const auto status = gpu::count(&count);
+    if (status == gpu::Status::NoDevice || status == gpu::Status::Unavailable) return;
+    gpu::checked(status);
+    for (int device = 0; device < count; ++device) {
+        gpu::DeviceScope scope(device);
+        gpu::checked(scope.status);
+        check(device);
+    }
+}
+#endif
+
 // Проверяет совпадение чисел в пределах заданного допуска.
 void near(double value, double expected, const char* reason) {
     aero_test::require(std::abs(value-expected) <= 2.e-12*(1.+std::abs(expected)),reason);
@@ -172,12 +189,7 @@ void check_mixed_coordinates(const Processes& world,bool implicit,bool renumbere
     check_coordinate_pairs(aes,nodes,implicit && !renumbered);
     if (renumbered) return;
 #ifdef AERO_WITH_KOKKOS_GPU
-    int devices=0;
-    const auto status=gpu::count(&devices);
-    if (status!=gpu::Status::NoDevice && status!=gpu::Status::Unavailable) gpu::checked(status);
-    for (int device=0;device<devices;++device) {
-        gpu::DeviceScope scope(device);
-        gpu::checked(scope.status);
+    check_each_device([&](int device) {
         gpu::DeviceArrays arrays;
         arrays.device=device;
         const auto op=aes.upload(arrays,nodes);
@@ -260,7 +272,7 @@ void check_mixed_coordinates(const Processes& world,bool implicit,bool renumbere
 #endif
             aes.evaluate(field.data());
         }
-    }
+    });
 #endif
 }
 
@@ -512,14 +524,7 @@ void check_element(const Processes& world, const MeshPartition& part, double vol
     check_device(-1);
 #endif
 #ifdef AERO_WITH_KOKKOS_GPU
-    int devices = 0;
-    const auto status = gpu::count(&devices);
-    if (status != gpu::Status::NoDevice && status != gpu::Status::Unavailable) gpu::checked(status);
-    for (int device = 0; device < devices; ++device) {
-        gpu::DeviceScope scope(device);
-        gpu::checked(scope.status);
-        check_device(device);
-    }
+    check_each_device(check_device);
 #endif
 }
 }

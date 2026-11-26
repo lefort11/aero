@@ -1,3 +1,4 @@
+#include "../parallel/device_check.h"
 #include "reconstruction.h"
 #include "../../tests/device_cases.h"
 #include "../parallel/device_scope.h"
@@ -23,12 +24,6 @@ struct State {
     size_t value_capacity, result_capacity;
 };
 
-// Сохраняет текст ошибки GPU-интерфейса реконструкции.
-int report(aero::gpu::Status code, char* error, unsigned capacity) {
-    if (code != aero::gpu::Status::Success && error && capacity)
-        snprintf(error, capacity, "CUDA: %s", aero::gpu::message(code));
-    return code == aero::gpu::Status::Success ? 0 : 1;
-}
 using namespace aero::device_tests;
 // Запускает GPU-проверку реконструкции с выбранными входными данными.
 aero::gpu::Status launch(State* s, const double* values, ReconstructionIndex components, double* left,
@@ -74,10 +69,10 @@ extern "C" int test_reconstruction_device_create(aero::ReconstructionStencilView
     *opaque = nullptr;
     aero::gpu::DeviceScope scope(device);
     if (scope.status != aero::gpu::Status::Success)
-        return report(scope.status, error, capacity);
+        return aero::gpu::report_status(scope.status, error, capacity);
     State* s = static_cast<State*>(calloc(1, sizeof(State)));
     if (!s)
-        return report(aero::gpu::Status::OutOfMemory, error, capacity);
+        return aero::gpu::report_status(aero::gpu::Status::OutOfMemory, error, capacity);
     s->device = device;
     s->view = view;
     *opaque = s;
@@ -90,8 +85,8 @@ extern "C" int test_reconstruction_device_device(void* opaque, const double* val
     State* s = static_cast<State*>(opaque);
     aero::gpu::DeviceScope scope(s->device);
     if (scope.status != aero::gpu::Status::Success)
-        return report(scope.status, error, capacity);
-    return report(launch(s, values, components, left, right, static_cast<aero::gpu::Stream>(stream)), error,
+        return aero::gpu::report_status(scope.status, error, capacity);
+    return aero::gpu::report_status(launch(s, values, components, left, right, static_cast<aero::gpu::Stream>(stream)), error,
                   capacity);
 }
 // Переносит тестовое поле на GPU и вычисляет реконструкцию.
@@ -101,7 +96,7 @@ extern "C" int test_reconstruction_device_host(void* opaque, const double* value
     State* s = static_cast<State*>(opaque);
     aero::gpu::DeviceScope scope(s->device);
     if (scope.status != aero::gpu::Status::Success)
-        return report(scope.status, error, capacity);
+        return aero::gpu::report_status(scope.status, error, capacity);
     const size_t n = static_cast<size_t>(s->view.node_count * components);
     const size_t m = static_cast<size_t>(s->view.edge_count * components);
     if (!m)
@@ -120,7 +115,7 @@ extern "C" int test_reconstruction_device_host(void* opaque, const double* value
         s->left = nullptr;
         s->right = nullptr;
         s->result_capacity = 0;
-        return report(code, error, capacity);
+        return aero::gpu::report_status(code, error, capacity);
     }
     code = aero::gpu::copy(s->values, values, n * sizeof(double), aero::gpu::Copy::ToDevice);
     if (code == aero::gpu::Status::Success)
@@ -129,7 +124,7 @@ extern "C" int test_reconstruction_device_host(void* opaque, const double* value
         code = aero::gpu::copy(left, s->left, m * sizeof(double), aero::gpu::Copy::ToHost);
     if (code == aero::gpu::Status::Success)
         code = aero::gpu::copy(right, s->right, m * sizeof(double), aero::gpu::Copy::ToHost);
-    return report(code, error, capacity);
+    return aero::gpu::report_status(code, error, capacity);
 }
 
 // Вычисляет одну выбранную сторону реконструкции на GPU.

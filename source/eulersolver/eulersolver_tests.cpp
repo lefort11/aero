@@ -1,5 +1,5 @@
 #include "lax_friedrichs.h"
-#include "../../tests/test_checks.h"
+#include "../../tests/test_suite.h"
 #include "roe.h"
 #include "linear_euler.h"
 #include "characteristic.h"
@@ -27,8 +27,7 @@ std::vector<std::pair<std::string, std::function<void()>>> tests;
 using aero_test::require;
 // Проверяет совпадение чисел в пределах заданного допуска.
 void near(double actual, double expected, double tolerance = 3.e-11) {
-    require(std::isfinite(actual) && std::abs(actual - expected) <= tolerance * (1 + std::abs(expected)),
-            "Expected " + std::to_string(expected) + ", got " + std::to_string(actual));
+    aero_test::require_close(actual, expected, tolerance, true);
 }
 // Проверяет условие теста и сообщает понятную причину нарушения.
 void ok(EulerStatus status) {
@@ -36,7 +35,7 @@ void ok(EulerStatus status) {
 }
 // Добавляет именованную проверку в список тестов модуля.
 void add(const std::string& name, std::function<void()> test) {
-    tests.push_back(std::make_pair(name, test));
+    aero_test::add_test(tests, name, std::move(test));
 }
 // Сравнивает результаты двух реализаций или представлений с заданным допуском.
 void same(const EulerFluxResult& a, const EulerFluxResult& b) {

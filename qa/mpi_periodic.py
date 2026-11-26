@@ -19,7 +19,7 @@ from mpi_euler import (
     stamp,
     verify as verify_euler,
 )
-from run import nodes, read_snapshot, reconstruction_variables, settings
+from run import nodes, read_snapshot, reconstruction_variables, settings, write_settings
 
 
 def square(mesh):
@@ -387,7 +387,7 @@ def verify(
 
     def configure(scheme):
         options["time_scheme"] = scheme
-        (case / "main.txt").write_text("".join(f"{k} = {v}\n" for k, v in options.items()))
+        write_settings(case / "main.txt", options)
 
     configure("euler")
     geom = case / "geometry"
@@ -481,7 +481,7 @@ END
     )
     options = settings(case / "main.txt")
     options.update(mesh="grid.mesh", reconstruction=reconstruction, final_time=0.003, report_every=1)
-    (case / "main.txt").write_text("".join(f"{k} = {v}\n" for k, v in options.items()))
+    write_settings(case / "main.txt", options)
     ref = case / "reference"
     serial = run([aero, f"--input={case}", f"--output={ref}"])
     run([meshdec, mesh, case / "grid.mdec", "--target-ranks=7"])
@@ -519,7 +519,7 @@ END
 """)
     options = settings(case / "main.txt")
     options.update(reconstruction="first_order", backend="cpu")
-    (case / "main.txt").write_text("".join(f"{k} = {v}\n" for k, v in options.items()))
+    write_settings(case / "main.txt", options)
     command = [aero, f"--input={case}", f"--output={case/'out'}"]
     run(command + ["--geometry-only"])
     if "unmatched face" not in run(command, success=False):

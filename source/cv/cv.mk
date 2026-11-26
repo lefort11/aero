@@ -42,4 +42,4 @@ cv-cuda-test cv-hip-test:
 	$(MAKE) KOKKOS_BACKEND=$(if $(filter %-hip-test,$@),hip,cuda) $(BIN)/cv_tests_cuda1$(EXE)
 	$(running_test)
 	"$(BIN)/cv_tests_cuda1$(EXE)" --require-gpu
-$(CV_TEST) $(CV_DEBUG): tests/test_checks.h
+$(CV_TEST) $(CV_DEBUG): tests/test_checks.h tests/mesh_fixture.h

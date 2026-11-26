@@ -9,7 +9,8 @@
 #include "../multigrid/coarse_step.h"
 #endif
 #include "../timestep/bdf_weights.h"
-#include "../parallel/parallel_for.h"
+#include "row_execution.h"
+#include "prediction_execution.h"
 #ifdef AERO_WITH_KOKKOS_GPU
 #include "../parallel/device_api.h"
 #endif
@@ -179,18 +180,11 @@ struct BdfStep::Storage {
 
     // Вычисляет глобальную норму полной невязки неявного шага.
     double residual_norm(const NewtonUpdate& operation) const {
-        double local = 0.;
-        partition.local([&] {
-#ifdef AERO_WITH_KOKKOS_GPU
-            if (device >= 0) {
-                device_work::check(device_work::aero_device_newton_residual(device,rows,operation,&local));
-                return;
-            }
-#endif
-            host_parallel::ensure_runtime();
-            local = form_residual_and_norm(host_parallel::Execution(),rows,operation);
-        });
-        return partition.reduce ? partition.reduce(local,true) : local;
+        // Для CPU тип исполнителя фиксирован, поэтому вызов исходного ядра встраивается.
+        return measure_rows(partition, device, rows, operation,
+                            [](const host_parallel::Execution& exec, MeshIndex length, const NewtonUpdate& row) {
+                                return form_residual_and_norm(exec, length, row);
+                            });
     }
 
     // Одним обходом вычисляем норму и, по запросу, сохраняем узловые нормы
@@ -201,6 +195,16 @@ struct BdfStep::Storage {
                                            0.,0.,0.,NewtonUpdate::SpatialRate,partition.owned,1.,{}});
         if (!std::isfinite(norm)) throw std::domain_error("Steady: nonfinite spatial residual");
         return norm;
+    }
+
+    // Передаёт смещения одной строки в компактном и полном поле истории BDF2.
+    // Вызвавший код выбирает направление копирования, сохраняя единственный обход.
+    template<class CopyRow>
+    void visit_history_rows(unsigned width, const CopyRow& copy) const {
+        for (MeshIndex i = 0; i < rows; ++i) {
+            const auto node = partition.host_owned ? partition.host_owned[i] : i;
+            copy(i * width, node * width);
+        }
     }
 
     // Сохраняет начало принятого шага до перестановки слоёв BDF2.
@@ -232,37 +236,31 @@ struct BdfStep::Storage {
 
     // Применяет полином к собственным строкам. Halo обновляет вызывающий код.
     void extrapolate(const TimePrediction& trial) const {
-#ifdef AERO_WITH_KOKKOS_GPU
-        if (device >= 0) {
-            device_work::check(device_work::aero_device_time_prediction(device, rows, trial));
-            return;
-        }
-#endif
-        parallel_for(rows, trial);
+        apply_rows(device, rows, trial);
     }
 
-#ifdef AERO_WITH_KOKKOS_GPU
     // На цельной плоской сетке уточняем наиболее активные строки до общей
     // проверки газа и SA. В остальных раскладках достаточно временной пробы.
     void predict_local_rows(const NewtonUpdate& gas,const double* initial,double threshold) const {
-        if (!partition.trial_faces || partition.owned || rows!=grid.nodes || grid.faces>=rows*4 ||
+        if (!partition.trial_flux || partition.owned || rows!=grid.nodes || grid.faces>=rows*4 ||
             grid.dim!=2 || !grid.packed.tiles || !grid.packed.gas ||
             grid.options.variables!=ResidualVariables::Characteristic || grid.stencil.mp5.weno ||
             grid.options.mp6_hybrid!=0.) return;
-        device_work::check(device_work::aero_device_local_gas_prediction(device,rows,gas,
-                                              partition.trial_flux,partition.trial_faces,initial,threshold));
-    }
-#endif
-
-    // Выполняет выбранное обновление полей Ньютона на CPU или GPU.
-    void update(const NewtonUpdate& operation) const {
 #ifdef AERO_WITH_KOKKOS_GPU
         if (device >= 0) {
-            device_work::check(device_work::aero_device_newton_update(device, rows, operation));
+            if (partition.trial_faces)
+                device_work::check(device_work::aero_device_local_gas_prediction(device,rows,gas,
+                                   partition.trial_flux,partition.trial_faces,initial,threshold));
             return;
         }
 #endif
-        parallel_for(rows, operation);
+        host_parallel::ensure_runtime();
+        predict_local_gas(host_parallel::Execution(),rows,gas,partition.trial_flux,nullptr,initial,threshold);
+    }
+
+    // Выполняет выбранное обновление полей Ньютона на CPU или GPU.
+    void update(const NewtonUpdate& operation) const {
+        apply_rows(device, rows, operation);
     }
 };
 
@@ -302,10 +300,9 @@ void BdfStep::export_history(BdfHistory& history) const {
     }
 #endif
     // Файл индексируется номерами узлов исходной сетки через полное локальное поле.
-    for (MeshIndex i = 0; i < s.rows; ++i) {
-        const auto node = s.partition.host_owned ? s.partition.host_owned[i] : i;
-        std::copy_n(source + i * width, width, history.previous.data() + node * width);
-    }
+    s.visit_history_rows(width, [&](MeshIndex local, MeshIndex global) {
+        std::copy_n(source + local, width, history.previous.data() + global);
+    });
 }
 // Восстанавливает предыдущий слой BDF и длительность его шага.
 void BdfStep::import_history(const BdfHistory& history) {
@@ -315,10 +312,9 @@ void BdfStep::import_history(const BdfHistory& history) {
         throw std::invalid_argument("BDF2: invalid checkpoint history");
     s.ensure_history();
     std::vector<double> compact(s.rows * width);
-    for (MeshIndex i = 0; i < s.rows; ++i) {
-        const auto node = s.partition.host_owned ? s.partition.host_owned[i] : i;
-        std::copy_n(history.previous.data() + node * width, width, compact.data() + i * width);
-    }
+    s.visit_history_rows(width, [&](MeshIndex local, MeshIndex global) {
+        std::copy_n(history.previous.data() + global, width, compact.data() + local);
+    });
 #ifdef AERO_WITH_KOKKOS_GPU
     if (s.device >= 0 && s.rows) {
         gpu::DeviceScope scope(s.device);
@@ -504,10 +500,8 @@ NewtonResult BdfStep::advance(double* state, const double* initial, const double
                 }
                 if (trial.count || local_rans) {
                     s.partition.local([&] { s.extrapolate(trial); });
-#ifdef AERO_WITH_KOKKOS_GPU
                     if (local_rans) s.predict_local_rows(operation(NewtonUpdate::Predict,1.),initial,
                                                          reference*settings.newton_relative);
-#endif
                     share_state();
                     norm = try_prediction_fluxes() ? residual_norm() : HUGE_VAL;
                     if (!(norm < .8 * initial_norm)) {

@@ -31,6 +31,18 @@ def mpi_parser(description, *, require_programs=False):
     return parser
 
 
+def backend_parser(description, *, single_device=False, devices="0"):
+    """Добавляет общие переключатели MPI/GPU и прежний формат идентификаторов карт."""
+    parser = mpi_parser(description)
+    parser.add_argument("--mpi", action="store_true")
+    parser.add_argument("--gpu", action="store_true")
+    if single_device:
+        parser.add_argument("--device", type=int, default=0)
+    else:
+        parser.add_argument("--devices", default=devices, help="Local GPU ids, e.g. 0,1 for two MPI ranks")
+    return parser
+
+
 def mpi_workspace(prefix):
     """Выделяет отдельный каталог для входов и результатов одного сценария."""
     build = ROOT / "build"

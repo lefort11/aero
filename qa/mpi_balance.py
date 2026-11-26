@@ -9,7 +9,7 @@ from mdec_header import MdecHeader
 from mpi_euler import check_output, check_report, launch
 from mpi_geometry import compare, geometry, legacy_archive, run
 from mpi_periodic import report_rows
-from run import nodes, settings
+from run import nodes, settings, write_settings
 
 
 def check_estimates(archive, plan, factor):
@@ -52,7 +52,7 @@ def verify(case, aero, meshdec, launcher):
 
     # Создаёт файлы и параметры тестовой постановки для выбранного сценария.
     def configure(**extra):
-        main.write_text("".join(f"{k} = {v}\n" for k, v in dict(options, **extra).items()))
+        write_settings(main, dict(options, **extra))
 
     configure()
     reference = case / "native"

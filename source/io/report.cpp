@@ -31,17 +31,8 @@ std::string local_date_time(std::time_t timestamp) {
 
 // Накапливает взвешенные квадраты приращений в масштабе наибольшего из них, чтобы избежать переполнения.
 void FlowSummary::add_squares(long double scale, long double weight) {
-    if (scale == 0)
-        return;
-    if (scale > rate_scale) {
-        // При появлении большего масштаба сначала пересчитываем накопленную сумму в его единицы.
-        const long double ratio = rate_scale / scale;
-        scaled_squares = weight + scaled_squares * ratio * ratio;
-        rate_scale = scale;
-    } else {
-        const long double ratio = scale / rate_scale;
-        scaled_squares += weight * ratio * ratio;
-    }
+    if (scale != 0)
+        diagnostic::add_scaled_square(scale, weight, rate_scale, scaled_squares);
 }
 // Объединяет диапазоны и масштабированные нормы локальных отчётных данных.
 void FlowSummary::merge(const FlowSummary& other, unsigned fields) {
@@ -146,18 +137,13 @@ FlowSummary Report::measure_values(std::uint64_t step, const double* u) {
                 const double* q = u + i * width;
                 // Одинаковое представление для таблицы и снимков на диске.
                 const auto sampled = output_values(dimension_, q, gamma_, i, background_);
-                double values[6] = {};
-                for (unsigned k=0; k<=dimension_; ++k) values[k] = sampled[k];
-                values[width-1] = sampled[4];
-                values[width] = sampled[5];
                 for (unsigned k = 0; k < fields; ++k) {
+                    const double value = sampled[diagnostic::report_column(dimension_, k)];
                     FlowRange& s = block.field[k];
-                    s.low = std::min(s.low, values[k]);
-                    s.high = std::max(s.high, values[k]);
-                    s.integral += static_cast<long double>(volumes_[i]) * values[k];
+                    diagnostic::accumulate_column(value,volumes_[i],s.low,s.high,s.integral);
                 }
                 // Сравниваем энергию с началом того же принятого шага. Вес узла равен его контрольному объёму.
-                const long double delta = static_cast<long double>(values[width]) - previous_energy_[i];
+                const long double delta = static_cast<long double>(sampled[diagnostic::Energy]) - previous_energy_[i];
                 block.add_squares(std::abs(delta), volumes_[i]);
             }
         },

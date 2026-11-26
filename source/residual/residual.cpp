@@ -1,3 +1,4 @@
+#include "face_execution.h"
 #include "flux_cfl.h"
 #include "boundary_flux_failure.h"
 #include "../bc/profile.h"
@@ -119,91 +120,18 @@ void launch_residual(Geometry, const double*, const double*, EulerFluxResult*, d
                      Index*, aero::gpu::Stream);
 #endif
 
-namespace {
-// Полная плитка хранит геометрию сразу обеих сторон. Выбираем только формулу
-// реконструкции, а построение базиса и запись потока общие с ядрами GPU.
-template <unsigned order>
-struct CpuPackedFlux {
-    const FaceBatch& batch;
-    Index face;
-    const WenoEdgeTile<order>& tile;
-    template<bool weno> bool apply_mp() const {
-        return compute_packed_face<!weno,weno>(batch,face,tile);
-    }
-    bool apply_weno() const { return compute_packed_face<false>(batch,face,tile); }
-};
-
-// Вычисляет поток площадки с выбранным типом реконструкции на CPU.
-template <unsigned order> bool cpu_face_with_stencil(const FaceBatch& batch, Index f) {
-    // У линейных схем EBR все четыре компоненты в 2D используют одну строку весов.
-    if (batch.linear_roe_2d())
-        return batch.compute_face<true,false,4>(f);
-    const auto* tile = complete_tile<order>(batch.geometry, f);
-    if (tile)
-        return dispatch_packed_reconstruction<order>(batch.geometry,CpuPackedFlux<order>{batch,f,*tile});
-    // Для границы либо неполной стороны порядок и способ чтения определяются на месте.
-    return batch.roe_2d() ? batch.compute_face<true>(f) : batch.compute_face(f);
-}
-
-// Номер face уже переведён из локального списка MPI в индекс площадки подобласти.
-bool cpu_flux_for_face(const FaceBatch& batch, Index face) {
-    if (batch.nodal_roe_2d())
-        return batch.compute_face<true,true>(face);
-    if (batch.geometry.packed.order == 5)
-        return cpu_face_with_stencil<5>(batch, face);
-    return cpu_face_with_stencil<3>(batch, face);
-}
-// В первом порядке оба состояния уже известны в узлах. Граничный поток остаётся общим
-// для всех схем, а на внутреннем ребре LF сразу обрабатывает ровно dim+2 компоненты.
-template<unsigned dim> bool cpu_nodal_lf(const FaceBatch& batch, Index face) {
-    return batch.compute_face<false,true>(face,dim);
-}
-
-// Вычисляет потоки линеаризованных уравнений Эйлера на CPU.
-bool cpu_linear_flux(const FaceBatch& batch, Index face) { return batch.compute_linear(face); }
-
-// Способ вычисления потока выбран перед обходом. Нумерация MPI и обработка ошибок общие.
-template<bool (*compute)(const FaceBatch&, Index)>
-void compute_cpu_faces(const FaceBatch& batch, const MeshIndex* global_nodes) {
-    parallel_for(
-        batch.count,
-        [&](Index k) {
-            const Index f = batch.face(k);
-            if (compute(batch, f))
-                return;
-            if (batch.is_boundary(f)) throw BoundaryFluxFailure(f);
-            if (global_nodes)
-                throw std::domain_error("Invalid flux at global node " +
-                                        std::to_string(global_nodes[batch.geometry.surfaces[f].begin]));
-            failure(f, batch.geometry);
-        },
-        256);
-}
-}
-
-// Вычисляет потоки набора внутренних и граничных площадок на CPU.
+// Вычисляет тот же пакет, что и точка входа GPU. Для отчёта об ошибке
+// локальную площадку MPI связываем с глобальным номером узла на хосте.
 void residual_detail::cpu_face_fluxes(const FaceBatch& batch, const MeshIndex* global_nodes) {
-    const auto& packed = batch.geometry.packed;
-    dispatch_face_fluxes(batch, [&] {
-        parallel_for(packed.state_nodes, [&](Index i) {
-            decode_nodal_gas(batch.geometry.dim, batch.state, batch.geometry.options.gamma, i, packed.gas);
-        });
-    }, [&] {
-        compute_cpu_faces<cpu_linear_flux>(batch, global_nodes);
-    }, [&] {
-        const auto launch = for_dimension(batch.geometry.dim, compute_cpu_faces<split_face<3>>,
-                                          compute_cpu_faces<split_face<4>>, compute_cpu_faces<split_face<5>>);
-        launch(batch,global_nodes);
-    }, [&] {
-        if (batch.nodal_lf()) {
-            const auto launch = for_dimension(batch.geometry.dim, compute_cpu_faces<cpu_nodal_lf<1>>,
-                                                           compute_cpu_faces<cpu_nodal_lf<2>>,
-                                                           compute_cpu_faces<cpu_nodal_lf<3>>);
-            launch(batch,global_nodes);
-        } else {
-            compute_cpu_faces<cpu_flux_for_face>(batch, global_nodes);
-        }
-    });
+    host_parallel::ensure_runtime();
+    Index bad = ~Index(0);
+    compute_flux_batch(host_parallel::Execution(), batch, &bad, &batch);
+    if (bad == ~Index(0)) return;
+    if (batch.is_boundary(bad)) throw BoundaryFluxFailure(bad);
+    if (global_nodes)
+        throw std::domain_error("Invalid flux at global node " +
+                                std::to_string(global_nodes[batch.geometry.surfaces[bad].begin]));
+    failure(bad, batch.geometry);
 }
 
 // Переносит настройки постановки в параметры пространственного оператора.
@@ -460,12 +388,8 @@ void SpatialResidual::Impl::assemble(const double* u, const double* u0, double* 
         cpu_face_fluxes({g, nullptr, g.faces, u, u0, buffer.data(), edge, boundary, false});
     }
     // Второй проход по узлам: каждый поток читает готовые вклады и пишет только строку своего узла.
-    parallel_for(
-        g.nodes,
-        [&](Index i) {
-            if (!assemble_node_residual(g, i, buffer.data(), g.node_row(r, i)))
-                failure(g.faces + i, g);
-        },
-        256);
+    Index bad = ~Index(0);
+    gather_flux_batch(host_parallel::Execution(), g, buffer.data(), r, &bad);
+    if (bad != ~Index(0)) failure(bad, g);
 }
 }

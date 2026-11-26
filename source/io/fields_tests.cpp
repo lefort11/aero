@@ -1,5 +1,7 @@
+#include "../../tests/mesh_fixture.h"
+#include "../../tests/test_files.h"
 #include "fields.h"
-#include "../../tests/test_checks.h"
+#include "../../tests/test_suite.h"
 #include "sha256.h"
 #include "../mesh/mesh.h"
 #include "lzma_stream.h"
@@ -23,32 +25,17 @@ std::vector<std::pair<std::string, std::function<void()>>> tests;
 using aero_test::require;
 // Проверяет, что некорректный ввод завершается ожидаемой ошибкой.
 template <class F> void rejects(F action, const std::string& part = "") {
-    try {
-        action();
-    } catch (const FieldError& error) {
-        require(part.empty() || std::string(error.what()).find(part) != std::string::npos,
-                "Unexpected error: " + std::string(error.what()));
-        return;
-    }
-    throw std::runtime_error("Expected FieldError");
+    aero_test::expect_error<FieldError>(action, part, "Expected FieldError");
 }
 // Добавляет именованную проверку в список тестов модуля.
 void add(const std::string& name, std::function<void()> test) {
-    tests.push_back(std::make_pair(name, test));
+    aero_test::add_test(tests, name, std::move(test));
 }
 // Создаёт небольшую тестовую сетку для проверки файлов полей.
 Mesh mesh(unsigned dimension) {
     MeshData d;
-    d.dimension = dimension;
-    d.patch_names = {"wall"};
     if (dimension == 1) {
-        d.x = {0, 0.25, 2};
-        d.y = {0, 0, 0};
-        d.z = {0, 0, 0};
-        d.face_nodes = MeshCsr({0, 1, 2, 3}, {0, 1, 2});
-        d.cell_faces = MeshCsr({0, 2, 4}, {0, 1, 1, 2});
-        d.cell_face_orientation = {-1, 1, -1, 1};
-        d.boundary_faces = {0, 2};
+        aero_test::mesh_fixture::make_two_intervals(d, 2);
     } else if (dimension == 2) {
         d.x = {0, 2, 1, 0};
         d.y = {0, 0, 0.25, 1};
@@ -58,14 +45,10 @@ Mesh mesh(unsigned dimension) {
         d.cell_face_orientation = {1, 1, 1, 1};
         d.boundary_faces = {0, 1, 2, 3};
     } else {
-        d.x = {0, 1, 0, 0};
-        d.y = {0, 0, 1, 0};
-        d.z = {0, 0, 0, 1};
-        d.face_nodes = MeshCsr({0, 3, 6, 9, 12}, {0, 2, 1, 0, 1, 3, 1, 2, 3, 2, 0, 3});
-        d.cell_faces = MeshCsr({0, 4}, {0, 1, 2, 3});
-        d.cell_face_orientation = {1, 1, 1, 1};
-        d.boundary_faces = {0, 1, 2, 3};
+        d = aero_test::mesh_fixture::tetrahedron();
     }
+    d.dimension = dimension;
+    d.patch_names = {"wall"};
     d.boundary_patch.assign(d.boundary_faces.size(), 0);
     return Mesh(d);
 }
@@ -119,26 +102,12 @@ FieldSnapshot decode(const std::string& bytes, const FieldReadLimits& limits = F
 }
 // Меняет указанный фрагмент заготовки для проверки повреждённого ввода.
 std::string replaced(std::string text, const std::string& from, const std::string& to) {
-    const std::size_t pos = text.find(from);
-    require(pos != std::string::npos, "Missing test token: " + from);
-    text.replace(pos, from.size(), to);
-    return text;
+    return aero_test::replace_first(std::move(text), from, to, "Missing test token: ");
 }
-// Владеет временным файлом проверки и удаляет его при выходе из области видимости.
-struct TempFile {
-    // Имя временного файла теста.
-    std::string path;
-    // Создаёт уникальное имя временного файла теста.
-    TempFile() {
-        static unsigned counter = 0;
-        path = "build/output-test-" +
-               std::to_string(std::chrono::high_resolution_clock::now().time_since_epoch().count()) + "-" +
-               std::to_string(counter++) + ".fields";
-        std::ifstream existing(path.c_str());
-        require(!existing, "Temporary file already exists");
-    }
-    // Удаляет временные файлы и каталоги, созданные объектом.
-    ~TempFile() { std::remove(path.c_str()); }
+// Выбирает имя и расширение временного файла данного тестового формата.
+struct TempFile : aero_test::TestFile {
+    // Время жизни файла ограничено проверкой, которая создала этот объект.
+    TempFile() : TestFile("output-test-", ".fields", "Temporary file already exists") {}
 };
 // Читает или записывает беззнаковое 64-битное значение в формате файла полей.
 void u64(std::string& bytes, U64 n) {
@@ -578,16 +547,5 @@ void register_tests() {
 // Запускает проверки модуля и возвращает ненулевой код при ошибке.
 int main() {
     register_tests();
-    std::size_t failed = 0;
-    for (const auto& test : tests) {
-        try {
-            test.second();
-            std::cout << "PASS " << test.first << '\n';
-        } catch (const std::exception& error) {
-            ++failed;
-            std::cerr << "FAIL " << test.first << ": " << error.what() << '\n';
-        }
-    }
-    std::cout << tests.size() - failed << '/' << tests.size() << " field I/O tests passed\n";
-    return failed ? 1 : 0;
+    return aero_test::run_tests(tests, " field I/O tests passed");
 }

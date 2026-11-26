@@ -78,9 +78,7 @@ std::vector<Ref> node_representatives(const MeshPartition& part, const Labels& l
             put(replies[peer], i);
             put(replies[peer], representative(labels, {key, w.rank}));
         });
-    exchange(
-        w, [&](Messages& out) { out.swap(replies); },
-        [&](Reader& r, int) {
+    exchange_replies(w, replies, [&](Reader& r, int) {
             const Id i = r.id();
             result.at(i) = r.ref();
         });

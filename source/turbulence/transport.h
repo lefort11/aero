@@ -481,6 +481,16 @@ struct Step {
             value = 0.;
         return ::fabs(value) <= max_finite_double ? ::fabs(value) : HUGE_VAL;
     }
+    // Включает одну строку в редукцию максимума, одинаковую для CPU и GPU.
+    AERO_HOST_DEVICE static void include_magnitude(double value, double& maximum) {
+        if (value > maximum) maximum = value;
+    }
+
+    // В обычном обходе норма вычисляется по уже подготовленным узловым данным.
+    AERO_HOST_DEVICE void collect_maximum(Norm which, MeshIndex row, double& maximum) const {
+        include_magnitude(magnitude(which,row), maximum);
+    }
+
 };
 }
 }

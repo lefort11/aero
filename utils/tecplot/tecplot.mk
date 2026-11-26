@@ -34,4 +34,5 @@ tecplot-debug-test: $(LZMA_OBJECTS) | $(BUILD) bin-runtime
 all: tecplot
 test: tecplot-test
 debug-test: tecplot-debug-test
-$(BUILD)/tecplot_tecplot_tests_omp$(WITH_OPENMP).o: tests/test_checks.h
+$(BUILD)/tecplot_tecplot_tests_omp$(WITH_OPENMP).o: tests/test_checks.h tests/mesh_fixture.h tests/test_files.h tests/test_suite.h
+$(BUILD)/tecplot_cli_omp$(WITH_OPENMP).o: source/io/cli_help.h

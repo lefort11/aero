@@ -4,7 +4,7 @@ import math
 import shutil
 from pathlib import Path
 
-from mpi_common import ROOT, mpi_parser, mpi_workspace, report_rows
+from mpi_common import ROOT, backend_parser, mpi_workspace, report_rows
 from mpi_fields import binary_snapshot
 from mpi_geometry import run, sparse_line
 from viscosity import max_difference
@@ -297,10 +297,7 @@ def check_recovery_and_probe(case, args):
 
 
 def main():
-    parser = mpi_parser(__doc__)
-    parser.add_argument("--mpi", action="store_true")
-    parser.add_argument("--gpu", action="store_true")
-    parser.add_argument("--device", type=int, default=0)
+    parser = backend_parser(__doc__, single_device=True)
     args = parser.parse_args()
     with mpi_workspace("lts-neighbors-") as work:
         case = Path(work)

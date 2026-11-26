@@ -14,6 +14,7 @@ AERO_HEADERS += source/aero/console_log.h
 AERO_HEADERS += source/implicit/implicit_settings.h source/implicit/bdf1_step.h source/implicit/partition.h
 AERO_HEADERS += source/aero/geometry.h source/aero/case_geometry.h source/mesh/mdec.h source/mesh/partition.h source/mesh/mesh_reader.h source/parallel/processes.h
 AERO_HEADERS += source/aero/recovery.h source/aero/indexed_io.h source/aero/mpi_fields.h source/aero/solver.h source/timestep/cfl_detail.h source/explicit/explicit_stage.h source/residual/residual_detail.h
+AERO_HEADERS += source/aero/partition_execution.h source/parallel/row_loop.h
 AERO_HEADERS += source/aero/partition_kernels.h source/aero/time_loop.h source/aero/mpi_periodic.h source/aero/mpi_periodic_detail.h
 AERO_HEADERS += source/aero/partition_state.h source/aero/partition_output.h source/aero/partition_operator.h source/aero/partition_transfers.h
 AERO_HEADERS += source/aero/mpi_stencil.h source/aero/partition_report.h source/aero/mpi_balance.h source/mesh/leaf_balance.h
@@ -33,7 +34,8 @@ AERO_PROGRAM := $(BUILD)/$(AERO_VARIANT)$(EXE)
 # имя каждого файла. Отдельный каталог защищает от смешивания вариантов MPI.
 AERO_OBJECT_DIR := $(BUILD)/$(AERO_VARIANT)_objects
 AERO_OBJECTS := $(patsubst source/%.cpp,$(AERO_OBJECT_DIR)/%.o,$(AERO_SOURCES))
-$(AERO_OBJECT_DIR)/aero/solver.o $(AERO_OBJECT_DIR)/aero/partition_operator.o: source/io/steady_report.h
+$(AERO_OBJECT_DIR)/aero/solver.o $(AERO_OBJECT_DIR)/aero/partition_operator.o: source/io/steady_report.h source/io/diagnostic_fields.h
+$(AERO_OBJECT_DIR)/aero/partition_operator.o: source/residual/step_execution.h
 $(AERO_OBJECT_DIR)/aero/partition_gpu.o: source/reconstruction/device_stencil.h
 $(AERO_OBJECT_DIR)/mesh/mdec.o: $(NATIVE_FORMAT)
 $(AERO_OBJECT_DIR)/turbulence/partition.o: source/timestep/bdf_weights.h
@@ -151,3 +153,7 @@ steady-multigrid-qa: aero $(if $(filter 1,$(WITH_MPI)),meshdec)
 	"$(PYTHON)" qa/steady_multigrid.py $(if $(filter 1,$(WITH_MPI)),--mpi $(MPI_QA_ARGS),--aero "$(BIN)/aero$(EXE)") $(if $(filter 1,$(kokkos_gpu)),--gpu)
 test: steady-multigrid-qa
 endif
+$(AERO_OBJECT_DIR)/aero/main.o: source/io/cli_help.h
+
+$(AERO_OBJECT_DIR)/viscosity/aes.o: source/viscosity/row_execution.h source/parallel/device_affine_aes.h source/parallel/device_volume_coordinates.h source/parallel/row_loop.h
+$(AERO_OBJECT_DIR)/turbulence/partition.o: source/turbulence/step_execution.h source/turbulence/convection.h source/parallel/row_loop.h

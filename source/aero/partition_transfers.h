@@ -1,6 +1,7 @@
 #ifndef AERO_PARTITION_TRANSFERS_H
 #define AERO_PARTITION_TRANSFERS_H
-#include "partition_kernels.h"
+#include "partition_execution.h"
+#include "../parallel/kokkos_host.h"
 #include "partition_report.h"
 #include "../parallel/processes.h"
 #include "../parallel/wall_timer.h"
@@ -110,8 +111,9 @@ public:
                 }
 #endif
                 const auto& ids = pack ? exports[p] : imports[p];
-                for (std::size_t k = 0; k < ids.size(); ++k)
-                    field.copy_record(ids[k], k, pack ? nullptr : records.data, pack ? records.data : nullptr);
+                host_parallel::ensure_runtime();
+                partition_detail::transfer_records(host_parallel::Execution(),field,ids.data(),ids.size(),
+                                                   pack ? nullptr : records.data,pack ? records.data : nullptr);
             }
         };
         // До отправки все процессы должны узнать о возможной ошибке копирования с GPU.

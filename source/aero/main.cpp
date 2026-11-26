@@ -1,3 +1,4 @@
+#include "../io/cli_help.h"
 #include "geometry.h"
 #include "console_log.h"
 #include "startup.h"
@@ -50,7 +51,7 @@ void print_usage(std::ostream& out) {
 // Читает постановку на каждом процессе и запускает выбранный режим.
 int run_application(int argc, char** argv, const Processes& world, ConsoleLog& log) {
     const bool no_arguments = argc == 1;
-    const bool help_requested = argc == 2 && (std::string(argv[1]) == "-h" || std::string(argv[1]) == "--help");
+    const bool help_requested = aero::help_requested(argc, argv);
     if (no_arguments || help_requested) {
         if (world.rank == 0)
             print_usage(help_requested ? std::cout : std::cerr);

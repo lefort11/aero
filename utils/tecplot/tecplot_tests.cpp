@@ -1,5 +1,7 @@
+#include "../../tests/test_files.h"
+#include "../../tests/mesh_fixture.h"
 #include "tecplot.h"
-#include "../../tests/test_checks.h"
+#include "../../tests/test_suite.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -19,35 +21,18 @@ typedef std::int32_t I32;
 using aero_test::require;
 // Проверяет, что некорректный ввод завершается ожидаемой ошибкой.
 template <class F> void rejects(F action) {
-    try {
-        action();
-    } catch (const std::exception&) {
-        return;
-    }
-    throw std::runtime_error("Expected rejection");
+    aero_test::expect_error<std::exception>(action, "", "Expected rejection");
 }
-typedef std::pair<std::string, std::function<void()>> Test;
-std::vector<Test> tests;
+aero_test::TestSuite tests;
 // Добавляет именованную проверку в список тестов модуля.
 void add(const std::string& name, std::function<void()> action) {
-    tests.push_back(std::make_pair(name, action));
+    aero_test::add_test(tests, name, std::move(action));
 }
-// Добавляет грань в заготовку тестовой сетки Tecplot.
-void face(MeshData& d, std::initializer_list<MeshIndex> nodes) {
-    d.face_nodes.indices.insert(d.face_nodes.indices.end(), nodes.begin(), nodes.end());
-    d.face_nodes.offsets.push_back(d.face_nodes.indices.size());
-}
+using aero_test::mesh_fixture::append_face;
 // Создаёт сетку из одной ячейки с заданной оболочкой.
 void single(MeshData& d) {
     d.patch_names = {"wall"};
-    const std::size_t n = d.face_nodes.offsets.size() - 1;
-    for (std::size_t i = 0; i < n; ++i) {
-        d.cell_faces.indices.push_back(i);
-        d.boundary_faces.push_back(i);
-    }
-    d.cell_faces.offsets.push_back(n);
-    d.cell_face_orientation.assign(n, 1);
-    d.boundary_patch.assign(n, 0);
+    aero_test::mesh_fixture::make_single_cell(d);
 }
 // Создаёт одномерную сетку для проверки алгоритма.
 Mesh line(std::size_t n = 2) {
@@ -59,7 +44,7 @@ Mesh line(std::size_t n = 2) {
         d.x.push_back(x * x / 4);
         d.y.push_back(0);
         d.z.push_back(0);
-        face(d, {i});
+        append_face(d, {i});
     }
     for (std::size_t i = 0; i < n; ++i) {
         d.cell_faces.indices.push_back(i);
@@ -80,7 +65,7 @@ Mesh polygon() {
     d.y = {0, 0, 2, 0.5, 2};
     d.z.assign(5, 0);
     for (MeshIndex i = 0; i < 5; ++i)
-        face(d, {i, (i + 1) % 5});
+        append_face(d, {i, (i + 1) % 5});
     single(d);
     return Mesh(d);
 }
@@ -96,11 +81,11 @@ Mesh strip(std::size_t n) {
         d.y.push_back(1);
         d.z.push_back(0);
         d.z.push_back(0);
-        face(d, {2 * i, 2 * i + 1});
+        append_face(d, {2 * i, 2 * i + 1});
     }
     for (std::size_t i = 0; i < n; ++i) {
-        face(d, {2 * i, 2 * i + 2});
-        face(d, {2 * i + 3, 2 * i + 1});
+        append_face(d, {2 * i, 2 * i + 2});
+        append_face(d, {2 * i + 3, 2 * i + 1});
         d.cell_faces.indices.insert(d.cell_faces.indices.end(), {n + 1 + 2 * i, i + 1, n + 2 + 2 * i, i});
         d.cell_faces.offsets.push_back(4 * (i + 1));
         d.cell_face_orientation.insert(d.cell_face_orientation.end(), {1, 1, 1, -1});
@@ -113,44 +98,14 @@ Mesh strip(std::size_t n) {
 }
 // Создаёт соседние тетраэдры с общей гранью.
 Mesh tetrahedra() {
-    MeshData d;
-    d.x = {0, 1, 0, 0, 0};
-    d.y = {0, 0, 1, 0, 0};
-    d.z = {0, 0, 0, 1, -1};
-    face(d, {0, 2, 1});
-    face(d, {0, 1, 3});
-    face(d, {1, 2, 3});
-    face(d, {2, 0, 3});
-    face(d, {0, 2, 4});
-    face(d, {2, 1, 4});
-    face(d, {1, 0, 4});
-    d.cell_faces = MeshCsr({0, 4, 8}, {0, 1, 2, 3, 0, 4, 5, 6});
-    d.cell_face_orientation = {1, 1, 1, 1, -1, 1, 1, 1};
-    d.boundary_faces = {1, 2, 3, 4, 5, 6};
-    d.boundary_patch.assign(6, 0);
+    auto d = aero_test::mesh_fixture::adjacent_tetrahedra();
     d.patch_names = {"wall"};
     return Mesh(d);
 }
 // Создаёт призматическую сетку для проверки геометрии и связности.
 Mesh prism(std::size_t n) {
-    MeshData d;
-    const double pi = std::acos(-1.0);
-    for (unsigned layer = 0; layer < 2; ++layer)
-        for (std::size_t i = 0; i < n; ++i) {
-            const double angle = 2 * pi * static_cast<double>(i) / static_cast<double>(n);
-            d.x.push_back(std::cos(angle));
-            d.y.push_back(std::sin(angle));
-            d.z.push_back(layer);
-        }
-    for (std::size_t i = 0; i < n; ++i)
-        d.face_nodes.indices.push_back(n - i - 1);
-    d.face_nodes.offsets.push_back(n);
-    for (std::size_t i = 0; i < n; ++i)
-        d.face_nodes.indices.push_back(n + i);
-    d.face_nodes.offsets.push_back(2 * n);
-    for (std::size_t i = 0; i < n; ++i)
-        face(d, {i, (i + 1) % n, (i + 1) % n + n, i + n});
-    single(d);
+    auto d = aero_test::mesh_fixture::polygonal_prism(n);
+    d.patch_names = {"wall"};
     return Mesh(d);
 }
 // Создаёт тестовые поля с разными размещениями и числом компонент.
@@ -370,21 +325,10 @@ private:
     // Текущая позиция разбора в байтах.
     std::size_t pos_;
 };
-// Владеет временным файлом проверки и удаляет его при выходе из области видимости.
-struct Temp {
-    // Путь к временному файлу проверки.
-    std::string path;
-    // Создаёт уникальное имя временного файла теста.
-    Temp() {
-        static unsigned counter = 0;
-        path = "build/tecplot-test-" +
-               std::to_string(std::chrono::high_resolution_clock::now().time_since_epoch().count()) + "-" +
-               std::to_string(counter++);
-        std::ifstream in(path.c_str());
-        require(!in, "Test file exists");
-    }
-    // Удаляет временные файлы и каталоги, созданные объектом.
-    ~Temp() { std::remove(path.c_str()); }
+// Выбирает имя и расширение временного файла данного тестового формата.
+struct Temp : aero_test::TestFile {
+    // Время жизни файла ограничено проверкой, которая создала этот объект.
+    Temp() : TestFile("tecplot-test-", "", "Test file exists") {}
 };
 // Читает содержимое тестового файла для проверки результата.
 std::string read_file(const std::string& path) {
@@ -663,17 +607,6 @@ void register_tests() {
 // Запускает проверки модуля и возвращает ненулевой код при ошибке.
 int main() {
     register_tests();
-    std::size_t failed = 0;
-    for (const auto& test : tests)
-        try {
-            test.second();
-            std::cout << "PASS " << test.first << '\n';
-        } catch (const std::exception& e) {
-            ++failed;
-            std::cerr << "FAIL " << test.first << ": " << e.what() << '\n';
-        }
-    std::cout << tests.size() - failed << '/' << tests.size()
-              << " Tecplot tests passed (OpenMP=" << (aero::tecplot::openmp_available() ? "on" : "off")
-              << ")\n";
-    return failed ? 1 : 0;
+    return aero_test::run_tests(tests, aero::tecplot::openmp_available() ?
+                                " Tecplot tests passed (OpenMP=on)" : " Tecplot tests passed (OpenMP=off)");
 }

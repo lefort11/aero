@@ -5,6 +5,7 @@ SPATIAL_OBJECT := $(BUILD)/spatial_jacobian_$(EBR_TAG).o
 BICGSTAB_OBJECT := $(BUILD)/bicgstab_$(EBR_TAG).o
 NEWTON_OBJECT := $(BUILD)/bdf1_step_$(EBR_TAG).o
 BICGSTAB_HEADERS := source/implicit/bdf1_linear_system.h source/implicit/bicgstab_vectors.h source/implicit/phase_timing.h
+$(BICGSTAB_OBJECT) $(NEWTON_OBJECT) $(BUILD)/coarse_step_$(EBR_TAG).o: source/implicit/row_execution.h
 $(BICGSTAB_OBJECT) $(NEWTON_OBJECT): source/implicit/workspace.h
 $(NEWTON_OBJECT): source/timestep/bdf_weights.h source/implicit/time_prediction.h
 SPATIAL_HEADERS := source/implicit/edge_jacobian.h source/implicit/csgs_order.h source/implicit/csgs_sweep.h source/implicit/roe_edge_jacobian.h source/implicit/spatial_jacobian.h source/implicit/spatial_jacobian_detail.h source/implicit/boundary_jacobian.h source/implicit/lf_edge_jacobian.h source/parallel/device_arrays.h $(RES_HDR)
@@ -63,3 +64,7 @@ implicit-test: $(IMPLICIT_TEST) | bin-runtime
 	$(running_test)
 	"$(IMPLICIT_TEST)"
 test: implicit-test
+
+$(IMPLICIT_OBJECT) $(SPATIAL_OBJECT): source/implicit/matrix_execution.h source/parallel/row_loop.h $(SPATIAL_HEADERS)
+$(SPATIAL_OBJECT): $(wildcard source/viscosity/row_execution.h source/parallel/device_affine_aes.h source/parallel/device_volume_coordinates.h)
+$(NEWTON_OBJECT): source/implicit/prediction_execution.h source/implicit/local_gas_prediction.h source/parallel/device_faces.h source/parallel/mpweno5_edges.h source/parallel/row_loop.h $(RES_HDR)

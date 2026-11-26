@@ -1,3 +1,4 @@
+#include "step_execution.h"
 #include "../aero/partition_operator.h"
 #include "../parallel/parallel_for.h"
 #include "convection.h"
@@ -72,29 +73,6 @@ turbulence::Step PartitionOperator::sa_step() const {
     s.history = weights.history;
     return s;
 }
-namespace {
-// Вычисляет узловые строки оператора SA на CPU.
-template <unsigned dim, bool same_gas> void host_sa_rows(const turbulence::Step &step) {
-    const auto &transport = step.transport;
-    // На CPU строки лежат подряд. Размерность и повторное использование газа
-    // выбираем до параллельного цикла, чтобы внутренние циклы имели постоянные границы.
-    const auto row = [&](MeshIndex k) { transport.residual_row<dim, same_gas, true>(k, step.keep_gas); };
-    if (transport.count < 1024) {
-        for (MeshIndex k = 0; k < transport.count; ++k)
-            row(k);
-    } else {
-        host_parallel::for_indices("Aero: SA residual", transport.count, row);
-    }
-}
-
-// Вычисляет невязку переноса SA на CPU.
-template <bool same_gas> void host_sa_residual(const turbulence::Step &step) {
-    const auto launch = for_dimension(step.transport.dim, host_sa_rows<1,same_gas>,
-                                      host_sa_rows<2,same_gas>, host_sa_rows<3,same_gas>);
-    launch(step);
-}
-}
-
 // Выполняет выбранную операцию SA на CPU или GPU.
 void PartitionOperator::sa_apply(const turbulence::Step &s, Operation op) const {
 #ifdef AERO_WITH_KOKKOS_GPU
@@ -103,34 +81,8 @@ void PartitionOperator::sa_apply(const turbulence::Step &s, Operation op) const 
         return;
     }
 #endif
-    s.dispatch(op, [&](MeshIndex count) {
-        parallel_for(count,[&](MeshIndex k){s.relax_line(k);},64);
-    }, [&] {
-        if (s.transport.sa.diffusion.vertex_contributions)
-            parallel_for(s.transport.cell_count,[&](MeshIndex e){s.transport.diffuse_element(e);});
-        host_sa_residual<false>(s);
-    }, [&](MeshIndex count) {
-        parallel_for(count, [&](MeshIndex k) { s.apply(op, k); });
-    });
-}
-namespace {
-// Вычисляет максимальную норму выбранной величины SA на CPU.
-template<unsigned dim,bool refresh>
-double host_sa_norm(const turbulence::Step& s,Norm which) {
-    // Вычисляет максимальный модуль выбранной величины SA.
-    const auto magnitude=[&](MeshIndex k) {
-        return refresh ? s.updated_defect<dim,true>(k) : s.magnitude(which,k);
-    };
-    double value=0.;
-    if (s.transport.count<1024) {
-        for (MeshIndex i=0;i<s.transport.count;++i) value=std::max(value,magnitude(i));
-    } else {
-        host_parallel::ensure_runtime();
-        Kokkos::parallel_reduce("Aero: SA maximum",host_parallel::Range(0,s.transport.count),
-            [&](MeshIndex i,double& best) { best=std::max(best,magnitude(i)); },Kokkos::Max<double>(value));
-    }
-    return value;
-}
+    host_parallel::ensure_runtime();
+    turbulence::execution::apply_step(host_parallel::Execution(),s,op);
 }
 // Вычисляет глобальную норму SA с редукцией между процессами.
 double PartitionOperator::sa_max(const turbulence::Step &s, Norm which,bool refresh) const {
@@ -142,13 +94,8 @@ double PartitionOperator::sa_max(const turbulence::Step &s, Norm which,bool refr
             return;
         }
 #endif
-        value=s.evaluate_norm(which,refresh,[&] {
-            parallel_for(s.transport.cell_count,[&](MeshIndex e){s.transport.refresh_diffusivity<true>(e);});
-        }, [&] {
-            const auto norm = for_dimension(s.transport.dim, host_sa_norm<1,true>,
-                                            host_sa_norm<2,true>, host_sa_norm<3,true>);
-            return norm(s,Norm::Bdf);
-        }, [&](Norm mode) { return host_sa_norm<0,false>(s,mode); });
+        host_parallel::ensure_runtime();
+        value=turbulence::execution::measure_norm(host_parallel::Execution(),s,which,refresh);
     });
     return world_.reduce_double(value, true);
 }
@@ -209,7 +156,8 @@ void PartitionOperator::prepare_sa_convection(const turbulence::Step& step) cons
             return;
         }
 #endif
-        parallel_for(count,edge);
+        host_parallel::ensure_runtime();
+        turbulence::execution::convection(host_parallel::Execution(),edge,count,geometry->packed.tiles,geometry->packed.order);
     });
     // Все ранги участвуют, в том числе ранг без собственных рёбер.
     if (sa_edge_exchange_) sa_edge_exchange_->transfer(world_,{1,sa_correction_,nullptr},device());

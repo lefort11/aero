@@ -73,9 +73,17 @@ struct PressureRate {
     }
 };
 // Тот же критерий плотности и давления используется на обеих архитектурах.
-AERO_HOST_DEVICE inline bool admissible_node(const residual_detail::Geometry& geometry, const double* state, Index node) {
-    EulerState gas;
-    return euler_state(geometry.dim, geometry.node_row(state, node), geometry.options.gamma, &gas) == EulerStatus::Success;
+AERO_HOST_DEVICE inline bool admissible_node(const residual_detail::Geometry& geometry, const double* state, Index node,
+                                            EulerState* validated = nullptr) {
+    EulerState temporary;
+    // Для целой сетки проверка Ньютона сразу наполняет существующий кэш потока.
+    // Неполный MPI-раздел проверяет владельца, а полный кэш формирует после обмена.
+    EulerState* gas = validated ? validated + node : &temporary;
+    return euler_state(geometry.dim, geometry.node_row(state, node), geometry.options.gamma, gas) == EulerStatus::Success;
+}
+// Кэш описывает всё текущее поле только при проверке каждого локального узла.
+inline EulerState* validation_cache(const residual_detail::Geometry& geometry, bool whole_mesh, MeshIndex owned) {
+    return whole_mesh && geometry.packed.state_nodes == owned ? geometry.packed.gas : nullptr;
 }
 // Обновляет один собственный узел прямо в массиве состояния. k — его номер среди узлов процесса.
 template <unsigned fixed_width = 0>

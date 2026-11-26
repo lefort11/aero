@@ -1,3 +1,5 @@
+#include "../../source/io/cli_help.h"
+#include "../../source/io/utf8_label.h"
 #include "cli.h"
 #include "converter.h"
 #include <algorithm>
@@ -36,21 +38,15 @@ int index(const std::string& text) {
         throw aero::MeshError("Expected a positive index");
     return value;
 }
-// Приводим имена и расширения к одной форме, сохраняя исходный путь для открытия файла.
-std::string lowercase(std::string value) {
-    for (char& c : value)
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return value;
-}
 // Определяет формат сетки по параметру или имени входного файла.
 std::string detect_input_format(const std::string& input) {
     const auto slash = input.find_last_of("/\\");
-    const auto name = lowercase(input.substr(slash == std::string::npos ? 0 : slash + 1));
+    const auto name = aero::lower_keyword(input.substr(slash == std::string::npos ? 0 : slash + 1));
     std::ifstream descriptor((input + "/mesh.txt").c_str());
     if (descriptor || name == "mesh.txt")
         return "another";
     const auto dot = input.find_last_of('.');
-    const auto extension = dot == std::string::npos ? "" : lowercase(input.substr(dot));
+    const auto extension = dot == std::string::npos ? "" : aero::lower_keyword(input.substr(dot));
     if (extension == ".msh")
         return "gmsh";
     if (extension == ".cgns")
@@ -70,7 +66,7 @@ aero::Mesh read_input_mesh(const std::string& format, const std::string& path,
 // Разбирает аргументы, выполняет операцию утилиты и возвращает код завершения.
 int aero::converter::run_cli(int argc, const char* const* argv, std::ostream& out, std::ostream& err) {
     try {
-        if (argc == 2 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h")) {
+        if (aero::help_requested(argc, argv)) {
             usage(out);
             return 0;
         }

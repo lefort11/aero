@@ -37,6 +37,12 @@ inline bool for_hex_tetrahedra(const Element& element, Visit visit) {
     }
     return count==24;
 }
+// Объёмная часть ньютоновского тензора напряжений для трёх диагональных
+// производных скорости. Порядок сложения одинаков для обеих геометрий AES.
+AERO_HOST_DEVICE inline double stress_volume_part(double xx, double yy, double zz) {
+    return (2. / 3.) * (xx + yy + zz);
+}
+
 // Коэффициенты пары постоянны на неподвижной сетке. При обходе в обратном
 // направлении матрица напряжений транспонируется, а коэффициент тепла тот же.
 struct PairMetric {

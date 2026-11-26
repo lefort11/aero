@@ -1,5 +1,5 @@
 #pragma once
-#include "device_execution.h"
+#include "row_loop.h"
 #include "mpweno5_edges.h"
 #include "../residual/flux_dispatch.h"
 
@@ -7,6 +7,7 @@ namespace aero {
 namespace device_work {
 namespace face_kernels {
 using namespace residual_detail;
+using row_loop::for_indices;
 // Полный шаблон обслуживает обе стороны ребра. Геометрия и формула WENO общие с CPU.
 template <unsigned order, bool use_mp5, bool use_mpweno, bool hybrid>
 KOKKOS_INLINE_FUNCTION void packed_flux(const FaceBatch& batch, Index face, Index* bad) {
@@ -17,8 +18,8 @@ KOKKOS_INLINE_FUNCTION void packed_flux(const FaceBatch& batch, Index face, Inde
 
 // Для подобласти передаём в ядро один указатель на постоянные адреса. При отдельном
 // библиотечном вызове указатели могут измениться, тогда передаём значения текущего пакета.
-template <unsigned order, bool use_mp5 = false, bool use_mpweno = false, bool hybrid = false>
-void full_edges(const Execution& exec, FaceBatch batch, Index* bad, const FaceBatch* device_faces) {
+template <unsigned order, bool use_mp5 = false, bool use_mpweno = false, bool hybrid = false, class Space>
+void full_edges(const Space& exec, FaceBatch batch, Index* bad, const FaceBatch* device_faces) {
     if (device_faces) {
         const MeshIndex* indices = batch.indices;
         for_indices<use_mpweno ? 4 : 0>(exec, "Aero: WENO edges", batch.count, KOKKOS_LAMBDA(Index k) {
@@ -33,7 +34,8 @@ void full_edges(const Execution& exec, FaceBatch batch, Index* bad, const FaceBa
 
 // Полные рёбра MPWENO5 и их укороченные стороны проходят три ядра в одном потоке CUDA.
 // Первый проход строит наклоны, второй восстанавливает следы, третий записывает один поток на ребро.
-void process_mpweno_edges(const Execution& exec, const FaceBatch& batch, Index* bad, const FaceBatch* stored) {
+template<class Space>
+void process_mpweno_edges(const Space& exec, const FaceBatch& batch, Index* bad, const FaceBatch* stored) {
     auto* work = batch.geometry.packed.mp_work;
     const auto* indices = batch.indices;
     // Номер k относится к текущей порции. Номер face учитывает всю подобласть MPI
@@ -55,8 +57,8 @@ void process_mpweno_edges(const Execution& exec, const FaceBatch& batch, Index* 
 
 // Гибрид требует сохранить интервалы всех волн до второго прохода. Выбираем ядро один раз
 // на пакет, чтобы при нулевом весе эти интервалы не занимали регистры и локальную память GPU.
-template <bool weno>
-void mp_edges(const Execution& exec, FaceBatch batch, Index* bad, const FaceBatch* device_faces) {
+template <bool weno, class Space>
+void mp_edges(const Space& exec, FaceBatch batch, Index* bad, const FaceBatch* device_faces) {
     if (batch.geometry.options.mp6_hybrid > 0)
         full_edges<5, !weno, weno, true>(exec, batch, bad, device_faces);
     else
@@ -64,13 +66,15 @@ void mp_edges(const Execution& exec, FaceBatch batch, Index* bad, const FaceBatc
 }
 
 // Общий выбор реконструкции сохраняет отдельные GPU-ядра с гибридом и без него.
-template<unsigned order>
+template<unsigned order, class Space>
 struct PackedFluxLaunch {
-    const Execution& exec;
-    const FaceBatch& batch;
-    Index* bad;
-    const FaceBatch* stored;
+    const Space& exec; // Контекст и поток выбранного исполнителя.
+    const FaceBatch& batch; // Геометрия и поля текущего пакета.
+    Index* bad; // Адрес минимального номера ошибочной грани.
+    const FaceBatch* stored; // Постоянное представление пакета в памяти исполнителя.
+    // Запускает выбранный порядок MP с заданной нелинейной поправкой.
     template<bool weno> void apply_mp() const { mp_edges<weno>(exec,batch,bad,stored); }
+    // Запускает обычную WENO-реконструкцию для имеющейся плитки.
     void apply_weno() const { full_edges<order>(exec,batch,bad,stored); }
 };
 
@@ -78,8 +82,8 @@ struct PackedFluxLaunch {
 // уже собраны по типам. Все потоки одного запуска выполняют одну физическую операцию.
 enum class RemainingFace { Sparse, Nodal, Boundary };
 // Определяет размер неполной группы рёбер в конце диапазона.
-template <RemainingFace kind>
-void remaining_group(const Execution& exec, FaceBatch batch, const FaceBatch* stored, Index begin,
+template <RemainingFace kind, class Space>
+void remaining_group(const Space& exec, FaceBatch batch, const FaceBatch* stored, Index begin,
                      Index count, Index* bad) {
     const auto apply = KOKKOS_LAMBDA(const FaceBatch& data, Index k) {
         const Index face = data.geometry.packed.remaining[begin + k];
@@ -96,8 +100,8 @@ void remaining_group(const Execution& exec, FaceBatch batch, const FaceBatch* st
 
 // Выбираем обход один раз на весь пакет. Внутри площадки остаются только формулы выбранного решателя.
 template <bool roe_2d, bool nodal_only = false, unsigned linear_width = 0, unsigned lf_dim = 0, bool ebr_flux = false,
-          unsigned pure_weno = 0>
-void other_faces(const Execution& exec, FaceBatch batch, Index* bad) {
+          unsigned pure_weno = 0, class Space>
+void other_faces(const Space& exec, FaceBatch batch, Index* bad) {
     // Целая сетка позволяет отделить граничные условия от внутреннего потока
     // для всех схем, включая нелинейные трёхмерные реконструкции.
     if (!batch.indices && batch.count == batch.geometry.faces) {
@@ -125,8 +129,8 @@ void other_faces(const Execution& exec, FaceBatch batch, Index* bad) {
 
 // Условия отбора рёбер и геометрия пакетов общие с характеристической реконструкцией.
 // На границах и при нехватке точек остаётся обычная формула именно выбранной схемы.
-template<bool physical, unsigned order, bool mp = false, bool mpweno = false, bool hybrid = false>
-void cartesian_edges(const Execution& exec, FaceBatch batch, Index* bad, const FaceBatch* stored) {
+template<bool physical, unsigned order, bool mp = false, bool mpweno = false, bool hybrid = false, class Space>
+void cartesian_edges(const Space& exec, FaceBatch batch, Index* bad, const FaceBatch* stored) {
     const auto* ids = batch.indices;
     // У MPWENO5 больше временных весов. Ограничиваем число регистров на
     // поток, чтобы несколько блоков одновременно загружали соседние шаблоны.
@@ -142,12 +146,13 @@ void cartesian_edges(const Execution& exec, FaceBatch batch, Index* bad, const F
 }
 
 // Декартовы ядра также получают статические признаки MP и MPWENO от общего выбора.
-template<bool physical>
+template<bool physical, class Space>
 struct CartesianFluxLaunch {
-    const Execution& exec;
-    const FaceBatch& batch;
-    Index* bad;
-    const FaceBatch* stored;
+    const Space& exec; // Контекст и поток выбранного исполнителя.
+    const FaceBatch& batch; // Геометрия и поля текущего пакета.
+    Index* bad; // Адрес минимального номера ошибочной грани.
+    const FaceBatch* stored; // Постоянное представление пакета в памяти исполнителя.
+    // Запускает выбранный порядок MP с заданной нелинейной поправкой.
     template<bool weno> void apply_mp() const {
         if (batch.geometry.options.mp6_hybrid > 0.)
             cartesian_edges<physical,5,!weno,weno,true>(exec,batch,bad,stored);
@@ -156,26 +161,28 @@ struct CartesianFluxLaunch {
         else
             cartesian_edges<physical,5,!weno,weno>(exec,batch,bad,stored);
     }
+    // Запускает обычную WENO-реконструкцию для имеющейся плитки.
     void apply_weno() const {
         if (batch.geometry.packed.order==3) cartesian_edges<physical,3>(exec,batch,bad,stored);
         else cartesian_edges<physical,5>(exec,batch,bad,stored);
     }
 };
 // Вычисляет пакет потоков в декартовом базисе компонент импульса.
-template<bool physical>
-void cartesian_fluxes(const Execution& exec, const FaceBatch& batch, Index* bad, const FaceBatch* stored) {
-    dispatch_packed_reconstruction<5>(batch.geometry,CartesianFluxLaunch<physical>{exec,batch,bad,stored});
+template<bool physical, class Space>
+void cartesian_fluxes(const Space& exec, const FaceBatch& batch, Index* bad, const FaceBatch* stored) {
+    dispatch_packed_reconstruction<5>(batch.geometry,CartesianFluxLaunch<physical,Space>{exec,batch,bad,stored});
 }
 
 // Полные шаблоны WENO и MP уложены по 32 ребра. Выбираем ядро один раз на пакет.
-void compute_packed_fluxes(const Execution& exec, FaceBatch batch, Index* bad, const FaceBatch* device_faces) {
+template<class Space>
+void compute_packed_fluxes(const Space& exec, FaceBatch batch, Index* bad, const FaceBatch* device_faces) {
     const auto& packed = batch.geometry.packed;
     // После включения гибрида используем ядро с ограничением MP6 даже при наличии рабочего буфера MPWENO5.
     const bool split_mpweno = device_faces && packed.mp_work && batch.geometry.options.mp6_hybrid == 0.;
     if (split_mpweno)
         process_mpweno_edges(exec, batch, bad, device_faces);
     else if (packed.order == 5)
-        dispatch_packed_reconstruction<5>(batch.geometry,PackedFluxLaunch<5>{exec,batch,bad,device_faces});
+        dispatch_packed_reconstruction<5>(batch.geometry,PackedFluxLaunch<5,Space>{exec,batch,bad,device_faces});
     else
         full_edges<3>(exec, batch, bad, device_faces);
 
@@ -191,8 +198,8 @@ void compute_packed_fluxes(const Execution& exec, FaceBatch batch, Index* bad, c
 // В консервативных и характеристических переменных EBR суммирует только U.
 // В потоковых переменных те же веса применяются также к F(U). Задаём состав
 // строки один раз на пакет рёбер, чтобы малое ядро не резервировало память большого.
-template<bool roe_2d, unsigned width>
-void ebr_faces(const Execution& exec, FaceBatch batch, Index* bad) {
+template<bool roe_2d, unsigned width, class Space>
+void ebr_faces(const Space& exec, FaceBatch batch, Index* bad) {
     if (batch.geometry.options.variables == ResidualVariables::Flux)
         other_faces<roe_2d, false, width, 0, true>(exec, batch, bad);
     else
@@ -200,20 +207,22 @@ void ebr_faces(const Execution& exec, FaceBatch batch, Index* bad) {
 }
 
 // Линейные уравнения используют своё ядро независимо от режима реконструкции.
-void compute_linear_fluxes(const Execution& exec, FaceBatch batch, Index* bad) {
+template<class Space>
+void compute_linear_fluxes(const Space& exec, FaceBatch batch, Index* bad) {
     for_indices(exec, "Aero: linear Euler fluxes", batch.count, KOKKOS_LAMBDA(Index k) {
         const auto face = batch.face(k);
         if (!batch.compute_linear(face)) Kokkos::atomic_fetch_min(bad,face);
     });
 }
 // Для первого порядка, EBR и сеток без упаковки используем обычный список площадок.
-void compute_unpacked_fluxes(const Execution& exec, FaceBatch batch, Index* bad) {
+template<class Space>
+void compute_unpacked_fluxes(const Space& exec, FaceBatch batch, Index* bad) {
     // Как и на CPU, LF первого порядка получает состояния прямо из узлов.
     // Постоянная размерность исключает реконструкцию из кода ядра этого запуска.
     if (batch.nodal_lf()) {
-        const auto launch = for_dimension(batch.geometry.dim, other_faces<false,true,0,1>,
-                                                       other_faces<false,true,0,2>,
-                                                       other_faces<false,true,0,3>);
+        const auto launch = for_dimension(batch.geometry.dim, other_faces<false,true,0,1,false,0,Space>,
+                                                       other_faces<false,true,0,2,false,0,Space>,
+                                                       other_faces<false,true,0,3,false,0,Space>);
         launch(exec,batch,bad);
     } else if (batch.nodal_roe_2d())
         other_faces<true, true>(exec, batch, bad);

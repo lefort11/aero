@@ -19,7 +19,7 @@ struct GpuMatrixPlan;
 // Связь численного метода с разбиением сетки. Сам решатель не зависит от MPI:
 // в обычном расчёте списки пусты, номера узлов и строк совпадают.
 struct Partition {
-    EulerFluxResult* trial_flux = nullptr; // Потоки целой сетки GPU для локальной подстановки перед полной сборкой.
+    EulerFluxResult* trial_flux = nullptr; // Потоки целой сетки исполнителя для локальной подстановки перед полной сборкой.
     const residual_detail::FaceBatch* trial_faces = nullptr; // Постоянная запись штатного пакетного ядра на той же GPU.
     std::shared_ptr<const multigrid::Aggregates> coarse_graph; // Подготовленный при оценке памяти граф агрегатов.
     std::shared_ptr<GpuMatrixPlan> gpu_matrix_plan; // Граф и раскраска из проверки размещения на карте.
@@ -46,6 +46,14 @@ struct Partition {
     template<class Work> void local(const Work& work) const {
         if (checked) checked(work);
         else work();
+    }
+
+    // Согласует возможную локальную ошибку до MPI-редукции и возвращает глобальную
+    // максимальную норму. На одном процессе значение остаётся локальным.
+    template<class Measure> double maximum_norm(const Measure& measure) const {
+        double value = 0.;
+        local([&] { value = measure(); });
+        return reduce ? reduce(value,true) : value;
     }
 };
 // Топология для построения CSR и адреса этой же сетки на исполнителе ранга.

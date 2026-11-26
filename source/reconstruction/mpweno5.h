@@ -32,7 +32,6 @@ struct Indicators {
 
     // Вычисляет нелинейные веса MPWENO5 по индикаторам гладкости.
     template <bool packed = false> AERO_HOST_DEVICE bool nonlinear() const {
-#ifndef KOKKOS_ACTIVE_EXECUTION_MEMORY_SPACE_HOST
         if (packed) {
             const mp5::OrderKey a = double_bits(first), b = double_bits(middle);
             const mp5::OrderKey c = double_bits(last);
@@ -44,17 +43,14 @@ struct Indicators {
                 return difference >= a || difference >= b || difference >= c;
             }
         }
-#endif
         return ::fabs(first - last) >= ::fmin(first, ::fmin(middle, last));
     }
     // На постоянном поле датчик формально выбирает WENO (0 >= 0), но сам след равен нулю.
     template <bool packed = false> AERO_HOST_DEVICE bool all_zero() const {
-#ifndef KOKKOS_ACTIVE_EXECUTION_MEMORY_SPACE_HOST
         if (packed) {
             const mp5::OrderKey bits = double_bits(first) | double_bits(middle) | double_bits(last);
             return (bits & ~mp5::sign_bit) == 0;
         }
-#endif
         return first == 0 && middle == 0 && last == 0;
     }
 };

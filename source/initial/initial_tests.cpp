@@ -1,3 +1,5 @@
+#include "../../tests/mesh_fixture.h"
+#include "../../tests/test_files.h"
 #include "initial.h"
 #include "../../tests/test_checks.h"
 #include "../io/expression.h"
@@ -37,14 +39,8 @@ template <class F> void rejects(F f, const std::string& message) {
 // Создаёт одномерную сетку для проверки алгоритма.
 Mesh line(double last_node = 1) {
     MeshData d;
-    d.dimension = 1;
-    d.x = {0, .25, last_node};
-    d.y = d.z = {0, 0, 0};
-    d.face_nodes = MeshCsr({0, 1, 2, 3}, {0, 1, 2});
-    d.cell_faces = MeshCsr({0, 2, 4}, {0, 1, 1, 2});
-    d.cell_face_orientation = {-1, 1, -1, 1};
+    aero_test::mesh_fixture::make_two_intervals(d, last_node);
     d.patch_names = {"left", "right"};
-    d.boundary_faces = {0, 2};
     d.boundary_patch = {0, 1};
     return Mesh(d);
 }
@@ -148,22 +144,21 @@ void formulas() {
     rejects([&] { load(m, sod, &seam); }, "periodic mismatch");
 }
 // Владеет временным файлом проверки и удаляет его при выходе из области видимости.
-struct Temp {
-    // Имя и путь временного набора тестовых данных.
-    std::string filename, path;
-    // Создаёт уникальное имя временного файла теста.
-    explicit Temp(const std::string& ext) {
+struct Temp : aero_test::TestFile {
+    std::string filename; // Имя, которое настройки указывают относительно каталога теста.
+    // Оставляет в пути специальные символы для проверки разбора пользовательских имён.
+    explicit Temp(const std::string& ext) : TestFile(initial_path(ext)), filename(path.substr(6)) {}
+private:
+    // Составляет имя в build из номера процесса и метки монотонных часов.
+    static std::string initial_path(const std::string& ext) {
 #ifdef _WIN32
-        int process = _getpid();
+        const int process = _getpid();
 #else
-        int process = getpid();
+        const int process = getpid();
 #endif
-        filename = "initial #" + std::to_string(process) + "_" +
-                   std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ext;
-        path = "build/" + filename;
+        return "build/initial #" + std::to_string(process) + "_" +
+               std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ext;
     }
-    // Удаляет временные файлы и каталоги, созданные объектом.
-    ~Temp() { std::remove(path.c_str()); }
 };
 // Готовит именованное тестовое поле для проверки загрузки.
 Field field(const std::string& name, std::vector<std::string> components, std::vector<double> values) {

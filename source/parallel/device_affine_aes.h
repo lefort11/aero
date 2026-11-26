@@ -1,5 +1,5 @@
 #pragma once
-#include "device_execution.h"
+#include "row_loop.h"
 #include "device_volume_coordinates.h"
 #include "../viscosity/transport.h"
 
@@ -8,7 +8,7 @@ namespace device_work {
 namespace affine_aes {
 using Geometry = viscosity::AffineHex;
 using viscosity::Gradient;
-using Team = Kokkos::TeamPolicy<Execution>;
+using row_loop::for_indices;
 // На каждый элемент назначены 32 исполнителя: восемь вершин для каждой из четырёх компонент.
 struct Workspace {
     // Узловые значения для обработки гексаэдра.
@@ -19,6 +19,7 @@ struct Workspace {
     FixedMatrix<double,3,4> departure, force;
 };
 // Командное ядро вязких градиентов аффинного гексаэдра.
+template<class Space>
 struct Apply {
     // Метрики аффинной геометрии.
     const Geometry *geometry;
@@ -69,7 +70,7 @@ struct Apply {
     // Вычисляет вклад средних напряжений в поток выбранной вершины.
     KOKKOS_INLINE_FUNCTION double mean_flux(const Geometry &g, const Workspace &w, unsigned m, unsigned i) const {
         double sum = 0.;
-        const double dilatation = (2. / 3.) * (w.mean(0, 0) + w.mean(1, 1) + w.mean(2, 2));
+        const double dilatation = viscosity::stress_volume_part(w.mean(0,0), w.mean(1,1), w.mean(2,2));
         for (unsigned d = 0; d < 3; ++d) {
             const double stress = w.mean(m, d) + w.mean(d, m) - (d == m ? dilatation : 0.);
             sum += g.basis(d, i) * stress;
@@ -88,7 +89,7 @@ struct Apply {
         return sum;
     }
     // Совместно вычисляет градиенты одного гексаэдра потоками команды GPU.
-    KOKKOS_INLINE_FUNCTION void operator()(const Team::member_type &team) const {
+    KOKKOS_INLINE_FUNCTION void operator()(const typename Kokkos::TeamPolicy<Space>::member_type &team) const {
         const MeshIndex e = first_cell + static_cast<unsigned>(team.league_rank());
         const unsigned tid = team.team_rank(), i = tid % 8, m = tid / 8;
         const auto &g = geometry[e];
@@ -114,16 +115,17 @@ struct Apply {
     }
 };
 // Kokkos выделяет рабочие числа только на время обработки одного элемента.
-inline void gradients(const Execution &exec, const viscosity::Operator &g, Gradient *output, MeshIndex first_cell,
+template<class Space>
+inline void gradients(const Space &exec, const viscosity::Operator &g, Gradient *output, MeshIndex first_cell,
                       MeshIndex cells, MeshIndex first_vertex) {
     if (g.tetra.cells) {
         coordinate_aes::gradients(exec,g,output,first_cell,cells,first_vertex);
         return;
     }
     const auto policy =
-        Team(exec, static_cast<int>(cells), 32).set_scratch_size(0, Kokkos::PerTeam(sizeof(Workspace)));
+        Kokkos::TeamPolicy<Space>(exec, static_cast<int>(cells), 32).set_scratch_size(0, Kokkos::PerTeam(sizeof(Workspace)));
     Kokkos::parallel_for("Aero: affine AES", policy,
-                         Apply{g.affine, g.cells, g.gas, output, g.stencil.pair_heat, first_vertex, first_cell});
+                         Apply<Space>{g.affine, g.cells, g.gas, output, g.stencil.pair_heat, first_vertex, first_cell});
 }
 // Одни и те же границы плиток нужны при сборке невязки и матрицы. Потребитель
 // ставит все операции текущей плитки в очередь Kokkos до повторной записи её буферов.
@@ -134,8 +136,8 @@ inline void for_tiles(const viscosity::Operator& g,Calculate calculate) {
 // Рабочий массив вмещает одну группу гексаэдров. Сначала все её градиенты
 // вычисляются на карте, затем потребитель добавляет вклады в невязку или матрицу.
 // Последовательность запусков в одном исполнителе Kokkos защищает от перезаписи.
-template<class Accumulate>
-inline void for_gradient_tiles(const Execution& exec, const viscosity::Operator& g, Accumulate accumulate) {
+template<class Accumulate,class Space>
+inline void for_gradient_tiles(const Space& exec, const viscosity::Operator& g, Accumulate accumulate) {
     for_tiles(g,[&](viscosity::GradientTile tile) {
         gradients(exec, g, g.gradient_cache, tile.first_cell, tile.cells, tile.first_vertex);
         accumulate(tile);

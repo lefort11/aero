@@ -45,7 +45,6 @@ struct Candidate {
     }
 };
 
-#ifndef KOKKOS_ACTIVE_EXECUTION_MEMORY_SPACE_HOST
 // Код конечного double, монотонный по его численному значению. Для положительных
 // чисел меняем знаковый бит; для отрицательных обращаем все биты (порядок модулей обратный).
 // На GPU сравнения границ тогда не занимают арифметические устройства double.
@@ -60,13 +59,11 @@ KOKKOS_INLINE_FUNCTION OrderKey order_key(double value) {
 KOKKOS_INLINE_FUNCTION double ordered_value(OrderKey key) {
     return from_double_bits(key ^ ((key & sign_bit) ? sign_bit : ~0ull));
 }
-#endif
 
 // Minmod четырёх кривизн. При общем знаке только 4*малая-большая
 // может дополнительно сузить модуль результата.
 template <bool packed = false>
 AERO_HOST_DEVICE inline double curvature(double a, double b) {
-#ifndef KOKKOS_ACTIVE_EXECUTION_MEMORY_SPACE_HOST
     if (packed) {
         const OrderKey bits_a = double_bits(a), bits_b = double_bits(b);
         const OrderKey abs_a = bits_a & ~sign_bit, abs_b = bits_b & ~sign_bit;
@@ -84,7 +81,6 @@ AERO_HOST_DEVICE inline double curvature(double a, double b) {
             return from_double_bits((bits_a & sign_bit) | magnitude);
         }
     }
-#endif
     if ((a > 0 && b > 0) || (a < 0 && b < 0)) {
         const double small = ::fmin(::fabs(a), ::fabs(b));
         const double large = ::fmax(::fabs(a), ::fabs(b));
@@ -104,17 +100,14 @@ struct Bounds {
     }
     // Оба конца интервала включают ноль. Если оба равны нулю, значение фиксировано.
     template <bool packed = false> AERO_HOST_DEVICE bool fixed() const {
-#ifndef KOKKOS_ACTIVE_EXECUTION_MEMORY_SPACE_HOST
         if (packed) {
             const OrderKey bits = double_bits(low) | double_bits(high);
             return (bits & ~sign_bit) == 0;
         }
-#endif
         return low == high;
     }
     // Ограничивает реконструированное значение допустимыми границами MP.
     template <bool packed = false> AERO_HOST_DEVICE double clamp(double value) const {
-#ifndef KOKKOS_ACTIVE_EXECUTION_MEMORY_SPACE_HOST
         if (packed) {
             const OrderKey bits = double_bits(value), magnitude = bits & ~sign_bit;
             // Для конечного значения достаточно одной границы: нижней для
@@ -125,7 +118,6 @@ struct Bounds {
                 return magnitude <= bound ? value : limit;
             }
         }
-#endif
         return ::fmin(high, ::fmax(low, value));
     }
 };
@@ -139,7 +131,6 @@ AERO_HOST_DEVICE inline Bounds bounds(double outer_slope, double inner_slope, do
     // Гибрид сохраняет арифметику боковой кривизны при ускоренном сравнении границ.
     const double lc = inner_slope + (8.0 / 3.0) * curvature<packed_curvature>(
         inner_slope - outer_slope, center - inner_slope);
-#ifndef KOKKOS_ACTIVE_EXECUTION_MEMORY_SPACE_HOST
     if (packed) {
         // В обычном диапазоне все четыре границы конечны (alpha не превышает 4).
         // Вне него оставляем fmin/fmax, в том числе при переполнении промежуточной разности.
@@ -157,7 +148,6 @@ AERO_HOST_DEVICE inline Bounds bounds(double outer_slope, double inner_slope, do
             return {ordered_value(lo < zero ? lo : zero), ordered_value(hi > zero ? hi : zero)};
         }
     }
-#endif
     const double low = ::fmax(::fmin(0., ::fmin(gc, md)), ::fmin(0., ::fmin(ul, lc)));
     const double high = ::fmin(::fmax(0., ::fmax(gc, md)), ::fmax(0., ::fmax(ul, lc)));
     return {low, high};

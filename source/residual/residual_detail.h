@@ -9,6 +9,7 @@
 #include "../eulersolver/lax_friedrichs.h"
 #include "../reconstruction/reconstruction.h"
 #include "mp6_cartesian.h"
+#include <cstring>
 namespace aero {
 namespace residual_detail {
 using Index = ReconstructionIndex;
@@ -568,6 +569,14 @@ KOKKOS_FORCEINLINE_FUNCTION bool limit_trace(unsigned d, const ResidualOptions& 
                                          const EulerState* known_base = nullptr, EulerState* limited_gas = nullptr) {
     if (d < 1 || d > 3)
         return false;
+    // В плоском потоке состояний газ узла уже проверен и декодирован.
+    // Если реконструкция вернула ровно этот узел, ограничитель сохраняет его:
+    // повторное вычисление давления и звуковой скорости даёт те же значения.
+    if (d == 2 && known_base && limited_gas && !reconstructed_flux &&
+        trace[0] == node[0] && trace[1] == node[1] && trace[2] == node[2] && trace[3] == node[3]) {
+        *limited_gas = *known_base;
+        return true;
+    }
     EulerState decoded;
     if (!known_base && euler_state(d, node, o.gamma, &decoded) != EulerStatus::Success)
         return false;
@@ -921,7 +930,14 @@ struct FaceBatch {
     bool needs_gas_update() const { return geometry.packed.gas && !gas_current; }
     // При плотном обходе k уже является номером грани. Выделенная группа
     // или подобласть MPI передаёт свой список; для GPU достаточно его адреса.
-    AERO_HOST_DEVICE static Index face(const MeshIndex* selected, Index k) { return selected ? selected[k] : k; }
+    AERO_HOST_DEVICE static Index face(const MeshIndex* selected, Index k) {
+        if (!selected) return k;
+        // Локальный предиктор использует память вектора поправки. Читаем представление
+        // индекса по байтам, чтобы список можно было читать и из массива double без нарушения правил типов.
+        MeshIndex value;
+        ::memcpy(&value, reinterpret_cast<const unsigned char*>(selected) + k * sizeof(value), sizeof(value));
+        return value;
+    }
     // При плотном обходе k уже является номером грани. Выделенная группа
     // или подобласть MPI передаёт свой список; для GPU достаточно его адреса.
     AERO_HOST_DEVICE Index face(Index k) const { return face(indices, k); }

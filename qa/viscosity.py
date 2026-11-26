@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 import shutil
 
-from mpi_common import ROOT, mpi_parser, mpi_workspace
+from mpi_common import ROOT, backend_parser, mpi_workspace
 from mpi_fields import binary_snapshot
 from mpi_geometry import run
 from run import nodes
@@ -181,9 +181,6 @@ def verify(case, args):
 
 
 if __name__ == "__main__":
-    parser = mpi_parser(__doc__)
-    parser.add_argument("--mpi", action="store_true")
-    parser.add_argument("--gpu", action="store_true")
-    parser.add_argument("--devices", default="0", help="Local GPU ids, e.g. 0,1 for two MPI ranks")
+    parser = backend_parser(__doc__)
     with mpi_workspace("aes-") as workspace:
         verify(Path(workspace), parser.parse_args())

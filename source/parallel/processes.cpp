@@ -51,35 +51,39 @@ void Processes::broadcast(std::string& value, int root) const {
     (void)root;
 #endif
 }
-// Передаёт данные корневого процесса всем участникам коммуникатора.
-void Processes::broadcast(double* values, int count, int root) const {
+namespace {
 #ifdef AERO_WITH_MPI
-    MPI_Bcast(values, count, MPI_DOUBLE, root, MPI_COMM_WORLD);
+// Выбирает представление элементов перед отправкой непрерывного массива double.
+MPI_Datatype broadcast_type(const double*) { return MPI_DOUBLE; }
+// Выбирает 64-битное беззнаковое представление индексов на всех рангах.
+MPI_Datatype broadcast_type(const std::uint64_t*) { return MPI_UINT64_T; }
+// Выбирает представление целых флагов MPI.
+MPI_Datatype broadcast_type(const int*) { return MPI_INT; }
+#endif
+// Передаёт блок с прежним типом MPI. В последовательной сборке данные уже на месте.
+template<class T>
+void broadcast_values(T* values, int count, int root) {
+#ifdef AERO_WITH_MPI
+    MPI_Bcast(values, count, broadcast_type(values), root, MPI_COMM_WORLD);
 #else
     (void)values;
     (void)count;
     (void)root;
 #endif
+}
+}
+
+// Передаёт данные корневого процесса всем участникам коммуникатора.
+void Processes::broadcast(double* values, int count, int root) const {
+    broadcast_values(values, count, root);
 }
 // Передаёт данные корневого процесса всем участникам коммуникатора.
 void Processes::broadcast(std::uint64_t* values, int count, int root) const {
-#ifdef AERO_WITH_MPI
-    MPI_Bcast(values, count, MPI_UINT64_T, root, MPI_COMM_WORLD);
-#else
-    (void)values;
-    (void)count;
-    (void)root;
-#endif
+    broadcast_values(values, count, root);
 }
 // Передаёт данные корневого процесса всем участникам коммуникатора.
 void Processes::broadcast(int* values, int count, int root) const {
-#ifdef AERO_WITH_MPI
-    MPI_Bcast(values, count, MPI_INT, root, MPI_COMM_WORLD);
-#else
-    (void)values;
-    (void)count;
-    (void)root;
-#endif
+    broadcast_values(values, count, root);
 }
 // Собирает данные процессов на корневом ранге.
 void Processes::gather(const std::uint64_t* values, int count, std::uint64_t* collected, int root) const {

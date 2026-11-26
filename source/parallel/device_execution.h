@@ -2,6 +2,7 @@
 #define AERO_DEVICE_EXECUTION_H
 #include <Kokkos_Core.hpp>
 #include "device_scope.h"
+#include "row_loop.h"
 #include <stdexcept>
 #include <string>
 namespace aero {
@@ -25,22 +26,17 @@ const char* on_device(void* stream, Work work, int requested_device = -1) {
     }
 }
 
-// Kokkos 3.2 HIP reductions support the backend's native launch bounds.
-template <unsigned min_blocks = 0>
-using DeviceRange = Kokkos::RangePolicy<Execution, Kokkos::IndexType<MeshIndex>
-#ifdef KOKKOS_ENABLE_CUDA
-    , Kokkos::LaunchBounds<128, min_blocks>
-#endif
-    >;
+// Точки входа GPU используют те же циклы, что и численные модули на хосте.
+using row_loop::for_indices;
+template<unsigned min_blocks = 0> using DeviceRange = row_loop::Range<Execution,min_blocks>;
 
-// Одна итерация соответствует одному индексу. Kokkos выбирает сетку запуска.
-// HintLightWeight помещает аргументы небольшого ядра непосредственно в его параметры.
-template <unsigned min_blocks = 0, class Work>
-void for_indices(const Execution& exec, const char* name, MeshIndex count, Work work) {
-    using Policy = DeviceRange<min_blocks>;
-    if (count)
-        Kokkos::parallel_for(name, Kokkos::Experimental::require(Policy(exec, 0, count),
-                             Kokkos::Experimental::WorkItemProperty::HintLightWeight), work);
+// Выполняет по одной операции на строку на выбранной карте в её стандартном потоке.
+// Тип операции известен при компиляции. Параметры передаются в существующее ядро Kokkos.
+template<class Work>
+const char* run_rows(int device, const char* name, MeshIndex count, const Work& work) {
+    return on_device(nullptr, [&](const Execution& exec) {
+        for_indices(exec, name, count, work);
+    }, device);
 }
 
 }

@@ -168,6 +168,17 @@ KOKKOS_FORCEINLINE_FUNCTION bool linear_split_slopes(const Geometry& g,Index edg
     return true;
 }
 
+// Записывает скорость волны, ограничивает поток и интегрирует его по площади грани.
+// Все виды реконструкции используют одинаковый порядок этих операций.
+template<unsigned W>
+KOKKOS_FORCEINLINE_FUNCTION bool integrate_split_flux(const Geometry& g, const Surface& s,
+        const double* ul, const double* ur, const double* fl, const double* fr, double speed,
+        EulerFluxResult& out) {
+    out.components=W;
+    out.max_wave_speed=speed;
+    return limit_split_flux<W>(g,ul,ur,fl,fr,speed,out.flux) && integrate_flux(W,s.measure,out);
+}
+
 // Добавляет диссипацию LF или Роу к линейной реконструкции нормального потока.
 template<unsigned W>
 KOKKOS_FORCEINLINE_FUNCTION bool finish_linear_split(const Geometry& g,const Surface& s,const euler_detail::InterfaceGas& gas,
@@ -193,9 +204,7 @@ KOKKOS_FORCEINLINE_FUNCTION bool finish_linear_split(const Geometry& g,const Sur
     }
     for (unsigned k=0;k<W;++k)
         out.flux[k]=.5*(fl[k]+fr[k])+.25*df[k]+g.options.upw_coeff*diss[k];
-    out.components=W;
-    out.max_wave_speed=speed;
-    return limit_split_flux<W>(g,ul,ur,fl,fr,speed,out.flux) && integrate_flux(W,s.measure,out);
+    return integrate_split_flux<W>(g,s,ul,ur,fl,fr,speed,out);
 }
 
 // Возвращает восстановленные волны в консервативные компоненты и ограничивает полный поток.
@@ -205,9 +214,7 @@ AERO_HOST_DEVICE inline bool finish_characteristic_split(const Geometry& g,const
         const double* waves,EulerFluxResult& out) {
     if (euler_detail::expand_characteristic<W>(W,basis,waves,out.flux)!=EulerStatus::Success) return false;
     for (unsigned k=0;k<W;++k) out.flux[k]+=.5*(fl[k]+fr[k]);
-    out.components=W;
-    out.max_wave_speed=speed;
-    return limit_split_flux<W>(g,ul,ur,fl,fr,speed,out.flux) && integrate_flux(W,s.measure,out);
+    return integrate_split_flux<W>(g,s,ul,ur,fl,fr,speed,out);
 }
 
 // Смешанные и укороченные строки используют собственный порядок с каждой стороны.

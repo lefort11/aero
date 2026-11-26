@@ -152,9 +152,7 @@ std::map<Id, Ref> match_nodes(const MeshPartition& part, const Patch& source, co
             }
         });
     std::map<Id, Ref> partners;
-    exchange(
-        w, [&](Messages& out) { out.swap(replies); },
-        [&](Reader& r, int) {
+    exchange_replies(w, replies, [&](Reader& r, int) {
             const Id i = r.id();
             const Ref other = r.ref();
             if (!partners.emplace(i, other).second)

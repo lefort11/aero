@@ -1,3 +1,4 @@
+#include "row_execution.h"
 #include "aes.h"
 #include "volume_simplices.h"
 #include "../parallel/parallel_for.h"
@@ -543,29 +544,24 @@ void Aes::prepare(const MeshPartition& part, const PeriodicPartition* seam, cons
 // Формирует связи элементов с узлами для осреднения материальных коэффициентов.
 void Aes::prepare_material_vertices() {
     if (cells_.empty() || (!material_from_sa_ && !op_.computes_les())) return;
-    // На CPU выбираем границы цикла один раз для всей однородной сетки.
-    // Номера вершин остаются в Cell, дополнительных массивов этот путь не требует.
-    if (!gpu_filter_) {
-        const auto count=cells_.front().count;
-        if (std::all_of(cells_.begin(),cells_.end(),[&](const Cell& cell){return cell.count==count;}))
-            host_vertices_=count;
-        return;
-    }
-    if (!cache_material_) return;
-    const auto count=cells_.front().count;
-    // Тот же способ усреднения работает на треугольниках и призмах. На
-    // смешанной сетке количество вершин по-прежнему читается из каждого элемента.
+    // Число вершин определяет специализацию ядра на обоих исполнителях.
+    // Обычная связность Cell уже содержит все нужные номера узлов.
+    const auto count = cells_.front().count;
     if (count != 3 && count != 4 && count != 6 && count != 8) return;
-    for (const auto& cell:cells_) {
-        if (cell.count!=count) return;
-        for (unsigned i=0; i<count; ++i) if (cell.node[i]>UINT32_MAX) return;
-    }
+    if (!std::all_of(cells_.begin(), cells_.end(), [=](const Cell& cell) { return cell.count == count; })) return;
+    op_.vertices_per_cell = count;
+    if (!gpu_filter_ || !cache_material_) return;
+
+    // Дополнительные плитки строим только по прежнему плану памяти ускорителя.
+    for (const auto& cell : cells_)
+        for (unsigned i = 0; i < count; ++i)
+            if (cell.node[i] > UINT32_MAX) return;
     const unsigned lanes = Operator::material_lanes;
-    op_.vertices_per_cell=count;
+    packed_material_ = true;
     if (!hex_nodes_.empty()) return; // Исходный порядок вершин уже записан фильтром в такой же раскладке.
     const auto blocks=(cells_.size()-1)/lanes+1;
     if (blocks>material_vertices_.max_size()/(lanes*count)) {
-        op_.vertices_per_cell=0;
+        packed_material_ = false;
         return;
     }
     material_vertices_.resize(blocks*lanes*count);
@@ -651,67 +647,11 @@ void Aes::allocate_host(MeshIndex nodes) {
     op_.material = material_.data();
     op_.rows = rows_.data();
 }
-#ifdef AERO_HAS_TURBULENCE
-// Тип модели и размерность одинаковы для всех элементов. Передаём их
-// компилятору до обхода, чтобы он развернул вычисление производных скорости.
-template<bool ddes,unsigned dimension>
-void host_subgrid(const Operator& op) {
-    if (dimension==3 && op.hex_filter.nodes)
-        parallel_for(op.cell_count,[&](MeshIndex e) { op.sample_hex<ddes>(e,op.filters); });
-    else if (dimension==3 && op.box_nodes)
-        parallel_for(op.cell_count,[&](MeshIndex e) { op.sample_les<ddes,3,true>(e); });
-    else
-        parallel_for(op.cell_count,[&](MeshIndex e) { op.sample_les<ddes,dimension>(e); });
-    if (!ddes) {
-        parallel_for(op.row_count,[&](MeshIndex n) { op.gather_filter<false>(n); });
-    }
-}
-// У массовых типов элементов число компонент и вершин известно до входа
-// в параллельный цикл. Общая формула усреднения остаётся в Operator.
-template<unsigned dimension,unsigned vertices>
-void average_host_material(const Operator& op) {
-    if (op.sa.active)
-        parallel_for(op.cell_count,[&](MeshIndex e){op.average_material<dimension,vertices,Operator::Mixing::Sa>(e);});
-    else
-        parallel_for(op.cell_count,[&](MeshIndex e){op.average_material<dimension,vertices,Operator::Mixing::Sigma>(e);});
-}
-#endif
 // После явной стадии на одном процессе узловая вязкость уже готова.
 // В остальных случаях пересчитываем её по текущему полю, включая узлы соседей.
 void Aes::evaluate(const double* state, const EulerState* cached, bool gas_is_current, Evaluation phase) {
-    const EvaluationPlan work(phase);
-    work.execute(op_, !gas_is_current && op_.needs_gas(phase), [&] {
-        parallel_for(op_.node_count,[&](MeshIndex node) { op_.prepare_gas(node,state,cached); });
-    }, [&] {
-#ifdef AERO_HAS_TURBULENCE
-        if (op_.c_des==0.) host_subgrid<false,3>(op_);
-        else if (op_.dim==3) host_subgrid<true,3>(op_);
-        else host_subgrid<true,0>(op_);
-#endif
-    }, [&] {
-#ifdef AERO_HAS_TURBULENCE
-        parallel_for(op_.node_count,[&](MeshIndex n) { op_.prepare_sa_material(n); });
-#endif
-    }, [&] {
-#ifdef AERO_HAS_TURBULENCE
-        if (host_vertices_==8 && op_.dim==3) average_host_material<3,8>(op_);
-        else if (host_vertices_==4 && op_.dim==2) average_host_material<2,4>(op_);
-        else
-#endif
-            parallel_for(op_.cell_count,[&](MeshIndex e){op_.average_material(e);});
-    }, [&](bool reuse_gradients) {
-        using Mode=Operator::Gradients;
-        if (op_.element_order) {
-            if (!reuse_gradients)
-                parallel_for(op_.vertex_count,[&](MeshIndex k) { op_.prepare_hex_gradient(k); });
-            parallel_for(op_.row_count,[&](MeshIndex n) { op_.assemble_row<3,Mode::Element>(n); });
-        } else if (!op_.gradient_cache)
-            parallel_for(op_.row_count,[&](MeshIndex node) { op_.assemble(node); });
-        else if (reuse_gradients)
-            parallel_for(op_.row_count,[&](MeshIndex node) { op_.assemble<Mode::Reuse>(node); });
-        else
-            parallel_for(op_.row_count,[&](MeshIndex node) { op_.assemble<Mode::Save>(node); });
-    });
+    host_parallel::ensure_runtime();
+    execution::evaluate(host_parallel::Execution(),op_,state,cached,phase,!gas_is_current && op_.needs_gas(phase));
 }
 }
 }

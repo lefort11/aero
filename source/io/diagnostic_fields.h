@@ -54,6 +54,34 @@ inline bool turbulent(const std::string &key) {
     return key == "turbulence" || key == "nu_tilde" || key == "nut";
 }
 
+// Выбирает газовый столбец отчёта: за компонентами скорости следуют давление и энергия.
+AERO_HOST_DEVICE inline unsigned report_column(unsigned dimension, unsigned column) {
+    return column <= dimension ? column : static_cast<unsigned>(column == dimension + 1 ? Pressure : Energy);
+}
+
+// Обновляет одну колонку для одного объёма. Тип суммы сохраняет расширенную точность
+// хоста и регистровое накопление double на GPU. Экстремумы в обоих случаях имеют тип double.
+template<class Sum>
+AERO_HOST_DEVICE inline void accumulate_column(double value, double volume, double& low, double& high, Sum& sum) {
+    low = ::fmin(low,value);
+    high = ::fmax(high,value);
+    sum += static_cast<Sum>(volume)*value;
+}
+
+// Добавляет ненулевой вклад в объёмно-взвешенную сумму квадратов.
+// Общий масштаб защищает от переполнения. Тип Real сохраняет точность выбранного исполнителя.
+template<class Real>
+AERO_HOST_DEVICE inline void add_scaled_square(Real magnitude, Real weight, Real& scale, Real& squares) {
+    if (magnitude > scale) {
+        const Real ratio = scale / magnitude;
+        squares = weight + squares * ratio * ratio;
+        scale = magnitude;
+    } else {
+        const Real ratio = magnitude / scale;
+        squares += weight * ratio * ratio;
+    }
+}
+
 // Один узел на границе двух принятых шагов. Храним взвешенное по времени среднее,
 // предыдущее мгновенное значение для интегрирования по следующему шагу.
 struct Moments {

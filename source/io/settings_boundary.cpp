@@ -217,13 +217,9 @@ CaseBoundaries read_case_boundaries(const std::string& path, const MeshData& mes
             result.periodic_pairs.push_back(pair);
         }
     };
-    std::string line;
+    std::string line, where;
     std::size_t row = 0;
-    while (std::getline(input, line)) {
-        const std::string where = path + ":" + std::to_string(++row);
-        line = settings_detail::clean(line, where, row);
-        if (line.empty())
-            continue;
+    while (settings_detail::next_line(input, path, row, line, where)) {
         if (line.front() == '[') {
             finish();
             if (line.back() != ']')
