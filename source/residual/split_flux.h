@@ -284,6 +284,8 @@ AERO_HOST_DEVICE inline bool general_characteristic_split(const Geometry& g,Inde
 // Полученное значение уже включает диссипацию, повторная задача Римана не нужна.
 template<unsigned W,bool linear_only=false,bool full_mp=false>
 AERO_HOST_DEVICE inline bool characteristic_flux(const Geometry& g,Index edge,const double* field,EulerFluxResult& out) {
+    // Нормаль заполняется по размерности сетки, а проекция читает W-2 координаты.
+    if (g.dim != W-2) return false;
     const auto s=g.surfaces[edge];
     const double* ul=field+W*s.begin;
     const double* ur=field+W*s.end;

@@ -2,6 +2,7 @@
 #define AERO_IMPLICIT_BLOCK_JACOBI_DETAIL_H
 #include "../mesh/mesh_index.h"
 #include "../parallel/kernel_math.h"
+#include <limits>
 
 namespace aero {
 namespace implicit {
@@ -77,6 +78,7 @@ struct JacobiBlocks {
     // Разлагает диагональный блок одного узла с выбором ведущих элементов.
     AERO_HOST_DEVICE bool factor_node(MeshIndex node, const double* values, const MeshIndex* starts) const {
         switch (width) {
+        case 1: return prepare_block<1>(node,values,starts);
         case 3: return prepare_block<3>(node,values,starts);
         case 4: return prepare_block<4>(node,values,starts);
         default: return prepare_block<5>(node,values,starts);
@@ -109,7 +111,13 @@ struct JacobiBlocks {
         // арифметика LU те же, но рабочий блок живёт только до конца обработки узла.
         double lu[size*size];
         unsigned char swaps[size];
-        factor_block<size>(diagonal_block<size>(node, diagonal, rows), lu, swaps);
+        if (!factor_block<size>(diagonal_block<size>(node, diagonal, rows), lu, swaps)) {
+            // Неполное разложение не задаёт поправку. Нечисловое значение
+            // передаёт отказ в проверку конечности линейной невязки на CPU и GPU.
+            for (unsigned row = 0; row < size; ++row)
+                answer[row] = std::numeric_limits<double>::quiet_NaN();
+            return;
+        }
         solve_factored<size>(lu, swaps, rhs, answer);
     }
 

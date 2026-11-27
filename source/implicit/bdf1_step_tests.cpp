@@ -433,14 +433,14 @@ void test_bdf1_step(int device) {
         settings.without_predictor=true;
         settings.newton_relative=1.e-8;
         settings.max_iterations=200;
-        const double h=.5, mass=1.e-4;
+        const double h=.5, mass_flux=1.e-4;
         state.set(initial);
         const auto constant_flux=[&] {
             for (auto& face : flux) {
                 face=EulerFluxResult{};
                 face.components=3;
             }
-            flux[0].flux[0]=mass;
+            flux[0].flux[0]=mass_flux;
 #ifdef AERO_WITH_KOKKOS_GPU
             if (device>=0) gpu::checked(gpu::copy(active_flux,flux,sizeof(flux),gpu::Copy::ToDevice));
 #endif
@@ -449,8 +449,8 @@ void test_bdf1_step(int device) {
         const auto solved=checked.advance(state.data(),nullptr,volumes.data(),active_flux,h,settings,constant_flux);
         const auto field=state.read();
         require(solved.iterations>3 && solved.relative_residual<=settings.newton_relative,"filtered implicit gas residual");
-        require(std::abs(field[0]-(initial[0]-h*mass/.4))<2.e-12 &&
-                std::abs(field[3]-(initial[3]+h*mass/.6))<2.e-12,"filtered gas conservation and history");
+        require(std::abs(field[0]-(initial[0]-h*mass_flux/.4))<2.e-12 &&
+                std::abs(field[3]-(initial[3]+h*mass_flux/.6))<2.e-12,"filtered gas conservation and history");
     }
     std::cout << "BDF2 variable-step refinement ratio = " << ratio << '\n';
     std::cout << "BDF1/BDF2 Newton passed on " << (device < 0 ? "CPU" : "GPU " + std::to_string(device))
