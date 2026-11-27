@@ -1,5 +1,6 @@
 """Сравнение реконструкций на кольцевой сетке с точным решением уравнений Эйлера."""
 
+import measurements
 import math
 from pathlib import Path
 
@@ -105,11 +106,11 @@ def setup(case, angles, layers, end, planes=1, hexahedra=False):
 def compare(ref, actual):
     a, fields = binary_snapshot(ref/"final.fields")
     b, result = binary_snapshot(actual/"final.fields")
-    if a != b or fields.keys() != result.keys():
+    if measurements.compare(a, "!=", b) or measurements.compare(fields.keys(), "!=", result.keys()):
         raise AssertionError("Different snapshot metadata")
     for name, expected in fields.items():
         for x,y in zip(expected,result[name]):
-            if not math.isclose(x,y,rel_tol=2.e-11,abs_tol=2.e-12):
+            if not measurements.isclose(x,y,rel_tol=2.e-11,abs_tol=2.e-12):
                 raise AssertionError(f"{name}: {x} != {y}")
 
 

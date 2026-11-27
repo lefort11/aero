@@ -53,9 +53,9 @@ struct Correction {
     }
 
     // Обе стороны передают интервалы, уже содержащие принятые приращения.
-    AERO_HOST_DEVICE double prepare(double left, double right, double raw_l, double raw_r, bool skip_l,
-                                    bool skip_r, double center, double h, mp5::Bounds l, mp5::Bounds r) {
-        active = 1 - .5 * (double(skip_l) + double(skip_r));
+    AERO_HOST_DEVICE double prepare(double left, double right, double raw_l, double raw_r, double skip_l,
+                                    double skip_r, double center, double h, mp5::Bounds l, mp5::Bounds r) {
+        active = 1 - .5 * (skip_l + skip_r);
         ds = h * (1 + (1 - h) * active) * (center - .5 * (left + right));
         dd = .5 * h * active * ((raw_l - left) - (raw_r - right));
         const double lm = left - l.low, lp = l.high - left, rm = right - r.low, rp = r.high - right;
@@ -114,7 +114,7 @@ KOKKOS_FORCEINLINE_FUNCTION double prepare_wave(double fl, double l, double c, d
                                                         double &left, double &right) {
     const double alpha = settings.alpha;
     const mp5::Candidate raw_l(fl, l, c, r, alpha), raw_r(fr, r, c, l, alpha);
-    bool skip_l = !raw_l.admissible, skip_r = !raw_r.admissible;
+    double skip_l = 1.-raw_l.weight, skip_r = 1.-raw_r.weight;
     // В центре обе стороны видят одну кривизну с противоположным знаком.
     // На GPU сравниваем модули конечных double по их двоичному представлению.
     const double shared = mp5::curvature<true>(c - l, r - c);
@@ -124,23 +124,23 @@ KOKKOS_FORCEINLINE_FUNCTION double prepare_wave(double fl, double l, double c, d
     auto br = mp5::bounds<true, false>(fr, r, c, alpha, -shared);
     if (weno) {
         const WenoIndicators li(c, l), ri(c, r);
+        bool nonlinear_l, nonlinear_r;
         // Нулевой интервал фиксирует значение на грани даже на скачке. Для общего веса
         // сохраняем решение датчика WENO на каждой стороне.
         left = mpweno5::bounded_candidate<anchored>(fl, l, c, r, WenoIndicators(l, fl).outer, li.inner, ri.outer,
-                                          settings.correction, bl, skip_l, raw_l.value, anchored ? left : 0.);
+                                          settings.correction, bl, nonlinear_l, raw_l.value, anchored ? left : 0., alpha);
         right = mpweno5::bounded_candidate<anchored>(fr, r, c, l, WenoIndicators(r, fr).outer, ri.inner, li.outer,
-                                           settings.correction, br, skip_r, raw_r.value, anchored ? right : 0.);
+                                           settings.correction, br, nonlinear_r, raw_r.value, anchored ? right : 0., alpha);
+        skip_l = nonlinear_l;
+        skip_r = nonlinear_r;
     } else if (!anchored) {
-        left = skip_l ? bl.clamp(raw_l.value) : raw_l.value;
-        right = skip_r ? br.clamp(raw_r.value) : raw_r.value;
+        left = raw_l.limited(bl);
+        right = raw_r.limited(br);
     }
-    // MP5 может досрочно принять полином благодаря допуску 1e-10. Гибрид
-    // сохраняет принятое значение в интервале именно той стороны, где сработала
-    // эта проверка. На противоположной стороне проверяем её собственный полином.
-    // У MPWENO5 берём её собственное ограниченное приращение. После поворота
-    // в локальные оси включаем базовое значение, переданное вызывающей стороной.
-    if (anchored || raw_l.admissible) bl.include(left);
-    if (anchored || raw_r.admissible) br.include(right);
+    // Гибрид включает принятый базовый след каждой стороны в её интервал,
+    // в том числе при частичном ограничении и после поворота локального базиса.
+    bl.include(left);
+    br.include(right);
     return correction.prepare(left, right, raw_l.value, raw_r.value, skip_l, skip_r, c, h, bl, br);
 }
 

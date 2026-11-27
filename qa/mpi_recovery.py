@@ -1,5 +1,6 @@
 """Проверяет продолжение вычислений из контрольной точки при смене числа процессов и повреждении файлов."""
 
+import measurements
 from mpi_common import ROOT, mpi_parser, mpi_workspace
 import re
 from pathlib import Path
@@ -133,7 +134,7 @@ def verify(case, aero, meshdec, launcher):
     init.unlink()
     shutil.rmtree(seed)
     slots = sorted(out.glob("recovery-*.bin"))
-    if len(slots) != 2:
+    if measurements.compare(len(slots), "!=", 2):
         raise AssertionError("Expected two shared recovery files")
 
     def saved_step(file):
@@ -142,7 +143,7 @@ def verify(case, aero, meshdec, launcher):
             return struct.unpack("<Q", f.read(8))[0]
 
     slots.sort(key=saved_step)
-    if [saved_step(f) for f in slots] != [last - 1, last]:
+    if measurements.compare([saved_step(f) for f in slots], "!=", [last - 1, last]):
         raise AssertionError("Recovery slots did not alternate")
 
     def clone(target):
@@ -168,8 +169,8 @@ def verify(case, aero, meshdec, launcher):
         reference = reference_slice(case / f"expected-selected-{slot}", expected, final_step)
         check_output(reference, directory / f"resumed-{expected}-1", ranks, count, 2, names)
         if (
-            selected.read_bytes() != before
-            or saved_step(directory / f"recovery-{1-slot}.bin") != final_step
+            measurements.compare(selected.read_bytes(), "!=", before)
+            or measurements.compare(saved_step(directory / f"recovery-{1-slot}.bin"), "!=", final_step)
         ):
             raise AssertionError("First save after explicit recovery did not rotate to the other file")
 
@@ -228,7 +229,7 @@ def verify(case, aero, meshdec, launcher):
     log = run(
         [launcher, "-n", 2, aero, f"--input={case}", f"--output={blocked}", "--recover"], success=False
     )
-    if "cannot prepare" not in log or (blocked / newer).read_bytes() != committed:
+    if "cannot prepare" not in log or measurements.compare((blocked / newer).read_bytes(), "!=", committed):
         raise AssertionError(log)
     (blocked / older).rmdir()
     launch(aero, case, blocked, launcher, 2, "--recover")
@@ -291,7 +292,7 @@ def verify_sparse_batches(case, aero, meshdec, launcher):
     record = struct.Struct("<QQ6dQ")
     for log in (first_log, next_log):
         sizes = [int(rank["owned"]) * record.size for rank in report_rows(log, "rank\tnode")]
-        if not min(sizes) <= 256 * 1024 < max(sizes):
+        if not (measurements.chain(min(sizes), "<=", 256 * 1024, "<", max(sizes))):
             raise AssertionError(f"Unequal MPI-IO batch counts required for this test: {sizes}")
 
     # По формату AERORCV1 сверяем исходные номера, начальное и принятое поля,
@@ -300,23 +301,23 @@ def verify_sparse_batches(case, aero, meshdec, launcher):
         name = f"recovery-{slot}.bin"
         ref, result = [(directory / name).read_bytes() for directory in (native, mpi)]
         if (
-            len(result) != len(ref)
-            or len(result) != 120 + count * record.size
-            or result[:120] != ref[:120]
+            measurements.compare(len(result), "!=", len(ref))
+            or measurements.compare(len(result), "!=", 120 + count * record.size)
+            or measurements.compare(result[:120], "!=", ref[:120])
             or result[:8] != b"AERORCV1"
-            or struct.unpack_from("<Q", result, 32)[0] != slot + 1
-            or zlib.crc32(result[:112]) != struct.unpack_from("<Q", result, 112)[0]
+            or measurements.compare(struct.unpack_from("<Q", result, 32)[0], "!=", slot + 1)
+            or measurements.compare(zlib.crc32(result[:112]), "!=", struct.unpack_from("<Q", result, 112)[0])
         ):
             raise AssertionError("Incompatible checkpoint header or extent")
         for i in range(count):
             pos = 120 + i * record.size
             a, b = record.unpack_from(ref, pos), record.unpack_from(result, pos)
             if (
-                a[:2] != (i, i)
-                or a[:2] != b[:2]
-                or a[5:8] != b[5:8]
+                measurements.compare(a[:2], "!=", (i, i))
+                or measurements.compare(a[:2], "!=", b[:2])
+                or measurements.compare(a[5:8], "!=", b[5:8])
                 or not all(close(x, y) for x, y in zip(a[2:5], b[2:5]))
-                or zlib.crc32(result[pos : pos + record.size - 8]) != b[-1]
+                or measurements.compare(zlib.crc32(result[pos : pos + record.size - 8]), "!=", b[-1])
             ):
                 raise AssertionError(f"Sparse checkpoint mismatch at node {i}")
 

@@ -46,11 +46,17 @@ void StagedFieldFile::publish(bool replace) {
     } else {
         if (link(temporary_.c_str(), path_.c_str()) != 0)
             throw FieldError("Cannot publish " + path_);
+        created_ = true;
         if (std::remove(temporary_.c_str()) != 0)
             return; // Деструктор повторит попытку удалить временный файл.
     }
 #endif
+    created_ = !replace;
     temporary_.clear();
+}
+// Не трогает существовавший до попытки файл при конфликте имени.
+void StagedFieldFile::withdraw() noexcept {
+    if (created_ && std::remove(path_.c_str()) == 0) created_ = false;
 }
 
 }

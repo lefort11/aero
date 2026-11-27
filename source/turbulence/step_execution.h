@@ -44,19 +44,31 @@ void convection(const Space& exec, const SaEdgeConvection& edges, MeshIndex coun
             for_indices(exec,"Aero: packed WENO5 SA convection",count,KOKKOS_LAMBDA(Index k){edges.packed<5,false>(k,geometry);});
     }
 }
+// Обновляет коэффициенты диффузии для нового поля nu_tilde. На CPU тот же
+// проход заполняет кэш вкладов элементов для последующей сборки строк.
+template<class Space>
+void refresh_sa_diffusion(const Space& exec, const Step& step) {
+    for_indices(exec,"Aero: SA element diffusivity",step.transport.cell_count,
+                KOKKOS_LAMBDA(Index e){step.transport.refresh_diffusivity<std::is_same<Space,Kokkos::DefaultHostExecutionSpace>::value>(e);});
+}
 // Выполняет операцию шага SA. При наличии кэша вкладов вершин заполняет его до обхода строк.
 template<class Space>
 void apply_step(const Space& exec, const Step& step, Operation op) {
-    step.dispatch(op,[&](Index count) {
-        for_indices(exec,"Aero: SA line relaxation",count,KOKKOS_LAMBDA(Index k){step.relax_line(k);});
-    }, [&] {
+    if (op == Operation::FrozenRows) {
+        // Между проходами поле уже обменено. Поток высокого порядка фиксирован,
+        // а диффузия и диагональ соответствуют промежуточному полю этой итерации.
+        refresh_sa_diffusion(exec,step);
+        sa_residual<true>(exec,step);
+        return;
+    }
+    if (op == Operation::Residual) {
         if (std::is_same<Space,Kokkos::DefaultHostExecutionSpace>::value && step.transport.sa.diffusion.vertex_contributions)
             for_indices(exec,"Aero: SA element diffusion",step.transport.cell_count,
                         KOKKOS_LAMBDA(Index e){step.transport.diffuse_element(e);});
         sa_residual<false>(exec,step);
-    }, [&](Index count) {
-        for_indices(exec,"Aero: SA transport",count,KOKKOS_LAMBDA(Index i){step.apply(op,i);});
-    });
+        return;
+    }
+    for_indices(exec,"Aero: SA transport",step.transport.count,KOKKOS_LAMBDA(Index i){step.apply(op,i);});
 }
 // Выполняет редукцию максимальной величины SA в выбранном пространстве исполнения.
 template<class Space>
@@ -76,8 +88,7 @@ double sa_norm(const Space& exec,const turbulence::Step& step,turbulence::Norm m
 template<class Space>
 double measure_norm(const Space& exec, const Step& step, Norm mode, bool refresh) {
     return step.evaluate_norm(mode,refresh,[&] {
-        for_indices(exec,"Aero: SA element diffusivity",step.transport.cell_count,
-                    KOKKOS_LAMBDA(Index e){step.transport.refresh_diffusivity<std::is_same<Space,Kokkos::DefaultHostExecutionSpace>::value>(e);});
+        refresh_sa_diffusion(exec,step);
     }, [&] {
         // Сборка строки читает площадки и пары AES. Её запускаем по всем
         // узлам обычным parallel_for, у которого достаточно блоков и на

@@ -13,6 +13,7 @@ struct MatrixSettings {
 };
 // Параметры нелинейных итераций и обновления матрицы Якоби.
 struct NewtonSettings : MatrixSettings {
+    bool damp_correction = false; // Демпфирует медленные нелинейные поправки газа в steady, BDF1 и BDF2.
     bool without_predictor = false; // Начинать Ньютон с принятого газа U_n при любом пределе числа поправок.
     unsigned prediction_order = 0; // Степень полиномиального начального приближения; 0 отключает историю.
     bool compact_jacobian = false; // Хранить вязкие производные только для узлов, соединённых ребром.

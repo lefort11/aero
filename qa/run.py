@@ -1,5 +1,6 @@
 """Сравнивает поля солвера с аналитическими решениями по матрице схем и записывает результат для Tecplot."""
 
+import measurements
 import argparse
 import itertools
 import json
@@ -54,7 +55,7 @@ def nodes(mesh, dim):
     """Извлекает координаты узлов тестовой сетки в порядке исходных номеров."""
     words = mesh.read_text(encoding="ascii").split()
     count = int(words[words.index("COUNTS") + 1])
-    if count < 1 or words[0] != "AEROMESH" or words[1] not in ("2", "3") or words[2:5] != ["TEXT", "DIMENSION", str(dim)]:
+    if measurements.compare(count, "<", 1) or words[0] != "AEROMESH" or words[1] not in ("2", "3") or measurements.compare(words[2:5], "!=", ["TEXT", "DIMENSION", str(dim)]):
         raise ValueError(f"Unexpected mesh header in {mesh}")
     coords = []
     for axis in "XYZ":
@@ -93,7 +94,7 @@ def read_snapshot(path, count, dim, time, expected):
     def expect(*tokens):
         for token in tokens:
             actual = next(words, None)
-            if actual != token:
+            if measurements.compare(actual, "!=", token):
                 raise ValueError(f"Malformed {path.name}: expected {token!r}, got {actual!r}")
 
     expect("AEROFIELDS", "1", "TEXT", "DIMENSION", str(dim), "MESH_SHA256")
@@ -105,7 +106,7 @@ def read_snapshot(path, count, dim, time, expected):
     step = int(next(words))
     expect("TIME")
     actual_time = float(next(words))
-    if step < 1 or not math.isclose(time, actual_time, rel_tol=1e-13, abs_tol=0):
+    if measurements.compare(step, "<", 1) or not measurements.isclose(time, actual_time, rel_tol=1e-13, abs_tol=0):
         raise ValueError(f"Expected an evolved solution at t={time}, got step={step}, t={actual_time}")
     expect("FIELDS", str(len(expected)))
     fields = {}
@@ -119,7 +120,8 @@ def read_snapshot(path, count, dim, time, expected):
         expect("VALUES", str(count), "DATA")
         values = [float(next(words)) for _ in range(count)]
         if not all(map(math.isfinite, values)):
-            raise ValueError(f"Non-finite {key} at step {step}")
+            node, value = next((i, v) for i, v in enumerate(values) if not math.isfinite(v))
+            raise ValueError(f"Non-finite {key}[{node}]={value!r} at step {step}")
         expect("END_FIELD")
         fields[key] = (unit, values)
     expect("END")
@@ -159,9 +161,9 @@ def compare(fields, exact, coords, weights, limits, tol):
         peak_limit, mean_limit = limits[key]
         if tol is not None:
             peak_limit = tol
-        if peak > peak_limit:
+        if measurements.error_exceeds(peak, peak_limit):
             failures.append(f"{key}: max={peak:.6g} > {peak_limit:g} at {coords[worst]}")
-        if mean > mean_limit:
+        if measurements.error_exceeds(mean, mean_limit):
             failures.append(f"{key}: mean={mean:.6g} > {mean_limit:g}")
         summary.append(f"{key}={peak:.3g}/{mean:.3g}")
     return failures, " ".join(summary)
@@ -173,13 +175,13 @@ def load_tolerances(path, names):
     if "default" not in groups or set(groups) - {"default", *RECONSTRUCTIONS}:
         raise ValueError(f"Invalid scheme groups in {path}")
     for group, limits in groups.items():
-        if set(limits) != set(names):
+        if measurements.compare(set(limits), "!=", set(names)):
             raise ValueError(f"Missing or unexpected fields in {path} ({group})")
         for key, pair in limits.items():
             if (
                 not isinstance(pair, list)
-                or len(pair) != 2
-                or not all(isinstance(v, (int, float)) and math.isfinite(v) and v >= 0 for v in pair)
+                or measurements.compare(len(pair), "!=", 2)
+                or not all(isinstance(v, (int, float)) and math.isfinite(v) and measurements.compare(v, ">=", 0) for v in pair)
             ):
                 raise ValueError(f"Invalid [max, mean] tolerances for {group}/{key} in {path}")
     return groups
@@ -298,7 +300,7 @@ def main():
         help="results root (default: qa/output); GPU runs go in their backend subdirectory",
     )
     parser.add_argument("--aero", help="path to the solver executable")
-    parser.add_argument("--fields-to-tecplot", help="path to the Tecplot exporter")
+    parser.add_argument("--visfield", "--fields-to-tecplot", help="path to visfield")
     options = parser.parse_args()
     if options.tol is not None and (not math.isfinite(options.tol) or options.tol < 0):
         parser.error("--tol must be finite and non-negative")
@@ -310,7 +312,7 @@ def main():
             options.device = 0
         options.output = options.output / options.backend
     solver = binary("aero", options.aero)
-    exporter = binary("fields_to_tecplot", options.fields_to_tecplot)
+    exporter = binary("visfield", options.visfield)
     print(
         f"Solver: {solver}\nBackend: {options.backend}\nTecplot: {exporter}\nOutput: {options.output}",
         flush=True,

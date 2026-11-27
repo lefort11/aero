@@ -149,7 +149,7 @@ inline void reconstruct_waves(const Space& exec, MpEdgeTile* tiles, Index faces,
             if (valid) {
                 for (unsigned side = 0; side < 2; ++side) {
                     if (weighted[side])
-                        answer[side] = sides[side].bounds.clamp<true>(queue.result(slot[side]));
+                        answer[side] = sides[side].limited<true>(queue.result(slot[side]));
                     // Пять исходных наклонов уже прочитаны их единственным владельцем.
                     // Первые две строки этой волны теперь содержат левый и правый след.
                     tile.waves(side, wave, lane) = answer[side];

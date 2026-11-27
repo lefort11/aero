@@ -1,8 +1,9 @@
+#include "scalar_topology.h"
 #include "bdf1_step.h"
 #include "linear_iteration_report.h"
 #include <utility>
 #include "bdf1_linear_system.h"
-#include "newton_vectors.h"
+#include "newton_predictor.h"
 #include "time_prediction.h"
 #include "workspace.h"
 #ifdef AERO_HAS_MULTIGRID
@@ -19,64 +20,6 @@
 
 namespace aero {
 namespace implicit {
-namespace {
-// Предиктор пробует поправку от временной диагонали либо от готового предобусловливателя.
-// Каждая проба использует те же потоки, тот же обмен и ту же норму, что и Ньютон.
-template<class Update, class Share, class Residual>
-double predict_initial_field(double norm, double initial_norm, const NewtonSettings& settings, const Update& update,
-                             const Share& share, const Residual& residual,
-                             const std::function<void()>& refresh, const std::function<bool()>& trial_flux,
-                             bool viscous, bool use_history, bool damp, const std::function<bool()>& confirm_prediction,
-                             bool local_rans, unsigned limit) {
-    if (norm == 0.) return confirm_prediction && confirm_prediction() ? residual() : norm;
-    // При быстрой сходимости последовательные подстановки дешевле сборки AES
-    // и решения линейной системы. Для вязкого шага оставляем запас по допуску,
-    // чтобы точность поля была близка к получаемой после поправки Ньютона.
-    const double target_multiplier = local_rans ? 1. : (viscous ? .02 : (use_history ? 1. : 4.));
-    const double target = initial_norm * std::min(.8, target_multiplier * settings.newton_relative);
-    // На первом приближении уточняем связанные уравнения сразу. Затем проверяем их
-    // на полпути к допуску по логарифмической шкале и обязательно перед принятием.
-    const double coupled_reduction = confirm_prediction ? std::sqrt(settings.newton_relative) : 1.;
-    double next_coupled_check = local_rans ? target : norm;
-    // После медленной подстановки слегка демпфируем следующую пробу. Это гасит
-    // знакочередующиеся пространственные моды, а невязка остаётся полной.
-    double fraction = 1.;
-    for (unsigned k = 0; k < limit && norm > target; ++k) {
-        update(NewtonUpdate::Predict, 1.);
-        if (fraction != 1.) update(NewtonUpdate::RelaxPrediction, fraction);
-        share();
-        double trial = trial_flux() ? residual() : HUGE_VAL;
-        if ((viscous || damp) && std::isfinite(trial) && !(trial < .8 * norm)) {
-            // На жёстком вязком члене полная подстановка может перебросить поле
-            // через корень. При противоположных знаках одной линейной моды
-            // доля norm/(norm+trial) даёт нуль этой моды между двумя полями.
-            // Для системы это только проба, её проверяем по полной невязке.
-            const double relaxation = 1. / (1. + trial/norm);
-            update(NewtonUpdate::RelaxPrediction, relaxation);
-            share();
-            trial = trial_flux() ? residual() : HUGE_VAL;
-        }
-        if (!(trial < .8 * norm)) {
-            // После отката нужны и потоки, и правая часть для восстановленного поля.
-            update(NewtonUpdate::UndoPrediction, 1.);
-            share();
-            refresh();
-            return residual();
-        }
-        if (damp && trial > .2 * norm) fraction = .75;
-        norm = trial;
-        // Пока подбирается газовое приближение, SA может использовать последнее
-        // рабочее поле. Перед принятием ещё раз проверяем оба уравнения совместно.
-        if (confirm_prediction && (norm <= next_coupled_check || norm <= target)) {
-            if (confirm_prediction()) norm = residual();
-            next_coupled_check = coupled_reduction * norm;
-        }
-    }
-    if (confirm_prediction && confirm_prediction()) norm = residual();
-    return norm;
-}
-}
-
 // Матрица, геометрия, история и рабочие векторы неявного шага.
 struct BdfStep::Storage {
     BdfLinearSystem linear;         // Матрица и рабочая память BiCGSTAB используются на всех шагах.
@@ -386,7 +329,8 @@ NewtonResult BdfStep::advance(double* state, const double* initial, const double
                               const EulerFluxResult* flux, double dt, const NewtonSettings& settings,
                               const std::function<void()>& refresh_fluxes, const std::function<bool()>& try_prediction_fluxes,
                               const std::function<bool()>& confirm_prediction, const PhaseTiming& timing,
-                              bool allow_extrapolation, double auto_pseudo_dt, const std::function<void(CoupledStart)>& coupled_start) {
+                              bool allow_extrapolation, double auto_pseudo_dt, const std::function<void(CoupledStart)>& coupled_start,
+                              const std::function<double()>& advance_transport) {
     auto& s = *storage_;
 #ifdef AERO_HAS_MULTIGRID
     s.matrix_on_step = false;
@@ -523,12 +467,20 @@ NewtonResult BdfStep::advance(double* state, const double* initial, const double
             // При локальном псевдошаге dt_i уже учитывает пристенную диффузию и SA.
             // Сначала пробуем решить газовый баланс временной диагональю. Матрица
             // понадобится только если подтверждённое связанное поле не прошло допуск.
-            spatial_predictor = initial_norm > 0. && s.partition.steady_steps && confirm_prediction &&
+            spatial_predictor = initial_norm > 0. && s.partition.steady_steps && (confirm_prediction || advance_transport) &&
                                 !local_rans && !s.partition.host_aes.c_des && settings.simplified_newton();
 #endif
             if (spatial_predictor) assemblies += s.prepare_matrix(state,initial,volumes,dt/weights.leading,settings,0,timing);
             // Применяет пробное обновление предиктора перед проверкой нелинейного баланса.
             const auto predictor_update = [&](NewtonUpdate::Operation op, double relaxation) {
+                if (spatial_predictor && op == NewtonUpdate::FilterTemporal) {
+                    // Вектор отката всё ещё хранит предыдущее поле. Готовую
+                    // пространственную поправку берём из рабочего вектора Крылова.
+                    auto row=operation(NewtonUpdate::FilterSpatial,relaxation);
+                    timing.measure(PhaseTiming::Prediction,[&] { row.rhs=s.linear.predict_in_workspace(s.rhs); });
+                    s.partition.local([&] { s.update(row); });
+                    return;
+                }
                 if (spatial_predictor && op == NewtonUpdate::Predict) {
                     timing.measure(PhaseTiming::Prediction,[&] { s.linear.predict(s.rhs,s.correction); });
                     op = NewtonUpdate::PredictCorrection;
@@ -562,10 +514,28 @@ NewtonResult BdfStep::advance(double* state, const double* initial, const double
                 }
             }
         }
+        bool filter_newton=false; // Включается по полной невязке принятой поправки газа.
+        bool previous_filtered=false; // В correction записан сдвиг только после первого фильтрованного шага.
         for (unsigned iteration = 0;; ++iteration) {
             // Равновесное поле с нулевой исходной невязкой принимаем без решения системы.
-            const double relative = initial_norm == 0. ? 0. : norm / initial_norm;
-            if (relative <= settings.newton_relative || iteration == settings.max_iterations) {
+            // Порядок блоков общий для всех реконструкций. На псевдошаге
+            // сначала заканчиваем обновление газа, затем один раз продвигаем SA.
+            // На физическом слое повторяем согласование при тех же коэффициентах BDF.
+            const bool gas_ready = norm <= initial_norm * settings.newton_relative;
+            const bool last = iteration == settings.max_iterations;
+            const bool steady = s.partition.steady_steps != nullptr;
+            double scalar_relative = 0.;
+            const bool sweep = advance_transport && (gas_ready || last || (iteration && !steady));
+            if (sweep) {
+                scalar_relative = advance_transport();
+                // После изменения вязкости и газ, и SA проверяются на одной паре полей.
+                norm = residual_norm();
+                if (!std::isfinite(norm) || !std::isfinite(scalar_relative))
+                    throw std::domain_error("BDF: nonfinite segregated residual");
+            }
+            const double gas_relative = initial_norm > 0. ? norm / initial_norm : (norm == 0. ? 0. : HUGE_VAL);
+            const double relative = std::max(gas_relative,scalar_relative);
+            if (relative <= settings.newton_relative || last || (steady && sweep)) {
                 // Оба условия завершают шаг с текущим полем и фактической невязкой.
                 // Для следующего шага BDF2 сохраняем историю и при остановке по лимиту.
                 // Экстраполяция самого поля использует общий шаг. Локальные
@@ -576,6 +546,9 @@ NewtonResult BdfStep::advance(double* state, const double* initial, const double
                 if (s.cached && !s.grid.options.background.active()) ++s.accepted_since_build;
                 return {iteration, relative, linear_iterations, std::move(correction_iterations), assemblies};
             }
+            // Если газ уже сошёлся при текущей вязкости, следующая итерация
+            // уточнит только SA. Нулевая газовая система BiCGSTAB здесь не нужна.
+            if (sweep && gas_relative <= settings.newton_relative) continue;
             // Диагональ пространственной части берётся из баланса потоков. Временной
             // вклад a*V/dt добавляется при сборке системы для текущей поправки.
             if (!spatial_predictor || iteration != 0)
@@ -585,7 +558,8 @@ NewtonResult BdfStep::advance(double* state, const double* initial, const double
             LinearResult result;
             s.predictions.clear(); // BiCGSTAB перезапишет векторы, содержащие принятые слои.
             timing.measure(PhaseTiming::Solve,[&] {
-                result=s.linear.solve_with_rhs_norm(s.rhs,s.correction,tolerance,norm);
+                result=s.linear.solve_with_rhs_norm(s.rhs,s.correction,tolerance,norm,
+                                                    previous_filtered ? s.rhs : nullptr);
             });
             correction_iterations.push_back(result.iterations);
             linear_iterations += result.iterations;
@@ -598,12 +572,15 @@ NewtonResult BdfStep::advance(double* state, const double* initial, const double
                 write_linear_iterations(message, correction_iterations, tolerance.max_iterations);
                 throw LinearSolveFailure(message.str());
             }
-            update(NewtonUpdate::AddCorrection);
+            update(filter_newton ? NewtonUpdate::ApplyFilteredNewton : NewtonUpdate::AddCorrection);
+            previous_filtered=filter_newton;
             // Для нового поля снова вычисляем физические потоки. Только по ним
             // можно проверить сходимость полного нелинейного уравнения.
             share_state();
             refresh_fluxes();
+            const double before=norm;
             norm = residual_norm();
+            if (settings.damp_correction && CorrectionFilter::slow(norm,before)) filter_newton=true;
             if (!std::isfinite(norm)) throw std::domain_error("BDF: nonfinite nonlinear residual");
         }
     } catch (...) {
@@ -614,5 +591,8 @@ NewtonResult BdfStep::advance(double* state, const double* initial, const double
         throw;
     }
 }
+// Переиспользует граф газовой матрицы для скалярной линейной системы.
+ScalarTopology BdfStep::scalar_topology(bool colored) { return storage_->linear.scalar_topology(colored); }
+
 }
 }

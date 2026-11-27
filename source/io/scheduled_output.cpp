@@ -1,4 +1,5 @@
 #include "scheduled_output.h"
+#include "visualization/zone_files.h"
 #include "../mesh/mesh.h"
 #include "../eulersolver/euler.h"
 #include "../parallel/parallel_for.h"
@@ -29,7 +30,7 @@ ScheduledOutput::ScheduledOutput(const std::vector<OutputZone>& zones, const std
 // Подготавливает локальную запись полей с учётом нумерации узлов.
 LocalFieldOutput::LocalFieldOutput(const std::string& directory, const Mesh& mesh, double gamma,
                                    std::vector<std::uint64_t> node_dof, std::size_t state_nodes, const LinearBackground& background)
-    : directory_(directory), gamma_(gamma), background_(background) {
+    : mesh_(&mesh), directory_(directory), gamma_(gamma), background_(background) {
     if (directory.empty() || !std::isfinite(gamma) || gamma <= 1)
         throw std::invalid_argument("output: invalid directory or gamma");
     metadata_ = FieldSnapshot(mesh);
@@ -184,10 +185,6 @@ void LocalFieldOutput::write(const OutputZone& zone, const std::vector<unsigned>
         const auto node = node_dof_.empty() ? i : static_cast<std::size_t>(node_dof_[i]);
         rows.visit(node, node, [&](std::size_t k, double value) { snap.fields[k].values[i] = value; });
     });
-    auto name = output_filename(zone, step);
-    std::replace(name.begin(), name.end(), '\\', '/');
-    StagedFieldFile file(directory_ + "/" + name);
-    snap.write(file.temporary(), zone.format);
-    file.publish(!zone.multi);
+    write_zone_files(directory_, zone, mesh_, snap);
 }
 }

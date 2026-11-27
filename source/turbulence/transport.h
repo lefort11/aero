@@ -1,5 +1,6 @@
 #pragma once
 #include "../timestep/node_step.h"
+#include "../timestep/correction_filter.h"
 #include "../residual/residual_detail.h"
 #include "../explicit/explicit_stage.h"
 #include "../io/diagnostic_fields.h"
@@ -304,10 +305,15 @@ enum class Operation {
     SaveBackup,
     RestoreBackup,
     CommitHistory,
-    Relax,
-    RestorePlain,
-    LineRelax,
-    PredictRate // Начальное приближение steady по пространственным скоростям на принятых слоях.
+    PredictRate, // Начальное приближение steady по пространственным скоростям на принятых слоях.
+    Relax,         // Обычная диагональная поправка, запоминает направление для следующей пробы.
+    Extrapolate,   // Геометрическая проба по двум последовательным диагональным поправкам.
+    RestorePlain,  // Восстанавливает обычное поле при отклонении геометрической пробы.
+    StartFiltered, // Первая демпфированная поправка без чтения истории.
+    Filtered,      // Демпфирует диагональную поправку по последнему принятому изменению.
+    StartDeferred, // Сохраняет начало резервной итерации и выполняет первый диагональный проход.
+    FrozenRows,    // Обновляет строки на промежуточном поле при прежней добавке к потоку.
+    FinishDeferred // Завершает второй проход и принимает долю суммарного изменения.
 };
 // При первом контроле BDF можно за тот же обход сохранить начало пробного шага.
 enum class Norm { Rate, Bdf, SaveStartBdf };
@@ -323,19 +329,8 @@ struct Step {
     NodeSteps local_steps;
     // Требуется сохранить поле начала стадии.
     bool save_stage_start;
-    bool extrapolate; // Разрешает ускорение двух последовательных скалярных поправок BDF.
     bool keep_gas; // Давление, плотность и скорость фиксированы между итерациями скалярного уравнения.
     double prediction_ratio = 0.; // Отношение текущего минимального псевдошага к предыдущему.
-#ifdef AERO_HAS_MULTIGRID
-    double polynomial_current, polynomial_previous; // Нулевой первый коэффициент означает обычный сглаживатель.
-#endif
-    // Выбирает обход на хосте до запуска CPU-команды или GPU-ядра.
-    template<class Lines, class Residual, class Nodes>
-    void dispatch(Operation op, const Lines& lines, const Residual& residual, const Nodes& nodes) const {
-        if (op==Operation::LineRelax && transport.sa.lines.count) lines(transport.sa.lines.count);
-        else if (op==Operation::Residual) residual();
-        else nodes(transport.count);
-    }
     // CPU может совместить обновление строк с нормой, GPU — выполнить отдельные ядра.
     template<class Diffusivity, class UpdatedNorm, class CurrentNorm>
     double evaluate_norm(Norm mode, bool refresh, const Diffusivity& diffusivity,
@@ -350,32 +345,53 @@ struct Step {
         const double previous = history ? history * (s.old[i] - s.previous[i]) : 0.;
         return leading * (s.w[i] - s.old[i]) - previous - local_steps.at(i, dt) * s.rate[i];
     }
-    // Применяет неявную поправку к рабочей вязкости с учётом диагонали и границ.
-    AERO_HOST_DEVICE double implicit_update(MeshIndex i) const {
-        auto& s=transport.sa;
-        const double delta=-defect(i)/(leading+local_steps.at(i,dt)*s.diagonal[i]);
-        const double plain=s.w[i]+delta;
-        if (!extrapolate) {
-            s.last_correction[i]=delta;
-            return plain;
-        }
-        s.plain_update[i]=s.zero_working_viscosity(i) || plain<0. ? 0. : plain;
-#ifdef AERO_HAS_MULTIGRID
-        if (polynomial_current > 0.) {
-            // Все узлы используют одни коэффициенты. Так ускорение сохраняет
-            // пространственную форму ошибки, в том числе когда поправки меняют знак.
-            double change = polynomial_current*delta;
-            if (polynomial_previous != 0.) change += polynomial_previous*s.last_correction[i];
-            const double next = s.w[i]+change;
-            const double projected = s.zero_working_viscosity(i) || next<0. ? 0. : next;
-            s.last_correction[i] = projected-s.w[i];
-            return projected;
-        }
-#endif
-        return extrapolated_viscosity(plain,delta,s.last_correction[i]);
+    // Диагональ содержит временной член и оценку производной пространственного
+    // оператора. Справа всегда стоит полный текущий дефект, включая поток выбранной схемы.
+    AERO_HOST_DEVICE double point_correction(MeshIndex i) const {
+        return -defect(i)/(leading + local_steps.at(i,dt)*transport.sa.diagonal[i]);
     }
-    // На вытянутой сетке учитываем две сильные связи в поправке совместно.
-    // Правая часть по-прежнему берётся из полной невязки SA со всеми соседями.
+    // Вычисляет пробное узловое значение из полного дефекта выбранной схемы.
+    // Обычный шаг сохраняет δ для геометрической пробы. Проба перед записью нового
+    // поля сохраняет обычное значение для отката. Следующий обычный шаг или начало
+    // демпфирования заново заполняет буфер, так что достаточно одного числа на узел.
+    AERO_HOST_DEVICE void relax_node(MeshIndex i, Operation op) const {
+        const auto& sa = transport.sa;
+        const double w = sa.w[i];
+        const double delta = point_correction(i);
+        double& saved = sa.plain_update[i];
+        double next = w + delta;
+        if (op == Operation::Extrapolate) {
+            const double candidate = extrapolated_viscosity(next,delta,saved);
+            saved = next < 0. ? 0. : next;
+            next = candidate;
+        } else if (op == Operation::Relax) {
+            saved = delta;
+        } else {
+            // Первая фильтрованная итерация начинает собственную историю.
+            // В последующих вычитается доля изменения после проекции на w ≥ 0.
+            const double change = CorrectionFilter::change(delta,op == Operation::Filtered ? saved : 0.);
+            next = w + change;
+        }
+        sa.w[i] = sa.zero_working_viscosity(i) || next < 0. ? 0. : next;
+        if (op == Operation::StartFiltered || op == Operation::Filtered) saved = sa.w[i]-w;
+    }
+    // Пока разность потоков зафиксирована, два прохода обновляют низкий порядок,
+    // источники и диффузию. Сохранённое начало занимает тот же буфер, который
+    // на предыдущем этапе хранил последнюю демпфированную поправку.
+    template<bool first>
+    AERO_HOST_DEVICE void deferred_update(MeshIndex i) const {
+        const auto& sa = transport.sa;
+        const double w = sa.w[i];
+        if (first) sa.plain_update[i] = w;
+        if (sa.zero_working_viscosity(i)) {
+            sa.w[i] = 0.;
+            return;
+        }
+        const double next = w + point_correction(i);
+        const double positive = next < 0. ? 0. : next;
+        sa.w[i] = first ? positive : sa.plain_update[i]+.4*(positive-sa.plain_update[i]);
+    }
+    // Решает самостоятельную задачу релаксации по заданной линии узлов.
     AERO_HOST_DEVICE void relax_line(MeshIndex segment) const {
         auto& sa=transport.sa;
         const auto rows=sa.lines.segments[segment];
@@ -412,6 +428,16 @@ struct Step {
         const auto i = transport.node(k);
         const auto &s = transport.sa;
         switch (op) {
+        case Operation::StartDeferred: deferred_update<true>(i); break;
+        case Operation::FinishDeferred: deferred_update<false>(i); break;
+        case Operation::FrozenRows: break; // Исполнитель обновляет элементы и строки отдельными обходами.
+        case Operation::Relax:
+        case Operation::Extrapolate:
+        case Operation::StartFiltered:
+        case Operation::Filtered: relax_node(i,op); break;
+        case Operation::RestorePlain:
+            s.w[i] = s.zero_working_viscosity(i) ? 0. : s.plain_update[i];
+            break;
         case Operation::Residual:
             transport.residual<false>(k, keep_gas);
             break;
@@ -440,23 +466,9 @@ struct Step {
         case Operation::CommitHistory:
             s.previous[i] = s.old[i];
             break;
-        case Operation::LineRelax: {
-            // На ранге без сильных связей та же проба совпадает с обычной поправкой.
-            const double plain=s.w[i]-defect(i)/(leading+local_steps.at(i,dt)*s.diagonal[i]);
-            s.plain_update[i]=s.w[i]=s.zero_working_viscosity(i) || plain<0. ? 0. : plain;
-            break;
-        }
-        case Operation::RestorePlain:
-            s.w[i]=s.plain_update[i];
-            break;
         case Operation::Explicit:
             s.advance_explicit(i,stage,dt,save_stage_start);
             break;
-        case Operation::Relax: {
-            const double next=implicit_update(i);
-            s.w[i] = s.zero_working_viscosity(i) ? 0. : (next < 0. ? 0. : next);
-            break;
-        }
         }
     }
     // После изменения nu_tilde считаем строку заново и сразу используем

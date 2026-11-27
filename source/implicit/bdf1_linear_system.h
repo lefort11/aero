@@ -9,6 +9,7 @@ namespace aero {
 class SpatialResidual;
 namespace residual_detail { struct Geometry; }
 namespace implicit {
+struct ScalarTopology;
 enum class LinearStatus { Converged, IterationLimit, Breakdown };
 
 // Относительный и абсолютный допуски линейного решения.
@@ -58,14 +59,20 @@ public:
     // Решает A*x=b с нулевой начальной поправки. b и x — отдельные массивы.
     // При исчерпании итераций или вырождении возвращает достигнутую поправку и её невязку.
     LinearResult solve(const double* b, double* x, const LinearTolerance& tolerance = LinearTolerance());
+    // Даёт скалярному блоку уже подготовленную связность этой же сетки.
+    ScalarTopology scalar_topology(bool colored);
 private:
     // Интегратор имеет доступ к внутренней сборке системы шага.
     friend class BdfStep;
     // Отдаёт для межшаговой истории только векторы без совмещения с пространственным оператором.
     KrylovScratch prediction_storage() const;
+    // Пространственный предиктор пишет в рабочий z BiCGSTAB. Вектор отката
+    // сохраняет предыдущую газовую пробу до применения фильтра.
+    double* predict_in_workspace(const double* rhs) const;
     // Ньютон уже измерил глобальную норму этой правой части. Передаём её в
     // BiCGSTAB, чтобы не делать вторую редукцию того же вектора на GPU и в MPI.
-    LinearResult solve_with_rhs_norm(const double* b, double* x, const LinearTolerance& tolerance, double rhs_norm);
+    LinearResult solve_with_rhs_norm(const double* b, double* x, const LinearTolerance& tolerance, double rhs_norm,
+                                     double* shifted_rhs = nullptr);
     struct Storage;
     // Владеет матрицей и рабочими данными линейного решателя.
     std::unique_ptr<Storage> storage_;

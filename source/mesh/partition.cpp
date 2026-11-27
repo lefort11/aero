@@ -350,6 +350,99 @@ MeshPartition PartitionInput::core(const Processes& world) {
     return result;
 }
 
+namespace {
+// Таблица одного типа записей листа. Пары (смещение, исходный номер) уже отсортированы read_leaf.
+using LeafIds = std::vector<std::pair<Id, Id>>;
+// Индексируем только узлы и грани: именно на них ссылаются строки связности.
+using GeometryIndex = std::vector<std::array<LeafIds, 2>>;
+
+// Преобразует архивный адрес в исходный номер и проверяет тип связанной записи.
+Id original_id(const GeometryIndex& index, Kind kind, const Address& address) {
+    const auto& ids = index.at(address.first)[kind];
+    const auto found = std::lower_bound(ids.begin(), ids.end(), std::make_pair(address.second, Id(0)));
+    check(found != ids.end() && found->first == address.second, "invalid global geometry link");
+    return found->second;
+}
+
+// Превращает длины строк в смещения; рабочий массив длин переиспользуется для готовой CSR.
+void allocate_rows(MeshCsr& csr) {
+    Id size = 0;
+    for (auto& count : csr.offsets) {
+        check(count <= csr.indices.max_size() - size, "global connectivity too large");
+        size += count;
+        count = size;
+    }
+    csr.indices.resize(size);
+}
+
+// Обходит архив по листьям. Распакованные записи освобождаются перед чтением следующего листа.
+template<class Visitor> void visit_geometry(Archive& archive, const Visitor& visit) {
+    for (Id leaf = 0; leaf < archive.leaves; ++leaf) {
+        Records records;
+        archive.read_leaf(leaf, records);
+        for (const auto& item : records) visit(item.first, item.second);
+    }
+}
+
+// В первый проход заполняем координаты и размеры строк в исходной нумерации.
+// Во второй проходим по тем же листьям, когда уже известны номера удалённых концов связей.
+MeshData archive_mesh_data(Archive& archive) {
+    MeshData data;
+    data.dimension = archive.dimension;
+    data.patch_names = archive.patches;
+    data.x.resize(archive.counts[Node]);
+    data.y.resize(data.x.size());
+    data.z.resize(data.x.size());
+    data.boundary_faces.resize(archive.boundaries, absent);
+    data.boundary_patch.resize(archive.boundaries);
+    data.face_nodes.offsets.resize(1 + archive.counts[Face]);
+    data.cell_faces.offsets.resize(1 + archive.counts[Cell]);
+    GeometryIndex index(archive.leaves);
+    std::array<std::vector<bool>, 3> seen;
+    for (auto kind : {Node, Face, Cell}) seen[kind].resize(archive.counts[kind]);
+    visit_geometry(archive, [&](const Address& address, const Record& record) {
+        const auto kind = record.kind(), id = record.id();
+        check(!seen[kind][id], "duplicate global geometry ID");
+        seen[kind][id] = true;
+        if (kind != Cell) index[address.first][kind].emplace_back(address.second, id);
+        if (kind == Node) {
+            data.x[id] = record.coordinate(0);
+            data.y[id] = record.coordinate(1);
+            data.z[id] = record.coordinate(2);
+        } else if (kind == Face) {
+            data.face_nodes.offsets[id + 1] = record.primary_count();
+            const Id order = record.boundary_order();
+            if (order != absent) {
+                check(data.boundary_faces[order] == absent, "duplicate global boundary ID");
+                data.boundary_faces[order] = id;
+                data.boundary_patch[order] = record.boundary_patch();
+            }
+        } else data.cell_faces.offsets[id + 1] = record.primary_count();
+    });
+    for (const auto& ids : seen)
+        check(std::find(ids.begin(), ids.end(), false) == ids.end(), "missing global geometry ID");
+    allocate_rows(data.face_nodes);
+    allocate_rows(data.cell_faces);
+    data.cell_face_orientation.resize(data.cell_faces.indices.size());
+    visit_geometry(archive, [&](const Address&, const Record& record) {
+        if (record.kind() == Node) return;
+        const bool cell = record.kind() == Cell;
+        auto& row = cell ? data.cell_faces : data.face_nodes;
+        const auto start = row.offsets[record.id()];
+        for (Id j = 0; j < record.primary_count(); ++j) {
+            row.indices[start + j] = original_id(index, cell ? Face : Node, record.link(j));
+            if (cell) data.cell_face_orientation[start + j] = record.sign(j);
+        }
+    });
+    return data;
+}
+}
+// Читает полную геометрию для общей визуализации. Вспомогательный индекс освобождается
+// до построения производных рёбер и связности Mesh, снижая пик памяти ранга 0.
+Mesh read_archive_geometry(const std::string& path) {
+    Archive archive(path);
+    return Mesh(archive_mesh_data(archive));
+}
 // Загружает собственную геометрию и требуемые halo-связи подобласти.
 MeshPartition load_partition(const std::string& path, const Processes& world,
                              std::unique_ptr<PartitionInput>* stencil_input, const LeafLayout& layout) {

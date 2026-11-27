@@ -16,7 +16,7 @@ Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "aero_io", "aero_io.vcxproj"
 EndProject
 Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "io_fields_tests", "io_fields_tests.vcxproj", "{E7AC8109-E2F7-49AE-92C0-26855F7583CC}"
 EndProject
-Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "fields_to_tecplot", "fields_to_tecplot.vcxproj", "{61D6B82A-6407-4EE4-A6DD-A3DD5F28EF9B}"
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "visfield", "visfield.vcxproj", "{61D6B82A-6407-4EE4-A6DD-A3DD5F28EF9B}"
 EndProject
 Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "tecplot_tests", "tecplot_tests.vcxproj", "{5A7A8067-8156-4B05-9CCB-E049BF703D2B}"
 EndProject

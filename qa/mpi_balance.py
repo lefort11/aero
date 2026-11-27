@@ -1,5 +1,6 @@
 """Сверяет выбор разбиения по ресурсам CPU с геометрией и полями обычного расчёта."""
 
+import measurements
 from mpi_common import ROOT, mpi_parser, mpi_workspace
 import shutil
 import struct
@@ -32,7 +33,7 @@ def check_estimates(archive, plan, factor):
         links = word(near + 16 * b) - word(near + 16 * a) + word(far + 8 * b) - word(far + 8 * a)
         base = sum(raw[a:b]) + sum(nodes_per_leaf[a:b]) * 8 * (header.dimension + 2) * 3 + links * cell_bytes
         expected = base * factor / 1048576
-        if abs(float(row["estimated_mesh_MiB"]) - expected) > max(expected * 6e-6, 1e-12):
+        if measurements.error_exceeds(abs(float(row["estimated_mesh_MiB"]) - expected), max(expected * 6e-6, 1e-12)):
             raise AssertionError(f"Incorrect estimate for leaf range [{a},{b}): {row}")
 
 
@@ -81,13 +82,13 @@ def verify(case, aero, meshdec, launcher):
         error = check_output(reference, out, ranks, count, 1, names)
         plan = report_rows(log, "mpi_rank\tweight")
         check_estimates(archive, plan, 7.5)
-        if plan != report_rows(geom, "mpi_rank\tweight"):
+        if measurements.compare(plan, "!=", report_rows(geom, "mpi_rank\tweight")):
             raise AssertionError("Geometry and time integration chose different cuts")
         for row in plan:
             rank = int(row["mpi_rank"])
             if (
-                float(row["weight"]) != weights[rank]
-                or abs(owners[rank] - count * weights[rank] / sum(weights)) > 4
+                measurements.compare(float(row["weight"]), "!=", weights[rank])
+                or measurements.error_exceeds(abs(owners[rank] - count * weights[rank] / sum(weights)), 4)
             ):
                 raise AssertionError(f"Incorrect work share {owners} for weights {weights}")
         print(f"OK {title} weights={weights} owned={owners} max field difference={error:.3g}")
@@ -97,7 +98,7 @@ def verify(case, aero, meshdec, launcher):
     check_report(serial, log)
     check_output(reference, out, 4, count, 1, names, empty=True)
     ranks = report_rows(log, "rank\tnode")
-    if [int(r["leaves"]) for r in ranks] != [0, 1, 0, 0]:
+    if measurements.compare([int(r["leaves"]) for r in ranks], "!=", [0, 1, 0, 0]):
         raise AssertionError("The fastest CPU did not receive the single leaf")
     configure(mesh="legacy.mdec", reconstruction="first_order", mpi_rank_weights="1,3")
     # Проверяем независимый старт со старым архивом. В каталоге предыдущего
@@ -123,7 +124,7 @@ def verify(case, aero, meshdec, launcher):
         journal = out / "aero.log"
         # В MSYS2 WindowsPath может получить разные разделители из iterdir() и из "/".
         # Проверяем состав каталога и сам файл, сохраняя требование единственной записи.
-        if (message not in log or len(list(out.iterdir())) != 1
+        if (message not in log or measurements.compare(len(list(out.iterdir())), "!=", 1)
                 or not journal.is_file() or message not in journal.read_text()):
             raise AssertionError(f"Failure before mesh loading expected: {log}")
     print("OK collective diagnostics for invalid weights and insufficient node RAM")

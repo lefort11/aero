@@ -1,5 +1,6 @@
 """Сверяет пульсации и энергию с точным переносом акустических и энтропийных возмущений."""
 
+import measurements
 import math
 from pathlib import Path
 import shutil
@@ -85,7 +86,7 @@ def check_restart(aero, case):
     run(restart)
     resumed = binary_snapshot(directory / f"resumed-{checkpoint[3]}-1" / "all.fields")
     continuous = solve([aero], case, case / "continuous", opts + [f"main:final_time={2*END}"])
-    if resumed != continuous:
+    if measurements.compare(resumed, "!=", continuous):
         raise AssertionError("BDF2 recovery changed fields or snapshot metadata")
     # При чтении скалярных полей пульсации возвращаются с исходным знаком.
     # Здесь проверяем начальное состояние до первого шага интегратора.
@@ -96,7 +97,7 @@ def check_restart(aero, case):
         case / "import",
         ["main:time_scheme=steady", "implicit:steady_criterion=absolute", "implicit:steady_tol=1e6"],
     )
-    if imported != saved_fields:
+    if measurements.compare(imported, "!=", saved_fields):
         raise AssertionError("Loading perturbations from a field file changed the initial state")
     print("OK field import, BDF2 restart and rejection of incompatible background", flush=True)
 
@@ -121,7 +122,7 @@ def check_wall(aero, mpi, distributed, case, coords):
         u = 0.005 * math.sin(math.pi * x) * math.sin(math.pi * END)
         for key, value in (("p", p), ("rho", p), ("ux", u), ("E", p / 0.4)):
             error = max(error, abs(fields[key][i] - value))
-    if error >= 3.0e-6:
+    if measurements.compare(error, ">=", 3.0e-6):
         raise AssertionError(f"Standing wave error {error}")
     print(f"OK acoustic reflection at walls: analytic {error:.3g}", flush=True)
 
@@ -163,7 +164,7 @@ def check_shear(args, aero, mpi, distributed, case, dim):
     meta, fields = solve(
         mpi, case, case / f"shear-mpi{dim}", opts + distributed + [f"main:mesh=shear-{dim}d.mdec"]
     )
-    if meta != reference[0]:
+    if measurements.compare(meta, "!=", reference[0]):
         raise AssertionError("Different shear snapshot metadata")
     errors = []
     for i, (_, y, _) in enumerate(nodes(case / "grid.mesh", dim)):
@@ -174,7 +175,7 @@ def check_shear(args, aero, mpi, distributed, case, dim):
         exact_fields = dict(rho=rho, ux=ux, uy=0, uz=uz, p=-0.003, E=energy)
         errors.extend(abs(fields[k][i] - exact_fields[k]) for k in names)
     diff = max(abs(a - b) for k in names for a, b in zip(reference[1][k], fields[k]))
-    if not max(errors) < 2.0e-5 or not diff < 2.0e-10:
+    if not measurements.error_below(max(errors), 2.0e-5) or not measurements.error_below(diff, 2.0e-10):
         raise AssertionError(f"{dim}D shear: analytic {max(errors)}, MPI difference {diff}")
     print(
         f"OK {dim}D shear, hybrid MPWENO5/{variables}: analytic {max(errors):.3g}, MPI {diff:.3g}", flush=True
@@ -196,10 +197,10 @@ def check_exact_report(aero, mpi, case, distributed):
             out = case / f"exact-{model}-{label}"
             log = run([*command, *args, f"--output={out}", "main:exact_solution=formula", *extra])
             report = (out / "sol_error.txt").read_text()
-            if report not in log or report.count("Solution error") != 1:
+            if report not in log or measurements.compare(report.count("Solution error"), "!=", 1):
                 raise AssertionError("Expected one identical final error report in the file and console")
             name, l2, linf = report.splitlines()[2].split()
-            if name != "rho" or abs(float(l2)-END*math.sqrt(1.5)) > 1e-12 or abs(float(linf)-2*END) > 1e-12:
+            if name != "rho" or measurements.error_exceeds(abs(float(l2)-END*math.sqrt(1.5)), 1e-12) or measurements.error_exceeds(abs(float(linf)-2*END), 1e-12):
                 raise AssertionError(report)
 
         # Берём настоящий глобальный снимок другого запуска. Сначала проверяем все
@@ -216,7 +217,7 @@ def check_exact_report(aero, mpi, case, distributed):
                 rows = {k: (float(l2), float(linf)) for k, l2, linf in
                         (row.split() for row in report.splitlines()[2:])}
                 expected = dict(rho=offset, ux=0., p=0., E=.03125*offset if model == "Linear" else 0.)
-                if rows.keys() != expected.keys() or any(abs(value - expected[k]) > 2.e-13
+                if measurements.compare(rows.keys(), "!=", expected.keys()) or any(measurements.error_exceeds(abs(value - expected[k]), 2.e-13)
                         for k, norms in rows.items() for value in norms):
                     raise AssertionError(report)
                 if label == "cpu" and not offset and any(any(norms) for norms in rows.values()):
@@ -232,7 +233,7 @@ def check_exact_report(aero, mpi, case, distributed):
             run([*command, *args, f"--output={out}", "main:exact_solution=fields", *extra])
             report = (out / "sol_error.txt").read_text()
             maximum = max(float(value) for row in report.splitlines()[2:] for value in row.split()[1:])
-            if maximum > (0. if label == "cpu" else 2.e-13):
+            if measurements.compare(maximum, ">", 0. if label == "cpu" else 2.e-13):
                 raise AssertionError(report)
         init.write_text("initial_type formula\nrho=1+t\nux=0\np=1\n")
     init.write_bytes(original)
@@ -272,7 +273,7 @@ def check_modes(args, case):
             options += ["implicit:jacobian_flux=Roe", "implicit:simplified_jacobian=on"]
         reference, expected = solve([aero], case, case / f"serial{i}", options)
         meta, actual = solve(mpi, case, case / f"mpi{i}", options + distributed)
-        if meta != reference or meta[4] != END or meta[3] < 2:
+        if measurements.compare(meta, "!=", reference) or measurements.compare(meta[4], "!=", END) or measurements.compare(meta[3], "<", 2):
             raise AssertionError("Snapshot metadata or integration interval mismatch")
         analytic = analytic_error(actual, coords)
         if scheme == "weno3":
@@ -280,11 +281,11 @@ def check_modes(args, case):
             sparse_line(coarse, 102)
             _, coarse_fields = solve([aero], case, case / "coarse", options + ["main:mesh=coarse.mesh"])
             coarse_error = analytic_error(coarse_fields, [point[0] for point in nodes(coarse, 1)])
-            if coarse_error <= 2 * analytic:
+            if measurements.compare(coarse_error, "<=", 2 * analytic):
                 raise AssertionError(f"WENO3 refinement: {coarse_error} -> {analytic}")
             print(f"OK WENO3 grid refinement: {coarse_error:.3g} -> {analytic:.3g}", flush=True)
         diff = max(abs(u - v) for k in expected for u, v in zip(actual[k], expected[k]))
-        if not analytic < {"first_order": 0.001, "weno3": 0.0002}.get(scheme, 0.00012) or not diff < 2.0e-10:
+        if not measurements.compare(analytic, "<", {"first_order": 0.001, "weno3": 0.0002}.get(scheme, 0.00012)) or not measurements.error_below(diff, 2.0e-10):
             raise AssertionError(f"{scheme}/{variables}: analytic error {analytic}, MPI difference {diff}")
         print(
             f"OK linear {scheme}/{variables}/{flux}/{time}: analytic {analytic:.3g}, MPI {diff:.3g}",
@@ -293,7 +294,7 @@ def check_modes(args, case):
     check_restart(aero, case)
     (case / "init.txt").write_text("initial_type formula\nrho=0\nux=0\np=0\n")
     meta, fields = solve(mpi, case, case / "zero", distributed + ["main:time_scheme=steady"])
-    if meta[3] or any(v != 0 for col in fields.values() for v in col):
+    if meta[3] or any(measurements.compare(v, "!=", 0) for col in fields.values() for v in col):
         raise AssertionError("Zero perturbations must remain exactly zero")
     check_wall(aero, mpi, distributed, case, coords)
     for dim in (2, 3):

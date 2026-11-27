@@ -1,4 +1,5 @@
 """Проверяет откат в задаче Сода и глобальные счётчики первого порядка в Report."""
+import measurements
 import math
 import re
 import shutil
@@ -19,15 +20,15 @@ def check_auto_retry_steps(log):
         # нижний шаг auto до отказа уже был меньше шага, вычисленного из CFL.
         step = int(step)
         old_dt, new_dt = float(old_dt), float(new_dt)
-        assert math.isclose(new_dt / old_dt, float(new_cfl) / float(old_cfl), rel_tol=2e-14), log
+        assert measurements.isclose(new_dt / old_dt, float(new_cfl) / float(old_cfl), rel_tol=2e-14), log
         if step in attempts:
-            assert old_dt == attempts[step], log
+            assert measurements.compare(old_dt, "==", attempts[step]), log
         attempts[step] = new_dt
     accepted = {int(step): float(dt) for step, dt in report_rows(log, r"^dt_min = (\S+)")}
-    assert 2 in attempts and attempts.keys() <= accepted.keys(), log
+    assert 2 in attempts and measurements.compare(attempts.keys(), "<=", accepted.keys()), log
     for step, final_dt in attempts.items():
         # В report печатаются шесть знаков после десятичной точки.
-        assert math.isclose(accepted[step], final_dt, rel_tol=1e-6), log
+        assert measurements.isclose(accepted[step], final_dt, rel_tol=1e-6), log
     assert "next CFL is below cfl_min" in log, log
 
 
@@ -91,20 +92,20 @@ def check(args, case):
                 assert "stage" in log and "RETRY step" not in log
                 continue
             reductions = re.findall(r"^RETRY step (\d+) \| CFL (\S+) -> (\S+) \| failed nodes = [1-9]\d*$", log, re.M)
-            assert reductions and len(reductions) == log.count("RETRY step"), log
-            assert all(float(new) == float(old) / 2 for _, old, new in reductions), reductions
+            assert reductions and measurements.compare(len(reductions), "==", log.count("RETRY step")), log
+            assert all(measurements.compare(float(new), "==", float(old) / 2) for _, old, new in reductions), reductions
             # Строка после нормы энергии относится к отчёту за принятый шаг.
             counts = list(report_rows(log, r"^Stabilization .*failed since last report = (\d+)\s+first-order now = (\d+)"))
             assert counts and any(int(failed) for _, failed, _ in counts)
-            assert any(int(low) for _, _, low in counts) == (mode in ("low", "on"))
+            assert measurements.compare(any(int(low) for _, _, low in counts), "==", mode in ("low", "on"))
             _, fields = binary_snapshot(dest / "final.fields")
             if reference is None:
                 reference = counts, fields, reductions
             else:
-                assert reductions == reference[2]  # Каждый отказ печатает только процесс 0.
-                assert counts == reference[0]
+                assert measurements.compare(reductions, "==", reference[2])  # Каждый отказ печатает только процесс 0.
+                assert measurements.compare(counts, "==", reference[0])
                 for key in fields:
-                    assert max(abs(a-b) for a,b in zip(fields[key], reference[1][key])) < 1e-11
+                    assert measurements.error_below(max(abs(a-b) for a,b in zip(fields[key], reference[1][key])), 1e-11)
         if mode == "cfl":
             # Уменьшение CFL сообщается сразу, даже когда обычный отчёт отключён.
             log = run([args.aero, *common, f"main:mesh={mesh}", f"--output={case / 'quiet'}",

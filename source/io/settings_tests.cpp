@@ -63,7 +63,7 @@ struct CaseFiles {
     ~CaseFiles() {
         for (const char* name :
              {"main.txt", "bc.txt", "init.txt", "cuda.txt", "gpu.txt", "gas.txt", "scheme.txt", "implicit.txt", "linear.txt", "turbulence.txt", "test.fields", "output.txt",
-              "latest.fields", "p_000001.fields", "p_000002.fields", "p_000003.fields"})
+              "p_000001.plt", "p_000001.vtk", "latest.fields", "latest.plt", "latest.vtk", "p_000001.fields", "p_000002.fields", "p_000003.fields"})
             std::remove((dir + "/" + name).c_str());
 #ifdef _WIN32
         _rmdir(dir.c_str());
@@ -167,6 +167,9 @@ void output_zones(const CaseFiles& files) {
     require(read_output_zones(path).empty(), "absent output.txt");
     for (const auto& invalid : std::vector<std::string>{
              latest + "every_time=.1", latest + "every_steps=3", latest + "multi=2", latest + latest,
+             latest + "visualization=", latest + "visualization=vtk, vtk", latest + "visualization=unknown",
+             latest + "visualization=vtk,",
+             series + "visualization=vtk\n[alias]\nfile=p_000003.vtk\nevery_steps=1\nvariables=E",
              latest + "oops=0", "file=f", "[s]\nvariables=p\nevery_steps=1",
              "[s]\nfile=x\nevery_steps=0\nvariables=p", "[s]\nfile=x\nevery_time=nan\nvariables=p",
              "[s]\nfile=x\nevery_steps=-1\nvariables=p", "[s]\nfile=x\nevery_steps=2\nvariables=p,p",
@@ -178,7 +181,7 @@ void output_zones(const CaseFiles& files) {
         files.write("output.txt", invalid);
         rejects([&] { read_output_zones(path); }, "output.txt");
     }
-    files.write("output.txt", latest + series);
+    files.write("output.txt", latest + "visualization=tecplot, vtk\n" + series);
     const auto zones = files.load().output_zones;
     require(output_filename(zones[1], 1000000) == "p_1000000.fields", "wide step number");
     const auto mesh = Mesh::read("qa/cases/momentum_2d/grid.mesh");
@@ -207,6 +210,14 @@ void output_zones(const CaseFiles& files) {
     auto changed = state;
     changed[3] += 1;
     writer.write(2, 0.2, changed);
+    // Два представления возникают только у первой зоны, вместе с её штатным снимком.
+    std::ifstream plt(files.dir + "/latest.plt", std::ios::binary), vtk(files.dir + "/latest.vtk", std::ios::binary);
+    std::string signature(8, '\0'), header;
+    plt.read(&signature[0], 8);
+    std::getline(vtk, header);
+    require(signature == "#!TDV112" && header == "# vtk DataFile Version 4.2", "scheduled visualization files");
+    plt.close();
+    vtk.close();
     const auto current = FieldSnapshot::read(files.dir + "/latest.fields");
     current.check_mesh(mesh);
     require(current.step == 2 && current.fields.size() == 4 && current.fields[0].name == "E" &&
@@ -242,6 +253,20 @@ void output_zones(const CaseFiles& files) {
                 FieldSnapshot::read(files.dir + "/p_000001.fields").time == accepted &&
                 clocks.limit_dt(accepted, 0.01) == 0.01,
             "coincident physical deadlines");
+    // Коллизия второго представления в серии не должна оставлять первый файл
+    // и препятствовать повтору записи того же шага после устранения причины.
+    auto history = zones[1];
+    history.tecplot = history.vtk = true;
+    ScheduledOutput retry({history}, files.dir, mesh, 1.4, map);
+    files.write("p_000001.vtk", "existing");
+    rejects([&] { retry.write(1, 0.1, state); }, "publish");
+    require(!std::ifstream(files.dir + "/p_000001.plt"), "rolled back partial history");
+    std::remove((files.dir + "/p_000001.vtk").c_str());
+    std::remove((files.dir + "/p_000001.fields").c_str());
+    retry.write(1, 0.1, state);
+    require(bool(std::ifstream(files.dir + "/p_000001.plt")) && bool(std::ifstream(files.dir + "/p_000001.vtk")),
+            "retried visualization history");
+
     auto invalid_zone = zones[1];
     invalid_zone.variables = {"uz"};
     rejects([&] { ScheduledOutput bad({invalid_zone}, files.dir, mesh, 1.4); }, "dimension");
@@ -416,6 +441,10 @@ void main_and_cuda(const CaseFiles& files) {
     require(read_run_settings(directories).implicit_settings.linear_max_iterations == 17, "custom BiCGSTAB limit");
     require(!bdf.implicit_settings.simplified_jacobian, "full LF derivative is the default");
     require(!bdf.implicit_settings.compact_jacobian, "full viscous stencil is the default");
+    require(!bdf.implicit_settings.damp_correction,"gas correction filter defaults to off");
+    directories.overrides["implicit"]["solver_damp_correction"]="on";
+    require(read_run_settings(directories).implicit_settings.damp_correction,"gas correction filter enabled");
+    directories.overrides["implicit"].erase("solver_damp_correction");
     require(!bdf.implicit_settings.without_predictor, "Newton predictor is enabled by default");
     directories.overrides["implicit"]["newton_without_predictor"] = "on";
     require(read_run_settings(directories).implicit_settings.without_predictor, "disable every Newton predictor");
@@ -526,7 +555,7 @@ void main_and_cuda(const CaseFiles& files) {
          {"local_time_step_velocity_change","-0.1"}, {"local_time_step_sa_change","inf"},
          {"local_time_step_min_factor","1.1"}, {"local_time_step_max_factor","0.9"},
          {"local_time_step_neighbor_ratio","0.75"}, {"local_time_step_neighbor_ratio","inf"}, {"steady_criterion","unknown"}, {"steady_tol","1"}, {"steady_max_steps","0"},
-         {"predictor_history_order","7"}, {"newton_without_predictor","maybe"}, {"jacobian_update_every","-2"}, {"simplified_newton","maybe"}, {"simplified_jacobian","maybe"}, {"compact_jacobian","maybe"}, {"solver","gmres"}, {"jacobian_flux","unknown"}, {"preconditioner","unknown"},
+         {"predictor_history_order","7"}, {"newton_without_predictor","maybe"}, {"solver_damp_correction","maybe"}, {"jacobian_update_every","-2"}, {"simplified_newton","maybe"}, {"simplified_jacobian","maybe"}, {"compact_jacobian","maybe"}, {"solver","gmres"}, {"jacobian_flux","unknown"}, {"preconditioner","unknown"},
          {"solver_max_iter","0"}, {"solver_max_iter","2.5"}, {"solver_max_iter","-1"}, {"solver_tol","0"}, {"newton_tol","1"}, {"newton_max_iter","0"}, {"newton_max_iter","2.5"}}) {
         directories.overrides["implicit"][bad.first] = bad.second;
         rejects([&] { read_run_settings(directories); }, bad.first);

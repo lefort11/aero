@@ -1,6 +1,7 @@
 #ifndef AERO_IMPLICIT_NEWTON_VECTORS_H
 #define AERO_IMPLICIT_NEWTON_VECTORS_H
 #include "../timestep/node_step.h"
+#include "../timestep/correction_filter.h"
 #include <Kokkos_Core.hpp>
 #include "../residual/residual_detail.h"
 
@@ -9,7 +10,8 @@ namespace implicit {
 // Поля текущего шага. Один вызов обрабатывает все компоненты одного узла.
 struct NewtonUpdate {
     // Операции над узловыми полями на этапах решения уравнения Ньютона.
-    enum Operation { InitialRhs, SavedInitialRhs, FormRhs, AddCorrection, PredictCorrection, RestoreStart, Predict, RelaxPrediction, UndoPrediction, SpatialRate, MassNorm };
+    enum Operation { InitialRhs, SavedInitialRhs, FormRhs, AddCorrection, PredictCorrection, RestoreStart, Predict, RelaxPrediction, UndoPrediction, SpatialRate, MassNorm,
+                     FilterTemporal, FilterSpatial, ApplyFilteredNewton };
     // Связность для сборки узловой невязки.
     residual_detail::Geometry grid;
     const EulerFluxResult* flux; // Потоки в тех же ориентациях, что при явном обновлении.
@@ -95,6 +97,31 @@ struct NewtonUpdate {
                 correction[i] = current;
                 current += (local_steps.at(node, dt)/leading/volumes[node])*rhs[i];
                 break;
+            case FilterTemporal:
+            case FilterSpatial: {
+                // correction хранит состояние до предыдущей пробы. Пока его не
+                // перезаписали, current−correction есть последнее принятое изменение.
+                const double previous_change=relaxation!=0. ? current-correction[i] : 0.;
+                const double delta=operation==FilterSpatial ? rhs[i] :
+                    (local_steps.at(node,dt)/leading/volumes[node])*rhs[i];
+                correction[i]=current;
+#ifdef AERO_HAS_VISCOSITY
+                if (operation==FilterSpatial && grid.options.wall && k>0 && k+1<width && grid.options.wall[node]) break;
+#endif
+                current+=CorrectionFilter::change(delta,previous_change);
+                break;
+            }
+            case ApplyFilteredNewton: {
+                // На выходе BiCGSTAB поправка уже содержит сдвиг от истории.
+                // Сохраняем в том же векторе сдвиг для возможной следующей итерации.
+                const double before=current;
+#ifdef AERO_HAS_VISCOSITY
+                if (!(grid.options.wall && k>0 && k+1<width && grid.options.wall[node]))
+#endif
+                    current+=CorrectionFilter::weight()*correction[i];
+                correction[i]=CorrectionFilter::shift(current-before);
+                break;
+            }
             case RelaxPrediction:
                 current = correction[i] + relaxation * (current - correction[i]);
                 break;

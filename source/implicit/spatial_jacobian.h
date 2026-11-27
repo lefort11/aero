@@ -9,6 +9,7 @@ namespace aero {
 class SpatialResidual;
 namespace residual_detail { struct Geometry; }
 namespace implicit {
+struct ScalarTopology;
 class BlockJacobi;
 // Проверка размещения компактной СЛАУ строит тот же граф и ту же раскраску,
 // которые затем принимает решатель. Размер — байты матричных массивов на GPU,
@@ -34,6 +35,8 @@ public:
     // Умножает последнюю успешно собранную матрицу на вектор. Массивы
     // размером nodes*(dimension+2) должны занимать разные области памяти.
     void apply(const double* vector, double* product) const;
+    // Даёт скалярному блоку уже подготовленную связность этой же сетки.
+    ScalarTopology scalar_topology(bool colored);
 private:
     // Линейная система управляет внутренними данными якобиана.
     friend class BdfLinearSystem;
@@ -53,7 +56,7 @@ private:
     // Обновляет временной вклад диагонали при повторном использовании пространственной матрицы.
     void update_time_diagonal(const double* volumes, double dt);
     // Подготавливает порядок обхода и упакованные блоки предобусловливателя CSGS.
-    void prepare_csgs();
+    void prepare_csgs(bool pack_values=true);
     // Выполняет прямой и обратный проходы CSGS с необходимыми обменами.
     void apply_csgs(const BlockJacobi& diagonal, const double* rhs, double* output,double* image) const;
     // Подготавливает разложение диагональных блоков текущей матрицы.

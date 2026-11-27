@@ -157,3 +157,4 @@ $(AERO_OBJECT_DIR)/aero/main.o: source/io/cli_help.h
 
 $(AERO_OBJECT_DIR)/viscosity/aes.o: source/viscosity/row_execution.h source/parallel/device_affine_aes.h source/parallel/device_volume_coordinates.h source/parallel/row_loop.h
 $(AERO_OBJECT_DIR)/turbulence/partition.o: source/turbulence/step_execution.h source/turbulence/convection.h source/parallel/row_loop.h
+$(AERO_OBJECT_DIR)/turbulence/partition.o: source/turbulence/scalar_solver.h source/turbulence/scalar_system.h source/turbulence/sa_jacobian.h $(BICGSTAB_HEADERS) source/implicit/newton_predictor.h $(SPATIAL_HEADERS)

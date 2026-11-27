@@ -1,2 +1,2 @@
-module := tecplot
+module := visfield
 include ../module.mk

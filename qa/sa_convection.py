@@ -1,4 +1,5 @@
 """Проверка порядка конвекции SA и сравнение полей RANS/DDES на разных исполнителях."""
+import measurements
 import math
 import struct
 import zlib
@@ -29,12 +30,12 @@ def seed_line(case, args, x, speed, name, profile=smooth):
     data = bytearray((case/name/"recovery-0.bin").read_bytes())
     # Газ уже записан солвером. Для одномерной точки без BDF и средних запись
     # содержит два номера, по три компоненты текущего и начального газа, nu_tilde и CRC.
-    assert data[:7] == b"AEROSAV" and (data[7]-ord("1")) & 5 == 0
+    assert data[:7] == b"AEROSAV" and measurements.compare((data[7]-ord("1")) & 5, "==", 0)
     stride = 80
     for i in range(len(x)):
         start = 120 + i*stride
         node, representative = struct.unpack_from("<QQ",data,start)
-        assert node == i
+        assert measurements.compare(node, "==", i)
         struct.pack_into("<d",data,start+64,profile(x[representative]))
         struct.pack_into("<Q",data,start+72,zlib.crc32(data[start:start+72]))
     (case/(name+".bin")).write_bytes(data)
@@ -51,7 +52,7 @@ def transport_error(case,args,x,speed):
                "gas:reynolds=1e12","turbulence:sa_high_order=on"]
     w = solve(case,args,"transport",options=options)["nu_tilde"]
     unique = [i for i,pos in enumerate(x) if pos < 1.]
-    assert min(w) > 0.
+    assert measurements.compare(min(w), ">", 0.)
     return math.sqrt(sum((w[i]/scale-smooth(x[i]-speed*end))**2 for i in unique)/len(unique))
 
 
@@ -80,13 +81,13 @@ def spatial_errors(case, args, cells, mpweno_only=False):
     for scheme in schemes:
         options = [] if scheme == "off" else [f"main:reconstruction={scheme}","turbulence:sa_high_order=on"]
         field = solve(case,args,scheme,options=options)["nu_tilde"]
-        assert binary_snapshot(case/scheme/"state.fields")[0][3:] == (1,dt)
+        assert measurements.compare(binary_snapshot(case/scheme/"state.fields")[0][3:], "==", (1,dt))
         # На одном шаге Эйлера из одинакового поля диффузия и источники совпадают.
         # Вычитание выделяет пространственную производную без ошибки интегрирования по времени.
         unique = [i for i,pos in enumerate(x) if pos < 1.]
         error = [(field[i]-rest[i])/dt + speed*derivative(x[i]) for i in unique]
         errors[scheme] = math.sqrt(sum(e*e for e in error)/cells)
-        assert abs(sum(field[i]-rest[i] for i in unique)) < 1e-13
+        assert measurements.error_below(abs(sum(field[i]-rest[i] for i in unique)), 1e-13)
     if cells == 63:
         # Здесь газ постоянный, а поле SA неоднородно: проверяем собственные
         # нелинейные веса MPWENO5–MP6 и передачу одной поправки между процессами.
@@ -96,14 +97,14 @@ def spatial_errors(case, args, cells, mpweno_only=False):
             (case/"cuda.txt").write_text("devices=0\n")
             gpu = solve(case,args,"hybrid-gpu",gpu=True,options=options)
             print(f"Scalar MPWENO5-MP6, GPU: {max_difference(reference,gpu):.3g}",flush=True)
-            assert max_difference(reference,gpu) < 1e-13
+            assert measurements.error_below(max_difference(reference,gpu), 1e-13)
         if args.mpi:
             run([args.meshdec.resolve(),mesh,case/"grid.mdec","--target-ranks=2","--compress"])
             mpi = solve(case,args,"hybrid-mpi",distributed=True,options=options)
             print(f"Scalar MPWENO5-MP6, MPI: {max_difference(reference,mpi):.3g}",flush=True)
-            assert max_difference(reference,mpi) < 1e-13
+            assert measurements.error_below(max_difference(reference,mpi), 1e-13)
         first = solve(case,args,"startup",options=options+["main:t_fo=.01"])
-        assert max_difference(first,binary_snapshot(case/"off/state.fields")[1]) < 1e-15
+        assert measurements.error_below(max_difference(first,binary_snapshot(case/"off/state.fields")[1]), 1e-15)
     if not mpweno_only:
         errors["SSPRK3+EBR3"] = transport_error(case,args,x,speed)
     return errors
@@ -119,29 +120,64 @@ def spatial_order(work,args):
         # WENO-JS и ограничитель MPWENO чувствительны к гладким экстремумам профиля.
         minimum = {"off":.95, "weno3":1.4, "weno5":3.6, "mpweno5":4.0,
                    "ebr5":4.7, "mp5":4.7}.get(scheme,2.8)
-        assert orders[-1] > minimum, (scheme,orders)
+        assert measurements.compare(orders[-1], ">", minimum), (scheme,orders)
     # На грубых сетках меняется число граней, для которых датчик выбирает WENO.
     # Два дальнейших измельчения отдельно проверяют асимптотический порядок.
     fine = (255,511)
     errors = [spatial_errors(work/f"grid-{n}",args,n,mpweno_only=True)["mpweno5"] for n in fine]
     order = math.log(errors[0]/errors[1])/math.log(fine[1]/fine[0])
     print(f"MPWENO5, {fine[0]} -> {fine[1]} cells: L2 {errors[0]:.4g}, {errors[1]:.4g}, order {order:.2f}",flush=True)
-    assert 4.7 < order < 5.3, (errors, order)
+    assert (measurements.chain(4.7, "<", order, "<", 5.3)), (errors, order)
 
 
 def compare_steps(reference, actual):
     """Сверяет по исходным номерам узлов каждое поле на каждом принятом шаге."""
     files = sorted(p.name for p in reference.glob("step_*.fields"))
-    assert files and files == sorted(p.name for p in actual.glob("step_*.fields"))
+    assert files and measurements.compare(files, "==", sorted(p.name for p in actual.glob("step_*.fields")))
     maximum = 0.
     for step,name in enumerate(files, start=1):
         a,x = binary_snapshot(reference/name)
         b,y = binary_snapshot(actual/name)
-        assert a[3] == step and a[:4] == b[:4] and abs(a[4]-b[4]) < 1e-13, (name,a,b)
+        assert measurements.compare(a[3], "==", step) and measurements.compare(a[:4], "==", b[:4]) and measurements.error_below(abs(a[4]-b[4]), 1e-13), (name,a,b)
         difference = max_difference(x,y)
-        assert difference < 2e-10, (actual.name,name,difference)
+        assert measurements.error_below(difference, 2e-10), (actual.name,name,difference)
         maximum = max(maximum,difference)
     return maximum
+
+
+def implicit_schemes(case, args):
+    """Сверяет семь реконструкций SA на одних полях для steady LTS, BDF1 и BDF2."""
+    (case/"turbulence.txt").write_text("model=RANS\nrans_eq=SA\nnut_nu_amb=.21\nsa_high_order=on\n")
+    common = ["implicit:solver_damp_correction=on", "main:upw_coeff=1",
+              "main:euler_solver=roe", "main:reconstruction_variables=characteristic",
+              "scheme:stencil_geometry=ijk"]
+    for mode in ("steady", "bdf1", "bdf2"):
+        steady = mode == "steady"
+        controls = ["main:control_every=1","implicit:steady_max_steps=2","implicit:steady_tol=1e-14",
+                    "implicit:local_time_step=on","main:cfl=4","implicit:cfl_max=4"] if steady else ["main:final_time=.01"]
+        # В физическом времени расписание гарантирует хотя бы два шага: BDF2 должен
+        # использовать предыдущий слой. В steady STOP принимается после первого шага.
+        schedule = "every_steps=1" if steady else "every_time=.005"
+        (case/"output.txt").write_text("[flow]\nfile=state.fields\nformat=binary\nlayout=global\n"
+                                       f"{schedule}\nvariables=primary,turbulence\n")
+        for scheme in ("first_order", "ebr3", "ebr5", "weno3", "weno5", "mp5", "mpweno5"):
+            options = [*common,*controls,f"main:time_scheme={mode}",f"main:reconstruction={scheme}"]
+            reference = None
+            for gpu,mpi in ((False,False),(True,False),(False,True),(True,True)):
+                if (gpu and not args.gpu) or (mpi and not args.mpi): continue
+                if gpu and mpi and len(args.devices.split(",")) < 2: continue
+                name = f"{mode}-{scheme}-{'gpu' if gpu else 'cpu'}-{'mpi' if mpi else 'serial'}"
+                folder = case/name
+                folder.mkdir()
+                if steady: (folder/"control.txt").write_text("STOP\n")
+                fields = solve(case,args,name,gpu=gpu,distributed=mpi,options=options)
+                metadata,_ = binary_snapshot(folder/"state.fields")
+                assert (measurements.compare(metadata[3], "==", 1) if steady else measurements.compare(metadata[3], ">=", 2)), (name,metadata[3])
+                assert measurements.compare(min(fields["nu_tilde"]), ">=", 0.), name
+                if reference is None: reference = fields
+                difference = max_difference(reference,fields)
+                print(f"{name}: max field difference {difference:.3g}",flush=True)
+                assert measurements.error_below(difference, 2e-9), (name,difference)
 
 
 # Проверяет согласованный перенос газа и рабочей вязкости SA.
@@ -151,7 +187,7 @@ def coupled(case,args):
     # Неоднородный RANS формирует поле SA на штатной периодической сетке.
     (case/"init.txt").write_text("initial_type=formula\nrho=1\np=2\nux=.4+.2*sin(2*pi*y)\nuy=.1*sin(2*pi*x)\nuz=0\n")
     seed = solve(case,args,"seed",options=["main:final_time=.01"])
-    assert max(seed["nu_tilde"]) > min(seed["nu_tilde"])
+    assert measurements.compare(max(seed["nu_tilde"]), ">", min(seed["nu_tilde"]))
     (case/"init.txt").write_text("initial_type=recovery\npath=seed/recovery-0.bin\n")
     output = case/"output.txt"
     schedule = output.read_text()
@@ -159,7 +195,8 @@ def coupled(case,args):
     # зона записывает поля каждого шага для обоих вариантов гибрида.
     each_step = ("\n[each]\nfile=step.fields\nformat=binary\nlayout=global\nevery_steps=1\n"
                  "multi=1\nvariables=primary,turbulence\n")
-    for model,scheme,integrator,hybrid in (("RANS","weno5","ssprk3",0),("DDES","mpweno5","bdf2",0),
+    for model,scheme,integrator,hybrid in (("RANS","weno5","ssprk3",0),("RANS","mp5","bdf1",0),
+                                          ("DDES","mpweno5","bdf2",0),
                                           ("DDES","mpweno5","bdf2",.6),("DDES","mp5","bdf2",.6)):
         name = f"{model}-{scheme}-{integrator}-h{hybrid}"
         output.write_text(schedule + (each_step if hybrid else ""))
@@ -173,7 +210,7 @@ def coupled(case,args):
         (case/"turbulence.txt").write_text(settings+"sa_high_order=on\n")
         high = solve(case,args,name,options=options)
         delta = max(abs(a-b) for a,b in zip(low["nu_tilde"],high["nu_tilde"]))
-        assert delta > 1e-10, (name,delta)
+        assert measurements.compare(delta, ">", 1e-10), (name,delta)
         for gpu,mpi in ((True,False),(False,True),(True,True)):
             if (gpu and not args.gpu) or (mpi and not args.mpi): continue
             if gpu and mpi and len(args.devices.split(",")) < 2: continue
@@ -181,7 +218,8 @@ def coupled(case,args):
             result = solve(case,args,label,gpu=gpu,distributed=mpi,options=options)
             diff = compare_steps(case/name,case/label) if hybrid else max_difference(high,result)
             print(f"{label}: max field difference {diff:.3g}, nu_tilde high/low {delta:.3g}",flush=True)
-            assert diff < 2e-10
+            assert measurements.error_below(diff, 2e-10)
+    implicit_schemes(case,args)
 
 
 if __name__=="__main__":

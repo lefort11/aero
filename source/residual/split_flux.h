@@ -289,7 +289,7 @@ AERO_HOST_DEVICE inline bool characteristic_flux(const Geometry& g,Index edge,co
     const double* ur=field+W*s.end;
     euler_detail::InterfaceGas gas;
     if (!edge_gas(g,edge,s,ul,ur,gas)) return false;
-    if (s.use_nodal_traces==1) return solve_edge_flux(g,s,ul,ur,gas,nullptr,out);
+    if (s.use_nodal_traces==1) return solve_edge_flux(g,s,ul,ur,gas,gas,nullptr,out);
     double fl[W],fr[W],sl,sr;
     if (euler_detail::project_flux(W-2,ul,gas.left,gas.normal,fl,&sl)!=EulerStatus::Success ||
         euler_detail::project_flux(W-2,ur,gas.right,gas.normal,fr,&sr)!=EulerStatus::Success) return false;

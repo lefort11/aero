@@ -12,7 +12,7 @@
   </PropertyGroup>
   <Import Project="kokkos_make.props" />
   <ItemGroup>
-    <ClCompile Include="..\utils\tecplot\examples\generate_examples.cpp" />
+    <ClCompile Include="..\utils\visfield\examples\generate_examples.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

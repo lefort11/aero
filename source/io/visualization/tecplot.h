@@ -1,12 +1,13 @@
 #ifndef AERO_TECPLOT_H
 #define AERO_TECPLOT_H
-#include "../../source/mesh/mesh.h"
-#include "../../source/io/fields.h"
+#include "../../mesh/mesh.h"
+#include "../fields.h"
 #include <iosfwd>
 #include <stdexcept>
 #include <string>
 
 namespace aero {
+class BinaryColumns;
 namespace tecplot {
 // Ошибка подготовки или записи данных Tecplot.
 class ExportError : public std::runtime_error {
@@ -27,13 +28,13 @@ bool openmp_available() noexcept;
 // До записи сверяет SHA-256, размеры и конечность значений. Описание приведено в README.txt.
 void write(std::ostream& output, const Mesh& mesh, const FieldSnapshot& fields,
            const Options& options = Options());
-// Для выхода требуется новый путь. При неудачной записи частичный файл удаляется.
+// Готовый результат заменяет прежний файл. При ошибке незаконченный временный файл удаляется.
 void write(const std::string& path, const Mesh& mesh, const FieldSnapshot& fields,
            const Options& options = Options());
 // Проверяет входные данные и экспортирует сетку или снимок в Tecplot.
 void write(const std::string& path, const Mesh& mesh, const Options& options = Options());
-// Разбирает аргументы, выполняет операцию утилиты и возвращает код завершения.
-int run_cli(int argc, const char* const* argv, std::ostream& out, std::ostream& err);
+// Записывает уже связанный с геометрией снимок решателя. Пустой указатель на сетку означает облако Cp.
+void write_snapshot(std::ostream& out, const Mesh* mesh, const FieldSnapshot& snapshot, BinaryColumns* columns = nullptr);
 }
 }
 #endif

@@ -1,8 +1,9 @@
+#include "scalar_topology.h"
 #include "bdf1_linear_system.h"
 #include "block_jacobi.h"
 #include "spatial_jacobian.h"
 #include "row_execution.h"
-#include "bicgstab_vectors.h"
+#include "krylov_operations.h"
 #include "workspace.h"
 #include <algorithm>
 #include <cmath>
@@ -13,7 +14,7 @@
 namespace aero {
 namespace implicit {
 // Матрица, предобусловливатель и общая рабочая память BiCGSTAB.
-struct BdfLinearSystem::Storage {
+struct BdfLinearSystem::Storage : KrylovOperations<BdfLinearSystem::Storage> {
     SpatialJacobian matrix;    // J пространства плюс временная диагональ текущей сборки.
     BlockJacobi jacobi;          // Разложенные диагональные блоки этой же матрицы.
     const int device;           // -1 для CPU, иначе номер карты.
@@ -42,68 +43,11 @@ struct BdfLinearSystem::Storage {
                 scratch.field[3], scratch.field[4], scratch.field[5]};
     }
 
-    // Выполняет выбранную поэлементную операцию BiCGSTAB на CPU или GPU.
-    void update(const KrylovUpdate& operation) const {
-        apply_rows(device, count, operation);
-    }
-    // Вычисляет локальное скалярное произведение или максимальную норму на выбранном исполнителе.
-    double local_reduction(const double* x, const double* y) const {
-        if (!count) return 0.; // Нейтральный вклад пустого ранга и в сумму, и в норму.
-#ifdef AERO_WITH_KOKKOS_GPU
-        if (device >= 0) {
-            double scalar;
-            device_work::check(device_work::aero_device_krylov_reduce(device, count, x, y, &scalar));
-            return scalar;
-        }
-#endif
-        host_parallel::ensure_runtime();
-        return krylov_reduce(host_parallel::Execution(), count, x, y);
-    }
-    // Согласует локальные редукции и ошибки между процессами MPI.
-    double reduce(const double* x, const double* y) const {
-        const auto& part = matrix.partition();
-        if (!part.reduce) return local_reduction(x, y);
-        double value = 0.;
-        std::exception_ptr failure;
-        try {
-            value = local_reduction(x, y);
-        } catch (...) {
-            failure = std::current_exception();
-            value = HUGE_VAL;
-        }
-        // Для исправного поля достаточно одной редукции. Бесконечный вклад при
-        // ошибке на любом ранге переводит все процессы в общую обработку сбоя.
-        value = part.reduce(value, y == nullptr);
-        if (!std::isfinite(value)) part.local([&] { if (failure) std::rethrow_exception(failure); });
-        return value;
-    }
-    // Обновляет векторы BiCGSTAB и одновременно вычисляет глобальную норму невязки.
-    double update_norm(const KrylovUpdate& operation) const {
-        // Для CPU тип исполнителя фиксирован, поэтому вызов исходного ядра встраивается.
-        return measure_rows(matrix.partition(), device, count, operation,
-                            [](const host_parallel::Execution& exec, MeshIndex length, const KrylovUpdate& row) {
-                                return krylov_update_norm(exec, length, row);
-                            });
-    }
-    // Вычисляет коэффициент стабилизации BiCGSTAB из глобальных скалярных произведений.
-    double omega_projection() const {
-        const auto& part=matrix.partition();
-        double pair[2]{};
-        part.local([&] {
-#ifdef AERO_WITH_KOKKOS_GPU
-            if (device>=0) { device_work::check(device_work::aero_device_krylov_project(device,count,work.t,work.r,pair)); return; }
-#endif
-            host_parallel::ensure_runtime();
-            krylov_project(host_parallel::Execution(),count,work.t,work.r,pair);
-        });
-        if (part.reduce) for (auto& value:pair) value=part.reduce(value,false);
-        return pair[0]>0. && std::isfinite(pair[0]) ? pair[1]/pair[0] : 0.;
-    }
-    // Вычисляет глобальное скалярное произведение рабочих векторов.
-    double dot(const double* x, const double* y) const { return reduce(x, y); }
-    // Возвращает максимальный модуль компоненты вектора по всем процессам.
-    double norm(const double* x) const { return reduce(x, nullptr); }
+    // Возвращает обмены и редукции данного блока для общей итерации.
+    const Partition& partition() const { return matrix.partition(); }
 
+    // Умножает газовую матрицу на проверяемый вектор.
+    void apply(const double* x,double* y) const { matrix.apply(x,y); }
     // Правое предобусловливание: сначала решаем локальные системы M*z=v,
     // затем умножаем z на полную матрицу. Сама поправка x остаётся физической.
     void apply_preconditioned(const double* v, double* image, bool use_sweep_image) {
@@ -183,6 +127,14 @@ void BdfLinearSystem::predict(const double* rhs,double* correction) const {
     else s.matrix.partition().local([&]{s.jacobi.apply(rhs,correction);});
 }
 
+// Векторы Крылова свободны до следующего линейного решения. После подстановки
+// вызывающая сторона сразу потребляет z и заново вычисляет потоки пробного газа.
+double* BdfLinearSystem::predict_in_workspace(const double* rhs) const {
+    double* delta=storage_->work.z;
+    predict(rhs,delta);
+    return delta;
+}
+
 // Запускает BiCGSTAB с самостоятельным вычислением нормы правой части.
 LinearResult BdfLinearSystem::solve(const double* b, double* x, const LinearTolerance& tol) {
     // Для самостоятельного вызова норма ещё неизвестна. Вычисляем её только
@@ -191,85 +143,12 @@ LinearResult BdfLinearSystem::solve(const double* b, double* x, const LinearTole
 }
 
 // Решает систему BiCGSTAB, используя известную норму правой части для критерия останова.
-LinearResult BdfLinearSystem::solve_with_rhs_norm(const double* b, double* x, const LinearTolerance& tol, double rhs_norm) {
+LinearResult BdfLinearSystem::solve_with_rhs_norm(const double* b, double* x, const LinearTolerance& tol, double rhs_norm, double* shifted_rhs) {
     auto& s = *storage_;
-    const auto& w = s.work;
-    if (!s.ready) throw std::logic_error("BDF: assemble before solving");
-    s.matrix.partition().local([&] {
-        if (s.count && (!b || !x || b == x))
-            throw std::invalid_argument("BiCGSTAB: separate input and output required");
-    });
-    if (!(tol.relative >= 0. && tol.relative < 1. && tol.absolute >= 0.) || !std::isfinite(tol.absolute))
-        throw std::invalid_argument("BiCGSTAB: invalid tolerance");
-    if (rhs_norm < 0.) rhs_norm = s.norm(b);
-    if (!std::isfinite(rhs_norm)) throw std::domain_error("BiCGSTAB: nonfinite right-hand side");
-    // Абсолютный допуск защищает почти нулевую правую часть, относительный масштабируется её нормой.
-    const double threshold = std::max(tol.absolute, tol.relative * rhs_norm);
-    // В итерациях масштабируем невязку, чтобы при малой правой части скалярные
-    // произведения не обнулялись. Допуск и итоговый отчёт остаются в исходных единицах.
-    const double scale = rhs_norm > 0. ? rhs_norm : 1.;
-    // Применяет выбранное обновление рабочих полей текущего этапа решателя.
-    const auto update = [&](KrylovStep step, double a, double omega, const double* image) {
-        s.matrix.partition().local([&] { s.update({w, b, x, image, scale, a, omega, step}); });
-    };
-    update(KrylovStep::Begin, 0., 0., nullptr);
-    if (rhs_norm <= threshold) return {LinearStatus::Converged, 0, rhs_norm};
-    // Независимо вычисляет b−A*x, чтобы проверить рекуррентную оценку BiCGSTAB.
-    const auto actual_residual = [&]() {
-        s.matrix.apply(x, w.t);
-        // Элемент b−A*x уже находится в регистре. В ту же редукцию включаем
-        // его модуль, сохраняя саму невязку для возможного перезапуска BiCGSTAB.
-        return s.update_norm({w, b, x, w.t, scale, 0., 0., KrylovStep::TrueResidual});
-    };
-    unsigned iteration = 0;
-    LinearStatus reason = LinearStatus::IterationLimit;
-    bool first = true, use_sweep_image = true;
-    double old_rho = 1., alpha = 1., omega = 1.;
-    while (iteration < tol.max_iterations) {
-        ++iteration;
-        reason = LinearStatus::Breakdown; // До завершения итерации выход возможен при вырождении.
-        const double rho = s.dot(w.shadow, w.r);
-        if (!std::isfinite(rho) || rho == 0.) break;
-        if (!first) {
-            const double beta = (rho/old_rho) * (alpha/omega);
-            if (!std::isfinite(beta)) break;
-            update(KrylovStep::Direction, beta, omega, nullptr);
-        }
-        // Первая поправка идёт вдоль M^{-1}p. После неё r хранит промежуточную
-        // невязку s из формулы BiCGSTAB. При точном попадании второй шаг не нужен.
-        s.apply_preconditioned(w.p, w.v, use_sweep_image);
-        const double projection = s.dot(w.shadow, w.v);
-        if (!std::isfinite(projection) || projection == 0.) break;
-        alpha = rho/projection;
-        if (!std::isfinite(alpha)) break;
-        double estimate = s.update_norm({w,b,x,w.v,scale,alpha,0.,KrylovStep::Advance});
-        if (!std::isfinite(estimate)) break;
-        if (estimate > threshold/scale) {
-            // Вторая поправка выбирает omega, минимизирующую евклидову норму r−omega*t.
-            s.apply_preconditioned(w.r, w.t, use_sweep_image);
-            omega = s.omega_projection();
-            if (!std::isfinite(omega) || omega == 0.) break;
-            estimate = s.update_norm({w,b,x,w.t,scale,omega,0.,KrylovStep::Advance});
-            if (!std::isfinite(estimate)) break;
-        }
-        old_rho = rho;
-        first = false;
-        if (estimate <= threshold/scale) {
-            // Округление накапливается в рекуррентной невязке. Принимаем решение
-            // только после независимого умножения A*x. Иначе продолжаем с b−A*x.
-            const double actual = actual_residual();
-            if (actual <= threshold) return {LinearStatus::Converged, iteration, actual};
-            if (!std::isfinite(actual)) break;
-            // Если рекуррентная оценка оказалась оптимистичной, следующий цикл
-            // использует прямое умножение CSR и для промежуточных направлений.
-            use_sweep_image = false;
-            update(KrylovStep::Restart, 0., 0., nullptr);
-            first = true;
-        }
-        reason = LinearStatus::IterationLimit;
-    }
-    const double actual = actual_residual();
-    return {actual <= threshold ? LinearStatus::Converged : reason, iteration, actual};
+    return solve_bicgstab(s,b,x,tol,rhs_norm,shifted_rhs);
 }
+// Переиспользует граф газовой матрицы для скалярной линейной системы.
+ScalarTopology BdfLinearSystem::scalar_topology(bool colored) { return storage_->matrix.scalar_topology(colored); }
+
 }
 }

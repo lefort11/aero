@@ -1,5 +1,6 @@
 """Сопоставляет геометрию контрольных объёмов в MPI и на исходной сетке."""
 
+import measurements
 from mpi_common import ROOT, mpi_parser, mpi_workspace
 import math
 import re
@@ -20,7 +21,7 @@ def run(args, success=True):
         errors="replace",
         timeout=120,
     )
-    if (result.returncode == 0) != success:
+    if measurements.compare(result.returncode == 0, "!=", success):
         raise RuntimeError(f"{args}\n{result.stdout}")
     return result.stdout
 
@@ -74,13 +75,13 @@ def geometry(directory, ranks):
 
 def compare(expected, actual):
     """Сверяет ожидаемые значения с полученными и сообщает место расхождения."""
-    if expected.keys() != actual.keys():
+    if measurements.compare(expected.keys(), "!=", actual.keys()):
         raise AssertionError(f"Missing or extra entities: {list(expected.keys() ^ actual.keys())[:5]}")
     for key, ref in expected.items():
         values = actual[key]
         scale = max(map(abs, ref))
-        if len(values) != len(ref) or any(
-            not math.isclose(x, y, rel_tol=3e-13, abs_tol=3e-13 * scale) for x, y in zip(ref, values)
+        if measurements.compare(len(values), "!=", len(ref)) or any(
+            not measurements.isclose(x, y, rel_tol=3e-13, abs_tol=3e-13 * scale) for x, y in zip(ref, values)
         ):
             raise AssertionError(f"{key}: {ref} vs {values}")
 
@@ -161,7 +162,7 @@ def verify_case(work, case, aero, meshdec, launcher):
         print(f"OK {case}  processes={ranks}  owned vertices={owners}  records={len(result)}")
     if case == "pulse_1d":
         run(command)
-        if (out / "final.fields").read_bytes() != reference_fields:
+        if measurements.compare((out / "final.fields").read_bytes(), "!=", reference_fields):
             raise AssertionError("Serial solve from archive differs from native periodic solve")
         print("OK single-process periodic SSPRK3 field output")
         # Архив v4 хранит SHA-256 и старое слово масштаба. Проверяем смещения
@@ -176,7 +177,7 @@ def verify_case(work, case, aero, meshdec, launcher):
         settings.write_text(legacy)
         legacy_output = params / "legacy-serial"
         run(solver_command(legacy_output))
-        if (legacy_output / "final.fields").read_bytes() != reference_fields:
+        if measurements.compare((legacy_output / "final.fields").read_bytes(), "!=", reference_fields):
             raise AssertionError("Legacy serial fields differ")
         mpi = [launcher, "-n", 2, *command]
         run(mpi + ["--geometry-only"])
@@ -205,14 +206,14 @@ def verify_case(work, case, aero, meshdec, launcher):
         run([launcher, "-n", 4, *command, "--geometry-only"])
         result, owners = geometry(out, 4)
         compare(reference, result)
-        if owners.count(0) != 3:
+        if measurements.compare(owners.count(0), "!=", 3):
             raise AssertionError(f"Expected three empty partitions: {owners}")
         print("OK one leaf on four processes")
     if case == "wave_3d":
         # Неверные границы каталога и ссылки должны вызвать согласованный отказ всех процессов.
         data = bytearray(archive.read_bytes())
         payload = struct.unpack_from("<Q", data, 120)[0]
-        if struct.unpack_from("<Q", data, payload)[0] != 0:
+        if measurements.compare(struct.unpack_from("<Q", data, payload)[0], "!=", 0):
             raise AssertionError("Expected a vertex at start of Morton order")
         first_id = struct.unpack_from("<Q", data, payload + 8)[0]
         struct.pack_into("<Q", data, payload + 8, first_id + 1)

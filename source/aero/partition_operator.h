@@ -36,6 +36,7 @@ struct RejectedGasState {
 };
 namespace residual_detail { struct FluxCfl; }
 // Пространственный оператор одной подобласти. Сетка и её владельцы живут дольше оператора.
+namespace turbulence { class ScalarSolver; }
 class PartitionOperator {
     // Тип номера узла, ребра или строки подобласти.
     using Id = MeshIndex;
@@ -80,11 +81,13 @@ public:
 #ifdef AERO_HAS_TURBULENCE
     // Готовит поле SA, расстояния до стенок и геометрию переноса.
     void prepare_sa(const MeshPartition&,const PeriodicPartition*,const BoundaryPatches&,
-                    const std::vector<PeriodicPair>&,const turbulence::Settings&,bool gpu,bool implicit,bool steady,bool has_stencil);
+                    const std::vector<PeriodicPair>&,const turbulence::Settings&,bool gpu,bool implicit,bool has_stencil);
     // Формирует рабочую и физическую вихревую вязкости для вывода.
     std::vector<double> sa_output(const std::vector<double>& state);
     // Сохраняет или восстанавливает текущее и предыдущее поля SA.
     void sa_checkpoint(std::vector<double>& current,std::vector<double>& previous,bool restore,double previous_dt);
+    // Обновляет замороженный фильтр DDES и зависящие от него строки SA на принятом поле.
+    void refresh_accepted_ddes(const std::vector<double>& state, SolverTimings& timing);
 #endif
     // При задании u=0 убираем только кинетическую энергию: начальные p и T сохраняются.
     void apply_wall(std::vector<double>& field) const;
@@ -277,10 +280,10 @@ private:
     // Пересчитывает поправку при каждом изменении газа или рабочей вязкости, затем передаёт её соседу.
     void prepare_sa_convection(const turbulence::Step&) const;
     // Собирает оператор SA с учётом уже подготовленных потоков и строк.
-    void evaluate_sa(const std::vector<double>& state,SolverTimings& timing,bool rates_ready=false,bool rows_ready=false,
+    double evaluate_sa(const std::vector<double>& state,SolverTimings& timing,bool rates_ready=false,bool rows_ready=false,
                      bool reference_only=false);
     // Решает стадию SA с учётом готовности потоков и диффузионных строк.
-    void solve_sa_stage(const std::vector<double>& state,bool rates_ready,bool rows_ready,bool reference_only);
+    double solve_sa_stage(const std::vector<double>& state,bool rates_ready,bool rows_ready,bool reference_only);
     std::unique_ptr<PartitionTransfers> turbulence_exchange_; // Те же владельцы узлов, один скаляр на запись.
     std::unique_ptr<PartitionTransfers> sa_edge_exchange_; // Одна поправка на общее ребро MPI.
     // Использовать газовый шаблон для конвекции SA.
@@ -288,12 +291,16 @@ private:
     std::vector<double> host_sa_correction_; // Хранилище потока для CPU.
     double* sa_correction_ = nullptr; // Адрес на активном исполнителе, включая GPU.
     // Текущий и предыдущий шаг SA, целевое значение и допуск итераций.
+    std::shared_ptr<turbulence::ScalarSolver> sa_linear_; // Разреженная скалярная система на общей топологии.
+    bool sa_history_allowed_=false; // Как у газа, экстраполяция отключена при проверке стабилизации.
+    void begin_sa_linear_step(bool history_allowed); // Согласует интервалы кэширования и разрешение прогноза.
+    void commit_sa_linear_step(double dt); // Добавляет поле принятого слоя в историю предиктора.
+    implicit::NewtonSettings sa_settings_; // Параметры того же неявного шага газа.
     double sa_dt_ = 0., sa_previous_dt_ = 0., sa_target_ = 0., sa_tol_ = 0.;
+    bool ddes_filter_pending_ = false; // Газ уже обновлён, а фильтр DDES ещё относится к началу шага.
     double sa_rate_dt_ = 0.; // Интервал между двумя последними балансами SA для пробного поля steady LTS.
     // Число итераций уточнения SA.
     unsigned sa_iterations_ = 0;
-    bool sa_lines_ = false; // Один выбор пробной поправки на всех MPI-процессах.
-    bool sa_multigrid_ = false; // Ускоренный сглаживатель SA во время стационарного цикла.
     // Признаки двухслойной истории и неявного интегрирования SA.
     bool sa_bdf2_ = false, sa_implicit_time_ = false;
     bool sa_prediction_pending_ = false; // Газовый предиктор изменил газ при фиксированной nu_tilde.

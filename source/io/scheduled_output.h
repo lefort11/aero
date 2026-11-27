@@ -21,10 +21,13 @@ public:
     const std::string& temporary() const { return temporary_; }
     // Переименовывает законченный временный файл в итоговый путь.
     void publish(bool replace);
+    // Отзывает созданное этой попыткой имя серии при ошибке публикации соседнего файла.
+    void withdraw() noexcept;
 
 private:
     // Конечное имя снимка и путь для записи перед публикацией.
     std::string path_, temporary_;
+    bool created_ = false; // Только успешная публикация без замены даёт право удалить результат.
 };
 
 // Выбирает физическую или диагностическую величину для столбца вывода.
@@ -73,7 +76,7 @@ class LocalFieldOutput {
 public:
     // Инициализирует объект стандартными значениями его полей.
     LocalFieldOutput() = default;
-    // Подготавливает локальную запись полей с учётом нумерации узлов.
+    // Подготавливает локальную запись полей. Для визуализации сетка должна жить до последней записи.
     LocalFieldOutput(const std::string& directory, const Mesh& mesh, double gamma,
                      std::vector<std::uint64_t> node_dof, std::size_t state_nodes, const LinearBackground& background = {});
     // Формирует выбранные поля и записывает снимок зоны в нужном формате.
@@ -81,6 +84,7 @@ public:
                const std::vector<double>& state,const diagnostic::Fields& scalars={}) const;
 
 private:
+    const Mesh* mesh_ = nullptr; // Невладеющая ссылка на исходную геометрию для визуализации.
     // Каталог для выходных файлов.
     std::string directory_;
     // Заголовок снимка с описанием сетки.

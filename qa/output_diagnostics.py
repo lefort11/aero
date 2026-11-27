@@ -1,6 +1,8 @@
 """Проверяет пульсации, dp/dt, ротор, выборку Cp и продолжение истории на другой раскладке."""
+import measurements
 import math
 import re
+import struct
 from pathlib import Path
 
 from mpi_common import backend_parser, mpi_workspace
@@ -52,7 +54,7 @@ def check_pressure_rhs(coords, fields, linear):
             u, v = fields["ux"][i], fields["uy"][i]
             expected = .4*(rhs[3] - u*rhs[1] - v*rhs[2] + .5*(u*u+v*v)*rhs[0])
         actual = fields["dp_dt"][i]
-        assert math.isfinite(actual) and abs(actual-expected) < 2.e-11, (i, actual, expected)
+        assert math.isfinite(actual) and measurements.error_below(abs(actual-expected), 2.e-11), (i, actual, expected)
         error = max(error, abs(actual-expected))
     return error
 
@@ -75,7 +77,7 @@ def check(case, args, linear=False):
     (case / "output.txt").write_text(
         "[flow]\nfile=state.fields\nformat=binary\nlayout=global\nevery_steps=1\nmulti=1\n"
         f"variables={FLOW_VARIABLES}\n"
-        "[surface]\nfile=wall.fields\nformat=binary\nlayout=global\nevery_steps=1\nvariables=Cp\nwall_label=ymin\n")
+        "[surface]\nfile=wall.fields\nformat=binary\nlayout=global\nevery_steps=1\nvariables=Cp\nwall_label=ymin\nvisualization=tecplot,vtk\n")
     # Запускает выбранный вариант решателя и читает результаты для сравнения.
     def solve(folder, end, gpu=False, mpi=False, recover=False, scheme='ssprk3', viscosity='off'):
         command=[args.aero.resolve(), f"--input={case}", f"--output={folder}",f"main:final_time={end}",
@@ -93,17 +95,25 @@ def check(case, args, linear=False):
         if scheme in ("euler", "ssprk3") and not recover:
             # Единственная дополнительная сборка нужна на самом последнем слое.
             stages = 1 if scheme == "euler" else 3
-            assert calls == stages*steps+1, (scheme, steps, calls)
+            assert measurements.compare(calls, "==", stages*steps+1), (scheme, steps, calls)
         flux_counts[folder] = calls
         path=next(folder.glob("resumed-*")) if recover else folder
-        return [binary_snapshot(f) for f in sorted(path.glob("state_*.fields"))],binary_snapshot(path/"wall.fields")
+        wall = binary_snapshot(path/"wall.fields")
+        # В VTK точки и Cp следуют исходным номерам стенки после удаления дублей MPI.
+        vtk = (path/"wall.vtk").read_bytes()
+        cp = wall[1]["Cp"]
+        marker = b"SCALARS Cp double 1\nLOOKUP_TABLE default\n"
+        start = vtk.index(marker) + len(marker)
+        assert measurements.compare(struct.unpack_from(f">{len(cp)}d", vtk, start), "==", tuple(cp))
+        assert (path/"wall.plt").read_bytes().startswith(b"#!TDV112")
+        return [binary_snapshot(f) for f in sorted(path.glob("state_*.fields"))], wall
 
     flux_counts = {}
     initial, _ = solve(case/"initial",0)
     ref, surface = solve(case/"complete",.033)
-    assert len(ref)>2
+    assert measurements.compare(len(ref), ">", 2)
     old=initial[0][1]
-    assert max(abs(value) for value in old["dp_dt"]) > .01
+    assert measurements.compare(max(abs(value) for value in old["dp_dt"]), ">", .01)
     rhs_error = check_pressure_rhs(coords, old, linear)
     xs = sorted({x for x, _, _ in coords})
     dx = xs[1] - xs[0]
@@ -111,9 +121,9 @@ def check(case, args, linear=False):
     for i,(x,y,_) in enumerate(coords):
         # В исходной постановке плотность Euler постоянна, а пульсация Linear зависит только от x.
         gx = -amplitude * math.sin(2*math.pi*x) * math.sin(2*math.pi*dx) / dx
-        assert abs(old["schlieren"][i] - abs(gx)) < 1.e-12
+        assert measurements.error_below(abs(old["schlieren"][i] - abs(gx)), 1.e-12)
         if 0.<y<1.:
-            assert abs(old["vorticity"][i]-.1)<1.e-13
+            assert measurements.error_below(abs(old["vorticity"][i]-.1), 1.e-13)
     quantities=("rho","ux","uy","p","E")
     # В Linear снимок основных величин содержит пульсации, а число Маха относится к полному потоку.
     for _, fields in initial + ref:
@@ -121,7 +131,7 @@ def check(case, args, linear=False):
             speed = math.hypot(fields["ux"][i] + (.4 if linear else 0.), fields["uy"][i])
             rho = fields["rho"][i] + (1.2 if linear else 0.)
             pressure = fields["p"][i] + (1. if linear else 0.)
-            assert abs(mach - speed / math.sqrt(1.4 * pressure / rho)) < 1.e-13
+            assert measurements.error_below(abs(mach - speed / math.sqrt(1.4 * pressure / rho)), 1.e-13)
     integrals={q:[0.]*len(coords) for q in quantities}
     start=0.
     for meta, fields in ref:
@@ -131,14 +141,14 @@ def check(case, args, linear=False):
             for i,value in enumerate(fields[q]):
                 integrals[q][i]+=.5*(old[q][i]+value)*(t-start)
                 expected=value-integrals[q][i]/t
-                assert abs(fields[q+"_prime"][i]-expected)<1.e-13
+                assert measurements.error_below(abs(fields[q+"_prime"][i]-expected), 1.e-13)
         old,start=fields,t
     wall_ids=[i for i,(_,y,_) in enumerate(coords) if y==0.]
     points=surface[1]
-    assert list(points["node_id"])==wall_ids
+    assert measurements.compare(list(points["node_id"]), "==", wall_ids)
     for j,i in enumerate(wall_ids):
-        assert tuple(points[k][j] for k in ("x","y","z"))==tuple(coords[i])
-        assert abs(points["Cp"][j]-(old["p"][i]-reference_pressure)/dynamic_pressure)<1.e-13
+        assert measurements.compare(tuple(points[k][j] for k in ("x","y","z")), "==", tuple(coords[i]))
+        assert measurements.error_below(abs(points["Cp"][j]-(old["p"][i]-reference_pressure)/dynamic_pressure), 1.e-13)
     model = "Linear" if linear else "Euler"
     print(f"{model}: maximum dp_dt difference from discrete RHS {rhs_error:.3g}", flush=True)
 
@@ -147,20 +157,20 @@ def check(case, args, linear=False):
         if (gpu and not args.gpu) or (mpi and not args.mpi): continue
         if gpu and mpi and not two_gpus: continue
         records, wall=solve(case/f"full-{gpu}-{mpi}",.033,gpu,mpi)
-        assert len(records)==len(ref)
+        assert measurements.compare(len(records), "==", len(ref))
         dp_error = 0.
         for (meta,a),(other,b) in zip(ref,records):
-            assert meta[:4]==other[:4] and abs(meta[4]-other[4])<1.e-14
-            assert max_difference(a,b)<2.e-10
+            assert measurements.compare(meta[:4], "==", other[:4]) and measurements.error_below(abs(meta[4]-other[4]), 1.e-14)
+            assert measurements.error_below(max_difference(a,b), 2.e-10)
             dp_error = max(dp_error, max(abs(l-r) for l, r in zip(a["dp_dt"], b["dp_dt"])))
         print(f"{model}, GPU={gpu}, MPI={mpi}: maximum dp_dt difference from CPU {dp_error:.3g}", flush=True)
-        assert wall[0][:4]==surface[0][:4] and max_difference(wall[1],points)<1.e-12
+        assert measurements.compare(wall[0][:4], "==", surface[0][:4]) and measurements.error_below(max_difference(wall[1],points), 1.e-12)
     # Останавливаемся в уже принятой точке, чтобы длины шагов совпали с непрерывным расчётом.
     split=case/"split"
     solve(split,ref[1][0][4])
     records,wall=solve(split,.033,args.gpu and (not args.mpi or two_gpus),args.mpi,True)
-    assert max_difference(records[-1][1],old)<2.e-10
-    assert max_difference(wall[1],points)<2.e-12
+    assert measurements.error_below(max_difference(records[-1][1],old), 2.e-10)
+    assert measurements.error_below(max_difference(wall[1],points), 2.e-12)
     print("OK all saved derived fields and resumed time averages",flush=True)
 
     # Проверяем также одиночный столбец без истории средних. На одинаковых шагах
@@ -180,15 +190,15 @@ def check(case, args, linear=False):
                 plain = case / f"{scheme}-{gpu}-plain"
                 output.write_text(config.replace(FLOW_VARIABLES, "primary"))
                 baseline, _ = solve(plain, .012, gpu=gpu, scheme=scheme)
-                assert flux_counts[target] == flux_counts[plain]
-                assert len(records) == len(baseline)
+                assert measurements.compare(flux_counts[target], "==", flux_counts[plain])
+                assert measurements.compare(len(records), "==", len(baseline))
                 for (meta, fields), (other, reference) in zip(records, baseline):
-                    assert meta == other and all(fields[k] == v for k, v in reference.items())
+                    assert measurements.compare(meta, "==", other) and all(measurements.compare(fields[k], "==", v) for k, v in reference.items())
         if len(by_backend) == 2:
             cpu, gpu_records = by_backend
-            assert len(cpu) == len(gpu_records)
+            assert measurements.compare(len(cpu), "==", len(gpu_records))
             for (_, a), (_, b) in zip(cpu, gpu_records):
-                assert max_difference(a, b) < 2.e-10
+                assert measurements.error_below(max_difference(a, b), 2.e-10)
         print(f"OK {model} {scheme}: pressure RHS and flux reuse", flush=True)
 
     if not linear:
@@ -202,14 +212,14 @@ def check(case, args, linear=False):
             # Создаёт снимок с заданным тепловым полем для проверки диагностик.
             def heat_snapshot(end):
                 records, _ = solve(case / f"heat-{gpu}-{end}", end, gpu=gpu, scheme="euler", viscosity="normal")
-                assert len(records) == 1 and records[0][0][3] == int(end > 0)
+                assert measurements.compare(len(records), "==", 1) and measurements.compare(records[0][0][3], "==", int(end > 0))
                 return records[0][1]
             start = heat_snapshot(0)
             end = heat_snapshot(dt)
             rates = start["dp_dt"]
-            assert max(map(abs, rates)) > .01
+            assert measurements.compare(max(map(abs, rates)), ">", .01)
             for rate, e0, e1 in zip(rates, start["E"], end["E"]):
-                assert abs(rate - .4*(e1-e0)/dt) < 2.e-11
+                assert measurements.error_below(abs(rate - .4*(e1-e0)/dt), 2.e-11)
             print(f"OK Euler, GPU={gpu}: initial dp_dt from viscous heat flux", flush=True)
 
 

@@ -88,6 +88,50 @@ void test_sa_convection() {
     packed.packed<5,true>(0,&tile);
     aero_test::require(std::abs(result-aero::mp5::increment(.7,.6,.35,.25,4.))<1.e-14,"packed right SA flux");
 }
+// Проверяет историю фактически принятого изменения, проекцию на стенке и обе
+// временные диагонали тем же вызовом, который выполняет внутренний решатель.
+void test_filtered_sa_relaxation() {
+    double w[] = {1., .125, 0.}, old[] = {1., .125, 0.}, rate[] = {1., -1., 1.};
+    double diagonal[] = {1., 0., 0.}, saved[] = {99.,99.,99.};
+    const double distance[] = {1., 1., -1.};
+    Step step{};
+    step.dt = step.leading = 1.;
+    auto& sa = step.transport.sa;
+    sa.w = w; sa.old = old; sa.rate = rate; sa.diagonal = diagonal;
+    sa.inverse_distance = distance; sa.plain_update = saved;
+    for (unsigned i=0;i<3;++i) step.apply(Operation::StartFiltered,i);
+    const double first=.65/2.;
+    aero_test::require(std::abs(w[0]-1.-first)<1.e-15 && saved[1]==-.125 && w[2]==0.,"SA filter start and projection");
+    step.apply(Operation::Filtered,0);
+    const double second=.65*(1.-first)/2.-.15*first;
+    aero_test::require(std::abs(w[0]-(1.+first+second))<1.e-15,"SA filtered BDF update");
+    double local_dt[] = {2.,1.,1.};
+    step.local_steps = {local_dt};
+    w[0]=old[0];
+    step.apply(Operation::StartFiltered,0);
+    aero_test::require(std::abs(w[0]-(1.+.65*2./3.))<1.e-15,"SA filtered local step");
+}
+
+// Проверяет принятие суммарной резервной поправки при общем и локальном шаге.
+void test_deferred_sa_relaxation() {
+    double w=1., old=1., rate=1., diagonal=1., saved=0.;
+    const double distance=1.;
+    Step step{};
+    step.dt=step.leading=1.;
+    auto& sa=step.transport.sa;
+    sa.w=&w; sa.old=&old; sa.rate=&rate; sa.diagonal=&diagonal;
+    sa.inverse_distance=&distance; sa.plain_update=&saved;
+    for (double dt : {1.,2.}) {
+        w=old;
+        step.local_steps = {dt==1. ? nullptr : &dt};
+        step.apply(Operation::StartDeferred,0);
+        const double first=dt/(1.+dt);
+        const double second=(dt-first)/(1.+dt);
+        step.apply(Operation::FinishDeferred,0);
+        aero_test::require(std::abs(w-(old+.4*(first+second)))<1.e-15 && saved==old,"SA frozen flux, two passes");
+    }
+}
+
 // Несимметричный градиент с сингулярными числами 3, 2, 1; ось вихря совпадает с z.
 void test_sigma() {
     FilterCell box{};
@@ -312,6 +356,8 @@ int main() {
         aero_test::require(extrapolated_viscosity(.1,-.5,-1.)==.1,"implicit SA positive branch");
         test_sa_line();
         test_sa_convection();
+        test_filtered_sa_relaxation();
+        test_deferred_sa_relaxation();
         test_shared_diffusion();
         test_sigma();
         test_ddes();

@@ -12,6 +12,7 @@ namespace aero {
 struct EulerFluxResult;
 namespace residual_detail { struct Geometry; }
 namespace implicit {
+struct ScalarTopology;
 // История принятых шагов в локальной нумерации узлов для контрольной точки.
 struct BdfHistory {
     double dt = 0.;                 // Ноль означает первый шаг или старую контрольную точку BDF1.
@@ -82,9 +83,12 @@ public:
                          const std::function<bool()>& try_prediction_fluxes = {},
                          const std::function<bool()>& confirm_prediction = {}, const PhaseTiming& timing = {},
                          bool allow_extrapolation = true, double auto_pseudo_dt = 0.,
-                         const std::function<void(CoupledStart)>& coupled_start = {});
+                         const std::function<void(CoupledStart)>& coupled_start = {},
+                         const std::function<double()>& advance_transport = {});
     // Необязательный обработчик пробного поля пересчитывает те же потоки.
     // false означает физически недопустимую пробу, которую надо откатить.
+    // Даёт скалярному блоку уже подготовленную связность этой же сетки.
+    ScalarTopology scalar_topology(bool colored);
 private:
     struct Storage;
     // История шагов и рабочие поля метода Ньютона.

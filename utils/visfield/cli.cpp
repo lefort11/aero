@@ -1,5 +1,11 @@
 #include "../../source/io/cli_help.h"
-#include "tecplot.h"
+#include "cli.h"
+#include "../../source/io/visualization/vtk.h"
+#include "../../source/io/scheduled_output.h"
+#include <fstream>
+#include <cctype>
+#include <algorithm>
+#include "../../source/io/visualization/tecplot.h"
 #include "../../source/io/submesh.h"
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -13,7 +19,8 @@
 #include <ostream>
 
 namespace aero {
-namespace tecplot {
+namespace visfield {
+using tecplot::ExportError;
 namespace {
 // Проверяем идентификатор файла, чтобы распознать также относительный путь и ссылки.
 bool same_file(const char* input, const char* output) {
@@ -42,16 +49,34 @@ bool same_file(const char* input, const char* output) {
 }
 // Печатает синтаксис запуска и доступные параметры утилиты.
 void usage(std::ostream& out) {
-    out << "Usage: fields_to_tecplot MESH [FIELDS] OUTPUT.plt [--threads N]\n\n"
+    out << "Usage: visfield MESH [FIELDS] OUTPUT.{plt,vtk} [--threads N]\n\n"
            "  MESH        Native AEROMESH v2/v3 or a .submesh plane slice.\n"
            "  FIELDS      Optional AEROFIELDS v1: text, binary or LZMA.\n"
-           "  OUTPUT.plt  Binary Tecplot file with geometry and any supplied fields.\n"
+           "  OUTPUT      .vtk writes binary VTK Legacy. .plt writes binary Tecplot 360.\n"
            "  --threads N Positive thread count (default: OpenMP runtime settings).\n"
            "  -h, --help  Show this help.\n\n"
            "Mesh SHA-256 must match. Coordinates use the original mesh units.\n"
            "A successful export replaces an existing output file.\n"
            "OpenMP: "
-        << (openmp_available() ? "enabled" : "disabled (one thread)") << "\n";
+        << (tecplot::openmp_available() ? "enabled" : "disabled (one thread)") << "\n";
+}
+// Сравнивает расширение VTK без учёта регистра на всех платформах.
+bool vtk_path(const std::string& path) {
+    if (path.size() < 4) return false;
+    auto suffix = path.substr(path.size() - 4);
+    std::transform(suffix.begin(), suffix.end(), suffix.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return suffix == ".vtk";
+}
+// Проверяет привязку внешнего снимка и публикует готовый VTK через временный файл.
+void export_vtk(const char* path, const Mesh& mesh, const FieldSnapshot* fields) {
+    if (fields) fields->check_mesh(mesh);
+    StagedFieldFile staged(path);
+    std::ofstream stream(staged.temporary(), std::ios::binary);
+    vtk::write(stream, &mesh, fields);
+    stream.close();
+    if (!stream) throw ExportError("Cannot finish VTK output");
+    staged.publish(true);
 }
 // Разбирает положительное число потоков из аргумента командной строки.
 int positive(const std::string& value) {
@@ -68,7 +93,7 @@ int positive(const std::string& value) {
     return result;
 }
 }
-// Читает пути к сетке и снимку, выбирает параметры OpenMP и запускает запись PLT.
+// Читает пути к сетке и снимку, выбирает параметры OpenMP и запускает выбранный писатель.
 int run_cli(int argc, const char* const* argv, std::ostream& out, std::ostream& err) {
     try {
         if (aero::help_requested(argc, argv)) {
@@ -87,7 +112,7 @@ int run_cli(int argc, const char* const* argv, std::ostream& out, std::ostream& 
             usage(err);
             return 1;
         }
-        Options options;
+        tecplot::Options options;
         if (end_paths < argc) {
             if (std::string(argv[end_paths]) != "--threads" || argc - end_paths != 2) {
                 usage(err);
@@ -95,27 +120,30 @@ int run_cli(int argc, const char* const* argv, std::ostream& out, std::ostream& 
             }
             options.threads = positive(argv[end_paths + 1]);
         }
-        if (!openmp_available() && options.threads > 1)
+        if (!tecplot::openmp_available() && options.threads > 1)
             throw ExportError("This build has no OpenMP; use --threads 1");
         const std::string input=argv[1];
         const bool slice=input.size()>=8 && input.compare(input.size()-8,8,".submesh")==0;
         const Mesh mesh = slice ? Submesh::read(input).mesh : Mesh::read(input);
         const char* path = argv[end_paths - 1];
+        const bool vtk_output = vtk_path(path);
         for (int i = 1; i < end_paths - 1; ++i)
             if (same_file(argv[i], path)) throw ExportError("Output path refers to an input file");
         if (end_paths == 4) {
             const FieldSnapshot fields = FieldSnapshot::read(argv[2]);
-            write(path, mesh, fields, options);
+            if (vtk_output) export_vtk(path, mesh, &fields);
+            else tecplot::write(path, mesh, fields, options);
             out << "Written: " << path << "; dimension=" << fields.dimension << ", cells=" << fields.counts[3]
                 << ", fields=" << fields.fields.size() << ", step=" << fields.step << "\n";
         } else {
-            write(path, mesh, options);
+            if (vtk_output) export_vtk(path, mesh, nullptr);
+            else tecplot::write(path, mesh, options);
             out << "Written: " << path << "; dimension=" << mesh.view().dimension
                 << ", cells=" << mesh.view().cell_count << "\n";
         }
         return 0;
     } catch (const std::exception& error) {
-        err << "Tecplot export failed: " << error.what() << "\n";
+        err << "visfield export failed: " << error.what() << "\n";
         return 1;
     }
 }

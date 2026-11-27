@@ -28,6 +28,7 @@ multi = 0
 Нумерация подсетки едина для последовательного и MPI-расчёта. Расписание и финальный снимок работают как у других зон. Для просмотра результата или одной геометрии:
 
 ```sh
-fields_to_tecplot INPUT/slice.submesh OUTPUT/slice.fields slice.plt
-fields_to_tecplot INPUT/slice.submesh geometry.plt
+visfield INPUT/slice.submesh OUTPUT/slice.fields slice.plt
+visfield INPUT/slice.submesh geometry.plt
+visfield INPUT/slice.submesh OUTPUT/slice.fields slice.vtk
 ```

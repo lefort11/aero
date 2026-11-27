@@ -1,5 +1,6 @@
 #include "tecplot.h"
-#include "../../source/io/number_codec.h"
+#include "binary_columns.h"
+#include "../number_codec.h"
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -11,7 +12,7 @@
 #include <streambuf>
 #include <utility>
 #include <vector>
-#include "../../source/io/scheduled_output.h"
+#include "../scheduled_output.h"
 #include <fstream>
 #ifdef _OPENMP
 #include <omp.h>
@@ -124,6 +125,7 @@ struct Zone {
 };
 // Владеет переменными и зонами экспорта, сохраняющими ссылки на исходные поля.
 struct Plan {
+    BinaryColumns* disk = nullptr; // Для общей зоны MPI значения читаются из завершённых столбцов файла.
     // Число потоков подготовки файла.
     int threads;
     // Контрольная сумма исходной сетки для метаданных.
@@ -137,10 +139,11 @@ struct Plan {
     // Запрещает копирование, чтобы ресурсы объекта сохраняли единственного владельца.
     Plan& operator=(const Plan&) = delete;
     // Подготавливает переменные, зоны и связи для записи Tecplot.
-    Plan(const Mesh& mesh, const FieldSnapshot* snapshot, const Options& options)
-        : threads(workers(options)) {
+    Plan(const Mesh& mesh, const FieldSnapshot* snapshot, const Options& options, bool verify_mesh = true,
+         BinaryColumns* columns = nullptr)
+        : disk(columns), threads(workers(options)) {
         if (snapshot) {
-            snapshot->check_mesh(mesh);
+            if (verify_mesh) snapshot->check_mesh(mesh);
             mesh_sha256 = snapshot->mesh_sha256;
         } else {
             mesh_sha256 = FieldSnapshot::mesh_fingerprint(mesh);
@@ -162,6 +165,29 @@ struct Plan {
         if (requested.faces)
             add_face_zone(view, d, nodes, faces);
         measure_zones(nodes);
+    }
+
+    // Стеночный снимок хранит исходный номер, три координаты и Cp в пяти узловых столбцах.
+    explicit Plan(const FieldSnapshot& wall) : threads(workers(Options())), mesh_sha256(wall.mesh_sha256) {
+        Zone zone;
+        zone.name = "Wall";
+        zone.source = FieldLocation::Node;
+        zone.nodes = checked(wall.counts[0], "Wall points");
+        // Упорядоченная зона Tecplot допускает только положительные размеры.
+
+        for (unsigned axis = 0; axis < 3; ++axis) {
+            const auto& field = wall.fields.at(axis + 1);
+            variables.push_back({std::string(1, "XYZ"[axis]), nullptr, 0, field.values.data(),
+                                 field.values.size(), 0, 0});
+        }
+        for (unsigned index : {0u, 4u}) {
+            const auto& field = wall.fields.at(index);
+            variables.push_back({field.name, &field, 0, field.values.data(), field.values.size(), 0, 0});
+        }
+        if (!zone.nodes) return; // Пустой раздел сохраняет заголовок и список переменных.
+        measure_variables(zone.nodes);
+        zones.push_back(std::move(zone));
+        measure_zones(zones.front().nodes);
     }
 
 private:
@@ -204,7 +230,7 @@ private:
                         name.resize(end);
                         name += "...";
                     }
-                    Variable v = {name,  &field, component, field.values.data() + component * count,
+                    Variable v = {name,  &field, component, disk ? nullptr : field.values.data() + component * count,
                                   count, 0,      0};
                     variables.push_back(v);
                 }
@@ -223,6 +249,7 @@ private:
         for (I64 i = 0; i < nvars; ++i) {
             Variable& v = variables[static_cast<std::size_t>(i)];
             double lo = std::numeric_limits<double>::max(), hi = -lo;
+            if (disk && v.field) continue; // Общий входной поток обслуживается после параллельного цикла.
             for (std::size_t j = 0; j < v.count; ++j) {
                 const double value = v.values[j];
                 if (!std::isfinite(value))
@@ -234,6 +261,19 @@ private:
             }
             v.minimum = lo;
             v.maximum = hi;
+        }
+        if (disk) for (auto& v : variables) {
+            if (!v.field) continue;
+            v.minimum = std::numeric_limits<double>::max();
+            v.maximum = -v.minimum;
+            disk->visit(*v.field, v.count, [&](const char* bytes, std::size_t count) {
+                for (std::size_t j = 0; j < count; ++j) {
+                    const double value = number_codec::read_real(bytes + 8*j);
+                    if (!std::isfinite(value)) fail("Tecplot export requires finite field values");
+                    v.minimum = std::min(v.minimum, value);
+                    v.maximum = std::max(v.maximum, value);
+                }
+            });
         }
         if (invalid)
             fail("Tecplot export requires finite field values (NaN/Inf found)");
@@ -551,8 +591,12 @@ void write_zone_data(Writer& writer, const Plan& plan, const Zone& z, std::vecto
             writer.f64(z.ranges[i].second);
         }
     for (const auto& v : plan.variables)
-        if (z.active(v))
-            write_variable_values(writer, z, v, bytes, plan.threads);
+        if (z.active(v)) {
+            if (plan.disk && v.field) {
+                // Двоичные AEROFIELDS и PLT используют одинаковый порядок байтов.
+                plan.disk->visit(*v.field, v.count, [&](const char* data, std::size_t n) { writer.raw(data, 8*n); });
+            } else write_variable_values(writer, z, v, bytes, plan.threads);
+        }
     for (I32 value : z.offsets)
         writer.i32(value);
     for (I32 value : z.connectivity)
@@ -598,6 +642,11 @@ void write_file(const std::string& path, const Mesh& mesh, const FieldSnapshot* 
     file.publish(true);
 }
 } // namespace
+// Расписание уже привязало поля к сетке. Повторный обход сетки ради SHA-256 здесь не требуется.
+void write_snapshot(std::ostream& out, const Mesh* mesh, const FieldSnapshot& snapshot, BinaryColumns* columns) {
+    if (mesh) write_plan(out, Plan(*mesh, &snapshot, Options(), false, columns), &snapshot);
+    else write_plan(out, Plan(snapshot), &snapshot);
+}
 // Проверяет входные данные и экспортирует сетку или снимок в Tecplot.
 void write(std::ostream& output, const Mesh& mesh, const FieldSnapshot& snapshot, const Options& options) {
     const Plan plan(mesh, &snapshot, options);

@@ -129,6 +129,7 @@ struct CsgsSweep {
     template<unsigned stride,class Coefficient>
     AERO_HOST_DEVICE void image_typed(MeshIndex index,double* result,const Coefficient* a) const {
         switch (diagonal.width) {
+        case 1: return image_row<1,stride>(index,result,a);
         case 3: return image_row<3,stride>(index,result,a);
         case 4: return image_row<4,stride>(index,result,a);
         default: return image_row<5,stride>(index,result,a);
@@ -144,6 +145,7 @@ struct CsgsSweep {
     template<unsigned stride,class Coefficient>
     AERO_HOST_DEVICE void solve_typed(MeshIndex index,const Coefficient* a) const {
         switch (diagonal.width) {
+        case 1: return solve_row<1,stride>(index,a);
         case 3: return solve_row<3,stride>(index,a);
         case 4: return solve_row<4,stride>(index,a);
         default: return solve_row<5,stride>(index,a);

@@ -1,5 +1,6 @@
 """Сравнивает результаты распределённого расчёта на CUDA, включая выбор GPU и переразбиение по памяти."""
 
+import measurements
 from mpi_common import ROOT, mpi_parser, mpi_workspace
 import math
 from pathlib import Path
@@ -24,7 +25,7 @@ def memory_rows(log):
         (int(r), int(first), int(end), int(need), int(budget), status)
         for r, first, end, need, budget, status in re.findall(pattern, log)
     ]
-    if len(rows) < 2 or any(row[-1] != "reserved" or not 0 < row[3] <= row[4] for row in rows[-2:]):
+    if measurements.compare(len(rows), "<", 2) or any(row[-1] != "reserved" or not (measurements.chain(0, "<", row[3], "<=", row[4])) for row in rows[-2:]):
         raise AssertionError(log)
     return rows
 
@@ -32,15 +33,15 @@ def memory_rows(log):
 def check_gpu_weights(log, archive, devices):
     """Сверяет границы листьев с весами GPU и стоимостью из каталога архива."""
     scores = re.findall(r"MPI GPU calibration: rank (\d+) faces_per_s (\S+) weight (\S+)", log)
-    if [int(row[0]) for row in scores] != [0, 1]:
+    if measurements.compare([int(row[0]) for row in scores], "!=", [0, 1]):
         raise AssertionError(scores)
     rates = [float(row[1]) for row in scores]
     weights = [float(row[2]) for row in scores]
     plan = report_rows(log, "mpi_rank\tweight")
     if (
-        any(not math.isfinite(rate) or rate <= 0 for rate in rates)
-        or any(not math.isclose(w, r / max(rates), rel_tol=2e-5) for w, r in zip(weights, rates))
-        or [float(row["weight"]) for row in plan] != weights
+        any(not math.isfinite(rate) or measurements.compare(rate, "<=", 0) for rate in rates)
+        or any(not measurements.isclose(w, r / max(rates), rel_tol=2e-5) for w, r in zip(weights, rates))
+        or measurements.compare([float(row["weight"]) for row in plan], "!=", weights)
     ):
         raise AssertionError((scores, plan))
     # Сверяем разрез с независимой суммой работы по записям каталога листьев.
@@ -53,12 +54,12 @@ def check_gpu_weights(log, archive, devices):
         work.append(work[-1] + raw + 32 * nodes)
     cut = int(plan[0]["end_leaf"])
     if leaves == 1:
-        if rates[0] != rates[1] and cut != int(rates[0] > rates[1]):
+        if measurements.compare(rates[0], "!=", rates[1]) and measurements.compare(cut, "!=", int(rates[0] > rates[1])):
             raise AssertionError((scores, plan))
     else:
         target = work[-1] * weights[0] / sum(weights)
         nearest = min(abs(value - target) for value in work[1:-1])
-        if not 0 < cut < leaves or abs(work[cut] - target) > nearest + work[-1] * 2e-5:
+        if not (measurements.chain(0, "<", cut, "<", leaves)) or measurements.error_exceeds(abs(work[cut] - target), nearest + work[-1] * 2e-5):
             raise AssertionError((scores, plan, target))
     print(f"OK GPU {devices} measured weights {weights}, leaves {cut}+{leaves-cut}")
 
@@ -103,7 +104,7 @@ def verify(case, aero, meshdec, launcher, devices, fixture, scheme, recon, empty
     launch(aero, case, reference, launcher, 1)
     deadlines = sorted(stamp(p)[1] for p in reference.glob("clock_*.fields"))
     # Зона пишется по расписанию и ещё раз на последнем принятом шаге.
-    if deadlines != [0.0017, 0.0034, options["final_time"]]:
+    if measurements.compare(deadlines, "!=", [0.0017, 0.0034, options["final_time"]]):
         raise AssertionError(f"Unexpected output times: {deadlines}")
     configure(mesh="grid.mdec", backend="cuda", recovery_every_steps=3)
     if recon == "weno5":
@@ -115,14 +116,14 @@ def verify(case, aero, meshdec, launcher, devices, fixture, scheme, recon, empty
         r"MPI (?:CUDA|HIP) placement: rank (\d+) local_rank (\d+) device (\d+) node/PCI (\S+)", log
     )
     if (
-        [int(row[2]) for row in placement] != list(map(int, devices.split(",")))
-        or len({row[3] for row in placement}) != 2
+        measurements.compare([int(row[2]) for row in placement], "!=", list(map(int, devices.split(","))))
+        or measurements.compare(len({row[3] for row in placement}), "!=", 2)
         or not re.search(r"Active backend = (?:CUDA|HIP) \(MPI\)", log)
     ):
         raise AssertionError(log)
     original = memory_rows(log)[-2:]
     budgets = re.findall(r"MPI GPU budget: rank (\d+) free_bytes (\d+) budget_bytes (\d+)", log)
-    if len(budgets) != 2 or any(int(b) != int(free) - int(free) // 20 for _, free, b in budgets):
+    if measurements.compare(len(budgets), "!=", 2) or any(measurements.compare(int(b), "!=", int(free) - int(free) // 20) for _, free, b in budgets):
         raise AssertionError(log)
     error = check_output(reference, out, 2, count, dim, names, empty)
     print(f"OK two GPUs {scheme} {recon} empty={empty}, max field difference {error:.3g}")
@@ -130,9 +131,9 @@ def verify(case, aero, meshdec, launcher, devices, fixture, scheme, recon, empty
         # Поровну делим исходный объём работы, чтобы проверить лимит памяти на любой паре карт.
         configure(mpi_rank_weights="1,1")
         manual = launch(aero, case, case / "manual", launcher, 2)
-        if "MPI GPU calibration" in manual or [
+        if "MPI GPU calibration" in manual or measurements.compare([
             float(r["weight"]) for r in report_rows(manual, "mpi_rank\tweight")
-        ] != [1, 1]:
+        ], "!=", [1, 1]):
             raise AssertionError(manual)
         original = memory_rows(manual)[-2:]
         # Уменьшаем предел памяти процесса 0 ниже первоначальной потребности шаблона WENO.
@@ -141,7 +142,7 @@ def verify(case, aero, meshdec, launcher, devices, fixture, scheme, recon, empty
         tight = case / "limited"
         rows = memory_rows(launch(aero, case, tight, launcher, 2))
         _, first, end, need, budget, _ = rows[-2]
-        if not (need <= budget == limit and 0 < end - first < original[0][2] - original[0][1]):
+        if not ((measurements.chain(need, "<=", budget, "==", limit)) and (measurements.chain(0, "<", end - first, "<", original[0][2] - original[0][1]))):
             raise AssertionError(rows)
         if not any(row[-1] == "rejected" for row in rows):
             raise AssertionError(f"Expected exact WENO reservation to refine the estimate: {rows}")
@@ -156,9 +157,9 @@ def verify(case, aero, meshdec, launcher, devices, fixture, scheme, recon, empty
         samples = [
             int(n) for n in re.findall(r"MPI GPU calibration: rank .*? sample_faces (\d+)", capped_log)
         ]
-        if len(samples) != 2 or samples[0] != samples[1] or not 0 < samples[0] < 32768:
+        if measurements.compare(len(samples), "!=", 2) or measurements.compare(samples[0], "!=", samples[1]) or not (measurements.chain(0, "<", samples[0], "<", 32768)):
             raise AssertionError(capped_log)
-        if memory_rows(capped_log)[-2][4] != limit:
+        if measurements.compare(memory_rows(capped_log)[-2][4], "!=", limit):
             raise AssertionError(capped_log)
         error = check_output(reference, capped, 2, count, dim, names)
         print(
@@ -200,7 +201,7 @@ def verify(case, aero, meshdec, launcher, devices, fixture, scheme, recon, empty
         compact = case / "without-cache"
         reduced = memory_rows(launch(aero, case, compact, launcher, 2))[-2:]
         required = next(row[3] for row in reduced if row[2] > row[1])
-        if required >= busy[3]:
+        if measurements.compare(required, ">=", busy[3]):
             raise AssertionError((busy, reduced))
         error = check_output(reference, compact, 2, count, dim, names, empty)
         print(f"OK one leaf without optional buffers, reserved {required} bytes, max field difference {error:.3g}")
@@ -208,7 +209,7 @@ def verify(case, aero, meshdec, launcher, devices, fixture, scheme, recon, empty
         configure(mpi_gpu_memory_mib=(required - 1) / 1048576)
         out = case / "too-small"
         failure = run([launcher, "-n", 2, aero, f"--input={case}", f"--output={out}"], success=False)
-        if ("MPI GPU memory" not in failure or sorted(p.name for p in out.iterdir()) != ["aero.log"]
+        if ("MPI GPU memory" not in failure or measurements.compare(sorted(p.name for p in out.iterdir()), "!=", ["aero.log"])
                 or "MPI GPU memory" not in (out / "aero.log").read_text() or "Starting time integration" in failure):
             raise AssertionError(failure)
         print("OK indivisible leaf exceeds both device budgets before output")

@@ -1,6 +1,7 @@
 #include "../../tests/test_files.h"
 #include "../../tests/mesh_fixture.h"
-#include "tecplot.h"
+#include "cli.h"
+#include "../../source/io/visualization/tecplot.h"
 #include "../../tests/test_suite.h"
 #include <algorithm>
 #include <chrono>
@@ -343,7 +344,7 @@ int cli(const std::vector<std::string>& args, std::string* errors = nullptr) {
     for (const std::string& s : args)
         argv.push_back(s.c_str());
     std::ostringstream out, err;
-    const int code = tecplot::run_cli(static_cast<int>(argv.size()), argv.data(), out, err);
+    const int code = visfield::run_cli(static_cast<int>(argv.size()), argv.data(), out, err);
     if (errors)
         *errors = err.str();
     return code;
@@ -477,6 +478,61 @@ void register_zones() {
 
 // Проверки экспорта через командную строку, обработки ошибок и защиты файлов.
 void register_cli() {
+    add("VTK Legacy geometry and field payload", [] {
+        Temp input, results, output;
+        output.path += ".vtk";
+        const auto mesh = line(2);
+        mesh.write(input.path);
+        fields(mesh).write(results.path);
+        require(cli({"visfield", input.path, results.path, output.path}) == 0, "VTK CLI");
+        const auto bytes = read_file(output.path);
+        require(bytes.find("# vtk DataFile Version 4.2\nAero step 123\nBINARY\nDATASET UNSTRUCTURED_GRID\n") == 0,
+                "VTK signature and step");
+        // На этой сетке 2 объёмных отрезка, 2 ребра и 3 точечные грани.
+        const auto cells = bytes.find("CELLS 7 18\n");
+        require(cells != std::string::npos, "VTK packed connectivity length");
+        const std::string types = "CELL_TYPES 7\n";
+        auto pos = bytes.find(types);
+        require(pos != std::string::npos, "VTK cell types");
+        pos += types.size();
+        for (int code : {3, 3, 3, 3, 1, 1, 1}) {
+            require(bytes.substr(pos, 4) == std::string(3, '\0') + static_cast<char>(code), "VTK big-endian type");
+            pos += 4;
+        }
+        const std::string scalar = "SCALARS velocity.y double 1\nLOOKUP_TABLE default\n";
+        pos = bytes.find(scalar);
+        require(pos != std::string::npos, "VTK second point component");
+        require(bytes.substr(pos + scalar.size(), 8) == std::string("\x40\x59\x20\0\0\0\0\0", 8),
+                "VTK binary64 100.5");
+        require(bytes.find("SCALARS edge.velocity.x") != std::string::npos &&
+                bytes.find("SCALARS face.velocity.y") != std::string::npos, "VTK edge/face fields");
+        require(cli({"visfield", input.path, output.path}) == 0 &&
+                read_file(output.path).find("POINT_DATA") == std::string::npos, "VTK geometry only");
+
+        // У двух соседних четырёхугольников разные знаки общего ребра и немонотонные номера узлов.
+        strip(2).write(input.path);
+        require(cli({"visfield", input.path, output.path}) == 0, "VTK shared edge");
+        const auto quads = read_file(output.path);
+        const std::string quads_header = "CELLS 2 10\n";
+        pos = quads.find(quads_header);
+        require(pos != std::string::npos, "VTK quad header");
+        pos += quads_header.size();
+        for (int index : {4, 0, 2, 3, 1, 4, 2, 4, 5, 3}) {
+            require(quads.substr(pos, 4) == std::string(3, '\0') + static_cast<char>(index), "VTK oriented polygon");
+            pos += 4;
+        }
+        // Вогнутый пятиугольник и пятиугольная призма сохраняют исходные грани и вершины.
+        for (const auto& geometry : {polygon(), prism(5)}) {
+            geometry.write(input.path);
+            require(cli({"visfield", input.path, output.path}) == 0, "VTK polygon or polyhedron");
+            const auto encoded = read_file(output.path);
+            const bool solid = geometry.view().dimension == 3;
+            const auto header = solid ? "CELLS 1 39\n" : "CELLS 1 6\n";
+            require(encoded.find(header) != std::string::npos, "VTK polygon/polyhedron connectivity length");
+            require(encoded.substr(encoded.size()-5, 4) == std::string(3, '\0') + char(solid ? 42 : 7),
+                    "VTK polygon/polyhedron type");
+        }
+    });
     add("CLI accepts every mesh and fields encoding in all dimensions", [] {
         for (const Mesh& mesh : {line(), polygon(), prism(5)})
             for (MeshFormat mf : {MeshFormat::Text, MeshFormat::Binary, MeshFormat::Lzma})
@@ -487,7 +543,7 @@ void register_cli() {
                     data.write(results.path, ff);
                     std::string err;
                     require(
-                        cli({"fields_to_tecplot", input.path, results.path, output.path, "--threads", "1"},
+                        cli({"visfield", input.path, results.path, output.path, "--threads", "1"},
                             &err) == 0,
                         err);
                     const std::string bytes = read_file(output.path);
@@ -503,7 +559,7 @@ void register_cli() {
             for (MeshFormat format : {MeshFormat::Text, MeshFormat::Binary, MeshFormat::Lzma}) {
                 Temp input, output;
                 mesh.write(input.path, format);
-                std::vector<std::string> args = {"fields_to_tecplot", input.path, output.path};
+                std::vector<std::string> args = {"visfield", input.path, output.path};
                 if (format == MeshFormat::Lzma)
                     args.insert(args.end(), {"--threads", "1"});
                 std::string err;
@@ -534,18 +590,18 @@ void register_cli() {
     });
     add("CLI help missing arguments and unknown options", [] {
         std::string errors;
-        require(cli({"fields_to_tecplot", "--help"}, &errors) == 0 && errors.empty(), "Help succeeds");
-        require(cli({"fields_to_tecplot", "-h"}) == 0, "Short help");
+        require(cli({"visfield", "--help"}, &errors) == 0 && errors.empty(), "Help succeeds");
+        require(cli({"visfield", "-h"}) == 0, "Short help");
         for (const auto& args :
-             std::vector<std::vector<std::string>>{{"fields_to_tecplot"},
-                                                   {"fields_to_tecplot", "x"},
-                                                   {"fields_to_tecplot", "x", "y", "z", "extra"},
-                                                   {"fields_to_tecplot", "x", "y", "--threads"}})
+             std::vector<std::vector<std::string>>{{"visfield"},
+                                                   {"visfield", "x"},
+                                                   {"visfield", "x", "y", "z", "extra"},
+                                                   {"visfield", "x", "y", "--threads"}})
             require(cli(args, &errors) == 1 && errors.find("Usage:") != std::string::npos, "Brief manual");
         for (const char* n : {"0", "-1", "1x", "2147483648", ""})
-            require(cli({"fields_to_tecplot", "x", "y", "z", "--threads", n}) == 1, "Invalid threads");
-        require(cli({"fields_to_tecplot", "x", "y", "z", "--unknown"}) == 1, "Unknown option");
-        require(cli({"fields_to_tecplot", "x", "y", "z", "--threads"}) == 1, "Missing option value");
+            require(cli({"visfield", "x", "y", "z", "--threads", n}) == 1, "Invalid threads");
+        require(cli({"visfield", "x", "y", "z", "--unknown"}) == 1, "Unknown option");
+        require(cli({"visfield", "x", "y", "z", "--threads"}) == 1, "Missing option value");
     });
     add("mesh mismatch invalid fields and empty meshes write nothing", [] {
         const Mesh mesh = polygon();
@@ -588,7 +644,7 @@ void register_cli() {
         mesh.write(input.path);
         data.write(results.path);
         const std::string before = read_file(input.path);
-        require(cli({"fields_to_tecplot", input.path, results.path, input.path}) == 1, "Input alias refused");
+        require(cli({"visfield", input.path, results.path, input.path}) == 1, "Input alias refused");
         require(read_file(input.path) == before, "Input preserved");
         rejects([&] { tecplot::write(output.path + "/missing", mesh, data); });
         rejects([&] { tecplot::write(std::string("build/x\0bad", 11), mesh, data); });
@@ -608,5 +664,5 @@ void register_tests() {
 int main() {
     register_tests();
     return aero_test::run_tests(tests, aero::tecplot::openmp_available() ?
-                                " Tecplot tests passed (OpenMP=on)" : " Tecplot tests passed (OpenMP=off)");
+                                " visfield tests passed (OpenMP=on)" : " visfield tests passed (OpenMP=off)");
 }

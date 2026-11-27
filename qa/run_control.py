@@ -1,4 +1,5 @@
 """Сверяет непрерывный расчёт с остановкой по команде и продолжением из recovery."""
+import measurements
 import shutil
 import re
 import subprocess
@@ -18,22 +19,22 @@ def check_cli(args, work):
         return subprocess.run(arguments, cwd=case, capture_output=True, text=True, errors="replace", timeout=45)
 
     help_text = launch([aero, "--help"])
-    assert help_text.returncode == 0 and "Usage: aero " in help_text.stdout and not help_text.stderr, help_text
+    assert measurements.compare(help_text.returncode, "==", 0) and "Usage: aero " in help_text.stdout and not help_text.stderr, help_text
     short = launch([aero, "-h"])
-    assert short.returncode == 0 and short.stdout == help_text.stdout, short
+    assert measurements.compare(short.returncode, "==", 0) and measurements.compare(short.stdout, "==", help_text.stdout), short
     for options, reason in (([], ""), (["--input=."], "missing --output"), (["--output=."], "missing --input"),
                             (["--input="], "expected --input"), (["main:cfl="], "invalid parameter override")):
         result = launch([aero, *options])
-        assert result.returncode != 0 and reason in result.stderr and help_text.stdout in result.stderr, result
+        assert measurements.compare(result.returncode, "!=", 0) and reason in result.stderr and help_text.stdout in result.stderr, result
     parallel = launch([args.mpiexec, "-n", "2", aero, "--input=."])
     messages = parallel.stdout + parallel.stderr
-    assert parallel.returncode != 0 and messages.count("Usage: aero ") == messages.count("missing --output") == 1, parallel
+    assert measurements.compare(parallel.returncode, "!=", 0) and (measurements.chain(messages.count("Usage: aero "), "==", messages.count("missing --output"), "==", 1)), parallel
     assert not list(case.glob("recovery-*.bin"))
     # Параметры из командной строки по-прежнему запускают расчёт прямо в каталоге постановки.
     result = launch([aero, "main:final_time=0", "gas.txt:gamma=1.4"])
-    assert result.returncode == 0 and (case / "recovery-0.bin").is_file(), result
+    assert measurements.compare(result.returncode, "==", 0) and (case / "recovery-0.bin").is_file(), result
     result = launch([aero, "main:cfl=invalid"])
-    assert result.returncode != 0 and "Usage: aero " not in result.stderr and "cfl" in result.stderr.lower(), result
+    assert measurements.compare(result.returncode, "!=", 0) and "Usage: aero " not in result.stderr and "cfl" in result.stderr.lower(), result
     print("OK command-line help, case overrides and two MPI ranks", flush=True)
 
 
@@ -88,7 +89,7 @@ def check_cfl_inputs(args, work):
         log = run(options)
         cfl = [float(value) for _, value in report_rows(log, r"^t = .*?\bCFL = (\S+)")]
         expected = [.25, .25, .375, .5] if live else [.25, .375, .5]
-        assert cfl[:len(expected)] == expected, log
+        assert measurements.compare(cfl[:len(expected)], "==", expected), log
     print(f"OK paired CFL validation ({len(cases)} cases) and CLI/live CFL growth", flush=True)
 
 
@@ -133,12 +134,12 @@ def check_steady_steps(args, work, parallel):
         ratios = {int(i): float(hi)/float(lo) for i, lo, hi in
                   report_rows(log, r"^dt_min = (\S+)\s+dt_max = (\S+)")}
         ratios.update((int(i), 0.) for (i,) in report_rows(log, r"^Pseudo-time = .*?\bdt = "))
-        assert set(ratios) == set(range(start + 1, start + 4)), log
+        assert measurements.compare(set(ratios), "==", set(range(start + 1, start + 4))), log
         for i, value in enumerate(expected, start + 1):
             if value is None:
-                assert ratios[i] > 1.06, log
+                assert measurements.compare(ratios[i], ">", 1.06), log
             else:
-                assert abs(ratios[i] - value) < 2e-6, log
+                assert measurements.error_below(abs(ratios[i] - value), 2e-6), log
 
     phase(0, "local_time_step=on\nlocal_time_step_max_ratio=1.05\n", [0., 1.05, 1.05])
     phase(3, "local_time_step_max_ratio=off\n", [1.05, None, None])
@@ -183,38 +184,38 @@ def check(args, work, parallel, scheme):
         original_file = control.stat()
         log = run([*cmd, f"--output={dest}"])
         original_log = (dest / "aero.log").read_text()
-        assert original_log == log, (original_log, log)
-        assert control.read_bytes() == b"" and control.stat().st_ino == original_file.st_ino
+        assert measurements.compare(original_log, "==", log), (original_log, log)
+        assert control.read_bytes() == b"" and measurements.compare(control.stat().st_ino, "==", original_file.st_ino)
         assert not (dest / "control.txt.last").exists()
         assert "Control applied after step 1, CFL = " in log, log
-        assert log.count("unknown parameter 'misspelled'") == 1, log
+        assert measurements.compare(log.count("unknown parameter 'misspelled'"), "==", 1), log
         for line in commands.splitlines():
             expected = line.replace("=", " = ")
-            assert log.splitlines().count("Control accepted: " + expected) == 1, log
+            assert measurements.compare(log.splitlines().count("Control accepted: " + expected), "==", 1), log
         accepted = int(re.search(r"Completed (\d+) steps", log)[1])
         latest = binary_snapshot(dest / "end.fields")
-        assert latest[0][3] == accepted and binary_snapshot(dest / "rare.fields") == latest
-        assert list(dest.glob("history_*.fields")) == [dest / f"history_{accepted:06d}.fields"]
-        assert binary_snapshot(dest / f"history_{accepted:06d}.fields") == latest
-        assert len(list(dest.glob("recovery-*.bin"))) == 1
+        assert measurements.compare(latest[0][3], "==", accepted) and measurements.compare(binary_snapshot(dest / "rare.fields"), "==", latest)
+        assert measurements.compare(list(dest.glob("history_*.fields")), "==", [dest / f"history_{accepted:06d}.fields"])
+        assert measurements.compare(binary_snapshot(dest / f"history_{accepted:06d}.fields"), "==", latest)
+        assert measurements.compare(len(list(dest.glob("recovery-*.bin"))), "==", 1)
         if scheme == "ssprk3":
             assert "RETRY step 1" in log and re.search(r"Control applied[^\n]+first-order cells = 0", log)
         if name == "split":
             assert "STOP: final fields and recovery saved at step 1" in log
-            assert binary_snapshot(dest / "rare.fields")[0][-2] == 1
+            assert measurements.compare(binary_snapshot(dest / "rare.fields")[0][-2], "==", 1)
             resumed = run([*cmd, f"--output={dest}", "--recover"])
             assert "Control accepted:" not in resumed and "unknown parameter 'misspelled'" not in resumed, resumed
-            assert (dest / "aero.log").read_text() == original_log + resumed
+            assert measurements.compare((dest / "aero.log").read_text(), "==", original_log + resumed)
     expected = binary_snapshot(case / "full/end.fields")
     # Продолжение без новых шагов тоже публикует все зоны в новом каталоге,
     # подтверждая, что итоговая контрольная точка читается полностью.
     log = run([*cmd, f"--output={case / 'full'}", "--recover"])
     assert f"Recovered step {expected[0][3]}" in log
-    assert binary_snapshot(next((case / "full").glob("resumed-*/rare.fields"))) == expected
+    assert measurements.compare(binary_snapshot(next((case / "full").glob("resumed-*/rare.fields"))), "==", expected)
     actual = binary_snapshot(next((case / "split").glob("resumed-*/end.fields")))
-    assert actual[0] == expected[0]
+    assert measurements.compare(actual[0], "==", expected[0])
     for key in expected[1]:
-        assert max(abs(a-b) for a,b in zip(actual[1][key], expected[1][key])) < 1e-11
+        assert measurements.error_below(max(abs(a-b) for a,b in zip(actual[1][key], expected[1][key])), 1e-11)
     if not parallel and scheme == "ssprk3":
         # После отказа посылаем одну и ту же команду дважды, затем останавливаем расчёт.
         dest = case / "live"
@@ -238,10 +239,10 @@ def check(args, work, parallel, scheme):
                         (dest / "control.txt").write_text("cfl=.1\n")
                 tail = process.communicate(timeout=60)[0]
                 match = re.search(r"STOP: final fields and recovery saved at step (\d+)", tail)
-                assert process.returncode == 0 and match and int(match[1]) % 25 == 0, tail
+                assert measurements.compare(process.returncode, "==", 0) and match and measurements.compare(int(match[1]) % 25, "==", 0), tail
                 journal = (dest / "aero.log").read_text()
-                assert journal.count("Control accepted: cfl = .1\n") == 2, journal
-                assert journal.count("Control accepted: STOP\n") == 1, journal
+                assert measurements.compare(journal.count("Control accepted: cfl = .1\n"), "==", 2), journal
+                assert measurements.compare(journal.count("Control accepted: STOP\n"), "==", 1), journal
                 assert (dest / "control.txt").read_bytes() == b""
             finally:
                 if process.poll() is None:

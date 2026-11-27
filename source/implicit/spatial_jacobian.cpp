@@ -1,4 +1,6 @@
 #include "matrix_execution.h"
+#include "scalar_topology.h"
+#include "ordered_sweep.h"
 #include "spatial_jacobian.h"
 #include "block_jacobi.h"
 #include "csgs_sweep.h"
@@ -223,6 +225,8 @@ MeshIndex gpu_matrix_bytes(const GpuMatrixPlan& plan) { return plan.bytes; }
 
 // Владельцы геометрии, блоков и буферов пространственной матрицы.
 struct SpatialJacobian::Storage {
+    MeshIndex scalar_slots=0; // Полная длина строк до выгрузки геометрии GPU.
+
     std::shared_ptr<const SpatialResidual::Impl> geometry_owner; // Владелец адресов в blocks.grid.
     SpatialBlocks blocks{};    // Указатели на калькуляционные массивы выбранного исполнителя.
     // Устройство, на котором размещены блоки матрицы.
@@ -295,6 +299,7 @@ void SpatialJacobian::allocate_blocks(const residual_detail::Geometry& host, boo
     } else {
         s.pattern.build(host,b.row_count,partition);
     }
+    s.scalar_slots=s.pattern.columns.size();
     const auto stride = s.blocks.stride();
     const auto limit = s.entries.max_size() / stride;
     if (host.faces > limit || host.edges > limit - host.faces || s.pattern.columns.size() > limit)
@@ -415,7 +420,7 @@ unsigned SpatialJacobian::dimension() const { return storage_->blocks.grid.dim; 
 int SpatialJacobian::device() const { return storage_->device; }
 
 // Подготавливает порядок обхода и упакованные блоки предобусловливателя CSGS.
-void SpatialJacobian::prepare_csgs() {
+void SpatialJacobian::prepare_csgs(bool pack_values) {
     auto& s = *storage_;
     auto& b = s.blocks;
     // Пересчитывает зависимые потоки или коэффициенты после изменения поля.
@@ -430,7 +435,7 @@ void SpatialJacobian::prepare_csgs() {
         host_parallel::ensure_runtime();
         matrix_rows::pack(host_parallel::Execution(),s.packing,b.values);
     };
-    if (s.order) { refresh(); return; }
+    if (s.order) { if (pack_values) refresh(); return; }
     const BlockPattern* graph = &s.pattern;
 #ifdef AERO_WITH_KOKKOS_GPU
     // Раскраска выполняется один раз на CPU. Забираем только индексы CSR,
@@ -532,7 +537,7 @@ void SpatialJacobian::prepare_csgs() {
     }
     view.blocks=plan.values;
     view.neighbour_values=plan.neighbour_values;
-    refresh();
+    if (pack_values) refresh();
     // Разделение графа уже записано в строках проходов. Для запусков
     // сохраняем только границы групп и, на CPU, порядок посещения.
     std::vector<MeshIndex>().swap(order->position);
@@ -542,44 +547,20 @@ void SpatialJacobian::prepare_csgs() {
     s.order = std::move(order);
 }
 
+// Скалярная матрица использует готовую раскраску без перепаковки газовых коэффициентов.
+ScalarTopology SpatialJacobian::scalar_topology(bool colored) {
+    auto& s=*storage_;
+    if (colored && !s.order) prepare_csgs(false);
+    return {s.blocks.rows,s.blocks.columns,s.sweep,colored ? &s.order->offsets : nullptr,
+            colored ? s.packing.count : s.scalar_slots,s.forward};
+}
+
 // Выполняет прямой и обратный проходы CSGS с необходимыми обменами.
 void SpatialJacobian::apply_csgs(const BlockJacobi& diagonal, const double* rhs, double* output,double* image) const {
     const auto& s = *storage_;
     auto sweep = s.sweep;
     sweep.diagonal = diagonal.factors();
-    sweep.rhs = rhs;
-    sweep.middle_rhs = output; // В прямом проходе выход ещё свободен для b−L*y.
-    const auto& offsets = s.order->offsets;
-    const MeshIndex groups = offsets.size() - 1;
-    for (unsigned pass = 0; pass < 2; ++pass) {
-        sweep.backward = pass == 1;
-        sweep.output = pass ? output : s.forward;
-        // Все ранги, включая пустые, выполняют один обмен между проходами.
-        // При работе без MPI исходная нумерация совпадает с номерами строк.
-        if (pass)
-            sweep.forward_with_halo =
-                s.partition.extend_vector ? s.partition.extend_vector(s.forward) : s.forward;
-        s.partition.local([&] {
-#ifdef AERO_WITH_KOKKOS_GPU
-            if (s.device >= 0) {
-                for (MeshIndex j = 0; j < groups; ++j) {
-                    const auto color = pass ? groups - 1 - j : j;
-                    device_work::check(device_work::aero_device_csgs_color(
-                        s.device, sweep, offsets[color], offsets[color + 1] - offsets[color]));
-                }
-                return;
-            }
-#endif
-            parallel_for(
-                groups,
-                [&](MeshIndex group) {
-                    const auto begin = offsets[group], end = offsets[group + 1];
-                    for (auto k = begin; k < end; ++k)
-                        sweep(pass ? end - 1 - (k - begin) : k);
-                },
-                2);
-        });
-    }
+    sweep=ordered_sweep(sweep,s.order->offsets,s.device,s.partition,s.forward,rhs,output);
     // В MPI соседние компоненты z требуют полноценного обмена. На цельной
     // сетке обе подстановки уже дали достаточно данных для умножения.
     if (!image) return;

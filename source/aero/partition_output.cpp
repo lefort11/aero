@@ -1,5 +1,6 @@
 #include "partition_output.h"
 #include "mpi_fields.h"
+#include "../io/visualization/zone_files.h"
 #include "../io/flow_values.h"
 #include "../io/sha256.h"
 #include <cstring>
@@ -95,7 +96,7 @@ PartitionOutput::PartitionOutput(const RunSettings& run, const MeshPartition& pa
     world.local([&] {
         for (const auto& zone:run.output_zones) {
             if (zone.submesh.empty() || slices_.count(zone.submesh)) continue;
-            const auto input=Submesh::read(zone.submesh);
+            auto input=Submesh::read(zone.submesh);
             if (parent_hash.empty() && single) parent_hash=FieldSnapshot::mesh_fingerprint(part.mesh);
             if (input.parent_hash!=parent_hash || input.parent_nodes!=part.global_counts[0])
                 throw FieldError("Submesh belongs to a different parent mesh: "+zone.submesh);
@@ -104,7 +105,11 @@ PartitionOutput::PartitionOutput(const RunSettings& run, const MeshPartition& pa
             std::map<MeshIndex,MeshIndex> compact;
             // От одного исходного узла могут зависеть сразу несколько точек среза.
             // При выводе его значения пересылаются ровно один раз.
-            slice.points=input.points;
+            slice.points=std::move(input.points);
+            // Несколько зон могут писать один срез с разными наборами форматов.
+            if (!world.rank && std::any_of(run.output_zones.begin(), run.output_zones.end(),
+                    [&](const OutputZone& other) { return other.submesh == zone.submesh && other.visualize(); }))
+                slice.geometry.reset(new Mesh(std::move(input.mesh)));
             for (auto& point:slice.points) {
                 for (auto* node:{&point.first,&point.second}) {
                     const auto index=compact.size();
@@ -120,6 +125,10 @@ PartitionOutput::PartitionOutput(const RunSettings& run, const MeshPartition& pa
             }
         }
     });
+    // Локальный вывод обходится сеткой раздела. Общая визуализация требует исходной нумерации.
+    if (!single && !world.rank && std::any_of(run.output_zones.begin(), run.output_zones.end(),
+            [](const OutputZone& z) { return z.global && z.visualize() && z.wall_label.empty() && z.submesh.empty(); }))
+        global_mesh_.reset(new Mesh(read_archive_geometry(run.mesh_path)));
     for (const auto& zone:run.output_zones) {
         if (zone.wall_label.empty() || walls_.count(zone.wall_label)) continue;
         const auto& names=part.mesh.data().patch_names;
@@ -224,9 +233,7 @@ void PartitionOutput::write_wall(const OutputZone& zone, std::uint64_t step, dou
         }
         snap.mesh_sha256=hash.hex_digest();
         const auto directory=global || world_.size==1?directory_:directory_+"/"+layout_.rank_directory+"/fields";
-        StagedFieldFile file(directory+"/"+output_filename(zone,step));
-        snap.write(file.temporary(),zone.format);
-        file.publish(!zone.multi);
+        write_zone_files(directory, zone, nullptr, snap);
     });
 }
 
@@ -270,9 +277,7 @@ void PartitionOutput::write_slice(const OutputZone& zone,const std::vector<unsig
             }
             snapshot.fields.push_back(std::move(field));
         }
-        StagedFieldFile file(directory_+"/"+output_filename(zone,step));
-        snapshot.write(file.temporary(),zone.format);
-        file.publish(!zone.multi);
+        write_zone_files(directory_, zone, slice.geometry.get(), snapshot);
     });
 }
 
@@ -283,7 +288,7 @@ void PartitionOutput::write(std::uint64_t step, double time, const std::vector<d
         if (!zone.wall_label.empty()) { write_wall(zone,step,time,state); return; }
         if (world_.size > 1 && zone.global) {
             write_global_fields(world_, directory_, zone, columns, layout_.selection, layout_.rows, gamma_,
-                                step, time, state, background_,scalars);
+                                step, time, state, background_,scalars, global_mesh_.get());
         } else {
             world_.local([&] { local_.write(zone, columns, step, time, state,scalars); });
         }

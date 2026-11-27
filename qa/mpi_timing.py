@@ -1,5 +1,6 @@
 """Проверяет счётчики стадий, обменов и записи по таблице времени MPI-расчёта."""
 
+import measurements
 from mpi_common import ROOT, mpi_parser, mpi_workspace
 import math
 from pathlib import Path
@@ -16,9 +17,9 @@ def check(log, ranks, start, stages, backend):
     end = int(re.search(r"Completed (\d+) steps", log)[1])
     steps = end - start
     header = f"{backend} timings: ranks={ranks} start_step={start} end_step={end} steps={steps}"
-    assert log.count(" timings:") == 1 and header in log, log
+    assert measurements.compare(log.count(" timings:"), "==", 1) and header in log, log
     lines = log.split(header)[1].strip().splitlines()
-    assert lines[0].split() == ["phase", "calls_per_rank", "min_s", "mean_s", "max_s", "max_s_per_step"]
+    assert measurements.compare(lines[0].split(), "==", ["phase", "calls_per_rank", "min_s", "mean_s", "max_s", "max_s_per_step"])
     exchange_calls = stages * steps if ranks > 1 else 0
     # При завершении все зоны и recovery пишутся один раз, в том числе
     # если после восстановления не понадобился ни один новый шаг.
@@ -47,22 +48,22 @@ def check(log, ranks, start, stages, backend):
         if line.startswith("Completed"):
             break
         phase, calls, low, mean, high, per_step = line.split()
-        assert int(calls) == expected.pop(phase), line
+        assert measurements.compare(int(calls), "==", expected.pop(phase)), line
         low, mean, high = map(float, (low, mean, high))
-        assert 0 <= low <= mean <= high and math.isfinite(high), line
-        assert (high > 0) == (int(calls) > 0), line
+        assert (measurements.chain(0, "<=", low, "<=", mean, "<=", high)) and math.isfinite(high), line
+        assert measurements.compare(high > 0, "==", int(calls) > 0), line
         if steps:
-            assert math.isclose(float(per_step), high / steps, rel_tol=2e-9), line
+            assert measurements.isclose(float(per_step), high / steps, rel_tol=2e-9), line
         else:
             assert per_step == "n/a", line
         maxima[phase] = high
-    assert not expected and maxima["integration"] >= max(maxima.values()), log
+    assert not expected and measurements.compare(maxima["integration"], ">=", max(maxima.values())), log
     if steps:
         assert (
-            maxima["integration"] > 0 and maxima["flux_compute"] > 0 and maxima["recovery_write"] > 0
+            measurements.compare(maxima["integration"], ">", 0) and measurements.compare(maxima["flux_compute"], ">", 0) and measurements.compare(maxima["recovery_write"], ">", 0)
         ), log
     if field_writes:
-        assert maxima["fields_write"] > 0, log
+        assert measurements.compare(maxima["fields_write"], ">", 0), log
     return end
 
 
@@ -101,16 +102,16 @@ def verify(case, aero, meshdec, launcher, devices):
             (case / "cuda.txt").write_text("devices = " + ",".join(devices.split(",")[:ranks]) + "\n")
         directory = case / f"run-{ranks}-{scheme}"
         last = check(launch(aero, case, directory, launcher, ranks), ranks, 0, stages, backend)
-        assert last >= 2
+        assert measurements.compare(last, ">=", 2)
         if ranks == 2 and scheme == "euler":
-            assert (directory / "state.fields").read_bytes() == (
+            assert measurements.compare((directory / "state.fields").read_bytes(), "==", (
                 case / "disabled/state.fields"
-            ).read_bytes()
+            ).read_bytes())
     configure(final_time=0.008)
     resumed = check(launch(aero, case, directory, launcher, 2, "--recover"), 2, last, 3, backend)
-    assert resumed > last
+    assert measurements.compare(resumed, ">", last)
     assert (
-        check(launch(aero, case, directory, launcher, 2, "--recover"), 2, resumed, 3, backend) == resumed
+        measurements.compare(check(launch(aero, case, directory, launcher, 2, "--recover"), 2, resumed, 3, backend), "==", resumed)
     )
     print(f"OK {backend} timings, Euler/SSPRK3, recovery and zero additional steps")
 

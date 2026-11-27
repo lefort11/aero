@@ -813,8 +813,15 @@ void register_weno_formulas() {
             near(left, 1.);
             near(right, 1.);
             mpweno5::pair(0., 0., 1., 0., 0., 1., correction, left, right);
-            near(left, 0., 0.);
-            near(right, 0., 0.);
+            // У постоянного подшаблона β₁=0 и полином равен нулю. Регуляризация
+            // весов WENO оставляет малый вклад двух остальных полиномов. Для
+            // такого v величина v²/ε столь мала, что вес MP округляется к единице.
+            const WenoIndicators adjacent(1.,0.);
+            const double raw = mpweno5::weighted_value({0.,adjacent.inner,adjacent.outer},
+                                                       {0.,2./3.,4./3.},correction);
+            require(std::abs(raw)<std::numeric_limits<double>::epsilon(),"isolated jump was not limited");
+            near(left, raw, 2.e-14*std::abs(raw));
+            near(right, raw, 2.e-14*std::abs(raw));
         }
     });
     add("WENO3 hand-computed nonlinear weights and signs", [] {
@@ -1721,6 +1728,39 @@ int main(int argc, char** argv) {
     }
     register_curved_stencils();
     register_side_access();
+    // У обеих схем один переход, но до ограничения они выбирают разные кандидаты.
+    // При нулевом центре и отрицательных соседних наклонах строгий интервал — [0,0].
+    add("MP5 and MPWENO5 use their own candidate in the shared continuous limiter", [] {
+        for (bool weno : {false,true}) for (bool correction : {false,true}) {
+            const WenoIndicators near_left(0.,-1.), across(0.,-3.);
+            const mpweno5::Indicators indicators{WenoIndicators(-1.,-4.).outer, near_left.inner, across.outer};
+            const auto polynomials = mpweno5::Polynomials::from_slopes(-4.,-1.,0.,-3.);
+            const double raw = weno ? mpweno5::weighted_value(indicators,polynomials,correction)
+                                    : mp5::linear(-4.,-1.,0.,-3.);
+            if (!indicators.nonlinear() || std::abs(raw)<.01) throw std::runtime_error("invalid MP threshold fixture");
+            for (double sign : {-1.,1.}) for (double t : {.25,.5,.999999,1.,1.000001,100.}) {
+                const double value = sign*std::sqrt(t*1.e-10), scale = value/raw;
+                // Изменение амплитуды сохраняет нулевой ограниченный след.
+                const double expected = 0.;
+                // При фиксированном масштабе проверяем прежнюю гладкую форму перехода.
+                const double weight = mp5::relative_weight(value,0.,1.);
+                near(weight,t>=1. ? 0. : (1.-t)*(1.-t)*(1.+2.*t),1.e-14);
+                const double f=-4.*scale, l=-scale, r=-3.*scale;
+                const double one = weno ? mpweno5::increment(f,l,0.,r,4.,correction) : mp5::increment(f,l,0.,r,4.);
+                double left,right;
+                if (weno) mpweno5::pair(f,l,0.,r,f,4.,correction,left,right);
+                else mp5::pair(f,l,0.,r,f,4.,left,right);
+                near(one,expected,1.e-18);
+                near(left,expected,1.e-18);
+                // Здесь проверяем также базовый след, передаваемый в гибрид MP6.
+                mp6::Correction hybrid;
+                const Mp5Settings settings{!weno,weno,correction,4.};
+                if (weno) mp6::prepare_wave<true,false>(f,l,0.,r,f,settings,.5,hybrid,left,right);
+                else mp6::prepare_wave<false,false>(f,l,0.,r,f,settings,.5,hybrid,left,right);
+                near(left,expected,1.e-18);
+            }
+        }
+    });
     add("MP5 CFL, constant state, isolated jump and paired bounds", [] {
         near(mp5_alpha_from_cfl(.125), 4);
         near(mp5_alpha_from_cfl(.5), 1);
@@ -1741,11 +1781,13 @@ int main(int argc, char** argv) {
         const auto reference = [&](double f, double l, double c, double r, double alpha) {
             const double v = -.1*r + .8*c + 11./30*l - f/15;
             const double bound = std::max(0., std::min(c,alpha*l)) + std::min(0., std::max(c,alpha*l));
-            if (v*(v-bound) < 1.e-10) return v;
+            const double scale = std::max({std::abs(f),std::abs(l),std::abs(c),std::abs(r)});
+            const double t = scale ? std::max(0.,std::min(1.,(v/scale)*((v-bound)/scale)/1.e-10)) : 0.;
             const double md = c-dm(c-l,r-c), lc = l+8./3*dm(l-f,c-l);
             const double lo = std::max(std::min({0.,2*c,md}), std::min({0.,2*alpha*l,lc}));
             const double hi = std::min(std::max({0.,2*c,md}), std::max({0.,2*alpha*l,lc}));
-            return std::min(hi,std::max(lo,v));
+            const double strict = std::min(hi,std::max(lo,v));
+            return strict+(v-strict)*(1.-t)*(1.-t)*(1.+2.*t);
         };
         for (double alpha : {0., 1., 4.})
             for (int i = 1; i <= 500; ++i) {
@@ -1798,13 +1840,11 @@ int main(int argc, char** argv) {
     add("MPWENO5-MP6 weak transverse perturbation at an acoustic component", check_weak_transverse_mp6<true>);
     add("MP6 includes the early MP5 increment on its own side", [] {
         const Mp5Settings settings{true, false, false, 4.};
-        // Центральный и оба ближних наклона равны нулю. Полный интервал каждой
-        // стороны равен [0,0]. Малый дальний наклон даёт проход по допуску MP5,
-        // а большой наклон с другой стороны заведомо требует ограничения до нуля.
+        // При разных амплитудах оба геометрически подобных шаблона дают ноль.
         for (double sign : {-1., 1.}) for (bool left_passes : {false, true}) {
             const double small = sign * 1.5e-5, large = .3;
             const double fl = left_passes ? small : large, fr = left_passes ? large : small;
-            const double accepted = -small / 15.;
+            const double accepted = 0.;
             for (double h : {0., 1.e-14, .5, 1.}) {
                 double left = 0., right = 0.;
                 mp6::Correction actual;
@@ -1824,15 +1864,19 @@ int main(int argc, char** argv) {
     });
     add("MPWENO5 hybrid uses its own accepted value on each side", [] {
         const Mp5Settings settings{false, true, true, 4.};
-        // Полином MP5 проходит быструю проверку. На данном шаблоне обычная
-        // MPWENO5 ограничит его до нуля. Нельзя расширять интервал полиномом MP5.
+        // Гибрид должен взять тот же след, что и отдельная реконструкция MPWENO5.
+        // На почти постоянном шаблоне ненулевой вес дальнего полинома очень мал.
         double left = 0., right = 0.;
         mp6::Correction characteristic;
         mp6::prepare_wave<true, false>(-1.5e-5, 0., 0., 0., .3, settings, 1., characteristic, left, right);
-        near(left, 0., 0.);
-        near(right, 0., 0.);
-        near(characteristic.min1, 0., 0.);
-        near(characteristic.max1, 0., 0.);
+        const double expected_l = mpweno5::increment(-1.5e-5,0.,0.,0.,settings.alpha,settings.correction);
+        const double expected_r = mpweno5::increment(.3,0.,0.,0.,settings.alpha,settings.correction);
+        near(left, expected_l, 1.e-14*std::abs(expected_l));
+        near(right, expected_r, 1.e-14*std::abs(expected_r));
+        const double lm=std::max(expected_l,0.), lp=std::max(-expected_l,0.);
+        const double rm=std::max(expected_r,0.), rp=std::max(-expected_r,0.);
+        near(characteristic.min1, -(1.5*lm+.5*rp), 1.e-14*(lm+rp));
+        near(characteristic.max1,   1.5*lp+.5*rm,  1.e-14*(lp+rm));
         // После поворота базовые значения слева и справа задаёт вызывающий код.
         // Используем разные знаки и модули, чтобы обнаружить перестановку сторон.
         left = 2.e-6;

@@ -16,7 +16,7 @@ struct KrylovVectors {
     double* z;        // Временный результат применения блочного Якоби.
     double* t;        // Образ A*M^{-1}*r, также буфер для проверки A*x.
 };
-enum class KrylovStep { Begin, Restart, Direction, Advance, TrueResidual };
+enum class KrylovStep { Begin, Restart, Direction, Advance, TrueResidual, BeginShifted, AddImage };
 // Параметры поэлементного обновления рабочих векторов BiCGSTAB.
 struct KrylovUpdate {
     // Набор рабочих векторов итерации BiCGSTAB.
@@ -31,8 +31,12 @@ struct KrylovUpdate {
     // Выполняет выбранную поэлементную операцию итерации BiCGSTAB.
     AERO_HOST_DEVICE void operator()(MeshIndex i) const {
         switch (step) {
+        case KrylovStep::AddImage:
+            x[i] += image[i]; // Прибавляет A·x₀ к временной правой части фильтрованного Ньютона.
+            break;
         case KrylovStep::Begin:
-            x[i] = 0.;
+        case KrylovStep::BeginShifted:
+            if (step == KrylovStep::Begin) x[i] = 0.;
             work.r[i] = rhs[i];
             // В начале и после уточнения фактической невязки строим новый базис.
             // fall through

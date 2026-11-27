@@ -181,6 +181,10 @@ const char* aero_device_sa_convection(const turbulence::SaEdgeConvection& edges,
                                       const void* tiles,unsigned order) {
     return on_device(nullptr,[&](const Execution& exec){ turbulence::execution::convection(exec,edges,count,tiles,order); });
 }
+// Запускает те же строки скалярной матрицы, что и на CPU.
+const char* aero_device_scalar_rows(const turbulence::ScalarOperation& row,MeshIndex count) {
+    return on_device(nullptr,[&](const Execution& exec){for_indices(exec,"Aero: implicit SA rows",count,row);});
+}
 // Ставит общий шаг SA в очередь устройства.
 const char* aero_device_sa_step(const turbulence::Step& step,turbulence::Operation op) {
     return on_device(nullptr,[&](const Execution& exec){ turbulence::execution::apply_step(exec,step,op); });

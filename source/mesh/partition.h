@@ -70,6 +70,8 @@ private:
     // Строит локальную сетку из выбранных глобальных сущностей.
     MeshPartition indexed_mesh(const mdec::Addresses& cells);
 };
+// Восстанавливает сетку целиком в исходной нумерации без коллективных вызовов MPI.
+Mesh read_archive_geometry(const std::string& path);
 // Загружает собственную геометрию и требуемые halo-связи подобласти.
 MeshPartition load_partition(const std::string& path, const Processes& world,
                              std::unique_ptr<PartitionInput>* stencil_input = nullptr,

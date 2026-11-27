@@ -186,31 +186,11 @@ KOKKOS_FORCEINLINE_FUNCTION bool plane_mp5_flux(const Geometry& g, const double*
     packed_slope<NearRightSlope>(tile,lane,read,slopes.row(NearRightSlope));
     packed_slope<FarLeftSlope>(tile,lane,read,slopes.row(FarLeftSlope));
     packed_slope<FarRightSlope>(tile,lane,read,slopes.row(FarRightSlope));
-    double amplitude=0.;
-    for (unsigned r=0; r<5; ++r) for (unsigned c=0; c<4; ++c) {
-        const double value=::fabs(slopes(r,c));
-        if (!(value<=max_finite_double)) return false;
-        amplitude=::fmax(amplitude,value);
-    }
+    // Относительная MP-проверка выполняется для каждой характеристики.
+    // Малость всего консервативного поля сама по себе не разрешает полином.
     const auto& basis=plane.basis;
-    const double velocity=::fabs(basis.velocity[0])+::fabs(basis.velocity[1]);
     const double inv_sound=inverse_value(basis.sound_speed);
-    // Оценка нормы проекции следует из формул акустических волн, энтропии и
-    // касательного импульса. Компоненты единичной нормали по модулю не больше 1.
-    const double pressure=(g.options.gamma-1.)*(1.+velocity+basis.kinetic)*inv_sound*inv_sound;
-    const double momentum=2.+velocity;
-    const double bound=amplitude*(1.+pressure+momentum*(1.+inv_sound));
     EdgeTraces traces;
-    if (bound<=4.e-6) {
-        // Сумма модулей весов полинома равна 4/3, а короткая граница не превосходит
-        // центрального наклона. Произведение в проверке MP5 строго меньше 1e-10.
-        for (unsigned c=0; c<4; ++c) {
-            const double center=slopes(CentralSlope,c), nl=slopes(NearLeftSlope,c), nr=slopes(NearRightSlope,c);
-            traces.left[c]=plane.left[c]+.5*mp5::linear(slopes(FarLeftSlope,c),nl,center,nr);
-            traces.right[c]=plane.right[c]-.5*mp5::linear(slopes(FarRightSlope,c),nr,center,nl);
-        }
-        return finish_edge_flux<true,true>(g,g.surfaces[edge],plane.left,plane.right,plane.gas,traces,nullptr,out);
-    }
     // В зоне больших наклонов ограничиваем каждую характеристику в обычном
     // порядке. Уже загруженные строки консервативного поля используются повторно.
     for (unsigned r=0; r<5; ++r)

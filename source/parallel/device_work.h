@@ -9,6 +9,7 @@
 // Возвращаемое сообщение живёт до следующего вызова на этом потоке CPU. nullptr означает успех.
 #ifdef AERO_HAS_TURBULENCE
 #include "../turbulence/transport.h"
+#include "../turbulence/scalar_system.h"
 #include "../turbulence/convection.h"
 #endif
 namespace aero {
@@ -21,6 +22,8 @@ AERO_DEVICE_ENTRY const char* aero_device_pressure_rate(const partition_detail::
 AERO_DEVICE_ENTRY const char* aero_device_sample(const diagnostic::Sample&,Index count);
 #ifdef AERO_HAS_TURBULENCE
 // Выполняет выбранную операцию шага SA на GPU.
+AERO_DEVICE_ENTRY const char* aero_device_scalar_rows(const turbulence::ScalarOperation&,MeshIndex);
+// Выполняет выбранную операцию над полем SA.
 AERO_DEVICE_ENTRY const char* aero_device_sa_step(const turbulence::Step&, turbulence::Operation);
 // Собирает конвективный перенос рабочей вязкости SA на GPU.
 AERO_DEVICE_ENTRY const char* aero_device_sa_convection(const turbulence::SaEdgeConvection&, MeshIndex,

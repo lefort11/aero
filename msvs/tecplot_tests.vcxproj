@@ -12,10 +12,10 @@
   </PropertyGroup>
   <Import Project="kokkos_make.props" />
   <ItemGroup>
-    <ClCompile Include="..\utils\tecplot\cli.cpp" />
-    <ClCompile Include="..\utils\tecplot\tecplot.cpp" />
-    <ClInclude Include="..\utils\tecplot\tecplot.h" />
-    <ClCompile Include="..\utils\tecplot\tecplot_tests.cpp" />
+    <ClCompile Include="..\utils\visfield\cli.cpp" />
+    <ClCompile Include="..\source\io\visualization\tecplot.cpp" />
+    <ClInclude Include="..\source\io\visualization\tecplot.h" />
+    <ClCompile Include="..\utils\visfield\tecplot_tests.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

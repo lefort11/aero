@@ -180,7 +180,7 @@ DEBUG_TEST := $(BUILD)/mesh_tests_debug$(EXE)
 all: $(BIN)/$(notdir $(TEST))
 all: converter
 .PHONY: programs
-programs: converter tecplot
+programs: converter visfield
 
 .PHONY: publish-programs bin-runtime
 $(BIN):
@@ -249,7 +249,7 @@ include utils/converter/converter.mk
 test: converter-test
 debug-test: converter-debug-test
 
-include utils/tecplot/tecplot.mk
+include utils/visfield/visfield.mk
 include source/parallel/mpi.mk
 include utils/meshdec/meshdec.mk
 include utils/submesh/submesh.mk

@@ -1,25 +1,37 @@
-fields_to_tecplot — экспорт в бинарный Tecplot 360
+visfield — экспорт в бинарные Tecplot 360 и VTK Legacy
 ===================================================
 
 Из корня проекта:
-  bin/fields_to_tecplot.exe grid.mesh grid.plt
-  bin/fields_to_tecplot.exe grid.mesh result_000100.fields result_000100.plt
-  bin/fields_to_tecplot.exe grid.mesh result_000100.fields result_000100.plt --threads 4
-  bin/fields_to_tecplot.exe --help
+  bin/visfield.exe grid.mesh grid.plt
+  bin/visfield.exe grid.mesh result_000100.fields result_000100.plt
+  bin/visfield.exe grid.mesh result_000100.fields result_000100.plt --threads 4
+  bin/visfield.exe grid.mesh grid.vtk
+  bin/visfield.exe grid.mesh result_000100.fields result_000100.vtk
+  bin/visfield.exe slice.submesh slice.fields slice.vtk
+  bin/visfield.exe --help
 
 Аргументы командной строки:
-  MESH        внутренняя сетка AEROMESH v2/v3
+  MESH        внутренняя сетка AEROMESH v2/v3 или файл среза .submesh
   FIELDS      необязательный файл полей AEROFIELDS v1
-  OUTPUT.plt  новый выходной файл Tecplot
+  OUTPUT      выходной путь. Расширение .vtk выбирает VTK, .plt — Tecplot.
+              При другом расширении сохраняется прежний режим Tecplot.
 
-При вызове с двумя путями создаётся статическая зона Cells с координатами
+Для .vtk используется двоичный UNSTRUCTURED_GRID в формате Legacy 4.2.
+В ParaView откройте .vtk, нажмите Apply и выберите нужное поле.
+Узловые и ячеечные величины записываются в POINT_DATA и CELL_DATA, каждая компонента
+своим скаляром double. Для полей рёбер и граней добавляются элементы соответствующей
+размерности. Значения вне их размещения заполняются NaN. Номер шага входит в заголовок,
+время записывается в массив TIME. Параметр --threads управляет подготовкой Tecplot.
+Описание общей реализации находится в source/io/visualization/README.md.
+
+При вызове с двумя путями для .plt создаётся статическая зона Cells с координатами
 X, Y, Z и связностью исходных отрезков, полигонов или многогранников.
 
 На входе автоматически распознаются Text, Binary и Lzma независимо от
 расширений. Все сочетания кодировок сетки/полей поддерживаются.
 При нехватке аргументов печатается краткая справка в stderr, код возврата 1.
 --help/-h: справка в stdout, код 0. Ошибка чтения/проверки/записи: код 1.
-Готовый PLT заменяет прежний выходной файл после успешной записи. Пути входных файлов и ссылки на них защищены.
+Готовый PLT или VTK заменяет прежний выходной файл после успешной записи. Пути входных файлов и ссылки на них защищены.
 Пути используют узкую строковую кодировку платформы, как существующие утилиты.
 
 Проверка и преобразование
@@ -28,7 +40,7 @@ X, Y, Z и связностью исходных отрезков, полиго�
 и файла полей. Проверяется топология Mesh и структура FieldSnapshot.
 Координаты X,Y,Z берутся непосредственно из сетки и сохраняются
 для всех размерностей. Значения полей и строки единиц не пересчитываются.
-При экспорте полей время записывается в SolutionTime, шаг — в Aero.Step.
+При экспорте в Tecplot время записывается в SolutionTime, шаг — в Aero.Step.
 Оба режима сохраняют SHA-256 сетки в метаданных зоны.
 Каждый компонент поля становится отдельной переменной float64.
 
@@ -95,19 +107,18 @@ SHA-256 и LZMA остаются последовательными. Для ма
 Порядок данных не зависит от числа потоков. GPU для экспорта не требуется.
 
 Сборка GNU Make (из корня, C++11):
-  make tecplot
-  make tecplot-test
-  make tecplot-debug-test
-  make tecplot WITH_OPENMP=0
-  make tecplot-test WITH_OPENMP=0
+  make visfield
+  make visfield-test
+  make visfield-debug-test
+  make visfield WITH_OPENMP=0
+  make visfield-test WITH_OPENMP=0
 
 Без OpenMP --threads 1 разрешен, больше 1 вызывает понятную ошибку.
-Остальные библиотеки проекта при включении OpenMP не перекомпилируются с его
-флагами; параллелизм находится в утилите. make all/test/debug-test включает ее.
-Из utils/tecplot можно использовать локальный Makefile с целями all/test/debug-test.
+Цели make all/test/debug-test включают сборку и проверки утилиты.
+Из utils/visfield можно использовать локальный Makefile с целями all/test/debug-test.
 
 MSVS:
-  открыть msvs/aero.sln; проекты fields_to_tecplot и tecplot_tests.
+  открыть msvs/aero.sln; проекты visfield и tecplot_tests.
   OpenMP задается через msvs/openmp.props, по умолчанию включен.
   /p:WithOpenMP=false отключает; /p:RunTecplotTests=false отключает запуск тестов.
   Утилита и тесты публикуются в bin.

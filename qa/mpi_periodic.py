@@ -1,5 +1,6 @@
 """Проверяет склейку периодических узлов, поток через шов и полноту шаблонов на границе процессов."""
 
+import measurements
 from mpi_common import ROOT, mpi_parser, mpi_workspace
 import math
 import os
@@ -147,7 +148,7 @@ def check_contact(ref, logical, names, reconstruction, cfl):
     for i, value in enumerate(actual):
         j = i % n
         expected = rho[j] - dt * n * (flux[j] - flux[j - 1])
-        if not math.isclose(value, expected, rel_tol=3e-14):
+        if not measurements.isclose(value, expected, rel_tol=3e-14):
             raise AssertionError(
                 f"Incorrect {reconstruction} contact flux at node {i}: {value} vs {expected}"
             )
@@ -197,18 +198,18 @@ def check_seam(out, ranks, logical, axes, names, dim, volumes, closed, split):
                 xyz = logical[node]
                 key = tuple(0.0 if i in axes and v == 1.0 else v for i, v in enumerate(xyz))
                 state = tuple(fields[n][1][local] for n in names)
-                if states.setdefault(key, state) != state:
+                if measurements.compare(states.setdefault(key, state), "!=", state):
                     raise AssertionError(f"Periodic copies differ at step {path.name}, node {node}")
                 processes.setdefault(key, set()).add(rank)
                 rho.append(volumes[node] * state[0])
                 energy.append(volumes[node] * state[-1])
-        if split and not any(len(s) > 1 for s in processes.values()):
+        if split and not any(measurements.compare(len(s), ">", 1) for s in processes.values()):
             raise AssertionError("Expected periodic copies on different MPI processes")
         if closed:
             total = math.fsum(rho), math.fsum(energy)
             if first_integral is None:
                 first_integral = total
-            if not all(math.isclose(a, b, rel_tol=4e-14) for a, b in zip(total, first_integral)):
+            if not all(measurements.isclose(a, b, rel_tol=4e-14) for a, b in zip(total, first_integral)):
                 raise AssertionError(f"Periodic mass/energy drift: {total} vs {first_integral}")
 
 
@@ -222,7 +223,7 @@ def report_rows(log, prefix):
         values = line.split("\t")
         if not values[0].isdigit():
             break
-        if len(values) != len(columns):
+        if measurements.compare(len(values), "!=", len(columns)):
             raise AssertionError(f"Incomplete partition report row: {line}")
         rows.append(dict(zip(columns, values)))
     return rows
@@ -232,7 +233,7 @@ def check_partition_report(log, serial, ranks, archive, out, logical, axes, dim,
     """Проверяет, что отчёт разделов согласуется с геометрией и сведениями архива."""
     parts = report_rows(log, "rank\tnode")
     hosts = report_rows(log, "node\thost")
-    if [int(p["rank"]) for p in parts] != list(range(ranks)):
+    if measurements.compare([int(p["rank"]) for p in parts], "!=", list(range(ranks))):
         raise AssertionError("Missing or duplicate MPI rank in partition report")
 
     def total(key):
@@ -240,15 +241,15 @@ def check_partition_report(log, serial, ranks, archive, out, logical, axes, dim,
 
     leaves = read_mdec_header(archive).leaves
     reference = re.search(r"Computational nodes = (\d+)\s+edges = (\d+)", serial)
-    if (total("owned"), total("edges"), total("leaves")) != (*map(int, reference.groups()), leaves):
+    if measurements.compare((total("owned"), total("edges"), total("leaves")), "!=", (*map(int, reference.groups()), leaves)):
         raise AssertionError("Distributed workload differs from serial grid or archive")
     for field in ("state", "flux"):
-        if total(field + "_send_B") != total(field + "_recv_B"):
+        if measurements.compare(total(field + "_send_B"), "!=", total(field + "_recv_B")):
             raise AssertionError(f"Unbalanced {field} exchange")
     for p in parts:
-        if int(p["state_recv_B"]) != int(p["halo"]) * (dim + 2) * 8:
+        if measurements.compare(int(p["state_recv_B"]), "!=", int(p["halo"]) * (dim + 2) * 8):
             raise AssertionError("State import bytes differ from halo size")
-        if int(p["leaves"]) == 0 and any(
+        if measurements.compare(int(p["leaves"]), "==", 0) and any(
             int(p[k])
             for k in (
                 "owned",
@@ -282,19 +283,19 @@ def check_partition_report(log, serial, ranks, archive, out, logical, axes, dim,
                     sent[left] += (dim + 3) * 8
                     received[right] += (dim + 3) * 8
         for i, p in enumerate(parts):
-            if (int(p["edges"]), int(p["flux_send_B"]), int(p["flux_recv_B"])) != (
+            if measurements.compare((int(p["edges"]), int(p["flux_send_B"]), int(p["flux_recv_B"])), "!=", (
                 edges[i],
                 sent[i],
                 received[i],
-            ):
+            )):
                 raise AssertionError(f"Incorrect computed edges or flux exchange on rank {i}")
-    if {n["node"] for n in hosts} != {p["node"] for p in parts} or len(hosts) != len(
+    if measurements.compare({n["node"] for n in hosts}, "!=", {p["node"] for p in parts}) or measurements.compare(len(hosts), "!=", len(
         {n["node"] for n in hosts}
-    ):
+    )):
         raise AssertionError("Incorrect node groups")
     for n in hosts:
         members = [p for p in parts if p["node"] == n["node"]]
-        if int(n["ranks"]) != len(members) or n["node"] != members[0]["rank"] or not n["host"]:
+        if measurements.compare(int(n["ranks"]), "!=", len(members)) or measurements.compare(n["node"], "!=", members[0]["rank"]) or not n["host"]:
             raise AssertionError("Incorrect node leader or number of ranks")
         for src, dst in (
             ("stencil_peak_KiB", "stencil_peaks_sum_KiB"),
@@ -303,17 +304,17 @@ def check_partition_report(log, serial, ranks, archive, out, logical, axes, dim,
         ):
             values = [p[src] for p in members]
             expected = "n/a" if "n/a" in values else str(sum(map(int, values)))
-            if n[dst] != expected or (os.name == "nt" and expected in ("n/a", "0")):
+            if measurements.compare(n[dst], "!=", expected) or (os.name == "nt" and expected in ("n/a", "0")):
                 raise AssertionError(f"Incorrect node memory summary for {src}")
         for p in members:
             for field in ("stencil_peak_KiB", "ready_rss_KiB"):
-                if "n/a" not in (p[field], p["startup_peak_KiB"]) and int(p[field]) > int(
+                if "n/a" not in (p[field], p["startup_peak_KiB"]) and measurements.compare(int(p[field]), ">", int(
                     p["startup_peak_KiB"]
-                ):
+                )):
                     raise AssertionError("Inconsistent RSS high-water mark")
-        if "n/a" not in (n["ram_total_KiB"], n["ram_available_KiB"]) and int(
+        if "n/a" not in (n["ram_total_KiB"], n["ram_available_KiB"]) and measurements.compare(int(
             n["ram_available_KiB"]
-        ) > int(n["ram_total_KiB"]):
+        ), ">", int(n["ram_total_KiB"])):
             raise AssertionError("Available RAM exceeds total RAM")
 
 
@@ -418,7 +419,7 @@ def verify(
             check_partition_report(log, serial, ranks, archive, out, logical, axes, dim, data)
             if reconstruction != "first_order":
                 pattern = r"downgraded reconstruction sides = (\d+)"
-                if re.search(pattern, serial)[1] != re.search(pattern, log)[1]:
+                if measurements.compare(re.search(pattern, serial)[1], "!=", re.search(pattern, log)[1]):
                     raise AssertionError("The partition introduced incomplete reconstruction rows")
             error = check_output(ref, out, ranks, len(logical), dim, names, empty)
             check_seam(

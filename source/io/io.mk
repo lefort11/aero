@@ -11,12 +11,22 @@ IO_DIR := source/io
 FIELD_HEADERS := $(LABEL_HEADER) $(NATIVE_FORMAT) $(IO_DIR)/fields.h $(IO_DIR)/sha256.h
 FIELD_SOURCES := $(IO_DIR)/fields.cpp $(IO_DIR)/fields_mesh.cpp $(IO_DIR)/sha256.cpp
 FIELD_OBJECTS := $(patsubst $(IO_DIR)/%.cpp,$(BUILD)/io_%.o,$(FIELD_SOURCES))
+VIS_DIR := $(IO_DIR)/visualization
+VIS_WRITERS := $(VIS_DIR)/tecplot.cpp $(VIS_DIR)/vtk.cpp
+VIS_SOURCES := $(VIS_WRITERS) $(VIS_DIR)/zone_files.cpp
+VIS_HEADERS := $(wildcard $(VIS_DIR)/*.h)
+VIS_OBJECTS := $(patsubst $(VIS_DIR)/%.cpp,$(BUILD)/vis_%.o,$(VIS_SOURCES))
+$(BUILD)/vis_%.o: $(VIS_DIR)/%.cpp $(VIS_HEADERS) $(FIELD_HEADERS) $(MESH_HEADERS) $(IO_DIR)/output_settings.h $(IO_DIR)/scheduled_output.h | $(BUILD)
+	$(compiling)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
 FIELD_TEST := $(BUILD)/io_fields_tests$(EXE)
 FIELD_DEBUG_TEST := $(BUILD)/io_fields_tests_debug$(EXE)
 SETTINGS_OBJECTS := $(BUILD)/settings.o $(BUILD)/io_output_settings.o
 $(BUILD)/settings.o $(BUILD)/report_explicit.o: source/eulersolver/linear_euler.h
 $(BUILD)/settings.o: source/timestep/stabilization.h source/implicit/implicit_settings.h source/implicit/bdf1_step.h
-OUTPUT_HEADERS := $(IO_DIR)/output_settings.h $(IO_DIR)/scheduled_output.h $(IO_DIR)/fields.h $(IO_DIR)/diagnostic_fields.h
+OUTPUT_HEADERS := $(VIS_HEADERS) $(IO_DIR)/output_settings.h $(IO_DIR)/scheduled_output.h $(IO_DIR)/fields.h $(IO_DIR)/diagnostic_fields.h
+$(BUILD)/io_staged_field_file.o: $(IO_DIR)/scheduled_output.h $(IO_DIR)/output_settings.h
 $(BUILD)/io_output_settings.o: $(NUMBER_CODEC) $(OUTPUT_HEADERS) $(IO_DIR)/settings_text.h
 ifneq ($(wildcard source/eulersolver/euler.h),)
 SETTINGS_OBJECTS += $(BUILD)/io_staged_field_file.o $(BUILD)/io_scheduled_output.o
@@ -64,7 +74,7 @@ $(BUILD)/io_%.o: $(IO_DIR)/%.cpp $(FIELD_HEADERS) | $(BUILD)
 $(BUILD)/io_fields.o $(BUILD)/io_fields_tests.o: $(IO_DIR)/lzma_stream.h
 $(BUILD)/io_fields_mesh.o $(BUILD)/io_fields_tests.o: $(MESH_HEADERS)
 
-$(IO_LIBRARY): source/io/io.mk $(BUILD)/lzma_stream.o $(BUILD)/expression.o $(FIELD_OBJECTS) $(SETTINGS_OBJECTS) $(REPORT_OBJECTS) $(LZMA_OBJECTS)
+$(IO_LIBRARY): source/io/io.mk $(BUILD)/lzma_stream.o $(BUILD)/expression.o $(FIELD_OBJECTS) $(SETTINGS_OBJECTS) $(REPORT_OBJECTS) $(VIS_OBJECTS) $(LZMA_OBJECTS)
 	$(archiving)
 	# Создаём архив заново: ar сохраняет старые объектные файлы после переименования.
 	$(RM) "$@.tmp"

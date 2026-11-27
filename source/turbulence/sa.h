@@ -277,7 +277,7 @@ struct View {
     double ambient, pr_ratio;
     // Рабочая вязкость, временные слои и резервная копия, скорость изменения и диагональ.
     double *w, *old, *previous, *backup, *rate, *diagonal;
-    double *last_correction, *plain_update; // Только для внутренних итераций неявного уравнения SA.
+    double *plain_update; // Рабочее значение релаксации SA: поправка, поле для отката или последнее принятое изменение.
     // Обратное расстояние от узла до стенки.
     const double *inverse_distance;
     DdesPoint* ddes; // Только собственные строки, для которых решаем перенос SA.

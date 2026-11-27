@@ -156,6 +156,9 @@ public:
             assemble_fluxes(timing);
             accepted_fluxes_ = true;
         }
+#ifdef AERO_HAS_TURBULENCE
+        else op_.refresh_accepted_ddes(fields_.current,timing);
+#endif
     }
 
     // Готовит первые потоки шага и исходную стационарную невязку.
@@ -723,7 +726,7 @@ prepare_partition_operator(const RunSettings& run, const ReconstructionOptions& 
         {
             WallTimer timer(run.mpi_timing ? &seconds : nullptr);
             op->prepare_sa(part,seam,boundaries.patches,boundaries.periodic_pairs,run.turbulence,
-                           run.use_cuda,run.uses_implicit_time(),run.steady(),needs_stencil);
+                           run.use_cuda,run.uses_implicit_time(),needs_stencil);
         }
         if (single) done();
         if (run.mpi_timing) {

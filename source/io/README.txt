@@ -135,7 +135,7 @@ translation. Исходная сторона берётся из заголов�
 ---------------------
 read_run_settings читает output.txt из каталога --input в run.output_zones.
 Если файл отсутствует или пуст, список зон пуст. Заголовок секции задаёт имя
-зоны вывода. В этой версии каждая зона охватывает всю исходную сетку.
+зоны вывода. По умолчанию выводится вся сетка. submesh выбирает срез, wall_label — точки стенки для Cp.
 
   [latest]
   file = latest.fields
@@ -149,6 +149,12 @@ read_run_settings читает output.txt из каталога --input в run.o
   variables = p
   multi = 1
   format = lzma
+  visualization = tecplot, vtk
+
+Параметр visualization принимает tecplot, vtk или оба имени через запятую.
+У зоны pressure_history на шаге 37 появятся pressure_000037.fields, pressure_000037.plt
+и pressure_000037.vtk. Если опустить visualization, останется только основной снимок.
+Кодировка format относится к .fields. Подробности записи приведены в visualization/README.md.
 
 Параметр layout задаётся для каждой зоны. При значении local (по умолчанию)
 каждый MPI-процесс записывает поля в каталог своей части сетки. Для общего файла

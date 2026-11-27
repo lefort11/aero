@@ -153,6 +153,7 @@ void show_settings(const RunSettings& r) {
                   << "\npredictor_history_order = " << r.implicit_settings.prediction_order
                   << "\nsimplified_jacobian = " << (r.implicit_settings.simplified_jacobian ? "on" : "off")
                   << "\ncompact_jacobian = " << (r.implicit_settings.compact_jacobian ? "on" : "off")
+                  << "\nsolver_damp_correction = " << (r.implicit_settings.damp_correction ? "on" : "off")
                   << "\nsimplified_newton = " << (r.implicit_settings.simplified_newton() ? "on" : "off")
                   << "\njacobian_update_every = " << r.implicit_settings.jacobian_update_every
                   << "\nnewton_max_iter = " << r.implicit_settings.max_iterations << '\n';
@@ -181,6 +182,12 @@ void show_settings(const RunSettings& r) {
                   << "  variables =";
         for (const auto& v : z.variables)
             std::cout << ' ' << v;
+        if (z.visualize()) {
+            std::cout << "  visualization = ";
+            if (z.tecplot) std::cout << "tecplot";
+            if (z.tecplot && z.vtk) std::cout << ",";
+            if (z.vtk) std::cout << "vtk";
+        }
         std::cout << '\n';
     }
 }

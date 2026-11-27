@@ -1,5 +1,6 @@
 """Сверяет каждый принятый шаг и поля MPI-расчёта с результатом на целой сетке."""
 
+import measurements
 from mpi_common import report_rows, ROOT, mpi_parser, mpi_workspace
 import math
 from pathlib import Path
@@ -53,7 +54,7 @@ def stamp(path):
 
 def close(a, b):
     """Сравнивает числа с относительным и абсолютным допусками MPI-проверок."""
-    return math.isclose(a, b, rel_tol=3e-13, abs_tol=3e-14)
+    return measurements.isclose(a, b, rel_tol=3e-13, abs_tol=3e-14)
 
 
 def check_report(reference, actual):
@@ -62,7 +63,7 @@ def check_report(reference, actual):
     ref, result = [
         rows.findall(log.partition("Starting time integration")[2]) for log in (reference, actual)
     ]
-    if not ref or not ref[0].startswith("STEP ") or len(ref) != len(result):
+    if not ref or not ref[0].startswith("STEP ") or measurements.compare(len(ref), "!=", len(result)):
         raise AssertionError("Missing global report or different number of steps")
     for a, b in zip(ref, result):
         if a.startswith('STEP '):  # Время компьютера может различаться.
@@ -72,7 +73,7 @@ def check_report(reference, actual):
         numbers = r"[-+]?\d+(?:\.\d*)?(?:[eE][-+]?\d+)?"
         # Ширина заполнителя таблицы меняется при переходе от экспоненциальной
         # записи к обычной. Сверяем текстовые столбцы и сами числа отдельно.
-        if re.sub(numbers, "#", a).split() != re.sub(numbers, "#", b).split() or not all(
+        if measurements.compare(re.sub(numbers, "#", a).split(), "!=", re.sub(numbers, "#", b).split()) or not all(
             close(float(x), float(y)) for x, y in zip(re.findall(numbers, a), re.findall(numbers, b))
         ):
             raise AssertionError(f"Global report mismatch:\n{a}\n{b}")
@@ -96,17 +97,17 @@ def check_output(reference, out, ranks, count, dim, names, empty=False):
             rows = (part / "nodes.tsv").read_text().splitlines()[1:]
             for row in rows:
                 local, node, owner = map(int, row.split())
-                if local != len(mapping) or not 0 <= node < count or not 0 <= owner < ranks:
+                if measurements.compare(local, "!=", len(mapping)) or not (measurements.chain(0, "<=", node, "<", count)) or not (measurements.chain(0, "<=", owner, "<", ranks)):
                     raise AssertionError(f"Bad node map: {row}")
                 if rank == owner:
                     if node in owners:
                         raise AssertionError(f"Duplicate owner for node {node}")
                     owners[node] = rank
                 mapping.append(node)
-        if {p.name for p in directory.glob("*.fields")} != {p.name for p in paths}:
+        if measurements.compare({p.name for p in directory.glob("*.fields")}, "!=", {p.name for p in paths}):
             raise AssertionError(f"Output schedule mismatch on rank {rank}")
         copies.append((directory, mapping))
-    if ranks > 1 and (len(owners) != count or len(set(owners.values())) != (1 if empty else ranks)):
+    if measurements.compare(ranks, ">", 1) and (measurements.compare(len(owners), "!=", count) or measurements.compare(len(set(owners.values())), "!=", 1 if empty else ranks)):
         raise AssertionError("Missing owner or incorrect number of active partitions")
     max_error = 0.0
     for path in paths:
@@ -115,7 +116,7 @@ def check_output(reference, out, ranks, count, dim, names, empty=False):
         for directory, mapping in copies:
             snap = directory / path.name
             s, t = stamp(snap)
-            if s != step or not math.isclose(t, time, rel_tol=3e-14):
+            if measurements.compare(s, "!=", step) or not measurements.isclose(t, time, rel_tol=3e-14):
                 raise AssertionError(f"Step/time mismatch: {(s,t)} vs {(step,time)}")
             actual = read_snapshot(snap, len(mapping), dim, time, names)
             for key in names:
@@ -157,8 +158,8 @@ def cut_balance(path, coords, cut, reverse, scheme):
             raise AssertionError(f"Third stage did not propagate the discontinuity to node {i}")
     pressure_jump = states[0][1] - states[1][1]
     if (
-        rates[0][0] * pressure_jump >= 0
-        or rates[1][0] * pressure_jump <= 0
+        measurements.compare(rates[0][0] * pressure_jump, ">=", 0)
+        or measurements.compare(rates[1][0] * pressure_jump, "<=", 0)
         or not all(close(a + b, ref) for (a, b), ref in zip(zip(*rates), (0.0, pressure_jump, 0.0)))
     ):
         raise AssertionError(f"First-step conservation failure across Sod interface: {rates}")
@@ -176,7 +177,7 @@ def check_mp_alpha(aero, case, launcher, ranks, overrides):
             target = case / f"alpha-{reconstruction}-{time}"
             log = launch(aero, case, target, launcher, ranks, *overrides, *options)
             actual = re.search(r"(?m)^MP alpha = (\S+)", log)
-            if not actual or float(actual[1]) != alpha or "Completed " not in log:
+            if not actual or measurements.compare(float(actual[1]), "!=", alpha) or "Completed " not in log:
                 raise AssertionError(f"Wrong MP alpha for {reconstruction}, {time}, CFL={cfl}")
     print(f"OK MP5 and MPWENO5 alpha for five time schemes on {ranks} ranks")
 
@@ -196,7 +197,7 @@ def check_steady(aero, case, launcher, ranks, overrides, coords, names):
         start = case / "steady-initial"
         log = launch(aero, case, start, launcher, 1, *options, absolute, "implicit:steady_tol=1e20")
         initial_rate = float(re.search(r"absolute spatial residual = (\S+)", log)[1])
-        if initial_rate <= 0 or stamp(next(start.glob("*.fields"))) != (0, 0.):
+        if measurements.compare(initial_rate, "<=", 0) or measurements.compare(stamp(next(start.glob("*.fields"))), "!=", (0, 0.)):
             raise AssertionError("Absolute criterion did not accept the initial field")
         # Один порог задаём в долях начального оттока, другой — в его единицах.
         # Обе проверки должны принять один и тот же шаг и сохранить одно поле.
@@ -214,7 +215,7 @@ def check_steady(aero, case, launcher, ranks, overrides, coords, names):
             return int(rows[-1][0]), float(final[1])
         accepted, ratio = last(relative_log, "relative")
         step, rate = last(abs_log, "absolute")
-        if accepted != step or not 0. < ratio <= .5 or not math.isclose(ratio, rate/initial_rate, rel_tol=2e-8):
+        if measurements.compare(accepted, "!=", step) or not (measurements.chain(0., "<", ratio, "<=", .5)) or not measurements.isclose(ratio, rate/initial_rate, rel_tol=2e-8):
             raise AssertionError(f"Steady criteria disagree: relative {ratio} at step {accepted}, "
                                  f"absolute {rate} at step {step}, initial {initial_rate}")
         check_output(relative_output, target, ranks, len(coords), 1, names)
@@ -228,9 +229,9 @@ def check_steady(aero, case, launcher, ranks, overrides, coords, names):
         other_log = launch(aero, case, local_mpi, launcher, ranks, *overrides, *bounded)
         for log in (local_log, other_log):
             ranges = list(report_rows(log, r"^dt_min = (\S+)\s+dt_max = (\S+)"))
-            if not ranges or not all(0. < float(lo) < float(hi) <= 4.00001*float(lo) for _, lo, hi in ranges):
+            if not ranges or not all((measurements.chain(0., "<", float(lo), "<", float(hi), "<=", 4.00001*float(lo))) for _, lo, hi in ranges):
                 raise AssertionError("Invalid bounded local time steps on a nonuniform mesh")
-        if last(local_log, "relative")[0] != last(other_log, "relative")[0]:
+        if measurements.compare(last(local_log, "relative")[0], "!=", last(other_log, "relative")[0]):
             raise AssertionError("Decomposition changed the local steady convergence step")
         check_output(local_ref, local_mpi, ranks, len(coords), 1, names)
         # При коэффициенте 1 все разделы должны получить общий минимум всей сетки.
@@ -238,7 +239,7 @@ def check_steady(aero, case, launcher, ranks, overrides, coords, names):
         capped = case / "local-steady-uniform-step"
         capped_log = launch(aero, case, capped, launcher, ranks, *overrides, *local_options,
                             "implicit:local_time_step_max_ratio=1")
-        if last(capped_log, "relative")[0] != accepted:
+        if measurements.compare(last(capped_log, "relative")[0], "!=", accepted):
             raise AssertionError("Uniform cap changed convergence compared with a global step")
         check_output(relative_output, capped, ranks, len(coords), 1, names)
         limit = case / "steady-limit"
@@ -349,7 +350,7 @@ def verify(
         if reconstruction == "first_order" and scheme not in ("bdf1","bdf2"):
             cut_balance(reference / "state_000001.fields", coords, cut_node, reverse, scheme)
         times = [stamp(path)[1] for path in sorted(reference.glob("timed_*.fields"))]
-        if times != [final / 2, final]:
+        if measurements.compare(times, "!=", [final / 2, final]):
             raise AssertionError(f"Missed physical-time outputs: {times}")
     mesh_setting(case, "grid.mdec")
     native.unlink()
@@ -364,11 +365,11 @@ def verify(
         if scheme in ("bdf1","bdf2"):
             pattern = r"^Newton\s+\d+/\d+ iterations\s+relative residual = (\S+)\s+\[OK\]$"
             expected, observed = [list(report_rows(text, pattern)) for text in (log, actual)]
-            if not expected or [s for s, _ in expected] != [s for s, _ in observed]:
+            if not expected or measurements.compare([s for s, _ in expected], "!=", [s for s, _ in observed]):
                 raise AssertionError("Missing Newton residual for an accepted step")
             for (step, reference_norm), (_, norm) in zip(expected, observed):
-                if not (0 <= float(norm) <= 1e-6 and
-                        math.isclose(float(norm), float(reference_norm), rel_tol=1e-4, abs_tol=1e-11)):
+                if not ((measurements.chain(0, "<=", float(norm), "<=", 1e-6)) and
+                        measurements.isclose(float(norm), float(reference_norm), rel_tol=1e-4, abs_tol=1e-11)):
                     raise AssertionError(f"Newton step {step}: {reference_norm} vs {norm}")
         check_report(log, actual)
         error = check_output(reference, target, ranks, len(coords), dim, names, empty)
@@ -385,7 +386,7 @@ def verify(
         launch(aero, case, restart, launcher, 1, f"main:final_time={final/2}", "main:recovery_every_steps=1")
         snapshots = sorted(restart.glob("state_*.fields"))
         last, split = stamp(snapshots[-1])
-        if split != final/2 or last < 2:
+        if measurements.compare(split, "!=", final/2) or measurements.compare(last, "<", 2):
             raise AssertionError("Expected at least two accepted steps before restart")
         resumed = launch(aero, case, restart, launcher, ranks_to_test[-1], "--recover", *overrides)
         if f"Recovered step {last} at" not in resumed:
@@ -451,7 +452,7 @@ def verify(
                    "implicit:newton_max_iter=1", "implicit:newton_without_predictor=on", "implicit:newton_tol=1e-14", *overrides])
         residuals = re.findall(r"(?m)^Newton\s+1/1 iterations\s+relative residual = (\S+)\s+\[ITERATION LIMIT\]$", log)
         times = sorted(stamp(path)[1] for path in limited.rglob("timed_*.fields"))
-        if not any(float(value) > 1.e-14 for value in residuals) or times != [final / 2] * ranks + [final] * ranks:
+        if not any(measurements.compare(float(value), ">", 1.e-14) for value in residuals) or measurements.compare(times, "!=", [final / 2] * ranks + [final] * ranks):
             raise AssertionError(f"{scheme} did not publish the final field after limited Newton steps:\n{log}")
     if empty:
         command = [launcher, "-n", 4, aero, f"--input={case}", f"--output={case / 'missing-init'}"]

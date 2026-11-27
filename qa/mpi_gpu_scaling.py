@@ -1,5 +1,6 @@
 """Измеряет время одной и той же задачи на одной и двух видеокартах при разных весах разбиения."""
 
+import measurements
 from mpi_common import ROOT, mpi_parser
 import csv
 import math
@@ -59,14 +60,14 @@ def benchmark(work, aero, meshdec, launcher, devices):
             elapsed = time.perf_counter() - start
             out.with_suffix(".log").write_text(log, encoding="utf-8")
             header = re.search(r"GPU timings: ranks=(\d+) start_step=0 end_step=(\d+) steps=(\d+)", log)
-            if not header or int(header[1]) != len(cards) or header[2] != header[3]:
+            if not header or measurements.compare(int(header[1]), "!=", len(cards)) or measurements.compare(header[2], "!=", header[3]):
                 raise AssertionError(log)
             if mode == "single":
                 if not re.search(rf"Active backend = (?:CUDA|HIP) device {cards[0]}\b", log):
                     raise AssertionError(log)
             else:
                 assigned = re.findall(r"MPI (?:CUDA|HIP) placement: rank \d+ local_rank \d+ device (\d+)", log)
-                if assigned != cards or ("MPI GPU calibration: rank" in log) != (mode == "auto"):
+                if measurements.compare(assigned, "!=", cards) or measurements.compare("MPI GPU calibration: rank" in log, "!=", mode == "auto"):
                     raise AssertionError(log)
             table = log.split("max_s_per_step\n")[1].split("Completed")[0]
             phases = {line.split()[0]: float(line.split()[4]) for line in table.splitlines()}
@@ -74,17 +75,19 @@ def benchmark(work, aero, meshdec, launcher, devices):
             if reference is None:
                 reference = snapshot
             if (
-                snapshot[0] != reference[0]
-                or snapshot[0][-2:] != (int(header[3]), final)
-                or snapshot[1].keys() != reference[1].keys()
+                measurements.compare(snapshot[0], "!=", reference[0])
+                or measurements.compare(snapshot[0][-2:], "!=", (int(header[3]), final))
+                or measurements.compare(snapshot[1].keys(), "!=", reference[1].keys())
             ):
                 raise AssertionError("Snapshot mesh, step, time or field list changed")
             if any(not math.isfinite(value) for field in snapshot[1].values() for value in field):
-                raise AssertionError(f"{out}: nonfinite field")
+                name, node, value = next((key, i, v) for key, field in snapshot[1].items()
+                                         for i, v in enumerate(field) if not math.isfinite(v))
+                raise AssertionError(f"{out}: nonfinite {name}[{node}]={value!r}")
             error = max(
                 abs(a - b) for name in snapshot[1] for a, b in zip(reference[1][name], snapshot[1][name])
             )
-            if not error <= 1e-10:
+            if not measurements.error_at_most(error, 1e-10):
                 raise AssertionError(f"{out}: maximum field difference {error}")
             rows.append(
                 dict(

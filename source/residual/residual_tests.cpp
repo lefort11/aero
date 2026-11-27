@@ -659,37 +659,44 @@ Result reference(const Mesh& mesh, CvView cv, const ReconstructionStencil& stenc
                 right[k] = b - .5 * dr[k];
             }
         };
-        double l[3], r[3], ul[3], ur[3];
-        pair(q, l, r);
-        EulerFluxResult f{};
-        const bool roe = options.solver == ResidualSolver::Roe;
-        if (options.variables == ResidualVariables::Flux) {
-            pair(u, ul, ur);
-            require((roe ? roe_fluxes(1, l, r, ul, ur, normal, options.gamma, &f)
-                         : lax_friedrichs_fluxes(1, l, r, ul, ur, normal, options.gamma, &f)) ==
-                        EulerStatus::Success,
-                    "reference fluxes");
-        } else {
-            if (options.variables == ResidualVariables::Characteristic) {
-                characteristic_to_conservative(basis, l, l);
-                characteristic_to_conservative(basis, r, r);
+        double ul[3], ur[3], fl[3], fr[3];
+        pair(options.variables == ResidualVariables::Flux ? u : q, ul, ur);
+        if (options.variables == ResidualVariables::Characteristic) {
+            characteristic_to_conservative(basis, ul, ul);
+            characteristic_to_conservative(basis, ur, ur);
+        }
+        double speed_left, speed_right;
+        require(euler_flux(1, ul, normal, options.gamma, fl, &speed_left) == EulerStatus::Success &&
+                euler_flux(1, ur, normal, options.gamma, fr, &speed_right) == EulerStatus::Success,
+                "reference trace flux and speed");
+        if (options.variables == ResidualVariables::Flux)
+            pair(q, fl, fr);
+        double max_speed = std::max(speed_left, speed_right);
+        double jump[3], dissipation[3];
+        for (unsigned k = 0; k < 3; ++k)
+            jump[k] = ur[k] - ul[k];
+        if (options.solver == ResidualSolver::Roe) {
+            // Формула (14): разложение скачка следов в базисе исходных узлов i и j.
+            double waves[3];
+            require(conservative_to_characteristic(basis, normal, options.gamma, jump, waves) == EulerStatus::Success,
+                    "reference Roe projection");
+            for (unsigned k = 0; k < 3; ++k) {
+                const double modulus = std::abs(basis.eigenvalues[k]);
+                waves[k] *= modulus;
+                max_speed = std::max(max_speed, modulus);
             }
-            require((roe ? roe_conservative(1, l, r, normal, options.gamma, &f)
-                         : lax_friedrichs_conservative(1, l, r, normal, options.gamma, &f)) ==
-                        EulerStatus::Success,
-                    "reference states");
-            double speed;
-            require(euler_flux(1, l, normal, options.gamma, ul, &speed) == EulerStatus::Success &&
-                    euler_flux(1, r, normal, options.gamma, ur, &speed) == EulerStatus::Success, "central flux");
+            require(characteristic_to_conservative(basis, waves, dissipation) == EulerStatus::Success,
+                    "reference Roe dissipation");
+        } else {
+            for (unsigned k = 0; k < 3; ++k)
+                dissipation[k] = max_speed * jump[k];
         }
         for (unsigned k = 0; k < 3; ++k) {
-            // Публичный решатель вернул полный LF/Roe. Масштабируем только отличие от среднего потока.
-            const double center = options.variables == ResidualVariables::Flux ? .5*(l[k]+r[k]) : .5*(ul[k]+ur[k]);
-            f.flux[k] = center + options.upw_coeff * (f.flux[k] - center);
-            out.r[3 * i + k] += std::abs(normal[0]) * f.flux[k];
-            out.r[3 * j + k] -= std::abs(normal[0]) * f.flux[k];
+            const double flux = .5 * (fl[k] + fr[k] - options.upw_coeff * dissipation[k]);
+            out.r[3 * i + k] += std::abs(normal[0]) * flux;
+            out.r[3 * j + k] -= std::abs(normal[0]) * flux;
         }
-        out.edge[e] = f.max_wave_speed;
+        out.edge[e] = max_speed;
     }
     for (MeshIndex k = 0; k < cv.boundary_count; ++k) {
         const auto& piece = cv.boundary[k];

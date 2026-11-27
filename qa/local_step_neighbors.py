@@ -1,5 +1,6 @@
 """Проверяет ограничение отношения локальных псевдошагов на соседних узлах."""
 
+import measurements
 import math
 import shutil
 from pathlib import Path
@@ -55,38 +56,38 @@ def solve(case, args, label, *, limit=None, global_limit=None, mpi=False, gpu=Fa
     # При одном общем потолке 2 вместо 128 получилось бы 2, а при одном
     # обходе соседей осталось бы 256. Передача через границу MPI тоже обязательна.
     ranges = list(report_rows(log, r"^dt_min = (\S+)\s+dt_max = (\S+)"))
-    if [int(step) for step, _, _ in ranges] != list(range(1, steps+1)):
+    if measurements.compare([int(step) for step, _, _ in ranges], "!=", list(range(1, steps+1))):
         raise AssertionError(log)
     _, smallest, largest = ranges[0]
     measured = float(largest) / float(smallest)
     before = min(256, global_limit or 256)
     # К самому дальнему узлу от ближайшего малого шага ведут семь рёбер.
     expected = min(before, limit ** 7) if limit else before
-    if not math.isclose(measured, expected, rel_tol=2.e-6):
+    if not measurements.isclose(measured, expected, rel_tol=2.e-6):
         raise AssertionError(f"{label}: неверный разброс шагов {measured:g}")
     if limit:
         rows = list(report_rows(log, r"^LTS edge ratio\s+(\S+)\s+->\s+(\S+)\s+limit = (\S+)"))
-        if ([int(step) for step, *_ in rows] != list(range(1, steps+1))
-                or not math.isclose(float(rows[0][1]), before, rel_tol=2.e-6)
-                or not math.isclose(float(rows[0][2]), min(before, limit), rel_tol=2.e-6)
-                or any(not 1 <= float(after) <= limit * (1 + 1.e-6) or float(setting) != limit
+        if (measurements.compare([int(step) for step, *_ in rows], "!=", list(range(1, steps+1)))
+                or not measurements.isclose(float(rows[0][1]), before, rel_tol=2.e-6)
+                or not measurements.isclose(float(rows[0][2]), min(before, limit), rel_tol=2.e-6)
+                or any(not (measurements.chain(1, "<=", float(after), "<=", limit * (1 + 1.e-6))) or measurements.compare(float(setting), "!=", limit)
                        for _, _, after, setting in rows)):
             raise AssertionError(log)
     if residual_limit:
         # До первой полной серии из 32 принятых шагов история только накапливается.
         # На этой неоднородной линии затем растёт невязка лишь в части узлов.
         counts = [int(n) for _, n in report_rows(log, r"^LTS residual limit  nodes = (\d+)")]
-        if len(counts) != steps or any(counts[:32]) or not 0 < max(counts[32:]) < 9:
+        if measurements.compare(len(counts), "!=", steps) or any(counts[:32]) or not (measurements.chain(0, "<", max(counts[32:]), "<", 9)):
             raise AssertionError(f"{label}: неверная активация узлового ограничения {counts}")
         probe = list(report_rows(log, r"^LTS probe +node = 7 +dt = (\S+) +gas rate = (\S+) +SA rate = (\S+) +cap/CFL step = (\S+)"))
-        if len(probe) != steps:
+        if measurements.compare(len(probe), "!=", steps):
             raise AssertionError(f"{label}: неполная история выбранного узла")
         for (_, dt, gas, sa, cap), (_, minimum, maximum) in zip(probe, ranges):
-            if not (float(minimum) <= float(dt) <= float(maximum) and float(gas) > 0
-                    and float(sa) == 0 and 0 < float(cap) <= 1):
+            if not ((measurements.chain(float(minimum), "<=", float(dt), "<=", float(maximum))) and measurements.compare(float(gas), ">", 0)
+                    and measurements.compare(float(sa), "==", 0) and (measurements.chain(0, "<", float(cap), "<=", 1))):
                 raise AssertionError(f"{label}: неверный шаг или невязка узла 7")
     metadata, fields = binary_snapshot(case / label / "final.fields")
-    if metadata[3] != steps or set(fields) != {"rho", "ux", "p"}:
+    if measurements.compare(metadata[3], "!=", steps) or measurements.compare(set(fields), "!=", {"rho", "ux", "p"}):
         raise AssertionError(f"{label}: неполный снимок последнего шага")
     return fields
 
@@ -112,27 +113,27 @@ def check_stencil(case, args):
         # Наблюдение начинается с одинаковых шагов. Следующий диапазон
         # вычисляется только после полного блока из 32 принятых шагов.
         ratios = reported_limits(log)
-        assert set(ratios) == set(range(1, 97))
-        assert all(ratios[k] == 1. for k in range(1, 33)), ratios
-        assert all(ratios[k] >= 1. and (k % 32 == 1 or ratios[k] == ratios[k-1])
+        assert measurements.compare(set(ratios), "==", set(range(1, 97)))
+        assert all(measurements.compare(ratios[k], "==", 1.) for k in range(1, 33)), ratios
+        assert all(measurements.compare(ratios[k], ">=", 1.) and (measurements.compare(k % 32, "==", 1) or measurements.compare(ratios[k], "==", ratios[k-1]))
                    for k in ratios), ratios
         counts = [int(n) for _, n in report_rows(log, r"^LTS residual limit  nodes = (\d+)")]
         caps = [int(n) for _, n in report_rows(log, r"nodes with stored cap = (\d+)")]
-        assert len(caps) == len(counts) and all(0 <= active <= cap <= 9 for active,cap in zip(counts,caps))
-        assert len(counts) == 96 and not any(counts[:32]) and max(counts) > 0, counts
+        assert measurements.compare(len(caps), "==", len(counts)) and all((measurements.chain(0, "<=", active, "<=", cap, "<=", 9)) for active,cap in zip(counts,caps))
+        assert measurements.compare(len(counts), "==", 96) and not any(counts[:32]) and measurements.compare(max(counts), ">", 0), counts
         # Номер относится к одному из узлов шаблона; при разбиении другой
         # сработавший узел может быть выбран представителем того же события.
         sources = list(report_rows(log, r"^LTS probe stencil  gas response at node = (\d+)"))
         reviews = [int(step) for step, node in sources]
-        assert reviews and all(step % 32 == 0 for step in reviews), sources
-        assert all(0 <= int(node) < 9 for _, node in sources), sources
+        assert reviews and all(measurements.compare(step % 32, "==", 0) for step in reviews), sources
+        assert all((measurements.chain(0, "<=", int(node), "<", 9)) for _, node in sources), sources
         _, fields = binary_snapshot(out / "final.fields")
         if label == "cpu":
-            assert any(int(node) != 2 for _, node in sources), sources
+            assert any(measurements.compare(int(node), "!=", 2) for _, node in sources), sources
             baseline, expected, expected_caps, expected_reviews = fields, counts, caps, reviews
         else:
             delta = max_difference(baseline, fields)
-            assert reviews == expected_reviews and counts == expected and caps == expected_caps and delta < 2.e-10, (label, delta, counts)
+            assert measurements.compare(reviews, "==", expected_reviews) and measurements.compare(counts, "==", expected) and measurements.compare(caps, "==", expected_caps) and measurements.error_below(delta, 2.e-10), (label, delta, counts)
             print(f"PASS WENO5 stencil {label}: counts match, maximum field difference {delta:.3g}")
 
 
@@ -140,9 +141,9 @@ def reported_limits(log):
     """Сверяет фактический разброс dt с объявленным пределом на каждом принятом шаге."""
     limits = {int(k): float(v) for k, v in report_rows(log, r"^LTS step ratio limit = (\S+)")}
     ranges = list(report_rows(log, r"^dt_min = (\S+)\s+dt_max = (\S+)"))
-    assert {int(k) for k, _, _ in ranges} == limits.keys()
+    assert measurements.compare({int(k) for k, _, _ in ranges}, "==", limits.keys())
     for k, small, large in ranges:
-        assert float(large) <= float(small) * limits[int(k)] * (1. + 2e-6), (k, small, large)
+        assert measurements.compare(float(large), "<=", float(small) * limits[int(k)] * (1. + 2e-6)), (k, small, large)
     return limits
 
 
@@ -162,18 +163,18 @@ def check_cfl_after_limit(case, args, label="cpu", mpi=False, gpu=False):
                    f"implicit:local_time_step_residual_limit={mode}"], success=False)
         assert "pseudo-step limit reached before convergence" in log, log
         rows = list(report_rows(log, r"^dt_min = (\S+)\s+dt_max = (\S+)\s+CFL = (\S+)"))
-        assert [float(cfl) for _, _, _, cfl in rows] == [100., .25, .25, .25], log
-        assert set(reported_limits(log).values()) == {1.}, log
+        assert measurements.compare([float(cfl) for _, _, _, cfl in rows], "==", [100., .25, .25, .25]), log
+        assert measurements.compare(set(reported_limits(log).values()), "==", {1.}), log
         steps = [float(lo) for _, lo, _, _ in rows]
-        assert steps == [float(hi) for _, _, hi, _ in rows]
-        assert steps == [float(dt) for _, dt in report_rows(log, r"^LTS probe +node = 7 +dt = (\S+)")]
-        assert math.isclose(steps[0], 100 / (2048 * math.sqrt(1.4)), rel_tol=2.e-6), steps
+        assert measurements.compare(steps, "==", [float(hi) for _, _, hi, _ in rows])
+        assert measurements.compare(steps, "==", [float(dt) for _, dt in report_rows(log, r"^LTS probe +node = 7 +dt = (\S+)")])
+        assert measurements.isclose(steps[0], 100 / (2048 * math.sqrt(1.4)), rel_tol=2.e-6), steps
         _, fields = binary_snapshot(out / "final.fields")
         if mode == "work":
             reference_steps, reference_fields = steps, fields
         else:
-            assert all(math.isclose(a, b, rel_tol=2.e-6) for a, b in zip(steps, reference_steps)), steps
-            assert max_difference(reference_fields, fields) < 2.e-10
+            assert all(measurements.isclose(a, b, rel_tol=2.e-6) for a, b in zip(steps, reference_steps)), steps
+            assert measurements.error_below(max_difference(reference_fields, fields), 2.e-10)
     print(f"PASS LTS cfl at CFL 100 and after switching to 0.25 ({label})")
 
 
@@ -230,8 +231,8 @@ def check_spread_restart(case, args, mode):
         first = advance(out, switch, "main:reconstruction=first_order")
         high_order = advance(out, split, "--recover", "main:reconstruction=ebr5")
         scheme, (_, _, cap, count, first_sum, second_sum, work, previous_work) = spread_record(out, split)
-        assert scheme.split("/", 1)[0] == "ebr5" and count == (split-switch) % 32, (scheme, count)
-        assert first_sum and second_sum and work >= count and previous_work >= 32 and cap >= 1.
+        assert scheme.split("/", 1)[0] == "ebr5" and measurements.compare(count, "==", (split-switch) % 32), (scheme, count)
+        assert first_sum and second_sum and measurements.compare(work, ">=", count) and measurements.compare(previous_work, ">=", 32) and measurements.compare(cap, ">=", 1.)
 
         # Чтение управляемого верхнего предела не начинает новую серию:
         # значение 100 выше текущего и не меняет разрешённого в тесте шага.
@@ -239,19 +240,19 @@ def check_spread_restart(case, args, mode):
         more = advance(out, end, "--recover", "main:reconstruction=ebr5")
         assert "Control accepted: local_time_step_max_ratio" in more, more
         limits, expected = reported_limits(first + high_order + more), reported_limits(automatic)
-        assert limits.keys() == expected.keys() == set(range(1, end+1))
-        assert limits[switch] > 1. and all(limits[k] == 1. for k in range(switch+1, switch+33)), limits
-        assert limits[split+1] == limits[split] and limits[switch+65] != limits[split], limits
+        assert (measurements.chain(limits.keys(), "==", expected.keys(), "==", set(range(1, end+1))))
+        assert measurements.compare(limits[switch], ">", 1.) and all(measurements.compare(limits[k], "==", 1.) for k in range(switch+1, switch+33)), limits
+        assert measurements.compare(limits[split+1], "==", limits[split]) and measurements.compare(limits[switch+65], "!=", limits[split]), limits
         for k, ratio in expected.items():
-            assert math.isclose(limits[k], ratio, rel_tol=2e-6), (label, k, limits[k], ratio)
+            assert measurements.isclose(limits[k], ratio, rel_tol=2e-6), (label, k, limits[k], ratio)
         # Выбранная зона записывает один общий файл независимо от числа рангов.
         # Сравниваем именно последний принятый слой обеих веток.
         resumed, = out.glob(f"resumed-{split}-*")
         files = [next(directory.rglob("final.fields")) for directory in (whole, resumed)]
         (a, reference), (b, continued) = map(binary_snapshot, files)
-        assert a[3] == b[3] == end
+        assert (measurements.chain(a[3], "==", b[3], "==", end))
         delta = max_difference(reference, continued)
-        assert delta < 2.e-10, (label, delta)
+        assert measurements.error_below(delta, 2.e-10), (label, delta)
         print(f"PASS LTS {mode} after LO to EBR5 and mid-block restart ({label}), maximum field difference {delta:.3g}")
 
 
@@ -292,7 +293,7 @@ def check_recovery_and_probe(case, args):
                    "implicit:local_time_step_probe_node=7", "implicit:steady_max_steps=5",
                    "implicit:steady_tol=1e-14"], success=False)
         rates = {int(k): float(v) for k, v in report_rows(log, r"^LTS probe +node = 7 +dt = \S+ +gas rate = (\S+)")}
-        assert set(rates) == set(range(1, 6)) and all(math.isfinite(v) and v > 0 for v in rates.values()), rates
+        assert measurements.compare(set(rates), "==", set(range(1, 6))) and all(math.isfinite(v) and measurements.compare(v, ">", 0) for v in rates.values()), rates
         print(f"PASS recovery BC change and LO transition probe ({label})")
 
 
@@ -306,12 +307,12 @@ def main():
         check_recovery_and_probe(case / "regressions", args)
         original = solve(case, args, "default")
         expected = solve(case, args, "limited", limit=2)
-        if max_difference(original, expected) < 1.e-7:
+        if measurements.error_below(max_difference(original, expected), 1.e-7):
             raise AssertionError("Ограничение не изменило решение на неоднородной сетке")
         # Предел 1 делает шаги на всей линии одинаковыми. Независимый эталон
         # даёт уже существующее глобальное ограничение при том же значении.
         uniform = solve(case, args, "global-1", global_limit=1)
-        if max_difference(uniform, solve(case, args, "neighbor-1", limit=1)) > 2.e-11:
+        if measurements.compare(max_difference(uniform, solve(case, args, "neighbor-1", limit=1)), ">", 2.e-11):
             raise AssertionError("При отношении 1 не воспроизведён единый шаг")
         combined = solve(case, args, "combined", limit=2, global_limit=5)
         feedback = solve(case, args, "feedback", limit=2, residual_limit=True)
@@ -324,15 +325,15 @@ def main():
                 check_cfl_after_limit(case, args, label, use_mpi, use_gpu)
                 fields = solve(case, args, label, limit=2, mpi=use_mpi, gpu=use_gpu)
                 delta = max_difference(expected, fields)
-                if delta > 2.e-11:
+                if measurements.error_exceeds(delta, 2.e-11):
                     raise AssertionError(f"{label}: максимальное расхождение полей {delta:g}")
                 controlled = solve(case, args, label + "-feedback", limit=2, mpi=use_mpi, gpu=use_gpu, residual_limit=True)
                 feedback_delta = max_difference(feedback, controlled)
-                if feedback_delta > 2.e-10:
+                if measurements.compare(feedback_delta, ">", 2.e-10):
                     raise AssertionError(f"{label}: различаются поля после двух проверок местной невязки")
                 other = solve(case, args, label + "-combined", limit=2, global_limit=5, mpi=use_mpi, gpu=use_gpu)
                 combined_delta = max_difference(combined, other)
-                if combined_delta > 2.e-11:
+                if measurements.compare(combined_delta, ">", 2.e-11):
                     raise AssertionError(f"{label}: расхождение при двух ограничениях {combined_delta:g}")
                 print(f"PASS LTS neighbor ratio {label}, maximum field difference {delta:.3g}, combined {combined_delta:.3g}, residual limit {feedback_delta:.3g}")
         check_stencil(case, args)

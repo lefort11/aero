@@ -359,6 +359,8 @@ RunSettings read_run_settings(const RunDirectories& directories) {
                 throw std::invalid_argument(entry.where + ": this build has no source/multigrid module");
 #endif
         }
+        controls.damp_correction = settings.contains("solver_damp_correction") &&
+            choice(lowercase(settings.take("solver_damp_correction")), {"on","off"}) == "on";
         controls.second_order = run.time_scheme == "bdf2";
         controls.roe = choice(lowercase(settings.take("jacobian_flux")), {"lf","roe"}) == "roe";
         controls.csgs = choice(lowercase(settings.take("preconditioner")), {"bj","csgs"}) == "csgs";

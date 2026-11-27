@@ -1,4 +1,5 @@
 #include "mpi_fields.h"
+#include "../io/visualization/zone_files.h"
 #include "../io/scheduled_output.h"
 #include <algorithm>
 #include <memory>
@@ -8,10 +9,11 @@ namespace aero {
 void write_global_fields(const Processes& world, const std::string& directory, const OutputZone& zone,
                          const std::vector<unsigned>& columns, const FieldNodeSelection& mesh,
                          const std::vector<OwnedNode>& nodes, double gamma, std::uint64_t step, double time,
-                         const std::vector<double>& state, const LinearBackground& background,const diagnostic::Fields& scalars) {
+                         const std::vector<double>& state, const LinearBackground& background,const diagnostic::Fields& scalars, const Mesh* visualization_mesh) {
     std::unique_ptr<StagedFieldFile> staged;
     std::vector<std::uint64_t> offsets;
-    std::string temporary;
+    FieldSnapshot metadata;
+    std::string temporary, path;
     world.local([&] {
         // Нулевой процесс создаёт метаданные и резервирует место для каждого столбца.
         offsets.resize(columns.size());
@@ -19,9 +21,9 @@ void write_global_fields(const Processes& world, const std::string& directory, c
             return;
         auto name = output_filename(zone, step);
         std::replace(name.begin(), name.end(), '\\', '/');
-        staged.reset(new StagedFieldFile(directory + "/" + name));
+        path = directory + "/" + name;
+        staged.reset(new StagedFieldFile(path));
         temporary = staged->temporary();
-        FieldSnapshot metadata;
         metadata.dimension = mesh.dimension;
         metadata.mesh_sha256 = mesh.mesh_sha256;
         metadata.counts = mesh.counts;
@@ -43,8 +45,11 @@ void write_global_fields(const Processes& world, const std::string& directory, c
     // Исходный номер узла определяет позицию в файле независимо от разбиения сетки.
     indexed_io::transfer(world, temporary, indexed_io::Access::Write, 8, nodes, offsets, std::ref(encode));
     world.local([&] {
-        if (!world.rank)
-            staged->publish(!zone.multi);
+        if (world.rank) return;
+        if (zone.visualize()) {
+            // Читаем законченные столбцы блоками непосредственно из результата MPI-IO.
+            publish_zone_files(*staged, path, zone, visualization_mesh, metadata, &offsets);
+        } else staged->publish(!zone.multi);
     });
 }
 }

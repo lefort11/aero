@@ -1,11 +1,11 @@
 #include "step_execution.h"
+#include "scalar_solver.h"
+#include <cstdio>
+#include <cstdlib>
 #include "../aero/partition_operator.h"
 #include "../parallel/parallel_for.h"
 #include "convection.h"
 #include "../timestep/bdf_weights.h"
-#ifdef AERO_HAS_MULTIGRID
-#include "../multigrid/scalar_smoother.h"
-#endif
 #ifdef AERO_WITH_KOKKOS_GPU
 #include "../parallel/device_work.h"
 #include "../parallel/device_check.h"
@@ -17,22 +17,19 @@ using turbulence::Operation;
 // Готовит поле SA, расстояния до стенок, границы и рабочую память.
 void PartitionOperator::prepare_sa(const MeshPartition &part, const PeriodicPartition *periodic,
                                    const BoundaryPatches &patches, const std::vector<PeriodicPair> &pairs,
-                                   const turbulence::Settings &settings, bool gpu, bool implicit, bool steady, bool has_stencil) {
+                                   const turbulence::Settings &settings, bool gpu, bool implicit, bool has_stencil) {
     sa_implicit_time_ = implicit;
     sa_high_order_ = settings.high_order && has_stencil;
     aes_->turbulence_field.distance =
         turbulence::wall_distances(part, periodic, patches, pairs, world_, state_nodes());
-    // Для RANS на стационарном шаге можно один раз построить линии по геометрии сетки.
-    const bool use_lines = steady && !settings.ddes;
     world_.local([&] {
         if (sa_high_order_ && !gpu) {
             host_sa_correction_.resize(grid_.edges);
             sa_correction_ = host_sa_correction_.data();
         }
         aes_->prepare_sa_faces(grid_, !gpu);
-        aes_->prepare_turbulence(settings, !gpu, implicit, use_lines ? &owned : nullptr);
+        aes_->prepare_turbulence(settings, !gpu, implicit, nullptr);
     });
-    sa_lines_ = use_lines && world_.reduce_double(aes_->turbulence_field.line_segments.empty() ? 0. : 1., true) > 0.;
 }
 // Собирает представление текущей стадии переноса SA.
 turbulence::Step PartitionOperator::sa_step() const {
@@ -127,6 +124,27 @@ void PartitionOperator::update_les(const std::vector<double>& state, SolverTimin
     if (gpu_ && seconds) PartitionGpu::synchronize();
 #endif
 }
+// Неявный шаг фиксирует длину DDES внутри Ньютона. Перед первым использованием
+// принятого поля пересчитываем фильтр по готовому газу. Меняется источник SA,
+// поэтому обновляем rate и diagonal; межузловые потоки и конвекция SA уже готовы.
+void PartitionOperator::refresh_accepted_ddes(const std::vector<double>& state, SolverTimings& timing) {
+    if (!ddes_filter_pending_) return;
+    WallTimer timer(timing.counter(SolverTimings::LesClosure));
+    world_.local([&] {
+        // На подобласти с постоянной длиной без экранирования фильтр не участвует в источнике.
+        if (aes_->view().skip_ddes_filter) return;
+        const auto phase = viscosity::Evaluation::FilterOnly;
+#ifdef AERO_WITH_KOKKOS_GPU
+        if (gpu_) {
+            device_work::check(device_work::aero_device_viscosity(gpu_->viscosity_view(),
+                gpu_->active_grid().state,gpu_->current_gas(),phase));
+        } else
+#endif
+            aes_->evaluate(state.data(),grid_.packed.gas,gas_current_,phase);
+        sa_apply(sa_step(),Operation::Residual);
+    });
+    ddes_filter_pending_ = false;
+}
 // Обновляет значения рабочей вязкости в halo-узлах.
 void PartitionOperator::sa_exchange() {
     if (turbulence_exchange_)
@@ -163,7 +181,7 @@ void PartitionOperator::prepare_sa_convection(const turbulence::Step& step) cons
     if (sa_edge_exchange_) sa_edge_exchange_->transfer(world_,{1,sa_correction_,nullptr},device());
 }
 // При включённых замерах отделяем ядра SA от асинхронной сборки газового потока.
-void PartitionOperator::evaluate_sa(const std::vector<double> &state, SolverTimings &timing, bool rates_ready, bool rows_ready,
+double PartitionOperator::evaluate_sa(const std::vector<double> &state, SolverTimings &timing, bool rates_ready, bool rows_ready,
                                     bool reference_only) {
     auto *seconds = timing.counter(SolverTimings::SaTransport);
 #ifdef AERO_WITH_KOKKOS_GPU
@@ -171,14 +189,25 @@ void PartitionOperator::evaluate_sa(const std::vector<double> &state, SolverTimi
         PartitionGpu::synchronize();
 #endif
     WallTimer timer(seconds);
-    solve_sa_stage(state, rates_ready, rows_ready, reference_only);
+    const double defect = solve_sa_stage(state, rates_ready, rows_ready, reference_only);
 #ifdef AERO_WITH_KOKKOS_GPU
     if (gpu_ && seconds)
         PartitionGpu::synchronize();
 #endif
+    return defect;
+}
+// Настройки берутся из общего неявного интегратора ровно один раз на слой.
+void PartitionOperator::begin_sa_linear_step(bool history_allowed) {
+    sa_history_allowed_=history_allowed && !(steady_steps_ && steady_steps_->local) &&
+        !sa_settings_.without_predictor && sa_settings_.prediction_order;
+    if (sa_linear_) sa_linear_->begin_step(sa_settings_.jacobian_update_every);
+}
+// Полином экстраполяции использует только принятые слои.
+void PartitionOperator::commit_sa_linear_step(double dt) {
+    if (sa_linear_) sa_linear_->commit(dt,sa_history_allowed_);
 }
 // Решает текущую стадию SA с согласованием потоков и диффузии.
-void PartitionOperator::solve_sa_stage(const std::vector<double> &state, bool rates_ready, bool rows_ready, bool reference_only) {
+double PartitionOperator::solve_sa_stage(const std::vector<double> &state, bool rates_ready, bool rows_ready, bool reference_only) {
     // Для явной стадии достаточно пространственной невязки. В BDF уточняем рабочую
     // вязкость при фиксированном газе до проверки полной невязки нового слоя.
     auto s = sa_step();
@@ -186,83 +215,55 @@ void PartitionOperator::solve_sa_stage(const std::vector<double> &state, bool ra
         prepare_sa_convection(s);
         world_.local([&] { sa_apply(s, Operation::Residual); });
     }
-    if (!sa_dt_)
-        return;
-    // Вычисляет согласованную норму невязки текущего пробного состояния.
-    const auto residual_norm = [&](bool refresh) {
-        if (refresh) prepare_sa_convection(s);
-        const double value = sa_max(s, reference_only ? Norm::SaveStartBdf : Norm::Bdf, refresh);
-        if (!s.extrapolate && !std::isfinite(value))
-            throw std::runtime_error("SA: nonfinite implicit transport residual");
-        return value;
-    };
-    double norm = residual_norm(false);
-    if (sa_target_ == 0.)
-        sa_target_ =
-            std::max(sa_tol_ * norm, 32. * std::numeric_limits<double>::epsilon() * s.transport.sa.ambient);
-    // Для совместной пробы достаточно зафиксировать тот же абсолютный допуск SA.
-    // Правая часть и рабочая вязкость остаются на принятом слое до газовой пробы.
-    if (reference_only) return;
-    unsigned count = 0;
-    bool use_lines = sa_lines_;
-#ifdef AERO_HAS_MULTIGRID
-    multigrid::ScalarSmoother polynomial;
+    if (!sa_dt_) return 0.;
+    (void)reference_only;
+    double norm = sa_max(s,Norm::Bdf);
     const double initial_norm = norm;
+    if (!std::isfinite(norm)) throw std::domain_error("SA: nonfinite transport residual");
+    if (norm <= sa_target_) return norm;
+    // Для переноса используется тот же выбор графа, предобусловливателя и линейного допуска.
+    auto faces=turbulence::GasFaces{grid_.surfaces,grid_.incidence,grid_.offsets};
+#ifdef AERO_WITH_KOKKOS_GPU
+    if (gpu_) faces=s.transport.gas_faces;
 #endif
-    // При достижении допуска или лимита используем текущее поле рабочей вязкости.
-    // Ниже по этому полю обновляются напряжения и тепловой поток газа.
-    while (norm > sa_target_ && count < sa_iterations_) {
-        const double previous_norm=norm;
-        // На небольшом псевдошаге нескольких точечных поправок обычно достаточно.
-        // Прогонку запускаем, только если после четырёх итераций перенос ещё не сошёлся.
-        const bool line_trial=use_lines && count>=4;
-        s.extrapolate=line_trial || (count%2==1 && count+1<sa_iterations_);
-#ifdef AERO_HAS_MULTIGRID
-        const bool polynomial_trial = sa_multigrid_ && !line_trial && count >= 4;
-        if (polynomial_trial) {
-            polynomial.next(initial_norm,norm,count);
-            s.polynomial_current = polynomial.current;
-            s.polynomial_previous = polynomial.previous;
-            s.extrapolate = true;
-        }
-#endif
-        world_.local([&] { sa_apply(s,line_trial ? Operation::LineRelax : Operation::Relax); });
-        sa_exchange();
-        norm = residual_norm(true);
-        // Проверяем настоящую нелинейную невязку по всем процессам. Если
-        // ускоренная поправка её не уменьшила, принимаем обычную итерацию.
-        bool reject = s.extrapolate && !(norm<previous_norm);
-#ifdef AERO_HAS_MULTIGRID
-        if (polynomial_trial) reject = !polynomial.accepts(norm);
-#endif
-        if (reject) {
-            // Если прогонка по сильным связям проиграла обычной итерации,
-            // для этого же газа не повторяем её при каждой следующей поправке.
-            // На новом слое и после обновления газа снова разрешаем пробу.
-            if (line_trial && sa_multigrid_) use_lines = false;
-#ifdef AERO_HAS_MULTIGRID
-            if (polynomial_trial) polynomial.restart();
-#endif
-            s.extrapolate=false;
-            world_.local([&] { sa_apply(s,Operation::RestorePlain); });
-            sa_exchange();
-            norm=residual_norm(true);
-        }
-        ++count;
+    if (!sa_linear_) {
+        const auto graph=bdf_->scalar_topology(sa_settings_.csgs);
+        const auto linear=linear_grid();
+        const auto exchange=[this](double* field) {
+            turbulence_exchange_->transfer(world_,{1,field,nullptr},device());
+        };
+        world_.local([&] {
+            sa_linear_=std::make_shared<turbulence::ScalarSolver>(graph,linear.partition,linear.device,
+                s.transport.count,state_nodes(),bdf_->report_workspace(),width_,sa_settings_.jacobian_update_every>1,exchange);
+        });
     }
-    // В автоматическом LTS несовместимую с допуском пару полей можно повторить
-    // с меньшим псевдошагом. Обработчик отказа восстанавливает газ и рабочую вязкость.
-    if (norm > sa_target_ && step_mode_ == LocalStepMode::Auto && !s.transport.sa.ddes)
-        throw implicit::LinearSolveFailure("SA transport reached its iteration limit above tolerance");
-    // При нуле итераций скалярное поле осталось тем же. Газовая сборка на входе
-    // уже использовала эту вязкость и повторять её не требуется.
-    // Пробная поправка Ньютона тоже уже содержит полную вязкую невязку
-    // данного газа. Если SA приняла старое nu_tilde, эти строки остаются точными.
-    if (count == 0 && (rows_ready || rates_ready))
-        return;
+    const auto refresh=[&] {
+        sa_exchange();
+        prepare_sa_convection(s);
+        return sa_max(s,Norm::Bdf,true);
+    };
+    const bool spatial=steady_steps_ && !s.transport.sa.ddes && sa_settings_.simplified_newton();
+    sa_linear_->prepare_stage(s,faces,sa_settings_);
+    const double reference=sa_target_/sa_settings_.newton_relative;
+    norm=sa_linear_->initial_guess(norm,reference,sa_settings_,spatial,steady_steps_ && steady_steps_->local,sa_history_allowed_,refresh);
+    bool filtered=false, shifted=false;
+    for (unsigned iteration=0;iteration<sa_settings_.max_iterations && norm>sa_target_;++iteration) {
+        if (!sa_settings_.simplified_newton()) sa_linear_->prepare(s,faces,sa_settings_.simplified_jacobian,true);
+        const auto solved=sa_linear_->correct(sa_settings_,norm,filtered,shifted);
+        if (solved.status!=implicit::LinearStatus::Converged)
+            throw implicit::LinearSolveFailure("SA BiCGSTAB failed above linear tolerance");
+        shifted=filtered;
+        const double before=norm;
+        norm=refresh();
+        // При профилировании сохраняем полную нелинейную невязку отдельно от линейной.
+        if (world_.rank == 0 && std::getenv("AERO_PROFILE_BDF"))
+            std::printf("SA Newton %u: initial=%.12e before=%.12e after=%.12e target=%.12e BiCGSTAB=%u linear_residual=%.12e\n",
+                        iteration+1,initial_norm,before,norm,sa_target_,solved.iterations,solved.residual_norm);
+        if (!std::isfinite(norm)) throw std::domain_error("SA: nonfinite Newton residual");
+        if (sa_settings_.damp_correction && CorrectionFilter::slow(norm,before)) filtered=true;
+    }
     const bool same_gas=rows_ready || rates_ready;
-    const auto phase = !count ? viscosity::Evaluation::RowsOnly :
-        (same_gas ? viscosity::Evaluation::AfterSaFixedGas : viscosity::Evaluation::AfterSaUpdate);
+    const auto phase = same_gas ? viscosity::Evaluation::AfterSaFixedGas : viscosity::Evaluation::AfterSaUpdate;
     world_.local([&] {
 #ifdef AERO_WITH_KOKKOS_GPU
         if (gpu_) {
@@ -274,6 +275,7 @@ void PartitionOperator::solve_sa_stage(const std::vector<double> &state, bool ra
 #endif
         aes_->evaluate(state.data(), grid_.packed.gas, true, phase);
     });
+    return norm;
 }
 // Формирует пары рабочей и физической вихревой вязкости для вывода.
 std::vector<double> PartitionOperator::sa_output(const std::vector<double> &state) {

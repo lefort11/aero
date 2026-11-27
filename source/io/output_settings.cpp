@@ -14,6 +14,19 @@
 namespace aero {
 namespace {
 using namespace settings_detail;
+// Читает список форматов одной зоны и сообщает о пропущенном или повторном значении.
+void read_visualization(OutputZone& zone, const std::string& value, const std::string& where) {
+    std::size_t start = 0;
+    for (;;) {
+        const auto comma = value.find(',', start);
+        const auto token = trim(value.substr(start, comma - start));
+        if (token == "tecplot" && !zone.tecplot) zone.tecplot = true;
+        else if (token == "vtk" && !zone.vtk) zone.vtk = true;
+        else throw std::invalid_argument(where + ": unknown or duplicate visualization format: " + token);
+        if (comma == std::string::npos) break;
+        start = comma + 1;
+    }
+}
 // Заполняет один параметр текущей зоны. Совместимость всех параметров проверяется после чтения.
 void entry(OutputZone& z, const std::string& key, const std::string& value, const std::string& where, std::vector<std::string>* warnings) {
     if (key == "file")
@@ -38,6 +51,8 @@ void entry(OutputZone& z, const std::string& key, const std::string& value, cons
         z.format = FieldFormat::Binary;
     else if (key == "format" && value == "lzma")
         z.format = FieldFormat::Lzma;
+    else if (key == "visualization")
+        read_visualization(z, value, where);
     else if (key == "variables") {
         std::size_t start = 0;
         for (;;) {
@@ -103,6 +118,10 @@ std::string output_path_key(std::string file) {
 #endif
     return normalized;
 }
+// Меняет расширение только у последнего компонента пути.
+std::string visualization_filename(const std::string& name, const char* suffix) {
+    return name.substr(0, extension(name)) + suffix;
+}
 // При раздельном выводе вставляет номер шага перед расширением файла.
 std::string output_filename(const OutputZone& zone, std::uint64_t step) {
     if (!zone.multi)
@@ -116,7 +135,7 @@ std::string output_filename(const OutputZone& zone, std::uint64_t step) {
 // Проверяет имена, поля и расписания зон вывода.
 void validate_output_zones(const std::vector<OutputZone>& zones) {
     std::set<std::string> names;
-    std::vector<std::string> keys;
+    std::vector<std::pair<std::string, const OutputZone*>> paths;
     std::set<std::string> supported={"primary","fluctuations","dp/dt"};
     for(unsigned c=0;c<diagnostic::ColumnCount;++c) supported.insert(diagnostic::name(c));
 #ifdef AERO_HAS_TURBULENCE
@@ -143,7 +162,6 @@ void validate_output_zones(const std::vector<OutputZone>& zones) {
         if (!z.submesh.empty() && !z.wall_label.empty())
             throw std::invalid_argument(prefix+"choose wall_label or submesh");
         // Проверяем, могут ли две зоны при каком-либо шаге записать в один и тот же файл.
-        const auto key = output_path_key(z.file);
         const auto snapshot = output_path_key(output_filename(z, 1));
         const auto first = snapshot.substr(0, snapshot.find('/'));
         if (first == "aero.log" || first == "control.txt")
@@ -154,14 +172,21 @@ void validate_output_zones(const std::vector<OutputZone>& zones) {
             if (first == "recovery-0.bin" || first == "recovery-1.bin" || first == "recovery.lock")
                 throw std::invalid_argument(prefix + "field output overlaps recovery data: " + z.file);
         }
-        for (std::size_t i = 0; i < keys.size(); ++i) {
-            const bool overlap = z.multi == zones[i].multi
-                                     ? key == keys[i]
-                                     : (z.multi ? in_series(keys[i], key) : in_series(key, keys[i]));
-            if (overlap)
-                throw std::invalid_argument(prefix + "file names overlap with zone " + zones[i].name);
-        }
-        keys.push_back(key);
+        // Проверяем также пересечения .fields с визуализацией этой и соседних зон.
+        const auto check_path = [&](const std::string& name) {
+            const auto key = output_path_key(name);
+            for (const auto& previous : paths) {
+                const auto& other = *previous.second;
+                const bool overlap = z.multi == other.multi ? key == previous.first :
+                    (z.multi ? in_series(previous.first, key) : in_series(key, previous.first));
+                if (overlap)
+                    throw std::invalid_argument(prefix + "file names overlap with zone " + other.name);
+            }
+            paths.emplace_back(key, &z);
+        };
+        check_path(z.file);
+        if (z.tecplot) check_path(visualization_filename(z.file, ".plt"));
+        if (z.vtk) check_path(visualization_filename(z.file, ".vtk"));
     }
 }
 // Разбирает секции зон вывода и проверяет их параметры.

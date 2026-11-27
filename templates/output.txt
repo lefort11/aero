@@ -20,6 +20,10 @@
 # E' = p'/(gamma-1) + rho0*(U0·u') + rho'*|U0|²/2. Эту же величину сравнивает sol_error.txt.
 # multi — 0 (по умолчанию, заменять файл) или 1 (номер шага в имени).
 # format — binary (по умолчанию), text или lzma.
+# visualization — дополнительные файлы этой зоны. Допустимы vtk, tecplot или список через запятую.
+# При visualization = tecplot, vtk рядом с pressure_000037.fields появятся pressure_000037.plt
+# и pressure_000037.vtk. Без этого параметра пишется только основной снимок.
+# Параметр format управляет кодировкой .fields. Файлы .plt и .vtk всегда двоичные.
 # layout — local (по умолчанию, отдельные файлы рангов) или global
 # (общий файл в исходной нумерации). Для общего вывода MPI используйте
 # layout = global, format = binary и сетку .mdec версии 4 или новее.
@@ -37,6 +41,7 @@ file = pressure.fields
 every_time = 0.05
 multi = 1
 variables = p
+# visualization = tecplot, vtk
 # Например, запись на шаге 37 получит имя pressure_000037.fields.
 
 # В variables можно указывать отдельные величины или группы через запятую.

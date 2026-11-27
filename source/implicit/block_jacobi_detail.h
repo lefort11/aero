@@ -8,7 +8,7 @@ namespace implicit {
 // Вид рабочих массивов, одинаковый в цикле CPU и в ядре Kokkos на GPU.
 struct JacobiBlocks {
     MeshIndex nodes;        // Число собственных узлов процесса.
-    unsigned width;         // Число уравнений Эйлера в одном узле: от трёх до пяти.
+    unsigned width;         // Размер блока: одно уравнение переноса или компоненты газа.
     double* factors;        // Нижний и верхний треугольники LU хранятся в одном плотном блоке.
     unsigned char* pivots;  // С какой строкой поменяли местами строку k на шаге исключения k.
     const double* diagonal; // В экономном режиме диагональ принадлежит матрице до следующей сборки.
@@ -91,6 +91,7 @@ struct JacobiBlocks {
     // Решает систему для одной строки, в том числе с правой частью прямого или обратного прохода.
     AERO_HOST_DEVICE void solve_block(MeshIndex node, const double* rhs, double* answer) const {
         switch (width) {
+        case 1: return solve_fixed<1>(node,rhs,answer);
         case 3: return solve_fixed<3>(node,rhs,answer);
         case 4: return solve_fixed<4>(node,rhs,answer);
         default: return solve_fixed<5>(node,rhs,answer);

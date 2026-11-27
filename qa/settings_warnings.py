@@ -1,4 +1,5 @@
 """Проверяет диагностику входных файлов при запуске и в каждом отчёте."""
+import measurements
 import os
 import re
 import shutil
@@ -22,9 +23,9 @@ def check(case):
            "main:report_every=1", "main:final_time=.01"]
     log = run([*cmd, f"--output={case / 'out'}"])
     reports = len(re.findall(r"^STEP \d+  \|", log, re.M))
-    assert reports >= 2, log
+    assert measurements.compare(reports, ">=", 2), log
     for name in ("main", "gas", "scheme", "output", "exact", "init", "bc"):
-        assert len(re.findall(rf"^WARNING: .*\btypo_{name}\b", log, re.M)) == reports + 1, log
+        assert measurements.compare(len(re.findall(rf"^WARNING: .*\btypo_{name}\b", log, re.M)), "==", reports + 1), log
     for name, key in (("main", "backend"), ("gas", "gamma"), ("exact", "ux"), ("init", "rho")):
         path = case / (name + ".txt")
         original = path.read_text()

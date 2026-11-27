@@ -1,5 +1,6 @@
 """Проверяет параллельную запись общих полей и их чтение по исходным номерам узлов."""
 
+import measurements
 from mpi_common import ROOT, mpi_parser, mpi_workspace
 from pathlib import Path
 import shutil
@@ -21,7 +22,7 @@ def binary_snapshot(path):
         def string():
             return f.read(word()).decode("utf-8")
 
-        if f.read(8) != b"AEROFLDB" or word() != 1:
+        if f.read(8) != b"AEROFLDB" or measurements.compare(word(), "!=", 1):
             raise AssertionError(f"Bad field signature in {path}")
         dimension, mesh_hash = word(), f.read(32)
         counts = tuple(word() for _ in range(4))
@@ -32,10 +33,10 @@ def binary_snapshot(path):
             if (
                 name in fields
                 or f.read(1) != b"\x00"
-                or word() != 1
+                or measurements.compare(word(), "!=", 1)
                 or string() != "value"
                 or string() != ""
-                or word() != counts[0]
+                or measurements.compare(word(), "!=", counts[0])
             ):
                 raise AssertionError(f"Bad NODE descriptor in {path}")
             fields[name] = struct.unpack(f"<{counts[0]}d", f.read(8 * counts[0]))
@@ -49,10 +50,10 @@ def compare(reference, result, coords):
     a, expected = binary_snapshot(reference)
     b, actual = binary_snapshot(result)
     if (
-        a[:4] != b[:4]
+        measurements.compare(a[:4], "!=", b[:4])
         or not close(a[4], b[4])
-        or list(actual) != list(expected)
-        or b[2][0] != len(coords)
+        or measurements.compare(list(actual), "!=", list(expected))
+        or measurements.compare(b[2][0], "!=", len(coords))
     ):
         raise AssertionError(f"Wrong global metadata or variable order in {result}")
     copies = {}
@@ -60,9 +61,9 @@ def compare(reference, result, coords):
         key = tuple(round(x % 1, 12) for x in point)
         peer = copies.setdefault(key, i)
         for name, values in actual.items():
-            if not close(values[i], expected[name][i]) or values[i] != values[peer]:
+            if not close(values[i], expected[name][i]) or measurements.compare(values[i], "!=", values[peer]):
                 raise AssertionError(f"Field {name} differs at original node {i} in {result}")
-    if len(copies) == len(coords):
+    if measurements.compare(len(copies), "==", len(coords)):
         raise AssertionError("Periodic fixture must contain identified vertices")
 
 
@@ -103,12 +104,12 @@ def verify(case, aero, meshdec, launcher):
 
     def compare_series(target):
         expected = sorted(f.name for f in (ref / "shared").iterdir())
-        if sorted(f.name for f in (target / "shared").iterdir()) != expected:
+        if measurements.compare(sorted(f.name for f in (target / "shared").iterdir()), "!=", expected):
             raise AssertionError("Global output schedule or set of published files differs")
         for name in expected:
             compare(ref / "shared" / name, target / "shared" / name, coords)
         metadata, _ = binary_snapshot(target / "shared/latest.fields")
-        if metadata[-1] != 0.003:
+        if measurements.compare(metadata[-1], "!=", 0.003):
             raise AssertionError("Latest snapshot was not replaced at its last deadline")
 
     configure("one.mdec", 0.003)
@@ -139,7 +140,7 @@ def verify(case, aero, meshdec, launcher):
     launch(aero, case, mixed, launcher, 2, "--recover")
     resumed = mixed / f"resumed-{saved_step}-1" / "shared/latest.fields"
     compare(extended / "shared/latest.fields", resumed, coords)
-    if original.read_bytes() != before:
+    if measurements.compare(original.read_bytes(), "!=", before):
         raise AssertionError("Resume overwrote the earlier segment")
 
     collision = case / "collision"
@@ -155,7 +156,7 @@ def verify(case, aero, meshdec, launcher):
         raise AssertionError(f"Publication replaced an existing snapshot: {first}")
     # Диагностика отдельно показывает, если после неудачной публикации остался временный файл.
     remaining = sorted(path.name for path in first.parent.iterdir())
-    if remaining != [first.name]:
+    if measurements.compare(remaining, "!=", [first.name]):
         raise AssertionError(f"Unexpected directory contents after publication failed: {remaining!r}")
 
     legacy_archive(case / "grid.mdec", case / "old.mdec", version=3)
@@ -183,7 +184,7 @@ def verify(case, aero, meshdec, launcher):
     launch(aero, case, actual, launcher, 2)
     check_output(reference, actual, 2, len(coords), 2, names)
     step, time = stamp(actual / "rank-0-of-2/fields/state_000001.fields")
-    if step != 1 or not 0 < time <= 0.0003:
+    if measurements.compare(step, "!=", 1) or not (measurements.chain(0, "<", time, "<=", 0.0003)):
         raise AssertionError("New calculation did not start at time zero")
     print("OK global AEROFIELDS matches native output at every periodic node, including empty ranks")
     print("OK mixed layouts, resumed schedules, atomic publication, and fresh run from 4 ranks on 2")
@@ -213,7 +214,7 @@ def verify_batches(case, aero, meshdec, launcher):
             # Одна периодическая пара склеивает две исходные вершины. В отчёте считаются степени свободы,
             # поэтому в данном неравенстве учитываем ещё один исходный номер.
             counts = [int(row["owned"]) for row in report_rows(log, "rank\tnode")]
-            if not (min(counts) + 1 < 8192 < max(counts)):
+            if not ((measurements.chain(min(counts) + 1, "<", 8192, "<", max(counts)))):
                 raise AssertionError(f"Unequal MPI-IO batch counts required: {counts}")
     compare(case / "mesh/all.fields", case / "mdec/all.fields", coords)
     print("OK multiple batches, noncontiguous source IDs and different per-rank batch counts")

@@ -105,27 +105,38 @@ struct Side {
     double outer, inner, center, opposite; // Наклоны перечислены от дальней точки к противоположной стороне.
     Indicators indicators;                // Гладкость трёх полиномов именно с этой стороны.
     mp5::Bounds bounds;                   // Допустимый MP-интервал содержит ноль.
+    double short_bound;                   // Короткая граница b этой стороны для проверки v(v−b).
+
+    // Один ограничитель обслуживает линейный кандидат, нелинейный кандидат
+    // с весами WENO и значение, рассчитанное отдельной очередью на GPU.
+    template<bool packed = false> AERO_HOST_DEVICE double limited(double value) const {
+        return mp5::Candidate(value,short_bound,mp5::slope_scale(outer,inner,center,opposite)).limited<packed>(bounds);
+    }
 
     // Определяет, требуется ли нелинейное взвешивание текущей стороны.
     template <bool packed = false> AERO_HOST_DEVICE bool needs_weights() const {
-        return !bounds.fixed<packed>() && indicators.nonlinear<packed>() && !indicators.all_zero<packed>();
+        return indicators.nonlinear<packed>() && !indicators.all_zero<packed>();
     }
     // Вычисляет кандидаты интерполяционных полиномов MPWENO5.
     AERO_HOST_DEVICE Polynomials polynomials() const {
         return Polynomials::from_slopes(outer, inner, center, opposite);
     }
-    // Вызываем, когда нелинейные веса не нужны. Если интервал схлопнулся или поле постоянно,
-    // обе ветви ограничителя возвращают ноль. Иначе датчик разрешил линейную схему.
+    // Вызываем для постоянного поля или когда датчик разрешил линейный полином.
     template <bool packed = false> AERO_HOST_DEVICE double direct_trace() const {
-        if (bounds.fixed<packed>() || indicators.all_zero<packed>())
-            return bounds.clamp<packed>(0.);
-        return bounds.clamp<packed>(mp5::linear(outer, inner, center, opposite));
+        if (indicators.all_zero<packed>()) return 0.;
+        return limited<packed>(mp5::linear(outer, inner, center, opposite));
     }
-    // Собирает след одной стороны ребра из полиномов и нелинейных весов.
+    // Принимает решение датчика и готовый линейный полином. Одиночный след
+    // и гибрид используют одни веса WENO и один вызов MP-ограничителя.
+    template <bool packed = false>
+    AERO_HOST_DEVICE double selected_trace(bool nonlinear, double linear_value, bool correction) const {
+        if (indicators.all_zero<packed>()) return 0.;
+        const double value = nonlinear ? weighted_value(indicators,polynomials(),correction) : linear_value;
+        return limited<packed>(value);
+    }
+    // Выбирает кандидат своей стороны до ограничения.
     AERO_HOST_DEVICE double trace(bool correction) const {
-        if (!needs_weights())
-            return direct_trace();
-        return bounds.clamp(weighted_value(indicators, polynomials(), correction));
+        return selected_trace(indicators.nonlinear(),mp5::linear(outer,inner,center,opposite),correction);
     }
 };
 
@@ -136,7 +147,7 @@ AERO_HOST_DEVICE inline Side prepare_side(double outer, double inner, double cen
                                            double alpha, double curvature, WenoIndicators near,
                                            WenoIndicators across) {
     return {outer, inner, center, opposite, {WenoIndicators(inner, outer).outer, near.inner, across.outer},
-            mp5::bounds<packed>(outer, inner, center, alpha, curvature)};
+            mp5::bounds<packed>(outer, inner, center, alpha, curvature), mp5::bound(inner,center,alpha)};
 }
 
 // Для обеих сторон исходные пять наклонов одни и те же. Сохраняем пару ближних
@@ -169,8 +180,8 @@ AERO_HOST_DEVICE inline double candidate(double fl, double nl, double c, double 
 template <bool anchored>
 AERO_HOST_DEVICE inline double bounded_candidate(double fl, double nl, double c, double nr, double b1,
                                                  double b2, double b3, bool correction, mp5::Bounds bounds,
-                                                 bool& selected, double linear_value, double anchor) {
-    const Side side = {fl, nl, c, nr, {b1, b2, b3}, bounds};
+                                                 bool& selected, double linear_value, double anchor, double alpha) {
+    const Side side = {fl, nl, c, nr, {b1, b2, b3}, bounds, mp5::bound(nl,c,alpha)};
     // MP6 использует решение датчика при расчёте общей поправки даже тогда,
     // когда нулевой интервал уже определил след. Поэтому проверяем датчик первым.
     selected = side.indicators.nonlinear<true>();
@@ -178,13 +189,7 @@ AERO_HOST_DEVICE inline double bounded_candidate(double fl, double nl, double c,
     // В осях грани нужен только датчик активности для разностной моды MP6.
     if (anchored)
         return anchor;
-    if (bounds.fixed<true>() || side.indicators.all_zero<true>())
-        return bounds.clamp(0.);
-    // Линейный полином уже нужен вызывающей стороне для разностной моды.
-    // Дорогие нелинейные веса считаем только для оставшихся сторон.
-    if (!selected)
-        return bounds.clamp(linear_value);
-    return bounds.clamp(weighted_value(side.indicators, side.polynomials(), correction));
+    return side.selected_trace<true>(selected,linear_value,correction);
 }
 
 // Для разреженного шаблона солвер может запросить только одну сторону.

@@ -185,7 +185,7 @@ struct Storage {
         if (host && !w.empty()) {
             nodal_material.resize(w.size());
             v.nodal_material = nodal_material.data();
-            work.resize((implicit_work ? 8 : 6) * w.size());
+            work.resize((implicit_work ? 7 : 6) * w.size());
             v.w = w.data();
             v.inverse_distance = distance.data();
             bind_work(v, work.data(), w.size());
@@ -201,10 +201,7 @@ struct Storage {
         v.rate = data + 3 * n;
         v.diagonal = data + 4 * n;
         v.rotation = data + 5 * n;
-        if (implicit_work) {
-            v.last_correction=data+6*n;
-            v.plain_update=data+7*n;
-        }
+        if (implicit_work) v.plain_update=data+6*n;
     }
     // Переносит подготовленные геометрию и коэффициенты SA на GPU.
     template <class Device> void upload(View &v, Device &device,bool share_faces=false) const {
@@ -237,7 +234,7 @@ struct Storage {
         v.diffusion.element_mean = device.template allocate<double>(element_count);
         v.w = device.upload(w);
         v.inverse_distance = device.upload(distance);
-        bind_work(v, device.template allocate<double>((implicit_work ? 8 : 6) * w.size()), w.size());
+        bind_work(v, device.template allocate<double>((implicit_work ? 7 : 6) * w.size()), w.size());
     }
 };
 }

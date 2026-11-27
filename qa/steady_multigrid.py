@@ -1,4 +1,5 @@
 """Двухуровневая поправка steady в последовательном расчёте и при разбиении MPI."""
+import measurements
 import math
 import re
 from pathlib import Path
@@ -29,18 +30,18 @@ def solve(case, args, label, distributed=False, gpu=False, enabled=True, end=6, 
             "pseudo-step limit reached before convergence" not in log):
         raise AssertionError(log)
     trials = re.findall(r"Steady multigrid: (accepted|skipped), scale = (\S+), spatial residual = (\S+) -> ([\d.eE+-]+)", log)
-    if not resume and enabled != bool(trials):
+    if not resume and measurements.compare(enabled, "!=", bool(trials)):
         raise AssertionError(log)
     for status, fraction, before, after in trials:
         previous, current = float(before), float(after)
         if status == "accepted":
-            if not (0 < float(fraction) and current < previous):
+            if not (measurements.compare(0, "<", float(fraction)) and measurements.compare(current, "<", previous)):
                 raise AssertionError((status, before, after))
-        elif previous != current or float(fraction) != 0:
+        elif measurements.compare(previous, "!=", current) or measurements.compare(float(fraction), "!=", 0):
             raise AssertionError((status, before, after))
     output = next(directory.glob("resumed-*")) if resume else directory
     header, fields = binary_snapshot(output / "final.fields")
-    if header[3] != end or not all(math.isfinite(x) for column in fields.values() for x in column):
+    if measurements.compare(header[3], "!=", end) or not all(math.isfinite(x) for column in fields.values() for x in column):
         raise AssertionError(f"Invalid final state in {directory}")
     return fields, sum(row[0] == "accepted" for row in trials)
 
@@ -54,15 +55,15 @@ def check_rans(case, args):
         "[state]\nfile=final.fields\nformat=binary\nlayout=global\nevery_steps=6\n"
         "variables=rho,ux,uy,p,nu_tilde,nut\n")
     reference, _ = solve(case,args,"cpu",local_steps="auto")
-    if min(reference["nu_tilde"]) < 0.:
+    if measurements.compare(min(reference["nu_tilde"]), "<", 0.):
         raise AssertionError("Negative working viscosity")
     if args.gpu:
         fields, _ = solve(case,args,"gpu",gpu=True,local_steps="auto")
-        if max_difference(reference,fields) > 1.e-9:
+        if measurements.compare(max_difference(reference,fields), ">", 1.e-9):
             raise AssertionError("RANS multigrid CPU/GPU mismatch")
     if args.mpi:
         fields, _ = solve(case,args,"mpi",distributed=True,local_steps="auto")
-        if min(fields["nu_tilde"]) < 0.:
+        if measurements.compare(min(fields["nu_tilde"]), "<", 0.):
             raise AssertionError("Negative working viscosity in MPI")
 
 
@@ -82,17 +83,17 @@ def main():
             run([args.meshdec, case / "grid.mesh", case / "grid.mdec", "--target-ranks=2"])
         reference, count = solve(case,args,"cpu")
         ordinary, _ = solve(case,args,"ordinary",enabled=False)
-        if not count or max_difference(reference,ordinary) == 0.:
+        if not count or measurements.compare(max_difference(reference,ordinary), "==", 0.):
             raise AssertionError("Coarse correction was never applied on the smooth line")
         # Сохраняем после второго обычного шага внутри цикла. Сразу после
         # перезапуска счётчик должен продолжиться из recovery.
         solve(case,args,"restart",end=3)
         continued, _ = solve(case,args,"restart",resume=True)
-        if max_difference(reference,continued) > 1.e-13:
+        if measurements.compare(max_difference(reference,continued), ">", 1.e-13):
             raise AssertionError("Restart changed the multigrid cycle")
         if args.gpu:
             fields, accepted = solve(case,args,"gpu",gpu=True)
-            if accepted != count or max_difference(reference,fields) > 1.e-9:
+            if measurements.compare(accepted, "!=", count) or measurements.compare(max_difference(reference,fields), ">", 1.e-9):
                 raise AssertionError("CPU/GPU multigrid mismatch")
         if args.mpi:
             _, accepted = solve(case,args,"mpi",distributed=True)

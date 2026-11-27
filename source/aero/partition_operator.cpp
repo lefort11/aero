@@ -1014,16 +1014,11 @@ bool PartitionOperator::assemble_fluxes(const std::vector<double>& u, const std:
     if (aes_ && aes_->view().computes_les()) {
         // У пробной поправки Ньютона рабочая вязкость SA фиксирована. Газ нужен
         // сразу, а длина DDES понадобится только при подтверждении этой поправки.
-        const bool frozen_ddes=trial && sa_dt_>0. && aes_->view().c_des>0.;
+        const bool frozen_ddes=sa_dt_>0. && aes_->view().c_des>0.;
         update_les(u,timing,frozen_ddes ? viscosity::Evaluation::DdesGasOnly : viscosity::Evaluation::LesClosure);
+        ddes_filter_pending_ = frozen_ddes;
     }
 #endif
-    bool defer_viscous_rows=false;
-#ifdef AERO_HAS_TURBULENCE
-    const bool frozen_sa=sa_dt_>0. && trial && !solve_trial_sa;
-    defer_viscous_rows=sa_dt_>0. && !frozen_sa;
-#endif
-    (void)defer_viscous_rows;
     bool physical = true;
     std::vector<Id> failed;
     // Вычисляет очередной этап оператора для текущего состояния поля.
@@ -1047,7 +1042,7 @@ bool PartitionOperator::assemble_fluxes(const std::vector<double>& u, const std:
             residual_detail::cpu_face_fluxes(batch, ids_.data());
 #ifdef AERO_HAS_VISCOSITY
         if (aes_) {
-            const auto phase = defer_viscous_rows ? viscosity::Evaluation::BeforeSaIterations : viscosity::Evaluation::Full;
+            const auto phase = viscosity::Evaluation::Full;
 #ifdef AERO_WITH_KOKKOS_GPU
             if (gpu_) gpu_->viscous_fluxes(phase);
             else
@@ -1079,9 +1074,7 @@ bool PartitionOperator::assemble_fluxes(const std::vector<double>& u, const std:
 #ifdef AERO_HAS_TURBULENCE
     // Обновляет рабочую вязкость SA вместе с пробным газовым состоянием.
     const auto update_sa=[&] {
-        if (!sa_active()) return;
-        sa_prediction_pending_=frozen_sa;
-        if (!frozen_sa) evaluate_sa(u,timing);
+        if (sa_active() && sa_dt_ == 0.) evaluate_sa(u,timing);
     };
 #endif
     if (world_.size == 1) {
@@ -1697,75 +1690,39 @@ implicit::NewtonResult PartitionOperator::advance_bdf(std::vector<double>& state
         const bool validated_gas = validate && validate();
         assemble_fluxes(state, initial, timing, false, bool(validate), false, validated_gas);
     };
-    // Применяет и оценивает пробную поправку без окончательного принятия шага.
-#ifdef AERO_HAS_TURBULENCE
-    const bool auto_rans = !settings.without_predictor && step_mode_ == LocalStepMode::Auto && sa_active() && !settings.second_order &&
-                           !aes_->view().c_des && (previous_cfl_>0. || (current_step_cfl_<=1. && retry_dt_==0.));
-#else
-    const bool auto_rans = false;
-#endif
-    bool first_coupled_trial = false; // На первой совместной пробе вязкие строки нужны только после решения SA.
-    bool temporal_trial = auto_rans; // После возврата к обычному Ньютону снова действует штатный откат CFL.
+    // Все пробы газового блока используют одну рабочую вязкость. При откате
+    // предиктора восстанавливается только газ: поле SA ещё не изменялось.
     const auto trial = [&] {
-        const bool solve_sa = first_coupled_trial;
-        first_coupled_trial = false;
-        bool validated_gas = false;
-        if (validate) {
-            try { validated_gas = validate(); }
-            catch (const RejectedGasState&) {
-                if (temporal_trial) return false; // Недопустимое начальное приближение откатывается внутри Ньютона.
-                throw;
-            }
-        }
-        return assemble_fluxes(state, initial, timing, true, false, solve_sa, validated_gas);
+        const bool validated_gas = validate && validate();
+        return assemble_fluxes(state, initial, timing, true, false, false, validated_gas);
     };
-    std::function<bool()> confirm_prediction;
-    std::function<void(implicit::CoupledStart)> coupled_start;
+    std::function<double()> advance_transport;
 #ifdef AERO_HAS_TURBULENCE
-    if(sa_active()) {
-        sa_prediction_pending_=false;
-        confirm_prediction=[&] {
-            if (!sa_prediction_pending_) return false;
-            // Потоки массы уже построены для нынешнего газа. Доводим SA до заданного
-            // допуска, обновляем вязкие напряжения, затем BDF проверяет невязку газа.
-            if (aes_->view().c_des>0.) update_les(state,timing,viscosity::Evaluation::FilterOnly);
-            evaluate_sa(state,timing,false,true);
-            sa_prediction_pending_=false;
-            return true;
+    if (sa_active()) {
+        sa_settings_ = settings;
+        begin_sa_linear_step(!validate);
+        sa_dt_ = dt_or_fraction;
+        sa_bdf2_ = settings.second_order;
+        // Допуск от начального физического дефекта фиксируется один раз до
+        // газового блока. Последующие согласования используют те же w_n и w_(n-1).
+        const auto start = sa_step();
+        const double initial_sa = sa_max(start,turbulence::Norm::SaveStartBdf);
+        if (!std::isfinite(initial_sa)) throw std::domain_error("SA: nonfinite initial residual");
+        sa_target_ = std::max(settings.newton_relative*initial_sa,
+                              32.*std::numeric_limits<double>::epsilon()*start.transport.sa.ambient);
+        advance_transport = [&] {
+            const double defect = evaluate_sa(state,timing,false,true);
+            if (defect == 0.) return 0.;
+            return sa_target_ > 0. ? (defect/sa_target_)*settings.newton_relative : HUGE_VAL;
         };
-        sa_dt_=dt_or_fraction; sa_bdf2_=settings.second_order; sa_tol_=settings.newton_relative*.1;
-        sa_iterations_=std::max(200u,settings.max_iterations);
-        sa_multigrid_=settings.steady_multigrid;
-        sa_target_=0.;
-        // При совместной пробе исходное поле сохраняет первая редукция нормы SA.
-        if (!auto_rans) sa_apply(sa_step(),turbulence::Operation::SaveStart);
-        evaluate_sa(state,timing,true,false,auto_rans);
-        if (auto_rans) {
-            coupled_start = [&](implicit::CoupledStart action) {
-                if (action == implicit::CoupledStart::Predict) {
-                    auto step = sa_step();
-                    if (sa_rate_dt_ > 0. && dt <= 2.*sa_rate_dt_) step.prediction_ratio = dt/sa_rate_dt_;
-                    sa_apply(step,turbulence::Operation::PredictRate);
-                    sa_rate_dt_ = dt;
-                    first_coupled_trial = true;
-                } else if (action == implicit::CoupledStart::Restore) {
-                    temporal_trial = false;
-                    sa_rate_dt_ = 0.;
-                    sa_apply(sa_step(),turbulence::Operation::RestoreStart);
-                    refresh();
-                } else {
-                    sa_rate_dt_ = 0.;
-                    evaluate_sa(state,timing,true);
-                }
-            };
-        } else sa_rate_dt_ = 0.;
     }
 #endif
     const auto result=bdf_->advance(fields.state, fields.initial, fields.volumes, fields.flux, dt_or_fraction,
-                                    settings, refresh, trial, confirm_prediction, timing.bdf_phases(), !validate,
-                                    auto_rans ? dt : 0., coupled_start);
+                                    settings, refresh, trial, {}, timing.bdf_phases(), !validate,
+                                    0., {}, advance_transport);
 #ifdef AERO_HAS_TURBULENCE
     if(sa_active()) {
+        commit_sa_linear_step(dt);
         if(sa_bdf2_) sa_apply(sa_step(),turbulence::Operation::CommitHistory);
         sa_previous_dt_=sa_bdf2_?dt:0.; sa_dt_=0.;
     }

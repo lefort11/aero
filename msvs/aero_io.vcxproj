@@ -48,6 +48,9 @@
   <ItemGroup>
     <None Include="..\source\io\FIELDS.txt" />
     <ClInclude Include="..\source\io\submesh.h" />
+    <ClCompile Include="..\source\io\visualization\*.cpp" />
+    <ClInclude Include="..\source\io\visualization\*.h" />
+    <None Include="..\source\io\visualization\README.md" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

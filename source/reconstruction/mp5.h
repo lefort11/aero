@@ -22,6 +22,8 @@ struct Mp5Settings {
 };
 
 namespace mp5 {
+// Допуск быстрой проверки MP5 относится к произведению двух наклонов.
+constexpr double shortcut_tolerance = 1.e-10;
 // Оптимальный линейный кандидат и короткая граница общие для обеих MP-схем.
 AERO_HOST_DEVICE inline double linear(double outer_slope, double inner_slope, double center, double opposite) {
     return -0.1 * opposite + 0.8 * center + (11.0 / 30.0) * inner_slope - (1.0 / 15.0) * outer_slope;
@@ -31,19 +33,6 @@ AERO_HOST_DEVICE inline double bound(double inner_slope, double center, double a
     const double upwind = alpha * inner_slope;
     return center > 0 ? ::fmax(0., ::fmin(center, upwind)) : ::fmin(0., ::fmax(center, upwind));
 }
-
-// Проверяем кандидата пятого порядка по дешёвому MP-критерию из исходной формулы.
-// Все наклоны имеют размерность удвоенного приращения от узла до середины ребра.
-struct Candidate {
-    double value;    // Удвоенное приращение по линейному полиному пятого порядка.
-    bool admissible; // Можно ли принять этот полином без расчёта полного MP-интервала.
-    // Формирует высокопорядковый кандидат и допустимые приращения ограничителя MP5.
-    AERO_HOST_DEVICE Candidate(double outer_slope, double inner_slope, double center, double opposite,
-                               double alpha) {
-        value = linear(outer_slope, inner_slope, center, opposite);
-        admissible = value * (value - bound(inner_slope, center, alpha)) < 1.e-10;
-    }
-};
 
 // Код конечного double, монотонный по его численному значению. Для положительных
 // чисел меняем знаковый бит; для отрицательных обращаем все биты (порядок модулей обратный).
@@ -152,20 +141,65 @@ AERO_HOST_DEVICE inline Bounds bounds(double outer_slope, double inner_slope, do
     const double high = ::fmin(::fmax(0., ::fmax(gc, md)), ::fmax(0., ::fmax(ul, lc)));
     return {low, high};
 }
-// Применяет ограничитель монотонности к высокопорядковому кандидату.
-AERO_HOST_DEVICE inline double limit(double value, double outer_slope, double inner_slope, double center,
-                                     double alpha, double central_curvature) {
-    return bounds(outer_slope, inner_slope, center, alpha, central_curvature).clamp(value);
+// Вес выбранного схемой кандидата в полосе 0 < p < eps. Две эквивалентные
+// формы кубического полинома сохраняют точность у единицы и у нуля.
+AERO_HOST_DEVICE inline double shortcut_weight(double product) {
+    if (product <= 0.) return 1.;
+    if (!(product < shortcut_tolerance)) return 0.;
+    const double t = product / shortcut_tolerance;
+    return t < .5 ? 1.-t*t*(3.-2.*t) : (1.-t)*(1.-t)*(1.+2.*t);
 }
 
-// Вычисляет ограниченное приращение MP5 относительно узлового значения.
-AERO_HOST_DEVICE inline double increment(double outer_slope, double inner_slope, double center, double opposite,
-                                         double alpha) {
-    const Candidate candidate(outer_slope, inner_slope, center, opposite, alpha);
-    if (candidate.admissible)
-        return candidate.value;
-    return limit(candidate.value, outer_slope, inner_slope, center, alpha,
-                 curvature(center - inner_slope, opposite - center));
+// Локальная амплитуда наклонов одной стороны. При смене единиц она
+// масштабируется вместе с кандидатом, в том числе при смене знака поля.
+AERO_HOST_DEVICE inline double slope_scale(double outer,double inner,double center,double opposite) {
+    return ::fmax(::fmax(::fabs(outer),::fabs(inner)),::fmax(::fabs(center),::fabs(opposite)));
+}
+
+// Отрицательное произведение всегда принимает полином. В положительной ветви
+// делим оба множителя до умножения, чтобы S² не переполнялось и не обнулялось.
+AERO_HOST_DEVICE inline double relative_weight(double raw,double bound,double scale) {
+    if (raw == 0. || (raw > 0. ? raw <= bound : raw >= bound)) return 1.;
+    if (scale == 0.) return 0.;
+    return shortcut_weight((raw/scale)*((raw-bound)/scale));
+}
+
+// Общий MP-ограничитель. Кандидат поступает из линейного полинома MP5
+// или из выбранной линейной/нелинейной ветви MPWENO5.
+struct Candidate {
+    double value;  // Удвоенное приращение до ограничения.
+    double weight; // Вес исходного значения. Ноль означает полный MP-ограничитель.
+
+    // Получает уже вычисленный кандидат и короткую границу его стороны.
+    AERO_HOST_DEVICE Candidate(double raw, double short_bound, double scale)
+        : value(raw), weight(relative_weight(raw,short_bound,scale)) {}
+
+    // Строит линейный кандидат MP5 по четырём наклонам.
+    AERO_HOST_DEVICE Candidate(double outer, double inner, double center, double opposite, double alpha)
+        : Candidate(linear(outer,inner,center,opposite),bound(inner,center,alpha),slope_scale(outer,inner,center,opposite)) {}
+
+    // На пороге и за ним возвращает точную проекцию. В полосе допуска
+    // остаток между исходным и ограниченным приращениями получает кубический вес.
+    template<bool packed = false>
+    AERO_HOST_DEVICE double limited(Bounds interval) const {
+        if (weight == 1.) return value;
+        const double projected = interval.clamp<packed>(value);
+        if (weight == 0. || projected == value) return projected;
+        return projected + weight*(value-projected);
+    }
+};
+
+// Применяет MP-ограничение к известному кандидату и геометрии этой стороны.
+AERO_HOST_DEVICE inline double limit(double value, double outer, double inner, double center,
+                                     double alpha, double central_curvature) {
+    return Candidate(value,bound(inner,center,alpha),slope_scale(outer,inner,center,central_curvature)).limited(bounds(outer,inner,center,alpha,central_curvature));
+}
+
+// Восстанавливает след одной стороны. На линейной ветви не строит полный интервал.
+AERO_HOST_DEVICE inline double increment(double outer, double inner, double center, double opposite, double alpha) {
+    const Candidate candidate(outer, inner, center, opposite, alpha);
+    if (candidate.weight == 1.) return candidate.value;
+    return candidate.limited(bounds(outer,inner,center,alpha,curvature(center-inner,opposite-center)));
 }
 
 // В полном двумерном шаблоне наклоны уже в регистрах. Левой и правой стороне
@@ -177,13 +211,13 @@ AERO_HOST_DEVICE inline void pair(double fl, double nl, double center, double nr
     right = r.value;
     // На гладком ребре оба полинома обычно проходят короткую проверку.
     // Только отклонённому следу нужны кривизна и полный интервал MP.
-    if (l.admissible && r.admissible)
+    if (l.weight == 1. && r.weight == 1.)
         return;
     const double shared = curvature(center - nl, nr - center);
-    if (!l.admissible)
-        left = limit(left, fl, nl, center, alpha, shared);
-    if (!r.admissible)
-        right = limit(right, fr, nr, center, alpha, -shared);
+    if (l.weight != 1.)
+        left = l.limited(bounds(fl,nl,center,alpha,shared));
+    if (r.weight != 1.)
+        right = r.limited(bounds(fr,nr,center,alpha,-shared));
 }
 } // namespace mp5
 } // namespace aero

@@ -1,5 +1,6 @@
 """Проверка периодичности и вида прогноза, в том числе при продолжении расчёта."""
 
+import measurements
 import re
 import shutil
 from pathlib import Path
@@ -29,13 +30,13 @@ def main():
             log = run([*cmd,"main:final_time=.024","main:prophecy_every_step=2"])
             steps = int(re.search(r"Completed (\d+) steps",log)[1])
             rows = forecasts(log)
-            if [int(n) for n,_ in rows] != list(range(2,steps+1,2)) or len(rows)<2:
+            if measurements.compare([int(n) for n,_ in rows], "!=", list(range(2,steps+1,2))) or measurements.compare(len(rows), "<", 2):
                 raise AssertionError(f"Incorrect ETA interval for {scheme}: {rows}")
             if not re.search(r"final time: \d{4}-\d\d-\d\d \d\d:\d\d:\d\d", rows[0][1]):
                 raise AssertionError(f"Missing finish date for {scheme}")
             resumed = run([*cmd,"main:prophecy_every_step=2","--recover","main:final_time=.036"])
             restart_rows = forecasts(resumed)
-            if not restart_rows or int(restart_rows[0][0]) != steps//2*2+2:
+            if not restart_rows or measurements.compare(int(restart_rows[0][0]), "!=", steps//2*2+2):
                 raise AssertionError(f"Wrong first forecast after recovery: {restart_rows}")
             print(f"PASS ETA {scheme} and recovery",flush=True)
         for criterion in ("relative","absolute"):
@@ -45,7 +46,7 @@ def main():
                            "implicit:steady_tol=1e-14","implicit:steady_max_steps=5",
                            "main:prophecy_every_step=2"],success=False)
                 rows = forecasts(log)
-                if [n for n,_ in rows]!=["2","4"] or not all("residual target:" in s and "step limit:" in s for _,s in rows):
+                if measurements.compare([n for n,_ in rows], "!=", ["2","4"]) or not all("residual target:" in s and "step limit:" in s for _,s in rows):
                     raise AssertionError(f"Wrong steady forecasts: {rows}\n{log[-900:]}")
                 if not all(re.search(r"residual target: trend unavailable  \|  step limit: \d{4}-",s) for _,s in rows):
                     raise AssertionError(f"Premature steady convergence estimate: {rows}")

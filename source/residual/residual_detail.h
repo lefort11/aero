@@ -664,7 +664,8 @@ AERO_HOST_DEVICE inline bool integrate_flux(unsigned width, double measure, Eule
 template <bool roe_2d = false, bool states_only = false>
 KOKKOS_FORCEINLINE_FUNCTION bool solve_edge_flux(const Geometry& g, const Surface& surface,
                                               const double* left, const double* right,
-                                              const euler_detail::InterfaceGas& gas, const EdgeTraces* physical,
+                                              const euler_detail::InterfaceGas& nodal_gas,
+                                              const euler_detail::InterfaceGas& trace_gas, const EdgeTraces* physical,
                                               EulerFluxResult& out, unsigned nodal_lf_dim = 0) {
     // Для LF первого порядка размерность выбирается перед обходом рёбер. Тогда
     // компилятор знает число компонент при проекции потока и при его интегрировании.
@@ -672,21 +673,22 @@ KOKKOS_FORCEINLINE_FUNCTION bool solve_edge_flux(const Geometry& g, const Surfac
     EdgeTraces local;
     double speed;
     if (!states_only && physical) {
-        if (euler_detail::interface_wave_speed(dim, gas, speed) != EulerStatus::Success)
+        if (euler_detail::interface_wave_speed(dim, trace_gas, speed) != EulerStatus::Success)
             return false;
     } else {
         // В режиме реконструкции состояний физический поток получаем по двум следам.
         double sl, sr;
-        if (euler_detail::project_flux(dim, left, gas.left, gas.normal, local.left, &sl) != EulerStatus::Success ||
-            euler_detail::project_flux(dim, right, gas.right, gas.normal, local.right, &sr) != EulerStatus::Success)
+        if (euler_detail::project_flux(dim, left, trace_gas.left, trace_gas.normal, local.left, &sl) != EulerStatus::Success ||
+            euler_detail::project_flux(dim, right, trace_gas.right, trace_gas.normal, local.right, &sr) != EulerStatus::Success)
             return false;
         speed = sl > sr ? sl : sr;
         physical = &local;
     }
     const euler_detail::FaceStates face = {dim, left, right, surface.area, g.options.gamma, g.options.upw_coeff};
+    // Матрица Роу заморожена по узлам ребра. К ней прикладывается скачок ограниченных следов.
     const auto status = roe_2d || (!nodal_lf_dim && g.options.solver == ResidualSolver::Roe)
-        ? roe_detail::RoeFlux::combine<roe_2d ? 2 : 0>(face, gas, physical->left, physical->right, speed, &out,g.options.entropy_fix)
-        : euler_detail::RusanovFlux::combine(face, gas, physical->left, physical->right, speed, &out);
+        ? roe_detail::RoeFlux::combine<roe_2d ? 2 : 0>(face, nodal_gas, physical->left, physical->right, speed, &out,g.options.entropy_fix)
+        : euler_detail::RusanovFlux::combine(face, trace_gas, physical->left, physical->right, speed, &out);
     return status == EulerStatus::Success && integrate_flux(dim + 2, surface.measure, out);
 }
 
@@ -756,7 +758,7 @@ KOKKOS_FORCEINLINE_FUNCTION bool finish_edge_flux(const Geometry& g, const Surfa
         !limit_trace(dim, g.options, end, state.right, surface.area, !states_only && physical ? physical->right : nullptr,
                      &base.right, &gas.right))
         return false;
-    return solve_edge_flux<roe_2d, states_only>(g, surface, state.left, state.right, gas, physical, out);
+    return solve_edge_flux<roe_2d, states_only>(g, surface, state.left, state.right, base, gas, physical, out);
 }
 
 // Решает, нужен ли базис Роу для реконструкции или только проверка допустимости газа.
@@ -886,7 +888,7 @@ KOKKOS_FORCEINLINE_FUNCTION bool integrated_edge_flux(const Geometry& g, Index e
     if (!prepare_edge_basis<roe_2d, nodal_only>(g, surface, base, basis))
         return false;
     if (nodal_only || !g.stencil.has_owners() || surface.use_nodal_traces == 1)
-        return solve_edge_flux<roe_2d>(g, surface, begin, end, base, nullptr, out, nodal_lf_dim);
+        return solve_edge_flux<roe_2d>(g, surface, begin, end, base, base, nullptr, out, nodal_lf_dim);
 
     EdgeTraces state, reconstructed_flux;
     EdgeTraces* physical_flux = nullptr;

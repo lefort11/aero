@@ -20,6 +20,11 @@ struct OutputZone {
     bool multi = false;
     // В MPI общая зона записывается одним файлом в исходной нумерации, локальная — по разделам.
     bool global = false;
+    // Дополнительные файлы визуализации публикуются рядом с основным снимком.
+    bool tecplot = false; // Запрашивает двоичный файл Tecplot PLT.
+    bool vtk = false;     // Запрашивает двоичный файл VTK Legacy.
+    // Проверяет, нужна ли геометрия для записи дополнительных файлов.
+    bool visualize() const { return tecplot || vtk; }
     // Кодирование данных зоны при записи на диск.
     FieldFormat format = FieldFormat::Binary;
 };
@@ -30,6 +35,8 @@ std::vector<OutputZone> read_output_zones(const std::string& path, std::vector<s
 void validate_output_zones(const std::vector<OutputZone>& zones);
 // Формирует имя файла снимка по настройкам зоны и номеру шага.
 std::string output_filename(const OutputZone& zone, std::uint64_t step);
+// Заменяет последнее расширение, сохраняя каталог и номер шага.
+std::string visualization_filename(const std::string& name, const char* suffix);
 // Нормализует имя для проверки, могут ли две зоны записать в один файл.
 std::string output_path_key(std::string file);
 }

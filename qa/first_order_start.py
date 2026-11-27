@@ -1,4 +1,5 @@
 """Сверяет автоматическую смену порядка с двумя отдельными расчётами через контрольную точку."""
+import measurements
 import re
 import math
 import shutil
@@ -20,7 +21,7 @@ def check_steady_residual(common, case):
     def last_norm(log):
         """Берёт пространственную норму последнего принятого слоя из отчёта."""
         rows = list(report_rows(log, r"^Steady\s+absolute residual = (\S+)"))
-        assert rows and int(rows[-1][0]) == 3, log
+        assert rows and measurements.compare(int(rows[-1][0]), "==", 3), log
         return float(rows[-1][1])
 
     low = case / "steady-residual-low"
@@ -38,17 +39,17 @@ def check_steady_residual(common, case):
             assert f"reconstruction = {scheme.lower()} (first-order startup complete)" in transition.lower(), transition
             actual = last_norm(transition)
             current, fields = binary_snapshot(target / "state.fields")
-            assert current[-2:] == metadata[-2:], (current, metadata)
+            assert measurements.compare(current[-2:], "==", metadata[-2:]), (current, metadata)
             for name in fields:
-                assert max(abs(a-b) for a,b in zip(fields[name],low_fields[name])) < 1e-12, name
+                assert measurements.error_below(max(abs(a-b) for a,b in zip(fields[name],low_fields[name])), 1e-12), name
             # Большой допуск завершает продолжение до интегрирования нового шага.
             # Норма вычисляется заново по реконструкции из настроек на том же поле.
             resumed = run([*options, "--recover", "implicit:steady_tol=1e100"])
             found = re.search(r"Steady state converged, absolute spatial residual = (\S+)", resumed)
             assert found and "Completed 3 steps." in resumed, resumed
             expected = float(found[1])
-            assert math.isclose(actual, expected, rel_tol=2e-6, abs_tol=1e-12), (scheme, mode, actual, expected)
-            assert not math.isclose(low_norm, expected, rel_tol=1e-5, abs_tol=1e-12), (scheme, low_norm, expected)
+            assert measurements.isclose(actual, expected, rel_tol=2e-6, abs_tol=1e-12), (scheme, mode, actual, expected)
+            assert not measurements.isclose(low_norm, expected, rel_tol=1e-5, abs_tol=1e-12), (scheme, low_norm, expected)
     print("OK steady residual switches at steps_fo and t_fo for all higher-order schemes", flush=True)
 
 
@@ -83,14 +84,14 @@ def check(args, work, name, equation, time_scheme, parallel):
     run([*common, f"--output={split}", "main:reconstruction=first_order", f"main:final_time={switch}",
          "main:recovery_every_steps=1000"])
     checkpoint, first_fields = binary_snapshot(split / "state.fields")
-    assert checkpoint[-1] == switch
+    assert measurements.compare(checkpoint[-1], "==", switch)
     run([*common, f"--output={split}", "--recover", selected, f"main:final_time={end}"])
     expected, expected_fields = binary_snapshot(next(split.glob("resumed-*/state.fields")))
     log = run([*common, f"--output={auto}", selected, f"main:t_fo={switch}", f"main:final_time={end}"])
     actual, actual_fields = binary_snapshot(auto / "state.fields")
-    assert actual == expected and actual_fields != first_fields
+    assert measurements.compare(actual, "==", expected) and measurements.compare(actual_fields, "!=", first_fields)
     for field in actual_fields:
-        assert max(abs(a-b) for a,b in zip(actual_fields[field], expected_fields[field])) < 1e-12, field
+        assert measurements.error_below(max(abs(a-b) for a,b in zip(actual_fields[field], expected_fields[field])), 1e-12), field
     reports = [(int(n), float(t)) for n,t in report_rows(log, r"^(?:t|Pseudo-time) = (\S+)")]
     assert (checkpoint[-2], switch) in reports
     if equation == "Linear":
@@ -99,24 +100,24 @@ def check(args, work, name, equation, time_scheme, parallel):
     if equation == "Euler":
         counts = {int(n): int(c) for n,c in report_rows(log, r"^Stabilization .*failed since last report = 0\s+first-order now = (\d+)")}
         for step, time in reports:
-            assert (counts[step] > 0) == (time <= switch)
+            assert measurements.compare(counts[step] > 0, "==", time <= switch)
     if name == "pulse_1d":
         # Порог по числу шагов сам по себе не должен укорачивать шаг CFL.
         counted = run([*common, f"--output={case / 'steps'}", selected,
                        "main:steps_fo=2", f"main:final_time={end}"])
         rows = report_rows(counted, r"^Stabilization .*first-order now = (\d+)")
         totals = {int(step): int(count) for step, count in rows}
-        assert totals[1] == totals[2] > 0 and totals[3] == 0
+        assert (measurements.chain(totals[1], "==", totals[2], ">", 0)) and measurements.compare(totals[3], "==", 0)
         # CFL растёт во время старта. На четвёртом шаге начинается новая серия.
         (case / "cfl.txt").write_text("cfl_init=.05\ncfl_min=.01\ncfl_max=.2\ncfl_coeff=2\ncfl_num_steps=1\n")
         options = [selected, "main:stabilization=cfl", "main:steps_fo=3", f"main:final_time={end}"]
         adaptive = run([*common, f"--output={case / 'adaptive'}", *options])
         cfl = [float(value) for _,value in report_rows(adaptive, r"^.*? CFL = (\S+)")]
-        assert cfl[:5] == [.05, .1, .2, .05, .1], cfl
+        assert measurements.compare(cfl[:5], "==", [.05, .1, .2, .05, .1]), cfl
         timed = run([*common, f"--output={case / 'adaptive-time'}", *options, "main:steps_fo=0", f"main:t_fo={switch}"])
         timed_rows = [(float(t),float(c)) for _,t,c in report_rows(timed, r"^t = (\S+).*? CFL = (\S+)")]
         last_first = next(i for i,(t,_) in enumerate(timed_rows) if t == switch)
-        assert timed_rows[last_first][1] > .05 and timed_rows[last_first+1][1] == .05
+        assert measurements.compare(timed_rows[last_first][1], ">", .05) and measurements.compare(timed_rows[last_first+1][1], "==", .05)
 
         # Останавливаем steady точно на границе и проверяем CFL после чтения recovery.
         steady = [*common, f"--output={case / 'steady-restart'}", *options, "main:time_scheme=steady",
@@ -125,7 +126,7 @@ def check(args, work, name, equation, time_scheme, parallel):
             result = run([*steady, *extra], success=False)
             assert "pseudo-step limit reached before convergence" in result, result
         resumed = [(int(n),float(c)) for n,c in report_rows(result, r"^.*? CFL = (\S+)")]
-        assert resumed == [(4,.05),(5,.1)], resumed
+        assert measurements.compare(resumed, "==", [(4,.05),(5,.1)]), resumed
         check_steady_residual(common,case)
     print(f"OK {equation} {time_scheme}, MPI={parallel}: transition at t={switch}")
 

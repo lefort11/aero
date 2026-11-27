@@ -40,6 +40,7 @@ public:
 private:
     // Метаданные подсетки, точки интерполяции и схема записи среза.
     struct SliceOutput {
+        std::unique_ptr<Mesh> geometry;      // Сетка среза хранится только для заказанной визуализации на ранге 0.
         FieldSnapshot metadata;             // Геометрия и отпечаток именно подсетки.
         std::vector<SlicePoint> points;     // Номера концов в компактном списке источников.
         std::vector<OwnedNode> sources;     // На каждом ранге только принадлежащие ему строки.
@@ -70,6 +71,7 @@ private:
     std::string directory_;             // Корень результатов текущего запуска или продолжения.
     LinearBackground background_; // Величины фона для вычисления пульсации энергии.
     double gamma_;                      // Показатель адиабаты для вычисления полей газа.
+    std::unique_ptr<Mesh> global_mesh_; // Полная геометрия из .mdec только на ранге 0 для общей визуализации.
     LocalFieldOutput local_;            // Метаданные сетки и нумерация локального вывода.
 };
 }
